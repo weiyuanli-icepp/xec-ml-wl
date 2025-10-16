@@ -59,3 +59,45 @@ __pycache__/
 *.p12
 *.jks
 .env
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb~*
+
+# Conda / Python
+.env
+*.env
+__pycache__/
+*.py[cod]
+*.egg-info/
+.poetry/
+.venv/
+venv/
+pip-wheel-metadata/
+
+# Logs & outputs
+*.log
+logs/
+outputs/
+runs/
+wandb/
+mlruns/
+tensorboard/
+tb_logs/
+
+# Data (adjust to your structure)
+data/
+dataset/
+datasets/
+*.csv
+*.tsv
+*.parquet
+*.h5
+*.npz
+*.npy
+*.zip
+*.tar
+*.tar.gz
+
+# CUDA build cache (sometimes appears)
+.cache/

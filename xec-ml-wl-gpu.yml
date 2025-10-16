@@ -1,4 +1,4 @@
-name: meg2-ml
+name: xec-ml-wl
 channels:
   - conda-forge
 dependencies:
@@ -16,9 +16,9 @@ dependencies:
   - yaml
   - pip:
       # PyTorch + CUDA 12.1 wheels from the official index
-      - torch==2.4.*
-      - torchvision==0.19.*
-      - torchaudio==2.4.*
+      - torch==2.4.1
+      - torchvision==0.19.1
+      - torchaudio==2.4.1
       - --extra-index-url https://download.pytorch.org/whl/cu121
 
       # HEP / I/O
@@ -35,5 +35,16 @@ dependencies:
       - onnx>=1.16
       - onnxruntime-gpu>=1.18
 
+      # GNNs
+      - pyg-lib
+      - torch-geometric
+      - torch-sparse
+      - torch-scatter
+      - torch-cluster
+      - torch-spline-conv
+      - extra-index-url https://data.pyg.org/whl/torch-2.4.1+cu121.html
+
       # Optional experiment tracking (comment out if not needed)
       - comet-ml>=3.44
+      # - datasets
+      # - transformers
