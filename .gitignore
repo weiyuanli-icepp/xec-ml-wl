@@ -1,0 +1,61 @@
+# --- Compilers / build artifacts ---
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.pcm
+*.d
+*.la
+*.lo
+*.pyc
+*.pyo
+*.swp
+*~
+
+# --- ROOT outputs & caches ---
+*.root
+*.pdf
+*.png
+*.C_ACLiC_dict_rdict.pcm
+*.dSYM/
+
+# --- Common build/output dirs (adjust to your tree) ---
+build/
+build-*/
+cmake-build-*/
+tmp/
+tmp*/
+.cache/
+dist/
+out/
+
+# --- ROOT ACLiC temp dirs (typical) ---
+*/tmp/aclic_build*/
+*/analyzer/tmp/
+*/analyzer/tmp/*
+
+# --- Logs & Slurm ---
+slurm-*.out
+slurm-*.err
+*.log
+logs/
+log/
+
+# --- Python & notebooks ---
+__pycache__/
+.ipynb_checkpoints/
+
+# --- IDE/editors ---
+.vscode/
+.idea/
+*.code-workspace
+
+# --- Secrets (set actual names if you have them) ---
+*.pem
+*.key
+*.crt
+*.p12
+*.jks
+.env

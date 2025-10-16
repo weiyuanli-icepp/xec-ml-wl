@@ -1,0 +1,39 @@
+name: meg2-ml
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - jupyterlab
+  - ipykernel
+  - tqdm
+  - scikit-learn
+  - pyarrow
+  - yaml
+  - pip:
+      # PyTorch + CUDA 12.1 wheels from the official index
+      - torch==2.4.*
+      - torchvision==0.19.*
+      - torchaudio==2.4.*
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+
+      # HEP / I/O
+      - uproot>=5.2
+      - awkward>=2.6
+      - vector>=1.4
+
+      # Training quality of life
+      - pytorch-lightning>=2.4
+      - torchmetrics>=1.4
+      - tensorboard>=2.17
+
+      # Model export / inference
+      - onnx>=1.16
+      - onnxruntime-gpu>=1.18
+
+      # Optional experiment tracking (comment out if not needed)
+      - comet-ml>=3.44
