@@ -18,3 +18,8 @@ or
 Now you can click the link shown in the console to start JupyterLab.
 When using gpu nodes, you need to enter the token also shown in the console.
 
+You can use MLflow and TensorBoard to automatically log the parameters and results.
+To see the tracks:
+mlflow ui --backend-store-uri mlruns --host 0.0.0.0 --port 5000 &
+tensorboard --logdir runs --host 0.0.0.0 --port 6006 &
+-> then open http://localhost:5000 and http://localhost:6006
