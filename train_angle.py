@@ -454,6 +454,11 @@ def main_angle_with_args(
     writer = SummaryWriter(log_dir=os.path.join("runs", run_name))
 
     with mlflow.start_run(run_name=run_name):
+        
+        artifact_dir = os.path.join("artifacts", run_name)
+        os.makedirs(artifact_dir, exist_ok=True)
+        print(f"[info] Storing artifacts to: {artifact_dir}")
+        
         mlflow.log_params({
             "root": root,
             "tree": tree,
@@ -588,14 +593,14 @@ def main_angle_with_args(
         )
 
         # ---------- 1. scatter plot ----------
-        scatter_png = f"scatter_pred_truth_{run_name}.png"
-        plot_pred_truth_scatter(pred_all, true_all, outfile=scatter_png)
-        mlflow.log_artifact(scatter_png)
+        scatter_pdf = os.path.join(artifact_dir,f"scatter_pred_truth_{run_name}.pdf")
+        plot_pred_truth_scatter(pred_all, true_all, outfile=scatter_pdf)
+        mlflow.log_artifact(scatter_pdf)
 
         # ---------- 2. example predictions ----------
-        examples_png = f"examples_pred_truth_{run_name}.png"
-        plot_prediction_examples(pred_all, true_all, n_examples=5, outfile=examples_png)
-        mlflow.log_artifact(examples_png)
+        examples_pdf = os.path.join(artifact_dir,f"examples_pred_truth_{run_name}.pdf")
+        plot_prediction_examples(pred_all, true_all, n_examples=5, outfile=examples_pdf)
+        mlflow.log_artifact(examples_pdf)
 
         # ---------- 3. event visualization ----------
         if last_npho_chunk is not None:
@@ -604,21 +609,20 @@ def main_angle_with_args(
             idx_chunk = np.random.choice(n_in_chunk, size=n_vis, replace=False)
             for k, j in enumerate(idx_chunk):
                 event_npho = last_npho_chunk[j]  # shape (4760,)
-                face_png = f"event_faces_{k}_{run_name}.png"
+                face_pdf = os.path.join(artifact_dir,f"event_faces_{k}_{run_name}.pdf")
                 plot_event_faces(
                     event_npho,
                     title=f"Event (last-chunk idx={j})",
-                    savepath=face_png,
+                    savepath=face_pdf,
                     outer_mode=outer_mode,
                     outer_fine_pool=outer_fine_pool,
                 )
-                mlflow.log_artifact(face_png)
-
+                mlflow.log_artifact(face_pdf)
         # Plot residuals
         if pred_all is not None:
-            residual_png = f"angle_residuals_{run_name}.png"
-            eval_plots_angle(pred_all, true_all, outfile=residual_png)
-            mlflow.log_artifact(residual_png)
+            residual_pdf = os.path.join(artifact_dir,f"angle_residuals_{run_name}.pdf")
+            eval_plots_angle(pred_all, true_all, outfile=residual_pdf)
+            mlflow.log_artifact(residual_pdf)
 
         # Export ONNX + log model
         model.eval()
