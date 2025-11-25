@@ -4,14 +4,15 @@
 
 set -euo pipefail
 PORT="${1:-8888}"
-TIME="${2:-02:00:00}"
 PARTITION="${3:-a100-interactive}"
 ENV_NAME="xec-ml-wl"
 
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   # Not inside a Slurm job yet → allocate an interactive GPU shell and run this same script ON the node.
-  exec srun --mpi=none --pty --clusters=gmerlin7 -p "${PARTITION}" --gres=gpu:1 --time "${TIME}" bash -lc \
-    "HOSTNAME=\$(hostname); echo \"[INFO] Allocated: \$HOSTNAME\"; $(printf %q "$0") ${PORT} ${TIME} ${PARTITION}"
+  # exec srun --mpi=none --pty --clusters=gmerlin7 -p "${PARTITION}" --gres=gpu:1 --mem=48G --time "${TIME}" bash -lc \
+  #   "HOSTNAME=\$(hostname); echo \"[INFO] Allocated: \$HOSTNAME\"; $(printf %q "$0") ${PORT} ${TIME} ${PARTITION}"
+  exec srun --mpi=none --pty --clusters=gmerlin7 -p "${PARTITION}" --gres=gpu:1 --mem=48G bash -lc \
+    "HOSTNAME=\$(hostname); echo \"[INFO] Allocated: \$HOSTNAME\"; $(printf %q "$0") ${PORT} ${PARTITION}"
 fi
 
 # ---- From here, we are on the compute node ----
