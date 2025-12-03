@@ -102,3 +102,6 @@ datasets/
 
 # CUDA build cache (sometimes appears)
 .cache/
+
+# MLflow artifacts
+artifacts/
