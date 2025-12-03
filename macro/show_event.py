@@ -9,6 +9,7 @@ import torch
 # Import the geometry maps and the plotting function
 # Make sure angle_model_geom.py is in the same directory or python path
 try:
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from angle_model_geom import plot_event_faces
 except ImportError:
     print("Error: Could not import 'angle_model_geom.py'.")
