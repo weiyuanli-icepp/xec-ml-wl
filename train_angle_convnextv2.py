@@ -19,7 +19,7 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="mlflow.trackin
 # Note: AngleRegressorSharedFaces is now in angle_lib.model
 #       plot_event_faces is now in angle_lib.event_display
 from angle_lib.model import AngleRegressorSharedFaces
-from angle_lib.event_display import plot_event_faces
+from angle_lib.event_display import plot_event_faces, plot_event_time
 from angle_lib.angle_utils import get_gpu_memory_stats
 from angle_lib.angle_reweighting import scan_angle_hist_1d, scan_angle_hist_2d
 from angle_lib.angle_engine import run_epoch_stream
@@ -281,12 +281,33 @@ def main_angle_convnextv2_with_args(
             }).to_csv(csv_path, index=False)
             mlflow.log_artifact(csv_path)
 
+            # --- WORST EVENT PLOTTING ---
             worst_events = extra_info.get("worst_events", [])
-            for i, (err, raw_n, p, t) in enumerate(worst_events):
-                title = f"Worst #{i+1} (Loss={err:.4f})\nTruth: {t}\nPred: {p}"
-                path = os.path.join(artifact_dir, f"worst_event_{i}_{run_name}.pdf")
-                plot_event_faces(raw_n, title=title, savepath=path, outer_mode=outer_mode)
-                mlflow.log_artifact(path)
+            for i, (err, raw_n, raw_t, p, t, vtx, energy) in enumerate(worst_events):
+
+                vtx_str = f"({vtx[0]:.1f}, {vtx[1]:.1f}, {vtx[2]:.1f})"
+                base_title = (f"Worst #{i+1} (Loss={err:.4f})\n"
+                              f"Truth E={energy:.1f} MeV | VTX={vtx_str}\n"
+                              f"Truth: θ={t[0]:.2f}, φ={t[1]:.2f} | Pred: θ={p[0]:.2f}, φ={p[1]:.2f}")
+
+                # 1. Plot Npho Faces
+                path_npho = os.path.join(artifact_dir, f"worst_event_{i}_{run_name}_npho.pdf")
+                plot_event_faces(
+                    raw_n, 
+                    title=f"{base_title}\n(Photon Distribution)", 
+                    savepath=path_npho, 
+                    outer_mode=outer_mode
+                )
+                mlflow.log_artifact(path_npho)
+                time_disp = raw_t / 1e-7 
+                path_time = os.path.join(artifact_dir, f"worst_event_{i}_{run_name}_time.pdf")
+                plot_event_time(
+                    raw_n,
+                    time_disp,
+                    title=f"{base_title}\n(Time Distribution [1e-7s])", 
+                    savepath=path_time
+                )
+                mlflow.log_artifact(path_time)
 
             res_pdf = os.path.join(artifact_dir, f"resolution_profile_{run_name}.pdf")
             plot_resolution_profile(pred_all, true_all, outfile=res_pdf)
