@@ -5,6 +5,8 @@ import numpy as np
 import math
 import uproot
 import matplotlib.pyplot as plt
+import pandas as pd  # Added for CSV export
+from scipy.stats import skew # Added for skewness calculation
 
 import torch
 import torch.nn as nn
@@ -14,7 +16,8 @@ from torch.utils.tensorboard import SummaryWriter
 import mlflow
 import mlflow.pytorch
 
-from angle_model_geom import AngleRegressorSharedFaces, plot_event_faces  # <-- from above
+# --- Import from the STANDARD model file (NOT ConvNeXtV2) ---
+from angle_model_geom import AngleRegressorSharedFaces, plot_event_faces
 
 # ------------------------------------------------------------
 # GPU memory monitoring utilities
@@ -52,19 +55,6 @@ def iterate_chunks(path, tree, branches, step_size=4000):
 # Angle conversion utilities
 # ------------------------------------------------------------
 def angles_deg_to_unit_vec(angles: torch.Tensor) -> torch.Tensor:
-    """
-    angles: (B,2) tensor of [theta_deg, phi_deg].
-    Convert to a 3D unit vector consistent with your emiVec convention.
-
-    You said:
-      phi = atan2(emiVec[1], -emiVec[0]) * 180 / pi
-    We assume theta is the polar angle from +z (0 to 180 deg).
-
-    Then a consistent mapping back is:
-      x = -sin(theta) * cos(phi)
-      y =  sin(theta) * sin(phi)
-      z =  cos(theta)
-    """
     # angles in degrees → radians
     theta = torch.deg2rad(angles[:, 0])
     phi   = torch.deg2rad(angles[:, 1])
@@ -86,22 +76,13 @@ def angles_deg_to_unit_vec(angles: torch.Tensor) -> torch.Tensor:
 # ------------------------------------------------------------
 
 def scan_angle_hist_1d(root, tree="tree", comp=0, nbins=30, step_size=4000):
-    """
-    1D histogram over emiAng[:, comp].
-    comp = 0 -> theta, comp = 1 -> phi
-    Returns:
-        edges:   (nbins+1,) array
-        weights: (nbins,) inverse-frequency weights (mean ≈ 1)
-    """
     root = os.path.expanduser(root)
-
     # 1st pass: get min/max
     vmin, vmax = +np.inf, -np.inf
     for arr in iterate_chunks(root, tree, ["emiAng"], step_size):
         ang = arr["emiAng"].astype("float64")
         vals = ang[:, comp]
-        if vals.size == 0:
-            continue
+        if vals.size == 0: continue
         vmin = min(vmin, vals.min())
         vmax = max(vmax, vals.max())
 
@@ -115,8 +96,7 @@ def scan_angle_hist_1d(root, tree="tree", comp=0, nbins=30, step_size=4000):
     for arr in iterate_chunks(root, tree, ["emiAng"], step_size):
         ang = arr["emiAng"].astype("float64")
         vals = ang[:, comp]
-        if vals.size == 0:
-            continue
+        if vals.size == 0: continue
         h, _ = np.histogram(vals, bins=edges)
         counts += h
         
@@ -131,32 +111,19 @@ def scan_angle_hist_1d(root, tree="tree", comp=0, nbins=30, step_size=4000):
 
 
 def scan_angle_hist_2d(root, tree="tree", nbins_theta=20, nbins_phi=20, step_size=4000):
-    """
-    2D histogram over (theta=emiAng[:,0], phi=emiAng[:,1]).
-    Returns:
-        edges_theta: (nbins_theta+1,)
-        edges_phi:   (nbins_phi+1,)
-        weights_2d:  (nbins_theta, nbins_phi) inverse-frequency weights
-    """
     root = os.path.expanduser(root)
-
     th_min, th_max = +np.inf, -np.inf
     ph_min, ph_max = +np.inf, -np.inf
 
     # 1st pass: ranges
     for arr in iterate_chunks(root, tree, ["emiAng"], step_size):
         ang = arr["emiAng"].astype("float64")
-        theta = ang[:, 0]
-        phi   = ang[:, 1]
-        if theta.size == 0:
-            continue
-        th_min = min(th_min, theta.min())
-        th_max = max(th_max, theta.max())
-        ph_min = min(ph_min, phi.min())
-        ph_max = max(ph_max, phi.max())
+        theta = ang[:, 0]; phi = ang[:, 1]
+        if theta.size == 0: continue
+        th_min = min(th_min, theta.min()); th_max = max(th_max, theta.max())
+        ph_min = min(ph_min, phi.min()); ph_max = max(ph_max, phi.max())
 
-    if not (np.isfinite(th_min) and np.isfinite(th_max) and
-            np.isfinite(ph_min) and np.isfinite(ph_max)):
+    if not (np.isfinite(th_min) and np.isfinite(th_max) and np.isfinite(ph_min) and np.isfinite(ph_max)):
         raise RuntimeError("scan_angle_hist_2d: invalid range")
 
     edges_theta = np.linspace(th_min, th_max, nbins_theta + 1)
@@ -166,10 +133,8 @@ def scan_angle_hist_2d(root, tree="tree", nbins_theta=20, nbins_phi=20, step_siz
     # 2nd pass: counts
     for arr in iterate_chunks(root, tree, ["emiAng"], step_size):
         ang = arr["emiAng"].astype("float64")
-        theta = ang[:, 0]
-        phi   = ang[:, 1]
-        if theta.size == 0:
-            continue
+        theta = ang[:, 0]; phi = ang[:, 1]
+        if theta.size == 0: continue
         h, _, _ = np.histogram2d(theta, phi, bins=[edges_theta, edges_phi])
         counts += h.astype(np.int64)
         
@@ -190,7 +155,8 @@ def run_epoch_stream(
     model, optimizer, device, root, tree,
     step_size=4000, batch_size=128, train=True, amp=True,
     max_chunks=None,
-    npho_branch="relative_npho",         # "relative_npho" or "npho"
+    npho_branch="relative_npho",         
+    time_branch="relative_time",
     NphoScale=2e5,
     reweight_mode="none",
     edges_theta=None, weights_theta=None,
@@ -199,48 +165,68 @@ def run_epoch_stream(
     loss_type="smooth_l1",
 ):
     model.train(train)
-    loss_fn = nn.SmoothL1Loss(reduction="none")    # or MSELoss
+    loss_fn = nn.SmoothL1Loss(reduction="none")
     device_type = "cuda" if torch.cuda.is_available() else "cpu"
     scaler = torch.amp.GradScaler(device_type, enabled=(amp and device_type == "cuda"))
 
     total_loss, nobs = 0.0, 0
     all_pred, all_true = [], []
-    last_npho_chunk = None # for visualization
+    last_npho_chunk = None
 
     chunks_done = 0
-    for arr in iterate_chunks(root, tree, [npho_branch, "emiAng", "emiVec"], step_size):
+    branches_to_load = [npho_branch, time_branch, "emiAng", "emiVec"]
+    for arr in iterate_chunks(root, tree, branches_to_load, step_size):
         if max_chunks and chunks_done >= max_chunks:
             break
         chunks_done += 1
 
         Npho = arr[npho_branch].astype("float32")
+        Time = arr[time_branch].astype("float32")
         Y = arr["emiAng"].astype("float32")
         V = arr["emiVec"].astype("float32")
         
         last_npho_chunk = Npho.copy()
 
-        # Preprocess photons
+        # --- PREPROCESSING START ---
+        # 1. Clamp negative photons
         Npho = np.maximum(Npho, 0.0)
+        
+        # 2. Handle Time Garbage
+        mask_garbage_time = (np.abs(Time) > 1.0) | np.isnan(Time)
+        
+        # Identify pixels that have no valid info (no photon OR garbage time)
+        mask_invalid = (Npho <= 0.0) | mask_garbage_time
+        
+        # Zero out Time for invalid pixels
+        Time[mask_invalid] = 0.0
+        
+        # 3. Normalize
+        TimeScale = 1e-7
+        Time_norm = Time / TimeScale 
+        
         Npho_log = np.log1p(Npho / NphoScale).astype("float32")
+        
+        # 4. Stack
+        X_stacked = np.stack([Npho_log, Time_norm], axis=-1)
+        # --- PREPROCESSING END ---
 
         ds = TensorDataset(
-            torch.from_numpy(Npho_log),
+            torch.from_numpy(X_stacked),
             torch.from_numpy(Y),
             torch.from_numpy(V),
         )
         loader = DataLoader(ds, batch_size=batch_size, shuffle=train, drop_last=False)
 
-        for Npho_b, Y_b, V_b in loader:
+        for i_batch, (Npho_b, Y_b, V_b) in enumerate(loader):
             Npho_b = Npho_b.to(device)
             Y_b    = Y_b.to(device)
             V_b    = V_b.to(device)
 
-            # --- compute angle-based weights w (shape: (B,)) ---
             w = None
             if reweight_mode == "theta" and (edges_theta is not None) and (weights_theta is not None):
                 th = Y_b[:, 0].detach().cpu().numpy()
                 bin_id = np.clip(np.digitize(th, edges_theta) - 1, 0, len(weights_theta) - 1)
-                w = torch.from_numpy(weights_theta[bin_id].astype("float32")).to(device)  # (B,)
+                w = torch.from_numpy(weights_theta[bin_id].astype("float32")).to(device)
             elif reweight_mode == "phi" and (edges_phi is not None) and (weights_phi is not None):
                 ph = Y_b[:, 1].detach().cpu().numpy()
                 bin_id = np.clip(np.digitize(ph, edges_phi) - 1, 0, len(weights_phi) - 1)
@@ -261,7 +247,7 @@ def run_epoch_stream(
                         enabled=(amp and device_type == "cuda"),
                         dtype=torch.bfloat16
                     ):
-                        pred_angles = model(Npho_b)          # (B,2)
+                        pred_angles = model(Npho_b)
                         
                         if loss_type == "smooth_l1":
                             lvec     = loss_fn(pred_angles, Y_b)
@@ -299,7 +285,6 @@ def run_epoch_stream(
             else:
                 with torch.no_grad():
                     pred_angles = model(Npho_b)
-                    
                     if loss_type == "smooth_l1":
                         lvec = loss_fn(pred_angles, Y_b)
                         l_sample = lvec.mean(dim=1)
@@ -333,20 +318,71 @@ def run_epoch_stream(
         return loss_avg, pred_np, true_np, last_npho_chunk
     return loss_avg, None, None, None
 
-
-
 # ------------------------------------------------------------
-#  Plotting helper (optional)
+#  Plotting & Stats Helpers
 # ------------------------------------------------------------
+
+def eval_stats(pred, true):
+    """
+    Calculate Bias, RMS, and Distortion (Skewness) for angle residuals.
+    """
+    res = pred - true # (N, 2)
+    labels = ["theta", "phi"]
+    
+    print("\n=== Residual Statistics ===")
+    stats = {}
+    for i, name in enumerate(labels):
+        r = res[:, i]
+        bias = np.mean(r)
+        rms = np.std(r)
+        dist = skew(r)
+        
+        print(f"[{name}] Bias: {bias:7.4f} | RMS: {rms:7.4f} | Skew: {dist:7.4f}")
+        stats[f"{name}_bias"] = bias
+        stats[f"{name}_rms"] = rms
+        stats[f"{name}_skew"] = dist
+    print("===========================\n")
+    return stats
+
+def plot_cos_residuals(pred, true, outfile=None):
+    """
+    Plot 1 - cos_similarity residuals.
+    """
+    # Convert both to unit vectors
+    # Note: `angles_deg_to_unit_vec` is pytorch, here we use numpy
+    def to_vec_np(angles):
+        theta = np.deg2rad(angles[:, 0])
+        phi   = np.deg2rad(angles[:, 1])
+        x = -np.sin(theta) * np.cos(phi)
+        y =  np.sin(theta) * np.sin(phi)
+        z =  np.cos(theta)
+        return np.stack([x, y, z], axis=1)
+
+    v_pred = to_vec_np(pred)
+    v_true = to_vec_np(true) 
+    
+    # Dot product
+    cos_sim = np.sum(v_pred * v_true, axis=1)
+    cos_sim = np.clip(cos_sim, -1.0, 1.0)
+    cos_res = 1.0 - cos_sim
+    
+    plt.figure(figsize=(6,4))
+    plt.hist(cos_res, bins=100, range=(0, 0.1), log=True) 
+    plt.title("Cosine Residuals (1 - cos_sim)")
+    plt.xlabel("1 - cos(theta_open)")
+    plt.ylabel("Count (Log)")
+    plt.grid(True, which="both", alpha=0.3)
+    plt.tight_layout()
+    
+    if outfile:
+        plt.savefig(outfile, dpi=120)
+        plt.close()
+    else:
+        plt.show()
 
 def eval_plots_angle(pred, true, outfile=None):
-    """
-    pred, true: (N,2) arrays
-    Plot residuals for each component separately.
-    """
     res = pred - true  # (N,2)
     labels = ["emiAng[0]", "emiAng[1]"]
-
     plt.figure(figsize=(10,4))
     for i in range(2):
         plt.subplot(1,2,i+1)
@@ -362,12 +398,8 @@ def eval_plots_angle(pred, true, outfile=None):
         plt.close()
 
 def plot_prediction_examples(pred, true, n_examples=5, outfile=None):
-    """
-    Show a few examples of predicted vs truth angles.
-    """
     idx = np.random.choice(len(pred), size=n_examples, replace=False)
     plt.figure(figsize=(8, 2*n_examples))
-
     for k, i in enumerate(idx, 1):
         p = pred[i]
         t = true[i]
@@ -375,7 +407,6 @@ def plot_prediction_examples(pred, true, n_examples=5, outfile=None):
         plt.title(f"Example {k}:   Truth={t}   Pred={p}")
         plt.bar(["Δ0","Δ1"], p - t)
         plt.ylim(-1, 1)
-
     plt.tight_layout()
     if outfile:
         plt.savefig(outfile, dpi=120)
@@ -384,16 +415,39 @@ def plot_prediction_examples(pred, true, n_examples=5, outfile=None):
         plt.show()
 
 def plot_pred_truth_scatter(pred, true, outfile=None):
-    plt.figure(figsize=(10,4))
-
+    """
+    Heatmap style scatter plot with identity line covering negative regions.
+    """
+    plt.figure(figsize=(12,5))
+    
+    labels = ["Theta", "Phi"]
     for comp in range(2):
         plt.subplot(1,2,comp+1)
-        plt.scatter(true[:,comp], pred[:,comp], s=3, alpha=0.4)
-        plt.xlabel(f"Truth emiAng[{comp}]")
-        plt.ylabel(f"Pred emiAng[{comp}]")
-        lim = max(true[:,comp].max(), pred[:,comp].max())
-        plt.plot([0,lim],[0,lim],'k--')
-    
+        
+        # Use hist2d for heatmap style
+        # Determine dynamic range based on data
+        vmin = min(true[:,comp].min(), pred[:,comp].min())
+        vmax = max(true[:,comp].max(), pred[:,comp].max())
+        
+        # Add some padding
+        range_span = vmax - vmin
+        vmin -= range_span * 0.05
+        vmax += range_span * 0.05
+        
+        plt.hist2d(true[:,comp], pred[:,comp], bins=100, range=[[vmin, vmax], [vmin, vmax]], 
+                   cmap="inferno", norm=matplotlib.colors.LogNorm()) # Log color for density
+        
+        plt.colorbar(label="Count")
+        plt.xlabel(f"Truth {labels[comp]}")
+        plt.ylabel(f"Pred {labels[comp]}")
+        plt.title(f"{labels[comp]} Regression")
+        
+        # Identity line
+        plt.plot([vmin, vmax], [vmin, vmax], 'w--', alpha=0.7, linewidth=1)
+        
+        plt.xlim(vmin, vmax)
+        plt.ylim(vmin, vmax)
+        
     plt.tight_layout()
     if outfile:
         plt.savefig(outfile, dpi=120)
@@ -416,6 +470,7 @@ def main_angle_with_args(
     amp=True,
     max_chunks=None,
     npho_branch="relative_npho",             # "npho" or "relative_npho"
+    time_branch="relative_time",
     NphoScale=2e5,
     onnx="meg2ang.onnx",
     mlflow_experiment="gamma_angle",
@@ -426,6 +481,7 @@ def main_angle_with_args(
     nbins_theta=50,
     nbins_phi=50,
     loss_type="smooth_l1",
+    resume_from=None, # NEW ARG: path to .pth file to resume from
 ):
     root = os.path.expanduser(root)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -447,38 +503,62 @@ def main_angle_with_args(
         lr=lr
     )
 
+    # --- RESUME LOGIC ---
+    start_epoch = 1
+    best_val = float("inf")
+    run_id = None
+    
+    if resume_from and os.path.exists(resume_from):
+        print(f"[INFO] Resuming training from checkpoint: {resume_from}")
+        checkpoint = torch.load(resume_from, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_epoch = checkpoint["epoch"] + 1
+        best_val = checkpoint.get("best_val", float("inf"))
+        run_id = checkpoint.get("mlflow_run_id", None) 
+        print(f"[INFO] Resumed at epoch {start_epoch} with best_val={best_val:.4f}")
+        if run_id:
+            print(f"[INFO] Continuing MLflow run_id: {run_id}")
+    
     # MLflow + TB setup
     mlflow.set_experiment(mlflow_experiment)
     if run_name is None:
         run_name = time.strftime("run_%Y%m%d_%H%M%S")
-    writer = SummaryWriter(log_dir=os.path.join("runs", run_name))
-
-    with mlflow.start_run(run_name=run_name):
+    
+    # Reuse existing run_id if resuming, otherwise create new
+    with mlflow.start_run(run_id=run_id, run_name=run_name if not run_id else None) as run:
+        run_id = run.info.run_id # Capture current run_id
         
-        artifact_dir = os.path.join("artifacts", run_name)
+        # Use absolute path for artifacts
+        artifact_dir = os.path.abspath(os.path.join("artifacts", run_name))
         os.makedirs(artifact_dir, exist_ok=True)
         print(f"[info] Storing artifacts to: {artifact_dir}")
         
-        mlflow.log_params({
-            "root": root,
-            "tree": tree,
-            "epochs": epochs,
-            "batch": batch,
-            "chunksize": chunksize,
-            "lr": lr,
-            "weight_decay": weight_decay,
-            "amp": amp,
-            "max_chunks": max_chunks,
-            "npho_branch": npho_branch,
-            "NphoScale": NphoScale,
-            "backbone_base_channels": 16,
-            "outer_mode": outer_mode,
-            "outer_fine_pool": str(outer_fine_pool),
-            "reweight_mode": reweight_mode,
-            "nbins_theta": nbins_theta,
-            "nbins_phi": nbins_phi,
-            "loss_type": loss_type,
-        })
+        # Setup TensorBoard with same run_name
+        writer = SummaryWriter(log_dir=os.path.join("runs", run_name))
+        
+        if start_epoch == 1: # Only log params if starting fresh
+            mlflow.log_params({
+                "root": root,
+                "tree": tree,
+                "epochs": epochs,
+                "batch": batch,
+                "chunksize": chunksize,
+                "lr": lr,
+                "weight_decay": weight_decay,
+                "amp": amp,
+                "max_chunks": max_chunks,
+                "npho_branch": npho_branch,
+                "NphoScale": NphoScale,
+                "backbone_base_channels": 16,
+                "outer_mode": outer_mode,
+                "outer_fine_pool": str(outer_fine_pool),
+                "reweight_mode": reweight_mode,
+                "nbins_theta": nbins_theta,
+                "nbins_phi": nbins_phi,
+                "loss_type": loss_type,
+                "resume_from": resume_from,
+            })
         
         # --- angle histograms for reweighting ---
         edges_theta = weights_theta = None
@@ -487,30 +567,17 @@ def main_angle_with_args(
 
         if reweight_mode == "theta":
             print("[info] using theta reweighting")
-            edges_theta, weights_theta = scan_angle_hist_1d(
-                root, tree=tree, comp=0,
-                nbins=nbins_theta, step_size=chunksize
-            )
-
+            edges_theta, weights_theta = scan_angle_hist_1d(root, tree=tree, comp=0, nbins=nbins_theta, step_size=chunksize)
         elif reweight_mode == "phi":
             print("[info] using phi reweighting")
-            edges_phi, weights_phi = scan_angle_hist_1d(
-                root, tree=tree, comp=1,
-                nbins=nbins_phi, step_size=chunksize
-            )
-
+            edges_phi, weights_phi = scan_angle_hist_1d(root, tree=tree, comp=1, nbins=nbins_phi, step_size=chunksize)
         elif reweight_mode == "theta_phi":
             print("[info] using 2D (theta,phi) reweighting")
-            edges2_theta, edges2_phi, weights_2d = scan_angle_hist_2d(
-                root, tree=tree,
-                nbins_theta=nbins_theta,
-                nbins_phi=nbins_phi,
-                step_size=chunksize
-            )
+            edges2_theta, edges2_phi, weights_2d = scan_angle_hist_2d(root, tree=tree, nbins_theta=nbins_theta, nbins_phi=nbins_phi, step_size=chunksize)
         
-        best_val, best_state = float("inf"), None
+        best_state = None
 
-        for ep in range(1, epochs+1):
+        for ep in range(start_epoch, epochs+1):
             t0 = time.time()
             tr_loss, _, _, _ = run_epoch_stream(
                 model, optimizer, device, root, tree,
@@ -518,6 +585,7 @@ def main_angle_with_args(
                 train=True, amp=amp,
                 max_chunks=max_chunks,
                 npho_branch=npho_branch,
+                time_branch=time_branch,
                 NphoScale=NphoScale,
                 reweight_mode=reweight_mode,
                 edges_theta=edges_theta, weights_theta=weights_theta,
@@ -532,6 +600,7 @@ def main_angle_with_args(
                 train=False, amp=False,
                 max_chunks=max_chunks,
                 npho_branch=npho_branch,
+                time_branch=time_branch,
                 NphoScale=NphoScale,
                 reweight_mode=reweight_mode,
                 edges_theta=edges_theta, weights_theta=weights_theta,
@@ -551,30 +620,42 @@ def main_angle_with_args(
                     print(f"   [mem] alloc={alloc_gb:.2f} GB, peak={peak_gb:.2f} GB")
                     writer.add_scalar("memory/allocated_GB", alloc_gb, ep)
                     writer.add_scalar("memory/peak_GB",      peak_gb,  ep)
-                    mlflow.log_metrics({
-                        "memory_allocated_GB": alloc_gb,
-                        "memory_peak_GB":      peak_gb,
-                    }, step=ep)
+                    mlflow.log_metrics({"memory_allocated_GB": alloc_gb, "memory_peak_GB": peak_gb}, step=ep)
                     torch.cuda.reset_peak_memory_stats(device)
 
-            mlflow.log_metrics({
-                "train_loss": tr_loss,
-                "val_loss": val_loss,
-                "epoch_time_sec": sec,
-            }, step=ep)
-
+            mlflow.log_metrics({"train_loss": tr_loss, "val_loss": val_loss, "epoch_time_sec": sec}, step=ep)
             writer.add_scalar("loss/train", tr_loss, ep)
             writer.add_scalar("loss/val", val_loss, ep)
             writer.add_scalar("time/epoch_sec", sec, ep)
 
+            # --- CHECKPOINTING ---
+            ckpt_last_path = os.path.join(artifact_dir, "checkpoint_last.pth")
+            torch.save({
+                "epoch": ep,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_val": best_val,
+                "val_loss": val_loss,
+                "mlflow_run_id": run_id,
+            }, ckpt_last_path)
+
             if val_loss < best_val:
                 best_val = val_loss
                 best_state = {k: v.cpu() for k, v in model.state_dict().items()}
+                
+                ckpt_best_path = os.path.join(artifact_dir, "checkpoint_best.pth")
+                torch.save({
+                    "epoch": ep,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_val": best_val,
+                    "mlflow_run_id": run_id,
+                }, ckpt_best_path)
 
         print(f"[info] best val_loss = {best_val:.6f}")
         mlflow.log_metric("best_val_loss", best_val)
 
-        # Load best state and do a full evaluation pass
+        # Load best state for final eval
         if best_state:
             model.load_state_dict(best_state)
 
@@ -584,6 +665,7 @@ def main_angle_with_args(
             train=False, amp=False,
             max_chunks=max_chunks,
             npho_branch=npho_branch,
+            time_branch=time_branch,
             NphoScale=NphoScale,
             reweight_mode=reweight_mode,
             edges_theta=edges_theta, weights_theta=weights_theta,
@@ -592,17 +674,38 @@ def main_angle_with_args(
             loss_type=loss_type,
         )
 
-        # ---------- 1. scatter plot ----------
+        # ---------- PLOTS & LOGGING ----------
+        
+        # 1. Stats (Standard Output)
+        if pred_all is not None:
+            stats = eval_stats(pred_all, true_all)
+            mlflow.log_metrics(stats)
+            
+            # 2. CSV Output
+            csv_path = os.path.join(artifact_dir, f"predictions_{run_name}.csv")
+            df = pd.DataFrame({
+                "true_theta": true_all[:,0],
+                "true_phi": true_all[:,1],
+                "pred_theta": pred_all[:,0],
+                "pred_phi": pred_all[:,1]
+            })
+            df.to_csv(csv_path, index=False)
+            mlflow.log_artifact(csv_path)
+            
+            # 3. Cosine Residuals Plot
+            cos_res_pdf = os.path.join(artifact_dir, f"cos_residuals_{run_name}.pdf")
+            plot_cos_residuals(pred_all, true_all, outfile=cos_res_pdf)
+            mlflow.log_artifact(cos_res_pdf)
+
+        # 4. Heatmap Scatter
         scatter_pdf = os.path.join(artifact_dir,f"scatter_pred_truth_{run_name}.pdf")
         plot_pred_truth_scatter(pred_all, true_all, outfile=scatter_pdf)
         mlflow.log_artifact(scatter_pdf)
 
-        # ---------- 2. example predictions ----------
         examples_pdf = os.path.join(artifact_dir,f"examples_pred_truth_{run_name}.pdf")
         plot_prediction_examples(pred_all, true_all, n_examples=5, outfile=examples_pdf)
         mlflow.log_artifact(examples_pdf)
 
-        # ---------- 3. event visualization ----------
         if last_npho_chunk is not None:
             n_in_chunk = last_npho_chunk.shape[0]
             n_vis = min(3, n_in_chunk)
@@ -610,31 +713,38 @@ def main_angle_with_args(
             for k, j in enumerate(idx_chunk):
                 event_npho = last_npho_chunk[j]  # shape (4760,)
                 face_pdf = os.path.join(artifact_dir,f"event_faces_{k}_{run_name}.pdf")
-                plot_event_faces(
-                    event_npho,
-                    title=f"Event (last-chunk idx={j})",
-                    savepath=face_pdf,
-                    outer_mode=outer_mode,
-                    outer_fine_pool=outer_fine_pool,
-                )
-                mlflow.log_artifact(face_pdf)
-        # Plot residuals
+                try:
+                    plot_event_faces(
+                        event_npho,
+                        title=f"Event (last-chunk idx={j})",
+                        savepath=face_pdf,
+                        outer_mode=outer_mode,
+                        outer_fine_pool=outer_fine_pool,
+                    )
+                    if os.path.exists(face_pdf):
+                        mlflow.log_artifact(face_pdf)
+                    else:
+                        print(f"[WARN] File not found after plotting: {face_pdf}")
+                except Exception as e:
+                    print(f"[WARN] Visualization failed for event {k}: {e}")
+
         if pred_all is not None:
             residual_pdf = os.path.join(artifact_dir,f"angle_residuals_{run_name}.pdf")
             eval_plots_angle(pred_all, true_all, outfile=residual_pdf)
             mlflow.log_artifact(residual_pdf)
 
-        # Export ONNX + log model
+        # --- EXPORT ONNX TO ARTIFACT DIR ---
+        onnx_path = os.path.join(artifact_dir, onnx) # Use artifact_dir
         model.eval()
-        dummy = torch.randn(1, 4760, device=device)
+        dummy = torch.randn(1, 4760, 2, device=device) 
         # torch.onnx.export(
-            # model, dummy, onnx,
+            # model, dummy, onnx_path, # Use full path
             # input_names=["Npho4760"],
             # output_names=["emiAng"]
         # )
-        print(f"[OK] Exported ONNX to {onnx}")
-        if os.path.exists(onnx):
-            mlflow.log_artifact(onnx)
+        # print(f"[OK] Exported ONNX to {onnx_path}")
+        # if os.path.exists(onnx_path):
+        #     mlflow.log_artifact(onnx_path)
 
         mlflow.pytorch.log_model(
             model,

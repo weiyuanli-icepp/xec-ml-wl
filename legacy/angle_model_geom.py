@@ -67,6 +67,7 @@ AdamW with decoupled weight decay
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+import matplotlib.patches as patches
 from matplotlib.colors import LogNorm, Normalize
 import torch
 import torch.nn as nn
@@ -187,55 +188,100 @@ BOTTOM_INDEX_MAP = hex_rows_to_padded_map(BOTTOM_ROWS_LIST)
 # 2. DATA GATHERING HELPERS
 # =========================================================
 
-def gather_face(npho_batch: torch.Tensor, index_map: np.ndarray) -> torch.Tensor:
-    device = npho_batch.device
+def gather_face(x_batch: torch.Tensor, index_map: np.ndarray) -> torch.Tensor:
+    """
+    x_batch: (B, 4760, C)
+    Returns: (B, C, H, W)
+    """
+    device = x_batch.device
+    B, N, C = x_batch.shape
     H, W = index_map.shape
+    
     idx_flat = torch.from_numpy(index_map.reshape(-1)).to(device)
     mask = (idx_flat >= 0)
+    
     safe_idx = idx_flat.clone()
     safe_idx[~mask] = 0
-    vals = npho_batch[:, safe_idx]
-    vals[:, ~mask] = 0.0
-    return vals.view(-1, 1, H, W)
-
-def gather_hex_nodes(npho_batch: torch.Tensor, flat_indices: torch.Tensor) -> torch.Tensor:
-    vals = torch.index_select(npho_batch, 1, flat_indices.to(npho_batch.device))
-    return vals.unsqueeze(-1)
-
-def build_outer_fine_grid_tensor(npho_batch: torch.Tensor, pool_kernel=None) -> torch.Tensor:
-    device = npho_batch.device
-    B = npho_batch.size(0)
-    coarse = gather_face(npho_batch, OUTER_COARSE_FULL_INDEX_MAP).squeeze(1)
-    center = gather_face(npho_batch, OUTER_CENTER_INDEX_MAP).squeeze(1)
-    fine = torch.zeros(B, 1, OUTER_FINE_H, OUTER_FINE_W, device=device, dtype=npho_batch.dtype)
     
-    cr_scale, cc_scale = OUTER_FINE_COARSE_SCALE
-    sr_scale, sc_scale = OUTER_FINE_CENTER_SCALE
-    c_start_r, c_start_c = OUTER_FINE_CENTER_START
-    c_h, c_w = OUTER_CENTER_INDEX_MAP.shape 
-    center_coarse_h = (c_h * sr_scale + cr_scale - 1) // cr_scale
-    center_coarse_w = (c_w * sc_scale + cc_scale - 1) // cc_scale
+    # Gather: (B, H*W, C)
+    vals = torch.index_select(x_batch, 1, safe_idx)
+    
+    # Zero out padding pixels
+    # (B, H*W, C)
+    vals[:, ~mask] = 0.0 # mask is (H*W,)
+    
+    # Reshape to image: (B, H*W, C) -> (B, C, H, W)
+    vals = vals.view(B, H, W, C).permute(0, 3, 1, 2)
+    return vals
 
-    for r in range(OUTER_COARSE_FULL_INDEX_MAP.shape[0]):
-        for c in range(OUTER_COARSE_FULL_INDEX_MAP.shape[1]):
-            if c_start_r <= r < c_start_r + center_coarse_h and c_start_c <= c < c_start_c + center_coarse_w:
-                continue
-            val = coarse[:, r, c].view(B, 1, 1, 1) / float(cr_scale * cc_scale)
-            tr, tc = r * cr_scale, c * cc_scale
-            fine[:, :, tr:tr + cr_scale, tc:tc + cc_scale] = val
+def gather_hex_nodes(x_batch: torch.Tensor, flat_indices: torch.Tensor) -> torch.Tensor:
+    """
+    x_batch: (B, 4760, C)
+    Returns: (B, N_hex, C)
+    """
+    vals = torch.index_select(x_batch, 1, flat_indices.to(x_batch.device))
+    return vals
 
-    region_top = c_start_r * cr_scale
-    region_left = c_start_c * cc_scale
-    for r in range(c_h):
-        for c in range(c_w):
-            val = center[:, r, c].view(B, 1, 1, 1) / float(sr_scale * sc_scale)
-            tr = region_top + r * sr_scale
-            tc = region_left + c * sc_scale
-            fine[:, :, tr:tr + sr_scale, tc:tc + sc_scale] = val
+def build_outer_fine_grid_tensor(x_batch: torch.Tensor, pool_kernel=None) -> torch.Tensor:
+    """
+    Constructs the high-res Outer Face image (Finegrid mode).
+    Handles N-channel inputs (e.g., Npho + Time).
+    
+    Logic:
+    - Channel 0 (Npho): Extensive property. Value is divided by pixel area (density).
+    - Channel 1+ (Time): Intensive property. Value is broadcasted (copied).
+    """
+    device = x_batch.device
+    B, N, C = x_batch.shape
+    
+    # 1. Gather Coarse (B,C,9,24) and Center (B,C,5,6) faces
+    coarse = gather_face(x_batch, OUTER_COARSE_FULL_INDEX_MAP)
+    center = gather_face(x_batch, OUTER_CENTER_INDEX_MAP)
+    
+    # 2. Define Scales
+    # Coarse PMT -> 5x3 pixels (Area=15)
+    cr, cc = OUTER_FINE_COARSE_SCALE 
+    # Center PMT -> 3x2 pixels (Area=6)
+    sr, sc = OUTER_FINE_CENTER_SCALE 
+    
+    # 3. Upsample to Fine Grid using Nearest Neighbor (Broadcasting)
+    # Coarse: (9, 24) -> (45, 72)
+    fine_from_coarse = F.interpolate(coarse, scale_factor=(cr, cc), mode='nearest')
+    # Center: (5, 6) -> (15, 12)
+    fine_from_center = F.interpolate(center, scale_factor=(sr, sc), mode='nearest')
+    
+    # 4. Apply Physical Scaling Rules
+    # Channel 0 (Npho): Divide by area to conserve total charge sum
+    # We clone the slice to avoid in-place modification errors if needed
+    
+    # Scale Coarse Channel 0 by 15.0
+    fine_from_coarse[:, 0] = fine_from_coarse[:, 0] / float(cr * cc)
+    
+    # Scale Center Channel 0 by 6.0
+    fine_from_center[:, 0] = fine_from_center[:, 0] / float(sr * sc)
+    
+    # (Channel 1 is Time: We leave it as is. T=10ns on 1 PMT becomes T=10ns on 15 pixels.)
 
+    # 5. Stitching
+    # Place the Center patch into the hole in the Coarse grid
+    
+    # Calculate offset in Fine coordinates
+    c_start_r, c_start_c = OUTER_FINE_CENTER_START # (3, 10) in coarse indices
+    top_fine = c_start_r * cr
+    left_fine = c_start_c * cc
+    
+    # Get dimensions of the center patch
+    h_fine_c = fine_from_center.shape[2]
+    w_fine_c = fine_from_center.shape[3]
+    
+    # Final assembly
+    fine_grid = fine_from_coarse.clone()
+    fine_grid[:, :, top_fine : top_fine + h_fine_c, left_fine : left_fine + w_fine_c] = fine_from_center
+    
     if pool_kernel:
-        fine = F.avg_pool2d(fine, kernel_size=pool_kernel, stride=pool_kernel)
-    return fine
+        fine_grid = F.avg_pool2d(fine_grid, kernel_size=pool_kernel, stride=pool_kernel)
+        
+    return fine_grid
 
 def build_face_tensors(npho_batch: torch.Tensor):
     faces = {}
@@ -246,7 +292,7 @@ def build_face_tensors(npho_batch: torch.Tensor):
 
 
 # =========================================================
-# 3. VISUALIZATION (CORRECTED LAYOUT)
+# 3. VISUALIZATION
 # =========================================================
 
 def plot_event_faces(npho_event, title="Event Faces", savepath=None, outer_mode="split", outer_fine_pool=None):
@@ -258,7 +304,10 @@ def plot_event_faces(npho_event, title="Event Faces", savepath=None, outer_mode=
     """
     # 1. Prepare Data
     npho_np = npho_event.reshape(-1)
-    x = torch.from_numpy(npho_np.reshape(1, -1).astype("float32"))
+    
+    # Reshape to (1, 4760, 1) for gather functions
+    x = torch.from_numpy(npho_np.reshape(1, -1, 1).astype("float32"))
+    
     faces = build_face_tensors(x)
     outer_fine_fused = build_outer_fine_grid_tensor(x, pool_kernel=None)
 
@@ -284,12 +333,9 @@ def plot_event_faces(npho_event, title="Event Faces", savepath=None, outer_mode=
     # New Layout: DS | Inner | US | Outer
     # Widths: 45 | 100 | 45 | 100
     # Heights: Top=45, Mid=160, Bot=45
-    
     fig = plt.figure(figsize=(20, 14))
-    
     width_ratios = [45, 88, 45, 100]
     height_ratios = [100, 183, 100]
-    
     gs = gridspec.GridSpec(3, 4, 
                            width_ratios=width_ratios, 
                            height_ratios=height_ratios,
@@ -395,6 +441,8 @@ def plot_event_faces(npho_event, title="Event Faces", savepath=None, outer_mode=
     # 4. Outer (Far Right)
     ax_outer = plt.subplot(gs[1, 3])
     plot_rect_face(ax_outer, to_np(outer_fine_fused), "Outer", flip_lr=True)
+    rect = patches.Rectangle((29.5, 14.5), 12, 15, linewidth=1.5, edgecolor='white', facecolor='none', linestyle=':')
+    ax_outer.add_patch(rect)
 
     # --- BOTTOM ROW ---
     # Bottom Face: Row 0 is Top, X inverted.
@@ -404,7 +452,6 @@ def plot_event_faces(npho_event, title="Event Faces", savepath=None, outer_mode=
     # Colorbar
     cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7]) 
     fig.colorbar(im_main, cax=cbar_ax, label="NPho")
-
     fig.suptitle(title, fontsize=16)
     
     if savepath:
@@ -413,15 +460,174 @@ def plot_event_faces(npho_event, title="Event Faces", savepath=None, outer_mode=
     else:
         plt.show()
 
+def plot_event_time(npho_data, time_data, title="Event Time", savepath=None):
+    """
+    Visualizes the time distribution.
+    - Uses Robust Scaling (5th-95th percentile) to ignore outliers and enhance contrast.
+    - Uses 'coolwarm' colormap.
+    """
+    
+    # 1. Data Cleaning
+    t_clean = time_data.copy()
+    
+    # Garbage Filter (safeguard against huge default values like 1e10)
+    mask_garbage = np.abs(t_clean) > 1.0 
+    
+    # Validity Mask: Positive photons AND valid time
+    mask_valid = (npho_data > 0) & (~mask_garbage)
+    
+    # Zero out invalid data for safety
+    t_clean[~mask_valid] = 0.0
+    
+    # 2. Determine Dynamic Range (Robust)
+    valid_vals = t_clean[mask_valid]
+    
+    if valid_vals.size > 0:
+        # --- CHANGE: ROBUST SCALING ---
+        # Instead of min/max, we take the 5th and 95th percentiles.
+        # This ignores the top/bottom 5% of extreme outliers.
+        vmin, vmax = np.percentile(valid_vals, [0, 100])
+        
+        # Safety check: if vmin == vmax (e.g. all values are identical), expand slightly
+        if vmin == vmax:
+            vmin -= 1e-9
+            vmax += 1e-9
+            
+        # Optional: If you want to ensure the range is symmetric around 0 
+        # (so 0 is always white), uncomment these lines:
+        # limit = max(abs(vmin), abs(vmax))
+        # vmin, vmax = -limit, limit
+    else:
+        vmin, vmax = -1.0, 1.0
+
+    # Linear scale with robust limits
+    # Values outside [vmin, vmax] will appear as the darkest blue/red (saturated)
+    norm = Normalize(vmin=vmin, vmax=vmax)
+    cmap = "coolwarm" 
+
+    # 3. Build Tensors (Same as before)
+    x_npho = torch.from_numpy(npho_data.reshape(1, -1, 1).astype("float32"))
+    x_time = torch.from_numpy(t_clean.reshape(1, -1, 1).astype("float32"))
+    
+    faces_npho = build_face_tensors(x_npho)
+    faces_time = build_face_tensors(x_time)
+    
+    outer_time_fused = build_outer_fine_grid_tensor(x_time, pool_kernel=None)
+    outer_npho_fused = build_outer_fine_grid_tensor(x_npho, pool_kernel=None)
+
+    def to_np(t): return t.squeeze(0).squeeze(0).cpu().numpy()
+
+    # 4. Setup Figure Layout
+    fig = plt.figure(figsize=(22, 14))
+    width_ratios = [45, 100, 45, 100]
+    height_ratios = [45, 160, 45]
+    gs = gridspec.GridSpec(3, 4, width_ratios=width_ratios, height_ratios=height_ratios, wspace=0.1, hspace=0.1)
+
+    # --- HELPER: Rectangular Faces ---
+    def plot_face(ax, t_tensor, n_tensor, title, flip_lr=False):
+        t_img = to_np(t_tensor)
+        n_img = to_np(n_tensor)
+        
+        if flip_lr:
+            t_img = np.fliplr(t_img)
+            n_img = np.fliplr(n_img)
+        
+        masked_t = np.ma.masked_where(n_img <= 0, t_img)
+        
+        im = ax.imshow(masked_t, aspect='auto', origin='upper', cmap=cmap, norm=norm)
+        ax.set_facecolor('lightgray')
+        ax.set_title(title, fontsize=10, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    # --- HELPER: Hex Faces ---
+    def plot_hex_time(ax, row_list, full_t, full_n, title, mode):
+        pitch_y, pitch_x = 7.5, 7.1
+        xs, ys, vals = [], [], []
+        
+        for r_idx, ids in enumerate(row_list):
+            n_items = len(ids)
+            x_start = -(n_items - 1) * pitch_x / 2.0
+            
+            if mode == 'top':
+                y_pos = r_idx * pitch_y
+            elif mode == 'bottom':
+                y_pos = (5 - r_idx) * pitch_y
+            
+            for c_idx, pmt_id in enumerate(ids):
+                if not mask_valid[pmt_id]:
+                    continue
+                
+                x = -(x_start + c_idx * pitch_x)
+                y = y_pos
+                
+                xs.append(x)
+                ys.append(y)
+                vals.append(full_t[pmt_id])
+
+        # Background dots
+        all_xs, all_ys = [], []
+        for r_idx, ids in enumerate(row_list):
+            n_items = len(ids)
+            x_start = -(n_items - 1) * pitch_x / 2.0
+            y_pos = r_idx * pitch_y if mode == 'top' else (5 - r_idx) * pitch_y
+            for c_idx, _ in enumerate(ids):
+                all_xs.append(-(x_start + c_idx * pitch_x))
+                all_ys.append(y_pos)
+        
+        ax.scatter(all_xs, all_ys, s=280, c='lightgray', marker='h', alpha=0.3)
+
+        # Active dots
+        if vals:
+            ax.scatter(xs, ys, c=vals, s=280, cmap=cmap, norm=norm, marker='h', edgecolors='none')
+
+        ax.set_xlim(-55, 55)
+        ax.set_ylim(-5, 45)
+        ax.axis('off')
+        ax.set_title(title, fontsize=10, fontweight='bold')
+
+    # --- EXECUTE PLOTS ---
+    ax_top = plt.subplot(gs[0, 1])
+    plot_hex_time(ax_top, TOP_ROWS_LIST, t_clean, npho_data, "Top (Time)", mode='top')
+
+    ax_ds = plt.subplot(gs[1, 0])
+    plot_face(ax_ds, faces_time["ds"], faces_npho["ds"], "Downstream", flip_lr=True)
+    
+    ax_inner = plt.subplot(gs[1, 1])
+    im_main = plot_face(ax_inner, faces_time["inner"], faces_npho["inner"], "Inner", flip_lr=True)
+    
+    ax_us = plt.subplot(gs[1, 2])
+    plot_face(ax_us, faces_time["us"], faces_npho["us"], "Upstream", flip_lr=False)
+    
+    ax_outer = plt.subplot(gs[1, 3])
+    plot_face(ax_outer, outer_time_fused, outer_npho_fused, "Outer", flip_lr=True)
+    rect = patches.Rectangle((29.5, 14.5), 12, 15, linewidth=1.5, edgecolor='black', facecolor='none', linestyle=':')
+    ax_outer.add_patch(rect)
+
+    ax_bot = plt.subplot(gs[2, 1])
+    plot_hex_time(ax_bot, BOTTOM_ROWS_LIST, t_clean, npho_data, "Bottom (Time)", mode='bottom')
+
+    # Colorbar
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7]) 
+    fmt = "%.1e" # Force scientific notation for small numbers like 1e-7
+    fig.colorbar(im_main, cax=cbar_ax, label=f"Time [{title}]", format=fmt)
+    fig.suptitle(title, fontsize=16)
+    
+    if savepath:
+        plt.savefig(savepath, bbox_inches='tight', dpi=120)
+        plt.close()
+    else:
+        plt.show()
+        
 # =========================================================
 # 4. MODEL CLASSES
 # =========================================================
 
 class FaceBackbone(nn.Module):
-    def __init__(self, base_channels=16, pooled_hw=(4, 4)):
+    def __init__(self, in_channels=1, base_channels=16, pooled_hw=(4, 4)):
         super().__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(1, base_channels, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels, base_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(base_channels),
             nn.LeakyReLU(0.1, inplace=True),
             nn.Conv2d(base_channels, base_channels*2, kernel_size=3, padding=1),
@@ -431,8 +637,10 @@ class FaceBackbone(nn.Module):
         self.pool = nn.AdaptiveAvgPool2d(pooled_hw)
         self.out_dim = base_channels*2 * pooled_hw[0] * pooled_hw[1]
     def forward(self, x):
-        x = self.conv(x); x = self.pool(x)
-        return x.view(x.size(0), -1)
+        x = self.conv(x)
+        x = self.pool(x)
+        # return x.view(x.size(0), -1)
+        return x.flatten(1)
 
 class HexGraphConv(nn.Module):
     """
@@ -465,9 +673,7 @@ class HexGraphConv(nn.Module):
         agg = torch.zeros(B, N, msgs.size(-1), device=x.device, dtype=x_f.dtype)
         idx = dst.view(1, -1, 1).expand(B, -1, msgs.size(-1))
 
-        # --- FIX: Explicitly cast msgs to match agg.dtype ---
         msgs = msgs.to(agg.dtype) 
-        # ----------------------------------------------------
 
         agg.scatter_add_(1, idx, msgs)
         agg = agg / deg.to(agg.dtype).clamp(min=1).view(1, -1, 1)
@@ -480,11 +686,15 @@ class HexGraphConv(nn.Module):
         return out.to(x.dtype)
 
 class HexGraphEncoder(nn.Module):
-    def __init__(self, embed_dim: int, hidden_dim: int = 64):
+    def __init__(self, in_dim=1, embed_dim=128, hidden_dim=64):
         super().__init__()
-        self.conv1 = HexGraphConv(1, hidden_dim)
+        self.conv1 = HexGraphConv(in_dim, hidden_dim)
         self.conv2 = HexGraphConv(hidden_dim, hidden_dim)
-        self.proj = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.LeakyReLU(0.1), nn.Linear(hidden_dim, embed_dim))
+        self.proj = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim), 
+            nn.LeakyReLU(0.1), 
+            nn.Linear(hidden_dim, embed_dim)
+        )
     def forward(self, node_feats, edge_index, deg):
         x = self.conv1(node_feats, edge_index, deg)
         x = self.conv2(x, edge_index, deg)
@@ -495,10 +705,13 @@ class AngleRegressorSharedFaces(nn.Module):
         super().__init__()
         self.outer_mode = outer_mode
         self.outer_fine_pool = outer_fine_pool
-        self.backbone = FaceBackbone(base_channels=16, pooled_hw=(4, 4))
+        
+        input_channels = 2 # Npho, Time
+        
+        self.backbone = FaceBackbone(in_channels=input_channels, base_channels=16, pooled_hw=(4, 4))
         self.hex_embed_dim = self.backbone.out_dim
-        self.hex_encoder = HexGraphEncoder(embed_dim=self.hex_embed_dim, hidden_dim=64)
-
+        self.hex_encoder = HexGraphEncoder(in_dim=input_channels, embed_dim=self.hex_embed_dim, hidden_dim=64)
+        
         if outer_mode == "split":
             self.cnn_face_names = ["inner", "outer_coarse", "outer_center", "us", "ds"]
             self.outer_fine = False
@@ -518,18 +731,32 @@ class AngleRegressorSharedFaces(nn.Module):
             nn.Linear(in_fc, hidden_dim), nn.LeakyReLU(0.1), nn.Dropout(0.2), nn.Linear(hidden_dim, out_dim)
         )
 
-    def forward(self, npho_batch):
-        faces = build_face_tensors(npho_batch)
+    def forward(self, x_batch):
+        """
+        x_batch: (B, 4760, 2)
+        """
+        # faces = build_face_tensors(npho_batch)
+        faces = {}
+        faces["inner"] = gather_face(x_batch, INNER_INDEX_MAP)
+        faces["us"]    = gather_face(x_batch, US_INDEX_MAP)
+        faces["ds"]    = gather_face(x_batch, DS_INDEX_MAP)
+        if self.outer_mode == "split":
+            faces["outer_coarse"] = gather_face(x_batch, OUTER_COARSE_FULL_INDEX_MAP)
+            faces["outer_center"] = gather_face(x_batch, OUTER_CENTER_INDEX_MAP)
+
         embeddings = []
         for name in self.cnn_face_names:
             embeddings.append(self.backbone(faces[name]))
+        
         if self.outer_fine:
-            outer_fine = build_outer_fine_grid_tensor(npho_batch, pool_kernel=self.outer_fine_pool)
+            outer_fine = build_outer_fine_grid_tensor(x_batch, pool_kernel=self.outer_fine_pool)
             embeddings.append(self.backbone(outer_fine))
         
         edge_index, deg = self.hex_edge_index, self.hex_deg
-        top_nodes = gather_hex_nodes(npho_batch, self.top_hex_indices)
-        bot_nodes = gather_hex_nodes(npho_batch, self.bottom_hex_indices)
+        top_nodes = gather_hex_nodes(x_batch, self.top_hex_indices)
+        bot_nodes = gather_hex_nodes(x_batch, self.bottom_hex_indices)
+        
         embeddings.append(self.hex_encoder(top_nodes, edge_index, deg))
         embeddings.append(self.hex_encoder(bot_nodes, edge_index, deg))
+        
         return self.head(torch.cat(embeddings, dim=1))
