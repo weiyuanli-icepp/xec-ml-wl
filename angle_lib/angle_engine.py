@@ -50,7 +50,7 @@ def run_epoch_stream(
     worst_events_buffer = [] 
 
     chunks_done = 0
-    branches_to_load = [npho_branch, time_branch, "emiAng", "emiVec", "xyzTruth", "xyzVTX", "energyTruth"]
+    branches_to_load = [npho_branch, time_branch, "emiAng", "emiVec", "xyzTruth", "xyzVTX", "energyTruth", "run", "event"]
     
     # Track Global Event Index
     global_event_counter = 0
@@ -192,7 +192,8 @@ def run_epoch_stream(
                     xyz_tru_np = XYZ_tru_b.cpu().numpy()
                     xyz_vtx_np = XYZ_vtx_b.cpu().numpy()
                     
-                    val_root_data["event_id"].append(EID_b.cpu().numpy())
+                    val_root_data["run_id"].append(RunNum_b.cpu().numpy())
+                    val_root_data["event_id"].append(EventNum_b.cpu().numpy())
                     val_root_data["pred_theta"].append(p_np[:, 0])
                     val_root_data["pred_phi"].append(p_np[:, 1])
                     val_root_data["true_theta"].append(t_np[:, 0])
@@ -205,8 +206,6 @@ def run_epoch_stream(
                     val_root_data["x_vtx"].append(xyz_vtx_np[:, 0])
                     val_root_data["y_vtx"].append(xyz_vtx_np[:, 1])
                     val_root_data["z_vtx"].append(xyz_vtx_np[:, 2])
-                    val_root_data["run_number"].append(RunNum_b.cpu().numpy())
-                    val_root_data["event_number"].append(EventNum_b.cpu().numpy())
 
                     # --- Worst Case Tracking ---
                     batch_errs_np = l_opt.cpu().numpy()
