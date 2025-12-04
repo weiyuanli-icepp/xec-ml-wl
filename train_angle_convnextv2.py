@@ -11,6 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 import mlflow
 import mlflow.pytorch
+import uproot
 
 # Silence warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="mlflow.tracking._tracking_service.utils")
@@ -283,11 +284,12 @@ def main_angle_convnextv2_with_args(
 
             # --- WORST EVENT PLOTTING ---
             worst_events = extra_info.get("worst_events", [])
-            for i, (err, raw_n, raw_t, p, t, vtx, energy) in enumerate(worst_events):
+            for i, (err, raw_n, raw_t, p, t, xyz, vtx, energy) in enumerate(worst_events):
 
                 vtx_str = f"({vtx[0]:.1f}, {vtx[1]:.1f}, {vtx[2]:.1f})"
+                xyz_str = f"({xyz[0]:.1f}, {xyz[1]:.1f}, {xyz[2]:.1f})"
                 base_title = (f"Worst #{i+1} (Loss={err:.4f})\n"
-                              f"Truth E={energy:.1f} MeV | VTX={vtx_str}\n"
+                              f"Truth E={energy:.1f} MeV | VTX={vtx_str}, XYZ={xyz_str}\n"
                               f"Truth: θ={t[0]:.2f}, φ={t[1]:.2f} | Pred: θ={p[0]:.2f}, φ={p[1]:.2f}")
 
                 # 1. Plot Npho Faces
@@ -326,6 +328,27 @@ def main_angle_convnextv2_with_args(
             
             plot_pred_truth_scatter(pred_all, true_all, outfile=os.path.join(artifact_dir, "scatter.pdf"))
             mlflow.log_artifact(os.path.join(artifact_dir, "scatter.pdf"))
+            
+            # --- SAVE VALIDATION ROOT FILE ---
+            root_data = extra_info.get("root_data", None)
+            if root_data is not None:
+                val_root_path = os.path.join(artifact_dir, f"validation_results_{run_name}.root")
+                print(f"[INFO] Saving validation ROOT file to {val_root_path}...")
+                
+                with uproot.recreate(val_root_path) as f:
+                    f["val_tree"] = {
+                        "event_number": root_data["event_id"],
+                        "pred_theta":   root_data["pred_theta"],
+                        "true_theta":   root_data["true_theta"],
+                        "pred_phi":     root_data["pred_phi"],   # Assuming Item 4 was Pred Phi
+                        "true_phi":     root_data["true_phi"],   # Added for completeness
+                        "opening_angle":root_data["opening_angle"],
+                        "energy_truth": root_data["energy_truth"],
+                        "x_truth":      root_data["x_truth"],
+                        "y_truth":      root_data["y_truth"],
+                        "z_truth":      root_data["z_truth"]
+                    }
+                mlflow.log_artifact(val_root_path)
 
         # --- EXPORT ONNX TO ARTIFACT DIR ---
         if onnx:
