@@ -286,10 +286,11 @@ def main_angle_convnextv2_with_args(
             worst_events = extra_info.get("worst_events", [])
             for i, (err, raw_n, raw_t, p, t, xyz, vtx, energy) in enumerate(worst_events):
 
+                energy = energy * 1e3  # GeV to MeV
                 vtx_str = f"({vtx[0]:.1f}, {vtx[1]:.1f}, {vtx[2]:.1f})"
                 xyz_str = f"({xyz[0]:.1f}, {xyz[1]:.1f}, {xyz[2]:.1f})"
                 base_title = (f"Worst #{i+1} (Loss={err:.4f})\n"
-                              f"Truth E={energy:.1f} MeV | VTX={vtx_str}, XYZ={xyz_str}\n"
+                              f"Truth E={energy:.2f} MeV | VTX={vtx_str}, XYZ={xyz_str}\n"
                               f"Truth: θ={t[0]:.2f}, φ={t[1]:.2f} | Pred: θ={p[0]:.2f}, φ={p[1]:.2f}")
 
                 # 1. Plot Npho Faces

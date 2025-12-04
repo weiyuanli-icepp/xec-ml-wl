@@ -52,9 +52,6 @@ def run_epoch_stream(
     chunks_done = 0
     branches_to_load = [npho_branch, time_branch, "emiAng", "emiVec", "xyzTruth", "xyzVTX", "energyTruth", "run", "event"]
     
-    # Track Global Event Index
-    global_event_counter = 0
-
     for arr in iterate_chunks(root, tree, branches_to_load, step_size):
         if max_chunks and chunks_done >= max_chunks:
             break
@@ -70,12 +67,6 @@ def run_epoch_stream(
         RunNum   = arr["run"].astype("int32")  # (N,)
         EventNum = arr["event"].astype("int32")  # (N,)
         
-        
-        # Generate Event IDs for this chunk
-        chunk_len = len(Npho)
-        EventIDs = np.arange(global_event_counter, global_event_counter + chunk_len, dtype="int32")
-        global_event_counter += chunk_len
-
         # --- PREPROCESSING ---
         Npho = np.maximum(Npho, 0.0)
         mask_garbage_time = (np.abs(Time) > 1.0) | np.isnan(Time)
@@ -94,16 +85,16 @@ def run_epoch_stream(
         X_stacked = np.stack([Npho_log, Time_norm], axis=-1)
 
         ds = TensorDataset(
-            torch.from_numpy(X_stacked),
-            torch.from_numpy(Y),
-            torch.from_numpy(V),
-            torch.from_numpy(Npho),     # Raw Npho
-            torch.from_numpy(Time),     # Raw Time
-            torch.from_numpy(RunNum),   # Run Number
-            torch.from_numpy(EventNum), # Event Number
-            torch.from_numpy(XYZ_tru),  # XYZ Truth
-            torch.from_numpy(XYZ_vtx),  # XYZ VTX
-            torch.from_numpy(E_truth)   # Energy Truth
+            torch.from_numpy(X_stacked),  # Stacked input features: log-scaled Npho and normalized Time
+            torch.from_numpy(Y),          # True angles in degrees
+            torch.from_numpy(V),          # Unit vector of true angles
+            torch.from_numpy(Npho),       # Raw Npho
+            torch.from_numpy(Time),       # Raw Time
+            torch.from_numpy(RunNum),     # Run Number
+            torch.from_numpy(EventNum),   # Event Number
+            torch.from_numpy(XYZ_tru),    # XYZ Truth
+            torch.from_numpy(XYZ_vtx),    # XYZ VTX
+            torch.from_numpy(E_truth)     # Energy Truth (in GeV)
         )
         loader = DataLoader(ds, batch_size=batch_size, shuffle=train, drop_last=False)
 
