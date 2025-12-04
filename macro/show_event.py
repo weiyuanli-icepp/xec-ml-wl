@@ -10,7 +10,7 @@ import torch
 # Make sure angle_model_geom.py is in the same directory or python path
 try:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-    from angle_model_geom import plot_event_faces
+    from angle_lib.event_display import plot_event_faces
 except ImportError:
     print("Error: Could not import 'angle_model_geom.py'.")
     print("Please ensure the file is in the current directory.")
