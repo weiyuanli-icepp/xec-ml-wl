@@ -1,147 +1,181 @@
 # xec-ml-wl
 
-**Deep Learning Analysis for the MEG II Liquid Xenon (LXe) Detector**
+## Deep Learning Analysis for the MEG II Liquid Xenon (LXe) Detector
 
-This repository contains machine learning models (CNNs and Graph Neural Networks) to regress the emission angle (theta, phi) of photons detected by the LXe detector, utilizing both photon count (N_pho) and timing information.
+This repository contains machine learning models (CNNs and Graph Neural Networks) to regress the emission angle (**$\theta$**, **$\phi$**) of photons detected by the LXe detector, utilizing both photon count (**$N_{\mathrm{pho}}$**) and timing information (**$t_{\mathrm{pm}}$**) in each photo-sensor (4092 SiPMs and 668 PMTs).
+
+---
 
 ## 1. Environment Setup
 
-The project supports both **x86 (A100)** and **ARM (Grace-Hopper)** architectures on the Merlin7 cluster.
+The repository supports both **x86 (A100)** and **ARM (Grace-Hopper)** architectures on the Merlin7 cluster. Due to binary incompatibility, I have prepared **two separate environments**.
 
-### First Time Setup
+### First-Time Setup
 
-**1. Load Base Tools:**
+### 1. A100 Nodes (a100-* partition)
 
-    module load anaconda/2024.08
+These x86-based nodes use the system Anaconda module:
 
-**2. Create Conda Environments:**
-You need separate environments for different node types due to architecture differences (x86 vs ARM).
+```bash
+$ module load anaconda/2024.08
+$ conda env create -f env_setting/xec-ml-wl.yml
+```
 
-* **For Standard GPU Nodes (A100):**
+### 2. Grace-Hopper Nodes (gh-* partition)
 
-    conda env create -f env_setting/xec-ml-wl.yml
+These ARM64-based nodes require a custom Miniforge installation.
 
-* **For Grace-Hopper Nodes (gh-interactive):**
+#### Log in to a GH node:
 
-    conda env create -f env_setting/environment_gh.yml
+```bash
+$ srun --cluster=gmerlin7 --partition=gh-interactive --gres=gpu:1 --pty /bin/bash
+```
 
-**3. Prepare Scripts:**
+#### Install Miniforge:
 
-    chmod +x start_jupyter_xec_gpu.sh submit_job.sh run_scan.sh
+```bash
+$ wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh
+
+$ bash Miniforge3-Linux-aarch64.sh -b -p $HOME/miniforge-arm
+```
+
+#### Create Environment:
+
+```bash
+$ source $HOME/miniforge-arm/bin/activate
+
+# 1. Create base with system libs
+$ mamba create -n xec-ml-wl-gh python=3.10 numpy scipy pandas matplotlib scikit-learn \
+    tqdm pyarrow pyyaml jupyterlab ipykernel uproot awkward vector \
+    pytorch-lightning torchmetrics tensorboard onnx mlflow \
+    -c conda-forge -y
+
+# 2. Activate
+$ conda activate xec-ml-wl-gh
+
+# 3. Install PyTorch (GPU)
+$ pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# 4. Install ONNX Runtime GPU (optional)
+$ pip install onnxruntime-gpu
+```
+
+### 3. Prepare Batch Job
+
+```bash
+$ chmod +x start_jupyter_xec_gpu.sh submit_job.sh run_scan.sh
+```
+
+---
 
 ## 2. Usage
 
-### A. Interactive Jupyter Session
+### A. Batch Training (Recommended)
 
-To start a JupyterLab session on a compute node. The script automatically selects the correct environment based on the partition.
+We use `submit_job.sh`, which automatically detects the CPU architecture of the allocated node and activates the correct environment (x86 or ARM).
 
-**Syntax:** `./start_jupyter_xec_gpu.sh [PARTITION] [TIME] [PORT]`
+#### 1. Quick Submission
 
-* **Standard A100 Node:**
+```bash
+# Usage:
+# ./submit_job.sh [RUN_NAME] [MODEL] [EPOCHS] [REWEIGHT] [LOSS] [LR] [BATCH] [RESUME] [PARTITION] [TIME]
+$ ./submit_job.sh test_run_01 convnextv2 20 none smooth_l1 3e-4 1024 "" a100-hourly 04:00:00
+```
 
-    ./start_jupyter_xec_gpu.sh a100-interactive 02:00:00 8888
+#### 2. Hyperparameter Scanning
 
-* **Grace-Hopper Node:**
+```bash
+# Inside run_scan.sh:
+export EMA_DECAY=0.999
+export LOSS_BETA=1.0
 
-    ./start_jupyter_xec_gpu.sh gh-interactive 02:00:00 8888
+./submit_job.sh scan_run_01 ...
+```
 
-**Connecting to Jupyter:**
+### B. Interactive Jupyter Session
 
-1.  Wait for the script to output the allocated node (e.g., `gpu105`) and the token URL.
-2.  On your local machine, open an SSH tunnel:
+```bash
+# Syntax:
+# ./start_jupyter_xec_gpu.sh [PARTITION] [TIME] [PORT]
+./start_jupyter_xec_gpu.sh gh-interactive 02:00:00 8888
+```
+1. Wait for the connection URL.
+2. Tunnel ports locally: `ssh -N -L 8888:localhost:8888 -J <user>@login001 <user>@gpuXXX`
+3. Paste the URL with token in the browser.
 
-    ssh -N -L 8888:localhost:8888 -J <user>@login001 <user>@gpuXXX
-
-    *(Replace `gpuXXX` with the allocated node name).*
-3.  Open `http://localhost:8888` in your browser.
-
-### B. Batch Training (Slurm Jobs)
-
-To submit training jobs to the queue without opening Jupyter.
-
-* **Submit Single Job:**
-
-    ./submit_job.sh <RUN_NAME> <LR> <BATCH_SIZE> <PARTITION> <TIME>
-    #### Example:
-    ./submit_job.sh test_run_01 3e-4 2048 a100-hourly 04:00:00
-
-* **Run Hyperparameter Scan:**
-    Edit `run_scan.sh` to define parameters, then run:
-
-    ./run_scan.sh
+---
 
 ## 3. Output & Artifacts
 
-All results are stored in the `artifacts/` and `runs/` directories.
+All results are logged to **MLflow** and stored in the `artifacts/` directory.
 
-### Directory Structure
+### Key Artifacts
 
-```text
-xec-ml-wl/
-├── artifacts/
-│   └── <run_name>/              # Created automatically per run
-│       ├── checkpoint_last.pth  # Latest model state (for resuming)
-│       ├── checkpoint_best.pth  # Best model state (lowest val_loss)
-│       ├── predictions.csv      # CSV with Pred vs Truth for analysis
-│       ├── meg2ang.onnx         # Exported model for C++ inference
-│       └── *.pdf                # Plots (Scatter, Residuals, Event Displays)
-├── runs/                        # TensorBoard logs
-├── mlruns/                      # MLflow logs
+* `checkpoint_best.pth` — Best model weights (includes EMA state).
+* `checkpoint_last.pth` — Last epoch's model weights (includes EMA state).
+* `predictions_*.csv` — Validation predictions vs truth.
+* `meg2ang_*.onnx` — Exported ONNX model for C++ inference.
+* `validation_results_*.root` — ROOT file containing event-by-event predictions and truth variables.
+
+### Plots
+
+* `resolution_profile_*.pdf`: 68% width resolution vs $\theta$/$\phi$.
+* `saliency_profile_*.pdf`: Physics Sensitivity analysis (Gradient of output w.r.t input Npho/Time).
+* `worst_event_*.pdf`: Event displays of the highest-loss events.
+
+### Visualization Tools
+
+```bash
+# Start MLflow (Track metrics & PDFs)
+$ mlflow ui --backend-store-uri mlruns --host 0.0.0.0 --port XXXX
+
+# Start TensorBoard (Track Loss Curves)
+$ tensorboard --logdir runs --host 0.0.0.0 --port YYYY
 ```
 
-### Visualization
+---
 
-To track training progress and view logged artifacts:
+## 4. Model & Training Features
 
-#### 1. Start MLflow UI (Tracks parameters, metrics, and PDF artifacts)
-mlflow ui --backend-store-uri mlruns --host 0.0.0.0 --port 5000 &
+The primary model is **ConvNeXt V2**, adapted for LXe geometry.
 
-#### 2. Start TensorBoard (Tracks loss curves)
-tensorboard --logdir runs --host 0.0.0.0 --port 6006 &
+### Key Features
 
-*Open http://localhost:5000 and http://localhost:6006 locally (requires tunneling).*
+* **Geometry-aware projections**: Maps PMTs to split faces (Inner/Outer/Side) and Hex grids (Top/Bottom).
+* **EMA (Exponential Moving Average)**: Maintains a "shadow" model with smoothed weights ($W_{ema} = \beta W_{ema} + (1-\beta)W_{live}$). Significantly improves stability on noisy physics data.
+* **Physics saliency**: Calculates $\partial \theta / \partial N_{pho}$ to visualize which detector faces drive the decision.
+* **Reliable ONNX export**: Automatically exports the EMA model (if active) and replaces dynamic pooling with Resize(bilinear) for compatibility.
 
-`ssh -N -L 5000(or 6006):localhost:5000(or 6006) <user_name>@login00X.merlin7.psi.ch`
+### Argument List (`run_training_cli.py`)
 
-## 4. Model Architectures
+| Argument          | Default         | Description                      |
+| ----------------- | --------------- | -------------------------------- |
+| `--root`          | Required        | Path to input ROOT file          |
+| `--model`         | `convnextv2`    | Model architecture               |
+| `--epochs`        | `20`            | Training epochs                  |
+| `--batch`         | `256`           | Batch size                       |
+| `--lr`            | `3e-4`          | Learning rate                    |
+| `--loss_type`     | `smooth_l1`     | Loss function                    |
+| `--loss_beta`     | `1.0`           | SmoothL1 parameter               |
+| `--ema_decay`     | `0.999`         | EMA decay rate (-1 disables EMA) |
+| `--reweight_mode` | `none`          | theta / phi / theta_phi          |
+| `--use_scheduler` | `-1`            | -1 for cosine, 1 for constant    |
+| `--npho_branch`   | `relative_npho` | Photon count branch              |
+| `--time_branch`   | `relative_time` | Timing branch                    |
+| `--NphoScale`     | `1e5`           | Photon count normalization       |
+| `--time_scale`    | `2.32e6`        | Time normalization               |
+| `--time_shift`    | `-0.29`         | Offset shift                     |
+| `--onnx`          | `*.onnx`        | Output ONNX filename             |
 
-This repository implements two main architectures. Both use a **Geometry-Aware** preprocessing step that maps the 4760 sensors onto 2D grids (Inner, Upstream, Downstream, Outer) and Graph structures (Top, Bottom).
-
-### Input Data
-
-* **Channels:** 2 (N_pho, Time)
-* **Preprocessing:**
-    * N_pho: Log-scaled log(1 + N_pho).
-    * Time: Normalized (T / 100ns) and masked (set to 0 where N_pho=0).
-
-### 1. Simple CNN (`angle_model_geom.py`)
-
-* **Backbone:** Shallow CNN (2 Convolutional layers + Pooling).
-* **Outer Face:** Uses "Finegrid" mode to stitch Coarse and Fine PMTs into a single image.
-* **Hex Faces:** Processed using a custom Graph Convolution (`HexGraphConv`).
-* **Speed:** Fast training (~20s / epoch), good baseline.
-
-### 2. ConvNeXt V2 (`angle_model_geom_convnextv2.py`)
-
-* **Backbone:** Deep modern architecture based on [ConvNeXt V2](https://arxiv.org/abs/2301.00808).
-* **Key Features:**
-    * **GRN (Global Response Normalization):** Enhances feature competition, crucial for sparse photon data.
-    * **LayerNorm & GELU:** Stable training for regression.
-    * **Depthwise Separable Convs:** Large receptive field (7 x 7).
-* **Performance:** Lower loss (~13 deg error vs 18 deg baseline), robust to noise.
+---
 
 ## 5. Resuming Training
+The script supports resumption. It detects if an EMA state exists in the checkpoint and loads it; otherwise, it syncs the EMA model with the loaded weights to prevent training divergence.
 
-You can interrupt and resume training at any time. Checkpoints are saved automatically.
-
-To resume, simply pass the path to the checkpoint file in your python script arguments:
-
-main_angle_convnextv2_with_args(
-    # ... other args ...
-    resume_from="artifacts/my_previous_run/checkpoint_last.pth"
-)
-
-This will:
-1.  Load model weights and optimizer state.
-2.  Restore the correct epoch number.
-3.  Continue logging to the **same** MLflow/TensorBoard run ID.
+```bash
+--resume_from "artifacts/<run name>/checkpoint_last.pth"
+```
+or
+```bash
+--resume_from "artifacts/<run name>/checkpoint_best.pth"
+```
