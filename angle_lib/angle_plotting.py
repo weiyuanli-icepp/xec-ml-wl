@@ -187,9 +187,58 @@ def plot_pred_truth_scatter(pred, true, outfile=None):
         vmax = max(true[:,comp].max(), pred[:,comp].max())
         plt.hist2d(true[:,comp], pred[:,comp], bins=100, range=[[vmin, vmax], [vmin, vmax]], 
                    cmap="inferno", norm=LogNorm()) 
+        plt.plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=1.0, alpha=0.8, label="y=x")
         plt.colorbar(label="Count")
         plt.title(f"{labels[comp]} Regression")
+        plt.xlabel(f"True {labels[comp]} [deg]")
+        plt.ylabel(f"Pred {labels[comp]} [deg]")
+        plt.legend()
     plt.tight_layout()
     if outfile:
         plt.savefig(outfile, dpi=120)
         plt.close()
+
+def plot_saliency_profile(saliency_data, outfile=None):
+    """
+    Plots the Gradient Saliency (Sensitivity) for Theta vs Phi,
+    separated by Npho and Time.
+    """
+    # Extract face names from one of the keys
+    faces = list(saliency_data["theta"]["npho"].keys())
+    x = np.arange(len(faces))
+    width = 0.35
+    
+    fig, axs = plt.subplots(1, 2, figsize=(18, 6))
+    
+    # --- Subplot 1: Npho Sensitivity ---
+    theta_npho = [saliency_data["theta"]["npho"][f] for f in faces]
+    phi_npho   = [saliency_data["phi"]["npho"][f]   for f in faces]
+    
+    axs[0].bar(x - width/2, theta_npho, width, label='Theta', color='tab:blue', alpha=0.8)
+    axs[0].bar(x + width/2, phi_npho,   width, label='Phi',   color='tab:orange', alpha=0.8)
+    axs[0].set_title('Sensitivity to PHOTON COUNTS')
+    axs[0].set_ylabel('Mean Gradient Magnitude')
+    axs[0].set_xticks(x)
+    axs[0].set_xticklabels(faces, rotation=45)
+    axs[0].legend()
+    axs[0].grid(True, axis='y', alpha=0.3)
+    
+    # --- Subplot 2: Time Sensitivity ---
+    theta_time = [saliency_data["theta"]["time"][f] for f in faces]
+    phi_time   = [saliency_data["phi"]["time"][f]   for f in faces]
+    
+    axs[1].bar(x - width/2, theta_time, width, label='Theta', color='tab:green', alpha=0.8)
+    axs[1].bar(x + width/2, phi_time,   width, label='Phi',   color='tab:red', alpha=0.8)
+    axs[1].set_title('Sensitivity to TIMING')
+    axs[1].set_ylabel('Mean Gradient Magnitude')
+    axs[1].set_xticks(x)
+    axs[1].set_xticklabels(faces, rotation=45)
+    axs[1].legend()
+    axs[1].grid(True, axis='y', alpha=0.3)
+    
+    plt.tight_layout()
+    if outfile:
+        plt.savefig(outfile, dpi=120)
+        plt.close()
+    else:
+        plt.show()
