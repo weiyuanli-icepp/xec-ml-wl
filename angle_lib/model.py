@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 
 from .model_blocks import ConvNeXtV2Block, LayerNorm, HexGraphEncoder
@@ -9,7 +10,11 @@ from .geom_defs import (
     TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
     HEX_EDGE_INDEX_NP, HEX_DEG_NP, flatten_hex_rows
 )
-from .geom_utils import gather_face, build_outer_fine_grid_tensor, gather_hex_nodes
+from .geom_utils import (
+    gather_face, 
+    build_outer_fine_grid_tensor, 
+    gather_hex_nodes
+)
 
 class FaceBackbone(nn.Module):
     def __init__(self, in_channels=2, base_channels=32, pooled_hw=(4, 4), drop_path_rate=0.0):
@@ -38,7 +43,8 @@ class FaceBackbone(nn.Module):
             ConvNeXtV2Block(dim=base_channels*2, drop_path=dp)
         )
         
-        self.pool = nn.AdaptiveAvgPool2d(pooled_hw)
+        # self.pool = nn.AdaptiveAvgPool2d(pooled_hw)
+        self.pooled_hw = pooled_hw
         self.out_dim = (base_channels * 2) * pooled_hw[0] * pooled_hw[1]
 
     def forward(self, x):
@@ -46,7 +52,7 @@ class FaceBackbone(nn.Module):
         x = self.stage1(x)
         x = self.downsample(x)
         x = self.stage2(x)
-        x = self.pool(x)
+        x = F.interpolate(x, size=self.pooled_hw, mode='bilinear', align_corners=False)
         return x.flatten(1)
 
 class AngleRegressorSharedFaces(nn.Module):
