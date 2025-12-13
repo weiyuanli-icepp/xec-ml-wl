@@ -125,6 +125,7 @@ All results are logged to **MLflow** and stored in the `artifacts/` directory.
 
 ### Visualization Tools
 
+The real time tracking of the training is available with MLflow and TensorBoard.
 ```bash
 # Start MLflow (Track metrics & PDFs)
 $ mlflow ui --backend-store-uri mlruns --host 0.0.0.0 --port XXXX
@@ -132,6 +133,31 @@ $ mlflow ui --backend-store-uri mlruns --host 0.0.0.0 --port XXXX
 # Start TensorBoard (Track Loss Curves)
 $ tensorboard --logdir runs --host 0.0.0.0 --port YYYY
 ```
+
+### Metrics Definition
+
+#### 1. Physics Performance Metrics
+
+These metrics evaluate the quality of the photon direction reconstruction. They are calculated during the validation phase using eval_stats and eval_resolution.
+
+| Metric | Definition | Formula |
+| ------ | ---------- | ------- | 
+| Theta Bias (`theta_bias`) | The arithmetic mean of the residuals. | $\mu = \text{Mean}(\theta_{pred} - \theta_{true})$ |
+| Theta RMS (`theta_rms`) | The standard deviation of the residuals. | $\sigma = \text{Std}(\theta_{pred} - \theta_{true})$ |
+| Theta Skewness (`theta_skew`) | A measure of the asymmetry of the error distribution. | $$\text{Skew} = \frac{\frac{1}{N} \sum_{i=1}^{N} (\Delta \theta_i - \mu)^3}{\left( \frac{1}{N} \sum_{i=1}^{N} (\Delta \theta_i - \mu)^2 \right)^{3/2}}$$ |
+| Opening Angle Resolution (`val_resolution_deg`) | The 68th percentile of the 3D opening angle $\psi$ between the predicted and true vectors. | $\psi = \arccos(\vec{v}_{pred} \cdot \vec{v}_{true})$ |
+
+#### 2. System Engineering Metrics
+These metrics monitor the health of the training infrastructure (GPU/CPU) to detect bottlenecks or imminent crashes.
+
+| Metric           | Definition                       | Interpretation                                                                            |
+| ---------------- | -------------------------------- | --------------------------------- |
+| Allocated Memory | `system/` `memory_allocated_GB`  | The actual size of tensors (weights, gradients, data) on the GPU. Steady growth indicates a memory leak.Reserved Memorysystem/memory_reserved_GBThe total memory PyTorch has requested from the OS. If this hits the hardware limit, an OOM crash occurs.                                                      |
+| Peak Memory      | `system/` `memory_peak_GB`       | The highest memory usage recorded (usually during the backward pass). Use this to tune batch_size.                          |
+| GPU Utilization  | `system/` `gpu_utilization_pct`  | Ratio of Allocated to Total VRAM. Low values (<50%) suggest the batch size can be increased; very high values (>90%) risk OOM.  |
+| Fragmentation    | `system/` `memory_fragmentation` | Ratio of empty space within reserved memory blocks. High fragmentation (>0.5) indicates inefficient memory use.                | 
+| RAM Usage        | `system/` `ram_used_gb`          | System RAM used by the process. High usage warns that step_size for ROOT file reading is too large.                            | 
+| Throughput       | `system/` `epoch_duration_sec`   | Wall-clock time per epoch. If high while GPU utilization is low, the pipeline is CPU-bound (data loading bottleneck).        |
 
 ---
 
@@ -179,3 +205,48 @@ or
 ```bash
 --resume_from "artifacts/<run name>/checkpoint_best.pth"
 ```
+
+## 6. Real Data Validation
+Validation using real data can be performed in the following procedure
+1. Convert checkpoint files to ONNX files (`export_onnx.py`)
+    ```bash
+    $ python export_onnx.py \
+    artifacts/<RUN_NAME>/checkpoint_best.pth \
+    --output onnx/<RUN_NAME>_<date_time>.onnx
+    ```
+2. Process rec files to a input file for ONNX run time script (`macro/PrepareRealData.C`)
+    ```bash
+    $ cd $MEG2SYS/analyzer
+    $ ./meganalyzer -b -q -I '$HOME/meghome/xec-ml-wl/macro/PrepareRealData.C+(start_runnumber, number_of_runs, "rec_suffix", "rec_dir")'
+    # DataGammaAngle_<start_runnumber>-<end_runnumber>.root will be generated. 2000 runs -> 100k events
+    $ mv DataGammaAngle_<start_runnumber>-<end_runnumber>.root $HOME/xec-ml-wl/val_data/
+    ```
+3. Use inference script to output the prediction and "truth" (`inference_real_data.py`)
+* First login to interactive gpu node. 
+    ```bash
+    $ srun --cluster=gmerlin7 -p a100-interactive --time=02:00:00 --gres=gpu:1 --pty /bin/bash
+    ```
+* Before executing the script, we need to export some path to `$LD_LIBRARY_PATH`
+    ```bash
+    $ export LD_LIBRARY_PATH=$(find $CONDA_PREFIX/lib/python3.10/site-packages/nvidia -name "lib" -type d | paste -sd ":" -):$LD_LIBRARY_PATH
+    ```
+* Check if it worked:
+    ```bash
+    $ echo $LD_LIBRARY_PATH
+    ```
+* Now we can start inference
+    ```bash
+    $ python inference_real_data.py \
+        --onnx onnx/<RUN_NAME>_<date_time>.onnx \
+        --input val_data/DataGammaAngle_<start_runnumber>-<end_runnumber>.root \
+        --output Output_Run<start_runnumber>-<end_runnumber>.root \
+        --NphoScale 1.0 --time_scale 2.32e6
+    ```
+4. Check inference result with plotting macro
+    ```bash
+    $ plot_real_data_analysis.py \
+        --input val_data/Output_Run<start_runnumber>-<end_runnumber>.root \
+        --checkpoint \ 
+        --output_dir \
+        --outer_mode
+    ```
