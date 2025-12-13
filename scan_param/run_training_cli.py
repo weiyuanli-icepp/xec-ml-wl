@@ -20,24 +20,25 @@ def get_parser():
     parser.add_argument("--batch", type=int, default=1024)
     parser.add_argument("--chunksize", type=int, default=32000)
     parser.add_argument("--lr", type=float, default=3e-4)
-    
-    # Tuning Hyperparameters
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--drop_path_rate", type=float, default=0.0)
     parser.add_argument("--use_scheduler", type=int, default=-1, help="-1 for Cosine+Warmup, other value for Constant LR")
     parser.add_argument("--warmup_epochs", type=int, default=2)
+    parser.add_argument("--ema_decay", type=float, default=0.999)
     
     # Preprocessing parameters
-    parser.add_argument("--time_shift", type=float, default=0.0)
-    parser.add_argument("--time_scale", type=float, default=1e-7)
+    parser.add_argument("--time_shift", type=float, default=-0.29)
+    parser.add_argument("--time_scale", type=float, default=2.32e6)
     
     # Model & Data Processing
     parser.add_argument("--model", type=str, default="simple", choices=["simple", "convnextv2"], help="Model architecture to use")
     parser.add_argument("--npho_branch", type=str, default="relative_npho")
     parser.add_argument("--time_branch", type=str, default="relative_time")
-    parser.add_argument("--NphoScale", type=float, default=2e5) # Updated default to match new script
+    parser.add_argument("--NphoScale", type=float, default=1e5)
+    parser.add_argument("--NphoScale2", type=float, default=13)
     parser.add_argument("--reweight_mode", type=str, default="none") 
     parser.add_argument("--loss_type", type=str, default="smooth_l1")
+    parser.add_argument("--loss_beta", type=float, default=1.0, help="Beta parameter for Smooth L1 loss if used")
     parser.add_argument("--outer_mode", type=str, default="finegrid")
     
     # Export
@@ -64,7 +65,7 @@ def main():
 
     if args.model == "simple":
         # Note: You haven't updated simple model yet, assuming old interface or you will update it later
-        from train_angle import main_angle_with_args
+        from legacy.train_angle import main_angle_with_args
         main_angle_with_args(
             root=os.path.expanduser(args.root),
             tree=args.tree,
@@ -104,12 +105,15 @@ def main():
             npho_branch=args.npho_branch,
             time_branch=args.time_branch,
             NphoScale=args.NphoScale,
+            NphoScale2=args.NphoScale2,
             reweight_mode=reweight,
             loss_type=args.loss_type,
+            loss_beta=args.loss_beta,
             outer_mode=args.outer_mode,
             outer_fine_pool=(3,3),
             run_name=args.run_name,
-            resume_from=args.resume_from
+            resume_from=args.resume_from,
+            ema_decay=args.ema_decay,
         )
 
 if __name__ == "__main__":

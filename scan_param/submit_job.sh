@@ -24,11 +24,13 @@ TIME="${10:-12:00:00}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-1e-4}"
 DROP_PATH="${DROP_PATH:-0.0}"
 SCHEDULER="${SCHEDULER:--1}"
-TIME_SCALE="${TIME_SCALE:-1e-7}"
-TIME_SHIFT="${TIME_SHIFT:-0.0}"
+TIME_SCALE="${TIME_SCALE:-2.32e6}"
+TIME_SHIFT="${TIME_SHIFT:--0.29}"
 WARMUP_EPOCHS="${WARMUP_EPOCHS:-2}"
-NPHO_SCALE="${NPHO_SCALE:-1.0}"
+NPHO_SCALE="${NPHO_SCALE:-1e5}"
+NPHO_SCALE2="${NPHO_SCALE2:-13}"
 ONNX="${ONNX:-}"
+EMA_DECAY="${EMA_DECAY:-0.999}"
 MLFLOW_EXPERIMENT="${MLFLOW_EXPERIMENT:-gamma_angle}"
 
 CHUNK_SIZE="${CHUNK_SIZE:-4000}"
@@ -65,8 +67,27 @@ set -e
 
 # Load Environment
 [[ -f /etc/profile.d/modules.sh ]] && source /etc/profile.d/modules.sh || true
+
+ARM_CONDA="\$HOME/miniforge-arm/bin/conda"
+X86_CONDA="/opt/psi/Programming/anaconda/2024.08/conda/bin/conda"
+
+# 1. Try loading the module (this handles paths automatically for x86 vs ARM)
 module load anaconda/2024.08 2>/dev/null || true
-eval "\$(/opt/psi/Programming/anaconda/2024.08/conda/bin/conda shell.bash hook)"
+
+# 2. Initialize Conda Dynamically (Escaped \$(...) to run on compute node)
+if [ -f "\$ARM_CONDA" ] && [ "\$(uname -m)" == "aarch64" ]; then
+    echo "[JOB] Detected ARM64 architecture. Using Miniforge."
+    eval "\$(\$ARM_CONDA shell.bash hook)"
+elif command -v conda &> /dev/null; then
+    # The module worked and conda is in PATH
+    eval "\$(conda shell.bash hook)"
+elif [ -f "\$X86_CONDA" ]; then
+    # Fallback for A100 if module failed
+    eval "\$(\$X86_CONDA shell.bash hook)"
+else
+    echo "CRITICAL ERROR: Could not find 'conda' on partition ${PARTITION}."
+    exit 1
+fi
 
 echo "[JOB] Activating environment: ${ENV_NAME}"
 conda activate "${ENV_NAME}"
@@ -93,11 +114,14 @@ python scan_param/run_training_cli.py \
     --onnx "${ONNX}" \
     --mlflow_experiment "${MLFLOW_EXPERIMENT}" \
     --NphoScale ${NPHO_SCALE} \
+    --NphoScale2 ${NPHO_SCALE2} \
     --reweight_mode "${REWEIGHT_MODE}" \
     --loss_type "${LOSSTYPE}" \
+    --loss_beta "${LOSS_BETA}" \
     --run_name "${RUN_NAME}" \
     --model "${MODEL}" \
-    --resume_from "${RESUME_FROM}"
+    --resume_from "${RESUME_FROM}" \
+    --ema_decay "${EMA_DECAY}"
 
 echo "[JOB] Finished."
 EOF
