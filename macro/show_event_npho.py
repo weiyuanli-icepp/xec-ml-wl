@@ -6,21 +6,19 @@ import uproot
 import matplotlib.pyplot as plt
 import torch
 
-# Import the geometry maps and the plotting function
-# Make sure angle_model_geom.py is in the same directory or python path
 try:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from angle_lib.event_display import plot_event_faces
 except ImportError:
-    print("Error: Could not import 'angle_model_geom.py'.")
-    print("Please ensure the file is in the current directory.")
+    print("Error: Could not import 'plot_event_faces'.")
+    print("Please ensure 'event_display.py' is in the current directory or python path.")
     sys.exit(1)
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize LXe Event from ROOT file")
     parser.add_argument("event_id", type=int, help="The event index to visualize (0-based)")
     parser.add_argument("--file", type=str, 
-                        default="/data/user/ext-li_w1/meghome/xec-ml-wl/data/MCGammaAngle_0-49.root",
+                        default="/data/user/ext-li_w1/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/MCGammaAngle_0-99.root",
                         help="Path to the ROOT file")
     parser.add_argument("--tree", type=str, default="tree", help="Name of the TTree")
     parser.add_argument("--branch", type=str, default="relative_npho", 

@@ -6,19 +6,19 @@ import uproot
 import matplotlib.pyplot as plt
 import torch
 
-# Import the plotter from your updated geometry file
 try:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-    from angle_model_geom import plot_event_time
+    from angle_lib.event_display import plot_event_time
 except ImportError:
-    print("Error: Could not import 'angle_model_geom.py'.")
+    print("Error: Could not import 'plot_event_time'.")
+    print("Please ensure 'event_display.py' is in the current directory or python path.")
     sys.exit(1)
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize LXe Event Time Distribution")
     parser.add_argument("event_id", type=int, help="The event index to visualize")
     parser.add_argument("--file", type=str, 
-                        default="/data/user/ext-li_w1/meghome/xec-ml-wl/data/MCGammaAngle_0-49.root")
+                        default="/data/user/ext-li_w1/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/MCGammaAngle_0-99.root")
     parser.add_argument("--tree", type=str, default="tree")
     parser.add_argument("--npho_branch", type=str, default="relative_npho", help="Branch for photon counts (used for masking)")
     parser.add_argument("--time_branch", type=str, default="relative_time", help="Branch for timing (used for color)")
