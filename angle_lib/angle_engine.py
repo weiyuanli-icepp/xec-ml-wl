@@ -12,18 +12,21 @@ def run_epoch_stream(
     max_chunks=None,
     npho_branch="relative_npho",
     time_branch="relative_time",
-    NphoScale=2e5,
-    time_shift=0.0,
-    time_scale=1e-7,
+    NphoScale=1e5,
+    NphoScale2=13,
+    time_shift=-0.29,
+    time_scale=2.32e6,
     reweight_mode="none",
     edges_theta=None, weights_theta=None,
     edges_phi=None,   weights_phi=None,
     edges2_theta=None, edges2_phi=None, weights_2d=None,
     loss_type="smooth_l1",
-    scheduler=None
+    loss_beta=1.0,
+    scheduler=None,
+    ema_model=None
 ):
     model.train(train)
-    criterion_smooth = nn.SmoothL1Loss(reduction="none")
+    criterion_smooth = nn.SmoothL1Loss(reduction="none", beta=loss_beta)
     criterion_l1 = nn.L1Loss(reduction="none")
     criterion_mse = nn.MSELoss(reduction="none")
     
@@ -80,9 +83,11 @@ def run_epoch_stream(
             val_inputs_npho.append(n_flat[valid_mask])
             val_inputs_time.append(t_flat[valid_mask])
 
-        Time_norm = (Time - time_shift) / time_scale
+        # Time_norm = (Time - time_shift) / time_scale
+        Time_norm = Time / time_scale - time_shift
         Npho_log = np.log1p(Npho / NphoScale).astype("float32")
-        X_stacked = np.stack([Npho_log, Time_norm], axis=-1)
+        Npho_norm = Npho_log / NphoScale2
+        X_stacked = np.stack([Npho_norm, Time_norm], axis=-1)
 
         ds = TensorDataset(
             torch.from_numpy(X_stacked),  # Stacked input features: log-scaled Npho and normalized Time
@@ -146,6 +151,9 @@ def run_epoch_stream(
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                     optimizer.step()
+                    
+                if ema_model is not None:
+                    ema_model.update_parameters(model)
                 
                 loss_sums["total_opt"] += loss.item() * Npho_b.size(0)
                 nobs += Npho_b.size(0)

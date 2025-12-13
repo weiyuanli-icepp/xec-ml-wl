@@ -83,7 +83,8 @@ class HexGraphConv(nn.Module):
         self.neigh_lin = nn.Linear(in_dim, out_dim)
         self.act = nn.LeakyReLU(0.1, inplace=True)
     def forward(self, x, edge_index, deg):
-        src, dst = edge_index
+        src = edge_index[0]
+        dst = edge_index[1]
         B, N, _ = x.shape
         x_f = x.float()
         msgs = self.neigh_lin(x_f[:, src, :])
