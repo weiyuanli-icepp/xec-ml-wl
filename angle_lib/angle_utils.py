@@ -1,6 +1,12 @@
 import torch
 import numpy as np
 import uproot
+from .geom_utils import gather_face, gather_hex_nodes
+from .geom_defs import (
+    INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP, 
+    OUTER_COARSE_FULL_INDEX_MAP, OUTER_CENTER_INDEX_MAP,
+    TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows
+)
 
 # ------------------------------------------------------------
 # GPU memory monitoring utilities
@@ -51,3 +57,52 @@ def angles_deg_to_unit_vec(angles: torch.Tensor) -> torch.Tensor:
 
     v = torch.stack([x, y, z], dim=1)  # (B,3)
     return v
+
+# ------------------------------------------------------------
+# Physics Analysis: Gradient Saliency
+# ------------------------------------------------------------
+def compute_face_saliency(model, x_batch, device):
+    """
+    Computes which faces are most important for determining Theta vs Phi.
+    Separates importance by input channel (Npho vs Time).
+    """
+    model.eval()
+    x_in = x_batch.clone().to(device)
+    x_in.requires_grad = True
+    pred = model(x_in)  # (B, 2)
+    
+    # Structure: results[angle][channel][face] = score
+    saliency_results = {}
+    channels = {0: "npho", 1: "time"}
+    
+    for angle_idx, angle_name in enumerate(["theta", "phi"]):
+        saliency_results[angle_name] = {}
+        
+        if x_in.grad is not None:
+            x_in.grad.zero_()
+            
+        target = pred[:, angle_idx]
+        target.sum().backward(retain_graph=True)
+        
+        for ch_idx, ch_name in channels.items():
+            grads = x_in.grad[:, :, ch_idx].abs() 
+            
+            face_scores = {}
+            
+            face_scores["inner"] = gather_face(grads.unsqueeze(-1), INNER_INDEX_MAP).mean()
+            face_scores["us"]    = gather_face(grads.unsqueeze(-1), US_INDEX_MAP).mean()
+            face_scores["ds"]    = gather_face(grads.unsqueeze(-1), DS_INDEX_MAP).mean()
+            
+            if hasattr(model, "outer_mode") and model.outer_mode == "split":
+                face_scores["outer_coarse"] = gather_face(grads.unsqueeze(-1), OUTER_COARSE_FULL_INDEX_MAP).mean()
+                face_scores["outer_center"] = gather_face(grads.unsqueeze(-1), OUTER_CENTER_INDEX_MAP).mean()
+                
+            top_indices = torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long().to(device)
+            bot_indices = torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long().to(device)
+            
+            face_scores["hex_top"] = gather_hex_nodes(grads.unsqueeze(-1), top_indices).mean()
+            face_scores["hex_bottom"] = gather_hex_nodes(grads.unsqueeze(-1), bot_indices).mean()
+            
+            saliency_results[angle_name][ch_name] = {k: v.item() for k, v in face_scores.items()}
+        
+    return saliency_results
