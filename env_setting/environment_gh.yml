@@ -1,9 +1,9 @@
 name: xec-ml-wl-gh
 channels:
   - pyg
-  - pytorch         # Official PyTorch channel (often better for latest CUDA)
-  - nvidia          # Required for CUDA runtime components
-  - conda-forge     # Best source for ARM64 (aarch64) binaries
+  - pytorch
+  - nvidia
+  - conda-forge
   - nodefaults
 dependencies:
   - python=3.10
@@ -23,15 +23,14 @@ dependencies:
   - mlflow
   - tensorboard
   
-  # --- GPU Libraries (Move to Conda for ARM safety) ---
+  # --- GPU Libraries ---
   # Conda-forge/PyTorch channel handles the ARM/CUDA compatibility
   - pytorch=2.4.1
   - torchvision
   - torchaudio
   - pytorch-cuda=12.1
   
-  # --- PyTorch Geometric (Use Conda to avoid compilation hell) ---
-  # These exist on conda-forge for aarch64
+  # --- PyTorch Geometric ---
   - pyg
   - pytorch-scatter
   - pytorch-sparse
@@ -49,12 +48,10 @@ dependencies:
   - tensorboard>=2.17
   
   # --- Inference ---
-  # Conda-forge usually has the ARM build for onnxruntime
   - onnx>=1.16
-  - onnxruntime  # Try standard first, conda-forge often bundles GPU support dynamically or via 'onnxruntime-gpu' package depending on channel state. 
-  # Note: If specifically 'onnxruntime-gpu' is missing on conda-aarch64, you might need to build from source or use a container.
+  - onnxruntime
 
+  # --- Comet ML ---
   - pip
   - pip:
-      # Keep only pure python packages here
       - comet-ml>=3.44

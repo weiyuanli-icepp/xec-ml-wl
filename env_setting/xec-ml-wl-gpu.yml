@@ -44,7 +44,6 @@ dependencies:
       - torch-spline-conv
       - extra-index-url https://data.pyg.org/whl/torch-2.4.1+cu121.html
 
-      # Optional experiment tracking (comment out if not needed)
+      # Experiment tracking
       - comet-ml>=3.44
-      # - datasets
       # - transformers
