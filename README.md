@@ -142,10 +142,10 @@ These metrics evaluate the quality of the photon direction reconstruction. They 
 
 | Metric | Definition | Formula |
 | ------ | ---------- | ------- | 
-| Theta Bias (`theta_bias`) | The arithmetic mean of the residuals. | $\mu = \text{Mean}(\theta_{pred} - \theta_{true})$ |
-| Theta RMS (`theta_rms`) | The standard deviation of the residuals. | $\sigma = \text{Std}(\theta_{pred} - \theta_{true})$ |
+| Theta Bias (`theta_bias`) | The arithmetic mean of the residuals. | $\mu = \text{Mean}(\theta_{\mathrm{pred}} - \theta_{\mathrm{true}})$ |
+| Theta RMS (`theta_rms`) | The standard deviation of the residuals. | $\sigma = \text{Std}(\theta_{\mathrm{pred}} - \theta_{\mathrm{true}})$ |
 | Theta Skewness (`theta_skew`) | A measure of the asymmetry of the error distribution. | $$\text{Skew} = \frac{\frac{1}{N} \sum_{i=1}^{N} (\Delta \theta_i - \mu)^3}{\left( \frac{1}{N} \sum_{i=1}^{N} (\Delta \theta_i - \mu)^2 \right)^{3/2}}$$ |
-| Opening Angle Resolution (`val_resolution_deg`) | The 68th percentile of the 3D opening angle $\psi$ between the predicted and true vectors. | $\psi = \cos^{-1}(\vec{v}_{pred} \cdot \vec{v}_{true})$ |
+| Opening Angle Resolution (`val_resolution_deg`) | The 68th percentile of the 3D opening angle $\psi$ between the predicted and true vectors. | $\psi = \arccos(v_{\mathrm{pred}} \cdot v_{\mathrm{true}})$ |
 
 #### 2. System Engineering Metrics
 These metrics monitor the health of the training infrastructure (GPU/CPU) to detect bottlenecks or imminent crashes.
@@ -168,8 +168,8 @@ The primary model is **ConvNeXt V2**, adapted for LXe geometry.
 ### Key Features
 
 * **Geometry-aware projections**: Maps PMTs to split faces (Inner/Outer/Side) and Hex grids (Top/Bottom).
-* **EMA (Exponential Moving Average)**: Maintains a "shadow" model with smoothed weights ($W_{ema} = \beta W_{ema} + (1-\beta)W_{live}$). Significantly improves stability on noisy physics data.
-* **Physics saliency**: Calculates $\partial \theta / \partial N_{pho}$ to visualize which detector faces drive the decision.
+* **EMA (Exponential Moving Average)**: Maintains a "shadow" model with smoothed weights ($W_{\mathrm{ema}} = \beta W_{\mathrm{ema}} + (1-\beta)W_{\mathrm{live}}$). Significantly improves stability on noisy physics data.
+* **Physics saliency**: Calculates $\partial \theta / \partial N_{\mathrm{pho}}$ to visualize which detector faces drive the decision.
 * **Reliable ONNX export**: Automatically exports the EMA model (if active) and replaces dynamic pooling with Resize(bilinear) for compatibility.
 
 ### Argument List (`run_training_cli.py`)
