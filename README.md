@@ -145,7 +145,7 @@ These metrics evaluate the quality of the photon direction reconstruction. They 
 | Theta Bias (`theta_bias`) | The arithmetic mean of the residuals. | $\mu = \text{Mean}(\theta_{pred} - \theta_{true})$ |
 | Theta RMS (`theta_rms`) | The standard deviation of the residuals. | $\sigma = \text{Std}(\theta_{pred} - \theta_{true})$ |
 | Theta Skewness (`theta_skew`) | A measure of the asymmetry of the error distribution. | $$\text{Skew} = \frac{\frac{1}{N} \sum_{i=1}^{N} (\Delta \theta_i - \mu)^3}{\left( \frac{1}{N} \sum_{i=1}^{N} (\Delta \theta_i - \mu)^2 \right)^{3/2}}$$ |
-| Opening Angle Resolution (`val_resolution_deg`) | The 68th percentile of the 3D opening angle $\psi$ between the predicted and true vectors. | $\psi = \arccos(\vec{v}_{pred} \cdot \vec{v}_{true})$ |
+| Opening Angle Resolution (`val_resolution_deg`) | The 68th percentile of the 3D opening angle $\psi$ between the predicted and true vectors. | $\psi = \cos^{-1}(\vec{v}_{pred} \cdot \vec{v}_{true})$ |
 
 #### 2. System Engineering Metrics
 These metrics monitor the health of the training infrastructure (GPU/CPU) to detect bottlenecks or imminent crashes.
