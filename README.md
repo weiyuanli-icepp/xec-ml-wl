@@ -1,8 +1,8 @@
 # xec-ml-wl
 
-## Deep Learning Analysis for the MEG II Liquid Xenon (LXe) Detector
+## Machine Learning Model for the MEG II Liquid Xenon (LXe) Detector
 
-This repository contains machine learning models (CNNs and Graph Neural Networks) to regress the emission angle (**$\theta$**, **$\phi$**) of photons detected by the LXe detector, utilizing both photon count (**$N_{\mathrm{pho}}$**) and timing information (**$t_{\mathrm{pm}}$**) in each photo-sensor (4092 SiPMs and 668 PMTs).
+This repository contains machine learning model based mainly on CNN to regress the emission angle (**$\theta$**, **$\phi$**) of photons detected by the LXe detector, utilizing both photon count (**$N_{\mathrm{pho}}$**) and timing information (**$t_{\mathrm{pm}}$**) in each photo-sensor (4092 SiPMs and 668 PMTs).
 
 ---
 
