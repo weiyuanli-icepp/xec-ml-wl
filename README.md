@@ -70,7 +70,7 @@ $ chmod +x start_jupyter_xec_gpu.sh submit_job.sh run_scan.sh
 
 ## 2. Usage
 
-### A. Batch Training (Recommended)
+### A. Batch Training
 
 We use `submit_job.sh`, which automatically detects the CPU architecture of the allocated node and activates the correct environment (x86 or ARM).
 
