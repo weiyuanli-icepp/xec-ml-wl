@@ -22,7 +22,7 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   echo "[INFO] Time limit: $TIME"
   echo "[INFO] Target Environment: $ENV_NAME"
   
-  # Not inside a Slurm job yet → allocate an interactive GPU shell and run this same script ON the node.
+  # Not inside a Slurm job yet -> allocate an interactive GPU shell and run this same script ON the node.
   # exec srun --mpi=none --pty --clusters=gmerlin7 -p "${PARTITION}" --gres=gpu:1 --mem=48G --time "${TIME}" bash -lc \
   #   "HOSTNAME=\$(hostname); echo \"[INFO] Allocated: \$HOSTNAME\"; $(printf %q "$0") ${PORT} ${TIME} ${PARTITION}"
   exec srun --mpi=none --pty --clusters=gmerlin7 \
