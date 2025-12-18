@@ -39,7 +39,7 @@ class DeepHexEncoder(nn.Module):
             nn.Linear(hidden_dim, embed_dim)
         )
 
-    def forward(self, node_feats, edge_index, deg=None):
+    def forward(self, node_feats, edge_index):
         # Apply Stem
         x = self.stem(node_feats)
         
@@ -158,8 +158,10 @@ class AngleRegressorSharedFaces(nn.Module):
         num_hex = 2
         total_tokens = num_cnn + num_hex
         
-        in_fc = self.face_embed_dim * total_tokens
+        self.pos_embed = nn.Parameter(torch.zeros(1, total_tokens, self.face_embed_dim))
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
         
+        in_fc = self.face_embed_dim * total_tokens
         self.head = nn.Sequential(
             nn.Linear(in_fc, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -200,6 +202,7 @@ class AngleRegressorSharedFaces(nn.Module):
         
         # Stack tokens and apply Transformer
         x_seq  = torch.stack(tokens, dim=1) # (B, T, D)
+        x_seq += self.pos_embed
         x_seq  = self.fusion_transformer(x_seq)
         
         # return self.head(torch.cat(embeddings, dim=1))

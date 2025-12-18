@@ -32,11 +32,16 @@ def get_gpu_memory_stats(device=None):
 # ------------------------------------------------------------
 #  Utilities: streaming ROOT reading
 # ------------------------------------------------------------
-def iterate_chunks(path, tree, branches, step_size=4000):
-    with uproot.open(path) as f:
-        t = f[tree]
-        for arrays in t.iterate(branches, step_size=step_size, library="np"):
-            yield arrays
+def iterate_chunks(files, tree, branches, step_size=4000):
+    """
+    files: Can be a single string "file.root", a wildcard "file_*.root", or a list ["file1.root", "file2.root"]
+    """
+    for arrays in uproot.iterate(f"{files}:{tree}", branches, step_size=step_size, library="np"):
+        yield arrays
+    # with uproot.open(path) as f:
+    #     t = f[tree]
+    #     for arrays in t.iterate(branches, step_size=step_size, library="np"):
+    #         yield arrays
 
 # ------------------------------------------------------------
 # Angle conversion utilities
