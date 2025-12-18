@@ -118,14 +118,20 @@ export ROOT_PATH="~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/MCGammaAngle_0-99.
 # 4. Scan Drop Path Rates & Weight Decays & ON/OFF EMA
 # Drop Path Rates to scan
 # DROP_PATHS=("0.0" "0.1" "0.2" "0.3")
-EPOCHS=350
+EPOCHS=800
 DROP_PATHS=("0.0")
 # Weight Decays to scan
 # WEIGHT_DECAYS=("1e-4" "1e-3" "1e-2")
-WEIGHT_DECAYS=("0.0" "1e-6" "1e-5" "1e-4") 
+# WEIGHT_DECAYS=("0.0" "1e-6" "1e-5" "1e-4") 
+# WEIGHT_DECAYS=("1e-7" "1e-6" "5e-5" "1e-4") 
+# WEIGHT_DECAYS=("5e-5") 
+# WEIGHT_DECAYS=("1e-6") 
+WEIGHT_DECAYS=("1e-4") 
 # EMA Decay settings: -1 (OFF), 0.999 (ON)
-EMA_SETTINGS=("0.99" "0.999" "0.9999")
-# EMA_SETTINGS=("0.999")
+# EMA_SETTINGS=("0.999" "0.9999")
+# EMA_SETTINGS=("0.9999")
+EMA_SETTINGS=("0.999")
+# !!!! NEED TO TRY TIMESCALE = 1e7 LATER !!!!
 
 # Set base Learning Rate from previous best result
 LR="8e-4"

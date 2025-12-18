@@ -5,7 +5,7 @@ import numpy as np
 import uproot
 import onnxruntime as ort
 import time
-
+import re
 
 ### Key Features of this Script
 # 1.  **Opening Angle Calculation:** I implemented `get_opening_angle_deg` using the standard MEG II coordinate definition ($z = \cos\theta$).
@@ -30,7 +30,7 @@ def get_opening_angle_deg(theta1, phi1, theta2, phi2):
     t2 = np.deg2rad(theta2)
     p2 = np.deg2rad(phi2)
 
-    # Convert to unit vectors (MEG II convention: z=cos(theta))
+    # Convert to unit vectors
     x1 = -np.sin(t1) * np.cos(p1)
     y1 = np.sin(t1) * np.sin(p1)
     z1 = np.cos(t1)
@@ -41,7 +41,6 @@ def get_opening_angle_deg(theta1, phi1, theta2, phi2):
 
     # Dot product
     dot = x1*x2 + y1*y2 + z1*z2
-    # Clamp for numerical stability
     dot = np.clip(dot, -1.0, 1.0)
     
     return np.rad2deg(np.arccos(dot))
@@ -50,9 +49,9 @@ def main():
     parser = argparse.ArgumentParser(description="Run Inference on Real Data (ONNX)")
     parser.add_argument("--onnx", type=str, required=True, help="Path to .onnx model")
     parser.add_argument("--input", type=str, required=True, help="Input ROOT file (Real Data)")
-    parser.add_argument("--output", type=str, required=True, help="Output ROOT file")
+    parser.add_argument("--output", type=str, default=None, help="Output ROOT file")
     parser.add_argument("--tree", type=str, default="tree", help="TTree name")
-    parser.add_argument("--chunksize", type=int, default=10000, help="Inference chunk size")
+    parser.add_argument("--chunksize", type=int, default=1024, help="Inference chunk size")
     
     # Preprocessing Params (MUST MATCH TRAINING!)
     parser.add_argument("--npho_branch", type=str, default="relative_npho")
@@ -62,6 +61,14 @@ def main():
     parser.add_argument("--time_shift", type=float, default=0.0)
     
     args = parser.parse_args()
+    
+    if args.output is None:
+        m = re.match(r".*_(\d{6}-\d{6})\.root$", os.path.basename(args.input))
+        if m:
+            run_range = m.group(1)  # e.g. "460027-462448"
+            args.output = f"inference_results_Run{run_range}.root"
+        else:
+            raise ValueError("Input file name does not match expected pattern and no output file name provided.")  
 
     # 1. Load ONNX Model
     print(f"[INFO] Loading Model: {args.onnx}")
@@ -81,12 +88,7 @@ def main():
 
     print(f"[INFO] Processing: {args.input}")
     
-    # Branches to read
-    # Inputs for Model
     model_branches = [args.npho_branch, args.time_branch]
-    
-    # Metadata / Truth info to copy to output
-    # Note: We assume these exist in the input file. If "emiAng" is missing, we can't compute opening angle.
     meta_branches = [
         "run", "event", 
         "emiAng",      # For true_theta/phi
@@ -97,7 +99,6 @@ def main():
     
     read_branches = model_branches + meta_branches
     
-    # Storage for all batches
     results = {
         "run_id": [], "event_id": [],
         "pred_theta": [], "pred_phi": [],
@@ -206,8 +207,6 @@ def main():
     final_data = {k: np.concatenate(v) for k, v in results.items()}
     
     with uproot.recreate(args.output) as f_out:
-        # Define types explicitly for robustness
-        # Integers
         branch_types = {
             "run_id": np.int32, 
             "event_id": np.int32
