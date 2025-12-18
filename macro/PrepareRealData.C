@@ -54,8 +54,7 @@ $ ./meganalyzer -b -q -I /path/to/PrepareRealData.C+
 
 using namespace MEG;
 
-// Helper function declarations
-std::map<Int_t, TString> PrepareRunList(Int_t startRun, Int_t maxNRuns, TString suffix, TString dir);
+std::map<Int_t, TString> PrepareRunList(TString dir, TString suffix, Int_t startRun, Int_t maxNRuns);
 
 void PrepareRealData(Int_t sRun = 430000, Int_t nfile = 2000, TString fileSuffix = "_open.root")
 {
