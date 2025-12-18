@@ -208,20 +208,20 @@ or
 
 ## 6. Real Data Validation
 Validation using real data can be performed in the following procedure
-1. Convert checkpoint files to ONNX files (`export_onnx.py`)
+### 1. Convert checkpoint files to ONNX files (`export_onnx.py`)
     ```bash
     $ python export_onnx.py \
     artifacts/<RUN_NAME>/checkpoint_best.pth \
     --output onnx/<RUN_NAME>_<date_time>.onnx
     ```
-2. Process rec files to a input file for ONNX run time script (`macro/PrepareRealData.C`)
+### 2. Process rec files to a input file for ONNX run time script (`macro/PrepareRealData.C`)
     ```bash
     $ cd $MEG2SYS/analyzer
     $ ./meganalyzer -b -q -I '$HOME/meghome/xec-ml-wl/macro/PrepareRealData.C+(start_runnumber, number_of_runs, "rec_suffix", "rec_dir")'
     # DataGammaAngle_<start_runnumber>-<end_runnumber>.root will be generated. 2000 runs -> 100k events
     $ mv DataGammaAngle_<start_runnumber>-<end_runnumber>.root $HOME/xec-ml-wl/val_data/
     ```
-3. Use inference script to output the prediction and "truth" (`inference_real_data.py`)
+### 3. Use inference script to output the prediction and "truth" (`inference_real_data.py`)
 * First login to interactive gpu node. 
     ```bash
     $ srun --cluster=gmerlin7 -p a100-interactive --time=02:00:00 --gres=gpu:1 --pty /bin/bash
@@ -242,7 +242,7 @@ Validation using real data can be performed in the following procedure
         --output Output_Run<start_runnumber>-<end_runnumber>.root \
         --NphoScale 1.0 --time_scale 2.32e6
     ```
-4. Check inference result with plotting macro
+### 4. Check inference result with plotting macro
     ```bash
     $ plot_real_data_analysis.py \
         --input val_data/Output_Run<start_runnumber>-<end_runnumber>.root \
