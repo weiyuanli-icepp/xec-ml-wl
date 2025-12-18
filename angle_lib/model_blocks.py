@@ -110,3 +110,64 @@ class HexGraphEncoder(nn.Module):
         x = self.conv1(node_feats, edge_index, deg)
         x = self.conv2(x, edge_index, deg)
         return self.proj(x.mean(dim=1))
+    
+class HexDepthwiseConv(nn.Module):
+    """
+    The 'Spatial Mixing' layer for Hex grids. 
+    Uses a lightweight Graph Attention mechanism to learn directionality.
+    """
+    def __init__(self, dim):
+        super().__init__()
+        self.gate_linear = nn.Linear(dim * 2, 1)
+        self.act = nn.LeakyReLU(0.2)
+
+    def forward(self, x, edge_index):
+        # x: [Batch, Nodes, Dim]
+        src, dst = edge_index
+        
+        # 1. Get features of pairs (Source -> Dest)
+        x_src = x[:, src]
+        x_dst = x[:, dst]
+        
+        # 2. Calculate Attention Scores
+        a_input = torch.cat([x_src, x_dst], dim=-1)
+        scores = self.gate_linear(a_input) 
+        # Simplified attention: sigmoid gating
+        # (softmax over neighbors is hard in pure tensor)
+        attention = torch.sigmoid(scores) 
+        
+        # 3. Message Passing (Weighted Sum)
+        msg = x_src * attention
+        
+        # 4. Aggregation
+        out = torch.zeros_like(x)
+        # Broadcast indices for the scatter operation
+        idx = dst.unsqueeze(-1).expand(-1, -1, x.size(-1))
+        out.scatter_add_(1, idx, msg)
+        
+        return out
+
+class HexNeXtBlock(nn.Module):
+    """
+    Hexagonal equivalent of ConvNeXt V2 Block.
+    Stem -> HexDepthwise -> Norm -> Pointwise MLP -> Residual
+    """
+    def __init__(self, dim, drop_path=0.):
+        super().__init__()
+        self.spatial_conv = HexDepthwiseConv(dim)
+        self.norm = LayerNorm(dim, data_format="channels_last")
+        self.pwconv1 = nn.Linear(dim, 4 * dim)
+        self.act = nn.GELU()
+        self.grn = GRN(4 * dim)
+        self.pwconv2 = nn.Linear(4 * dim, dim)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+    def forward(self, x, edge_index, deg=None):
+        input = x
+        x = self.spatial_conv(x, edge_index)
+        x = self.norm(x)
+        x = self.pwconv1(x)
+        x = self.act(x)
+        x = self.grn(x)
+        x = self.pwconv2(x)
+        return input + self.drop_path(x)

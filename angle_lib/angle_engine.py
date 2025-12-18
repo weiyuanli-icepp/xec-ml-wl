@@ -108,7 +108,7 @@ def run_epoch_stream(
             Y_b    = Y_b.to(device)
             V_b    = V_b.to(device)
             
-            # Reweighting (Unchanged)
+            # Reweighting
             w = None
             if reweight_mode == "theta" and (edges_theta is not None):
                 th = Y_b[:, 0].detach().cpu().numpy()
@@ -131,7 +131,6 @@ def run_epoch_stream(
                 with torch.amp.autocast(device_type, enabled=(amp and device_type == "cuda"), dtype=torch.bfloat16):
                     pred_angles = model(Npho_b)
                     
-                    # (Simplified Loss selection for brevity - same as before)
                     if loss_type == "smooth_l1": l_opt = criterion_smooth(pred_angles, Y_b).mean(dim=1)
                     elif loss_type == "l1": l_opt = criterion_l1(pred_angles, Y_b).mean(dim=1)
                     elif loss_type == "mse": l_opt = criterion_mse(pred_angles, Y_b).mean(dim=1)
@@ -163,7 +162,7 @@ def run_epoch_stream(
                 with torch.no_grad():
                     pred_angles = model(Npho_b)
                     
-                    # Calculate individual losses for tracking
+                    # Individual losses for tracking
                     l_smooth = criterion_smooth(pred_angles, Y_b).mean(dim=1)
                     l_l1 = criterion_l1(pred_angles, Y_b).mean(dim=1)
                     l_mse = criterion_mse(pred_angles, Y_b).mean(dim=1)
@@ -181,11 +180,9 @@ def run_epoch_stream(
                     else: loss = l_opt.mean()
                     
                     # --- COLLECT DATA FOR ROOT FILE ---
-                    # Opening angle in degrees: acos(cos_sim) * 180/pi
                     opening_angle = torch.acos(cos_sim) * (180.0 / np.pi)
                     
                     # Append batch data to lists
-                    # Move to CPU numpy
                     p_np = pred_angles.cpu().numpy()
                     t_np = Y_b.cpu().numpy()
                     xyz_tru_np = XYZ_tru_b.cpu().numpy()
@@ -206,7 +203,7 @@ def run_epoch_stream(
                     val_root_data["y_vtx"].append(xyz_vtx_np[:, 1])
                     val_root_data["z_vtx"].append(xyz_vtx_np[:, 2])
 
-                    # --- Worst Case Tracking ---
+                    # --- Worst Case Tracking (10 worst cases) ---
                     batch_errs_np = l_opt.cpu().numpy()
                     worst_idx = np.argsort(batch_errs_np)[-5:]
                     for idx in worst_idx:
@@ -221,7 +218,7 @@ def run_epoch_stream(
                             E_b[idx].cpu().numpy()
                         ))
                     worst_events_buffer.sort(key=lambda x: x[0], reverse=True)
-                    worst_events_buffer = worst_events_buffer[:10]  # Keep only top 10 worst
+                    worst_events_buffer = worst_events_buffer[:10]
 
                     loss_sums["total_opt"] += loss.item() * Npho_b.size(0)
                     loss_sums["smooth_l1"] += l_smooth.sum().item()

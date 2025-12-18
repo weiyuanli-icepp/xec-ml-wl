@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from .model_blocks import ConvNeXtV2Block, LayerNorm, HexGraphEncoder
+from .model_blocks import ConvNeXtV2Block, LayerNorm, HexGraphEncoder, HexNeXtBlock
 from .geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
     OUTER_COARSE_FULL_INDEX_MAP, OUTER_CENTER_INDEX_MAP,
@@ -15,6 +15,43 @@ from .geom_utils import (
     build_outer_fine_grid_tensor, 
     gather_hex_nodes
 )
+
+class DeepHexEncoder(nn.Module):
+    def __init__(self, in_dim=2, embed_dim=1024, hidden_dim=96, num_layers=4, drop_path_rate=0.0):
+        super().__init__()
+        
+        # 1. STEM LAYER (Project 2 -> 96 immediately)
+        self.stem = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU()
+        )
+        
+        # 2. DEEP HEXNEXT STACK
+        self.layers = nn.ModuleList([
+            HexNeXtBlock(dim=hidden_dim, drop_path=drop_path_rate) 
+            for _ in range(num_layers)
+        ])
+        
+        # 3. PROJECTION TO BACKBONE DIM
+        self.proj = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, embed_dim)
+        )
+
+    def forward(self, node_feats, edge_index, deg=None):
+        # Apply Stem
+        x = self.stem(node_feats)
+        
+        # Apply HexNeXt Blocks
+        for layer in self.layers:
+            x = layer(x, edge_index)
+            
+        # Global Pooling (Mean)
+        x = x.mean(dim=1) 
+        
+        # Project to match CNN face size
+        return self.proj(x)
 
 class FaceBackbone(nn.Module):
     def __init__(self, in_channels=2, base_channels=32, pooled_hw=(4, 4), drop_path_rate=0.0):
@@ -63,15 +100,39 @@ class AngleRegressorSharedFaces(nn.Module):
         
         input_channels = 2 # Npho, Time
         
-        # Backbone
+        # CNN Backbone
         self.backbone = FaceBackbone(
             in_channels=input_channels, 
             base_channels=32, 
             pooled_hw=(4, 4),
             drop_path_rate=drop_path_rate
         )
-        self.hex_embed_dim = self.backbone.out_dim
-        self.hex_encoder = HexGraphEncoder(in_dim=input_channels, embed_dim=self.hex_embed_dim, hidden_dim=64)
+        # self.hex_embed_dim = self.backbone.out_dim
+        self.face_embed_dim = self.backbone.out_dim # 1024
+
+        # Hex Encoder        
+        # self.hex_encoder = HexGraphEncoder(in_dim=input_channels, embed_dim=self.hex_embed_dim, hidden_dim=64)
+        self.hex_encoder = DeepHexEncoder(
+            in_dim=input_channels, 
+            embed_dim=self.face_embed_dim, 
+            hidden_dim=96, 
+            num_layers=4,
+            drop_path_rate=drop_path_rate
+        )
+        
+        # Mid-Fusion Transformer: Each face as a token
+        fusion_layer = nn.TransformerEncoderLayer(
+            d_model=self.face_embed_dim,
+            nhead=8,
+            dim_feedforward=self.face_embed_dim * 4,
+            activation='gelu',
+            batch_first=True,
+            dropout=0.1
+        )
+        self.fusion_transformer = nn.TransformerEncoder(
+            fusion_layer,
+            num_layers=2
+        )
         
         # Face Config
         if outer_mode == "split":
@@ -85,14 +146,19 @@ class AngleRegressorSharedFaces(nn.Module):
         self.register_buffer("top_hex_indices", torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long())
         self.register_buffer("bottom_hex_indices", torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long())
         self.register_buffer("hex_edge_index", torch.from_numpy(HEX_EDGE_INDEX_NP).long())
-        self.register_buffer("hex_deg", torch.from_numpy(HEX_DEG_NP.astype(np.float32)))
+        # self.register_buffer("hex_deg", torch.from_numpy(HEX_DEG_NP.astype(np.float32)))
 
         # Head
-        extra_cnn = 1 if self.outer_fine else 0
-        self.num_cnn_components = len(self.cnn_face_names) + extra_cnn
-        self.num_hex_components = 2 # Top + Bottom
+        # extra_cnn = 1 if self.outer_fine else 0
+        # self.num_cnn_components = len(self.cnn_face_names) + extra_cnn
+        # self.num_hex_components = 2 # Top + Bottom
         
-        in_fc = self.backbone.out_dim * self.num_cnn_components + self.hex_embed_dim * self.num_hex_components
+        # in_fc = self.backbone.out_dim * self.num_cnn_components + self.hex_embed_dim * self.num_hex_components
+        num_cnn = len(self.cnn_face_names) + (1 if self.outer_fine else 0)
+        num_hex = 2
+        total_tokens = num_cnn + num_hex
+        
+        in_fc = self.face_embed_dim * total_tokens
         
         self.head = nn.Sequential(
             nn.Linear(in_fc, hidden_dim),
@@ -111,22 +177,34 @@ class AngleRegressorSharedFaces(nn.Module):
             faces["outer_coarse"] = gather_face(x_batch, OUTER_COARSE_FULL_INDEX_MAP)
             faces["outer_center"] = gather_face(x_batch, OUTER_CENTER_INDEX_MAP)
 
-        embeddings = []
+        # embeddings = []
+        tokens = []
         for name in self.cnn_face_names:
-            embeddings.append(self.backbone(faces[name]))
+            # embeddings.append(self.backbone(faces[name]))
+            tokens.append(self.backbone(faces[name]))
         
         if self.outer_fine:
             outer_fine = build_outer_fine_grid_tensor(x_batch, pool_kernel=self.outer_fine_pool)
-            embeddings.append(self.backbone(outer_fine))
+            # embeddings.append(self.backbone(outer_fine))
+            tokens.append(self.backbone(outer_fine))
         
-        edge_index, deg = self.hex_edge_index, self.hex_deg
+        # edge_index, deg = self.hex_edge_index, self.hex_deg
+        edge_index = self.hex_edge_index
         top_nodes = gather_hex_nodes(x_batch, self.top_hex_indices)
         bot_nodes = gather_hex_nodes(x_batch, self.bottom_hex_indices)
         
-        embeddings.append(self.hex_encoder(top_nodes, edge_index, deg))
-        embeddings.append(self.hex_encoder(bot_nodes, edge_index, deg))
+        # embeddings.append(self.hex_encoder(top_nodes, edge_index, deg))
+        # embeddings.append(self.hex_encoder(bot_nodes, edge_index, deg))
+        tokens.append(self.hex_encoder(top_nodes, edge_index))
+        tokens.append(self.hex_encoder(bot_nodes, edge_index))
         
-        return self.head(torch.cat(embeddings, dim=1))
+        # Stack tokens and apply Transformer
+        x_seq  = torch.stack(tokens, dim=1) # (B, T, D)
+        x_seq  = self.fusion_transformer(x_seq)
+        
+        # return self.head(torch.cat(embeddings, dim=1))
+        x_flat = x_seq.flatten(1)
+        return self.head(x_flat)
 
     def get_concatenated_weight_norms(self):
         w = self.head[0].weight.detach().abs().mean(dim=0)

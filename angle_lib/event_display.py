@@ -51,7 +51,6 @@ def plot_event_faces(npho_event, title="Event Faces", savepath=None, outer_mode=
 
     def to_np(t): return t.squeeze(0).squeeze(0).cpu().numpy()
 
-    # Determine global min/max for color consistency
     valid_all = npho_np[npho_np > 0]
     if valid_all.size > 0:
         is_relative = (valid_all.max() <= 1.0001)
