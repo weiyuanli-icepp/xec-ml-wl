@@ -15,10 +15,8 @@ import mlflow.pytorch
 import uproot
 import psutil
 
-# Silence warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="mlflow.tracking._tracking_service.utils")
 
-# --- CUSTOM MODULES (Imported from angle_lib) ---
 from angle_lib.model import AngleRegressorSharedFaces
 from angle_lib.event_display import plot_event_faces, plot_event_time
 from angle_lib.angle_reweighting import scan_angle_hist_1d, scan_angle_hist_2d
@@ -73,6 +71,11 @@ def main_angle_convnextv2_with_args(
     resume_from=None, 
     ema_decay=0.999,
 ):
+    if os.path.isdir(root):
+        import glob
+        files = glob.glob(os.path.join(root, "*.root"))
+    else:
+        files = root
     root = os.path.expanduser(root)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -214,7 +217,7 @@ def main_angle_convnextv2_with_args(
             
             # TRAIN
             tr_metrics, _, _, _, _ = run_epoch_stream( 
-                model, optimizer, device, root, tree,
+                model, optimizer, device, tree, root=files, 
                 step_size=chunksize, 
                 batch_size=batch,
                 train=True, 
@@ -243,7 +246,7 @@ def main_angle_convnextv2_with_args(
             # VAL
             val_model_to_use = ema_model if ema_model is not None else model
             val_metrics, pred_val, true_val, _, val_stats = run_epoch_stream( 
-                val_model_to_use, optimizer, device, root, tree,
+                val_model_to_use, optimizer, device, tree, root=files,
                 step_size=chunksize, 
                 batch_size=max(batch,256),
                 train=False, 
@@ -345,7 +348,7 @@ def main_angle_convnextv2_with_args(
                 "mlflow_run_id": run_id,
             }, os.path.join(artifact_dir, "checkpoint_last.pth"))
 
-        # --- FINAL ARTIFACTS ---
+        # --- ARTIFACTS ---
         final_model = ema_model if ema_model is not None else model
         if ema_model is None and best_state:
             model.load_state_dict(best_state)
@@ -353,7 +356,7 @@ def main_angle_convnextv2_with_args(
 
         # Get final data with extra info
         _, pred_all, true_all, extra_info, _ = run_epoch_stream(
-            final_model, optimizer, device, root, tree,
+            final_model, optimizer, device, tree, root=files,
             step_size=chunksize, 
             batch_size=max(batch,256), 
             train=False, 
@@ -387,7 +390,7 @@ def main_angle_convnextv2_with_args(
             }).to_csv(csv_path, index=False)
             mlflow.log_artifact(csv_path)
 
-            # --- WORST EVENT PLOTTING ---
+            # --- WORST EVENTS ---
             worst_events = extra_info.get("worst_events", [])
             for i, (err, raw_n, raw_t, p, t, xyz, vtx, energy) in enumerate(worst_events):
                 energy = energy * 1e3  # GeV to MeV
@@ -397,7 +400,6 @@ def main_angle_convnextv2_with_args(
                               f"Truth E={energy:.2f} MeV | VTX={vtx_str}, XYZ={xyz_str}\n"
                               f"Truth: θ={t[0]:.2f}, φ={t[1]:.2f} | Pred: θ={p[0]:.2f}, φ={p[1]:.2f}")
 
-                # 1. Plot Npho Faces
                 path_npho = os.path.join(artifact_dir, f"worst_event_{i}_{run_name}_npho.pdf")
                 plot_event_faces(
                     raw_n, 
@@ -406,6 +408,7 @@ def main_angle_convnextv2_with_args(
                     outer_mode=outer_mode
                 )
                 mlflow.log_artifact(path_npho)
+                
                 time_disp = raw_t / 1e-7 
                 path_time = os.path.join(artifact_dir, f"worst_event_{i}_{run_name}_time.pdf")
                 plot_event_time(
@@ -443,9 +446,7 @@ def main_angle_convnextv2_with_args(
             
             # --- Sensity Analysis for each face ---
             try:                
-                # Get a single chunk
                 for arr in iterate_chunks(root, tree, [npho_branch, time_branch], step_size=256):
-                    # Preprocess exactly like training
                     Npho = arr[npho_branch].astype("float32")
                     Time = arr[time_branch].astype("float32")
                     Npho = np.maximum(Npho, 0.0)
@@ -472,7 +473,7 @@ def main_angle_convnextv2_with_args(
             except Exception as e:
                 print(f"[WARN] Saliency calculation failed: {e}")
             
-            # --- SAVE VALIDATION ROOT FILE ---
+            # --- VALIDATION ROOT FILE ---
             root_data = extra_info.get("root_data", None)
             if root_data is not None:
                 val_root_path = os.path.join(artifact_dir, f"validation_results_{run_name}.root")
@@ -499,7 +500,7 @@ def main_angle_convnextv2_with_args(
                     f["val_tree"].extend(root_data)
                 mlflow.log_artifact(val_root_path)
 
-        # --- EXPORT ONNX TO ARTIFACT DIR ---
+        # --- EXPORT ONNX ---
         if onnx:
             onnx_path = os.path.join(artifact_dir, onnx)
             print(f"[INFO] Exporting ONNX model to {onnx_path}...")
