@@ -43,13 +43,41 @@ class LayerNorm(nn.Module):
 class GRN(nn.Module):
     def __init__(self, dim):
         super().__init__()
-        self.gamma = nn.Parameter(torch.zeros(1, 1, 1, dim))
-        self.beta = nn.Parameter(torch.zeros(1, 1, 1, dim))
+        # self.gamma = nn.Parameter(torch.zeros(1, 1, 1, dim))
+        # self.beta = nn.Parameter(torch.zeros(1, 1, 1, dim))
+        self.gamma = nn.Parameter(torch.zeros(dim))
+        self.beta = nn.Parameter(torch.zeros(dim))
 
+    # def forward(self, x):
+    #     Gx = torch.norm(x, p=2, dim=(1,2), keepdim=True)
+    #     Nx = Gx / (Gx.mean(dim=-1, keepdim=True) + 1e-6)
+    #     return self.gamma * (x * Nx) + self.beta + x
     def forward(self, x):
-        Gx = torch.norm(x, p=2, dim=(1,2), keepdim=True)
-        Nx = Gx / (Gx.mean(dim=-1, keepdim=True) + 1e-6)
-        return self.gamma * (x * Nx) + self.beta + x
+        # Handle 3D (Batch, Nodes, Channels) vs 4D (Batch, H, W, Channels)
+        if x.dim() == 3:
+            # For 3D: Norm over nodes (dim 1)
+            Gx = torch.norm(x, p=2, dim=1, keepdim=True)
+            Nx = Gx / (Gx.mean(dim=-1, keepdim=True) + 1e-6)
+            
+            # Reshape params for broadcasting: (1, 1, C)
+            gamma = self.gamma.view(1, 1, -1)
+            beta = self.beta.view(1, 1, -1)
+            
+            return gamma * (x * Nx) + beta + x
+            
+        elif x.dim() == 4:
+            # For 4D: Norm over spatial dims (dim 1, 2)
+            Gx = torch.norm(x, p=2, dim=(1,2), keepdim=True)
+            Nx = Gx / (Gx.mean(dim=-1, keepdim=True) + 1e-6)
+            
+            # Reshape params for broadcasting: (1, 1, 1, C)
+            gamma = self.gamma.view(1, 1, 1, -1)
+            beta = self.beta.view(1, 1, 1, -1)
+            
+            return gamma * (x * Nx) + beta + x
+            
+        else:
+            raise NotImplementedError(f"GRN input dimension {x.dim()} not supported. Expected 3 or 4.")
 
 class ConvNeXtV2Block(nn.Module):
     def __init__(self, dim, drop_path=0.):
@@ -123,6 +151,11 @@ class HexDepthwiseConv(nn.Module):
 
     def forward(self, x, edge_index):
         # x: [Batch, Nodes, Dim]
+        input_shape = x.shape
+        is_4d = x.dim() == 4
+        if is_4d:
+            x = x.flatten(0, 1)
+            
         src, dst = edge_index
         
         # 1. Get features of pairs (Source -> Dest)
@@ -134,7 +167,7 @@ class HexDepthwiseConv(nn.Module):
         scores = self.gate_linear(a_input) 
         # Simplified attention: sigmoid gating
         # (softmax over neighbors is hard in pure tensor)
-        attention = torch.sigmoid(scores) 
+        attention = torch.sigmoid(scores)
         
         # 3. Message Passing (Weighted Sum)
         msg = x_src * attention
@@ -142,8 +175,28 @@ class HexDepthwiseConv(nn.Module):
         # 4. Aggregation
         out = torch.zeros_like(x)
         # Broadcast indices for the scatter operation
-        idx = dst.unsqueeze(-1).expand(-1, -1, x.size(-1))
+        # idx = dst.unsqueeze(-1).expand(-1, -1, x.size(-1))
+        idx_template = dst.view(1, -1, 1)
+        
+        B = x.size(0)
+        D = x.size(-1)
+        
+        idx = idx_template.expand(B, -1, D)
+        
+        # if out.dim() != idx.dim():
+        #     print("\n!!! CRASH IMMINENT IN HexDepthwiseConv !!!")
+        #     print(f"x.shape:       {x.shape}")
+        #     print(f"out.shape:     {out.shape}")
+        #     print(f"dst.shape:     {dst.shape}")
+        #     print(f"idx_template:  {idx_template.shape}")
+        #     print(f"idx (expand):  {idx.shape}")
+        #     print(f"msg.shape:     {msg.shape}")
+        #     print("------------------------------------------\n")
+
         out.scatter_add_(1, idx, msg)
+        
+        if is_4d:
+            out = out.view(input_shape)
         
         return out
 

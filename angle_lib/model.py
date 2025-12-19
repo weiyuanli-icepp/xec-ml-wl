@@ -40,6 +40,12 @@ class DeepHexEncoder(nn.Module):
         )
 
     def forward(self, node_feats, edge_index):
+        # print(f"[DeepHexEncoder] Input shape: {node_feats.shape}")
+        if node_feats.dim() == 4:
+            # print("[DeepHexEncoder] Detected 4D input. Flattening batch dims...")
+            node_feats = node_feats.flatten(0, 1)
+            # print(f"[DeepHexEncoder] New shape: {node_feats.shape}")
+        
         # Apply Stem
         x = self.stem(node_feats)
         
@@ -47,8 +53,12 @@ class DeepHexEncoder(nn.Module):
         for layer in self.layers:
             x = layer(x, edge_index)
             
+        print(f"[DEBUG] HexEncoder Shape BEFORE mean: {x.shape}")
+            
         # Global Pooling (Mean)
-        x = x.mean(dim=1) 
+        x = x.mean(dim=1)
+        
+        print(f"[DEBUG] HexEncoder Shape AFTER mean: {x.shape}")
         
         # Project to match CNN face size
         return self.proj(x)
@@ -171,6 +181,10 @@ class AngleRegressorSharedFaces(nn.Module):
         )
 
     def forward(self, x_batch):
+        if x_batch.dim() == 4:
+            x_batch = x_batch.flatten(0, 1)
+            print(f"[AngleRegressorSharedFaces] Flattened input shape: {x_batch.shape}")
+            
         faces = {}
         faces["inner"] = gather_face(x_batch, INNER_INDEX_MAP)
         faces["us"]    = gather_face(x_batch, US_INDEX_MAP)
@@ -200,9 +214,13 @@ class AngleRegressorSharedFaces(nn.Module):
         tokens.append(self.hex_encoder(top_nodes, edge_index))
         tokens.append(self.hex_encoder(bot_nodes, edge_index))
         
+        # print(f"\n[DEBUG] Dumping Token Shapes for Batch Size {x_batch.shape[0]}:")
+        # for i, t in enumerate(tokens):
+            # print(f"  Token [{i}] Shape: {t.shape}")
+        
         # Stack tokens and apply Transformer
         x_seq  = torch.stack(tokens, dim=1) # (B, T, D)
-        x_seq += self.pos_embed
+        x_seq  = x_seq + self.pos_embed
         x_seq  = self.fusion_transformer(x_seq)
         
         # return self.head(torch.cat(embeddings, dim=1))
