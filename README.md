@@ -4,6 +4,11 @@
 
 This repository contains machine learning model based mainly on CNN to regress the emission angle (**$\theta$**, **$\phi$**) of photons detected by the LXe detector, utilizing both photon count (**$N_{\mathrm{pho}}$**) and timing information (**$t_{\mathrm{pm}}$**) in each photo-sensor (4092 SiPMs and 668 PMTs).
 
+This model respects the complex topology of the detector by combining:
+1.  **ConvNeXt V2** for rectangular faces (Inner, Outer, US, DS).
+2.  **HexNeXt (Graph Attention)** for hexagonal PMT faces (Top, Bottom).
+3.  **Transformer Fusion** to correlate signals across disjoint detector faces.
+
 ---
 
 ## 1. Environment Setup
@@ -122,6 +127,7 @@ All results are logged to **MLflow** and stored in the `artifacts/` directory.
 * `resolution_profile_*.pdf`: 68% width resolution vs $\theta$/$\phi$.
 * `saliency_profile_*.pdf`: Physics Sensitivity analysis (Gradient of output w.r.t input Npho/Time).
 * `worst_event_*.pdf`: Event displays of the highest-loss events.
+* `saliency_profile_*.pdf`: Computes $\nabla_{\text{Input}} \text{Output}$ to quantify how much the model relies on Photon Counts vs Timing for each face (Inner, Top, Hex, etc.) to determine $\theta$ and $\phi$.
 
 ### Visualization Tools
 
@@ -161,16 +167,57 @@ These metrics monitor the health of the training infrastructure (GPU/CPU) to det
 
 ---
 
-## 4. Model & Training Features
+## 4. Model Architecture
 
-The primary model is **ConvNeXt V2**, adapted for LXe geometry.
+The model (`AngleRegressorSharedFaces`) utilizes a multi-branch architecture to handle the heterogeneous sensor geometry (SiPMs vs PMTs), followed by an attention-based fusion mechanism.
 
-### Key Features
+### A. The Pipeline
 
-* **Geometry-aware projections**: Maps PMTs to split faces (Inner/Outer/Side) and Hex grids (Top/Bottom).
-* **EMA (Exponential Moving Average)**: Maintains a "shadow" model with smoothed weights ($W_{\mathrm{ema}} = \beta W_{\mathrm{ema}} + (1-\beta)W_{\mathrm{live}}$). Significantly improves stability on noisy physics data.
-* **Physics saliency**: Calculates $\partial \theta / \partial N_{\mathrm{pho}}$ to visualize which detector faces drive the decision.
-* **Reliable ONNX export**: Automatically exports the EMA model (if active) and replaces dynamic pooling with Resize(bilinear) for compatibility.
+```mermaid
+graph TD
+    Input[Photon Counts + Timing] -->|Split by Face| Faces
+    
+    subgraph "Branch 1: Rectangular Faces (SiPM)"
+    Faces -->|Inner/Outer/US/DS| CNN[ConvNeXt V2 Backbone]
+    CNN -->|Bilinear Pool| Emb1[Spatial Embeddings]
+    end
+    
+    subgraph "Branch 2: Hexagonal Faces (PMT)"
+    Faces -->|Top/Bottom| GNN[Deep HexNeXt Encoder]
+    GNN -->|Graph Attention| Emb2[Graph Embeddings]
+    end
+    
+    Emb1 & Emb2 -->|Stack + Positional Embed| Tokens[Face Tokens]
+    Tokens -->|Self-Attention| Trans[Transformer Fusion]
+    Trans -->|Flatten| MLP[Regression Head]
+    MLP --> Output[Theta, Phi]
+
+```
+
+### B. Key Components
+
+#### 1. Rectangular Branch: ConvNeXt V2
+* **Faces**: Inner, Outer (Fine Grid), Upstream, Downstream.
+* **Architecture**: Uses ConvNeXt V2 blocks with Global Response Normalization (GRN) to prevent feature collapse in sparse photon data.
+* **Pooling**: Output feature maps are standardized to a $4 \times 4$ grid using Bilinear Interpolation to preserve spatial variance within the face.
+
+#### 2. Hexagonal Branch: Deep HexNeXt
+* **Faces**: Top, Bottom (Hexagonal Lattice).
+* **Problem**: Standard GCNs (isotropic) cannot easily detect "directionality" (gradients) in a single layer.
+* **Solution**: Introduce the HexNeXt Block, a custom Graph Attention (GAT) layer.It learns dynamic attention weights between neighbors (anisotropy), effectively creating a "directional kernel" on the hex grid.
+* **Structure**: Stem -> [HexDepthwiseConv -> LayerNorm -> PWConv -> GRN -> PWConv] x4.3. 
+* **Mid-Fusion**: Transformer EncoderProblem: Physics events (showers) often cross boundaries (e.g., Corner events). Independent CNNs struggle to "stitch" these images together.Solution: We treat each detector face as a Token in a sequence.
+* **Positional Embeddings**: Learnable vectors are added to each token so the model knows which face is where.
+* **Self-Attention**: A 2-layer Transformer Encoder allows every face to "talk" to every other face globally before the final prediction.
+
+### C. Training Features
+* **EMA (Exponential Moving Average)**: Maintains a shadow model ($W_{\mathrm{ema}} = \beta W_{\mathrm{ema}} + (1-\beta)W_{\mathrm{live}}$) for stable validation.
+* **Positional Encoding**: Essential for the Transformer to understand the detector topology.
+
+### D. References
+1. ConvNeXt V2: Woo, S., et al. "ConvNeXt V2: Co-designing and Scaling ConvNets with Masked Autoencoders." CVPR 2023.
+2. Graph Attention (GAT): Veličković, P., et al. "Graph Attention Networks." ICLR 2018.
+3. Transformer: Vaswani, A., et al. "Attention Is All You Need." NeurIPS 2017.
 
 ### Argument List (`run_training_cli.py`)
 
