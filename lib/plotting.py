@@ -3,8 +3,8 @@ import numpy as np
 import torch
 from scipy.stats import binned_statistic
 
-from .angle_utils import angles_deg_to_unit_vec
-from .angle_metrics import get_opening_angle_deg
+from .utils import angles_deg_to_unit_vec
+from .metrics import get_opening_angle_deg
 
 def plot_resolution_profile(pred, true, bins=20, outfile=None):
     """

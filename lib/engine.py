@@ -2,9 +2,10 @@ import torch
 import torch.nn as nn
 import numpy as np
 from torch.utils.data import TensorDataset, DataLoader
+import time
 
-from .angle_utils import iterate_chunks, angles_deg_to_unit_vec
-from .angle_metrics import eval_stats, eval_resolution
+from .utils import iterate_chunks, angles_deg_to_unit_vec
+from .metrics import eval_stats, eval_resolution
 
 def run_epoch_stream(
     model, optimizer, device, root, tree,
@@ -36,6 +37,11 @@ def run_epoch_stream(
     loss_sums = {"total_opt": 0.0, "smooth_l1": 0.0, "l1": 0.0, "mse": 0.0, "cos": 0.0}
     nobs = 0
     
+    epoch_throughput = []
+    epoch_data_time  = []
+    epoch_batch_time = []
+    t_end = time.time()
+    
     # Collections for the Final ROOT file
     val_root_data = {
         "run_id": [],
@@ -55,6 +61,7 @@ def run_epoch_stream(
     chunks_done = 0
     branches_to_load = [npho_branch, time_branch, "emiAng", "emiVec", "xyzTruth", "xyzVTX", "energyTruth", "run", "event"]
     
+    # ========================== START OF CHUNK LOOP ==========================
     for arr in iterate_chunks(root, tree, branches_to_load, step_size):
         if max_chunks and chunks_done >= max_chunks:
             break
@@ -83,18 +90,16 @@ def run_epoch_stream(
             val_inputs_npho.append(n_flat[valid_mask])
             val_inputs_time.append(t_flat[valid_mask])
 
-        # Time_norm = (Time - time_shift) / time_scale
-        Time_norm = Time / time_scale - time_shift
-        Npho_log = np.log1p(Npho / NphoScale).astype("float32")
-        Npho_norm = Npho_log / NphoScale2
-        X_stacked = np.stack([Npho_norm, Time_norm], axis=-1)
+        # Time_norm = Time / time_scale - time_shift
+        # Npho_log = np.log1p(Npho / NphoScale).astype("float32")
+        # Npho_norm = Npho_log / NphoScale2
+        # X_stacked = np.stack([Npho_norm, Time_norm], axis=-1)
+        X_raw = np.stack([Npho, Time], axis=-1).astype("float32")
 
         ds = TensorDataset(
-            torch.from_numpy(X_stacked),  # Stacked input features: log-scaled Npho and normalized Time
+            torch.from_numpy(X_raw),  # Raw input features: Npho and Time
             torch.from_numpy(Y),          # True angles in degrees
             torch.from_numpy(V),          # Unit vector of true angles
-            torch.from_numpy(Npho),       # Raw Npho
-            torch.from_numpy(Time),       # Raw Time
             torch.from_numpy(RunNum),     # Run Number
             torch.from_numpy(EventNum),   # Event Number
             torch.from_numpy(XYZ_tru),    # XYZ Truth
@@ -103,10 +108,22 @@ def run_epoch_stream(
         )
         loader = DataLoader(ds, batch_size=batch_size, shuffle=train, drop_last=False)
 
-        for i_batch, (Npho_b, Y_b, V_b, Raw_N_b, Raw_T_b, RunNum_b, EventNum_b, XYZ_tru_b, XYZ_vtx_b, E_b) in enumerate(loader):
-            Npho_b = Npho_b.to(device)
-            Y_b    = Y_b.to(device)
-            V_b    = V_b.to(device)
+        # ========================== START OF BATCH LOOP ==========================
+        for i_batch, (X_raw_b, Y_b, V_b, RunNum_b, EventNum_b, XYZ_tru_b, XYZ_vtx_b, E_b) in enumerate(loader):
+            t_data  = time.time() - t_end
+            
+            X_raw_b = X_raw_b.to(device, non_blocking=True)
+            Y_b    = Y_b.to(device, non_blocking=True)
+            V_b    = V_b.to(device, non_blocking=True)
+            
+            raw_npho = X_raw_b[:, :, 0]
+            raw_time = X_raw_b[:, :, 1]
+            Raw_N_b = X_raw_b[:, :, 0]
+            Raw_T_b = X_raw_b[:, :, 1]
+            time_norm = raw_time / time_scale - time_shift
+            npho_log = torch.log1p(raw_npho / NphoScale)
+            npho_norm = npho_log / NphoScale2
+            X_batch = torch.stack([npho_norm, time_norm], dim=-1)
             
             # Reweighting
             w = None
@@ -129,7 +146,7 @@ def run_epoch_stream(
             if train:
                 optimizer.zero_grad(set_to_none=True)
                 with torch.amp.autocast(device_type, enabled=(amp and device_type == "cuda"), dtype=torch.bfloat16):
-                    pred_angles = model(Npho_b)
+                    pred_angles = model(X_batch)
                     
                     if loss_type == "smooth_l1": l_opt = criterion_smooth(pred_angles, Y_b).mean(dim=1)
                     elif loss_type == "l1": l_opt = criterion_l1(pred_angles, Y_b).mean(dim=1)
@@ -154,13 +171,13 @@ def run_epoch_stream(
                 if ema_model is not None:
                     ema_model.update_parameters(model)
                 
-                loss_sums["total_opt"] += loss.item() * Npho_b.size(0)
-                nobs += Npho_b.size(0)
+                loss_sums["total_opt"] += loss.item() * X_batch.size(0)
+                nobs += X_batch.size(0)
 
             # --- VALIDATION ---
             else:
                 with torch.no_grad():
-                    pred_angles = model(Npho_b)
+                    pred_angles = model(X_batch)
                     
                     # Individual losses for tracking
                     l_smooth = criterion_smooth(pred_angles, Y_b).mean(dim=1)
@@ -215,24 +232,42 @@ def run_epoch_stream(
                             Y_b[idx].cpu().numpy(),
                             xyz_tru_np[idx],
                             xyz_vtx_np[idx],
-                            E_b[idx].cpu().numpy()
+                            E_b[idx].cpu().numpy(),
+                            RunNum_b[idx].cpu().numpy(),
+                            EventNum_b[idx].cpu().numpy()
                         ))
                     worst_events_buffer.sort(key=lambda x: x[0], reverse=True)
                     worst_events_buffer = worst_events_buffer[:10]
 
-                    loss_sums["total_opt"] += loss.item() * Npho_b.size(0)
+                    loss_sums["total_opt"] += loss.item() * X_batch.size(0)
                     loss_sums["smooth_l1"] += l_smooth.sum().item()
                     loss_sums["l1"]        += l_l1.sum().item()
                     loss_sums["mse"]       += l_mse.sum().item()
                     loss_sums["cos"]       += l_cos.sum().item()
-                    nobs += Npho_b.size(0)
+                    nobs += X_batch.size(0)
+                    
+            t_batch = time.time() - t_end
+            current_bs = X_batch.size(0)
+            if t_batch > 0:
+                epoch_throughput.append(current_bs / t_batch)
+                epoch_data_time.append(t_data)
+                epoch_batch_time.append(t_batch)
+            t_end = time.time()
+        # ========================== END OF BATCH LOOP ==========================
 
         torch.cuda.empty_cache()
+    # ========================== END OF CHUNK LOOP ==========================
 
     if train and scheduler is not None:
         scheduler.step()
 
     metrics = {k: v / max(1, nobs) for k, v in loss_sums.items()}
+    
+    if len(epoch_throughput) > 0:
+        metrics["system/throughput_events_per_sec"] = np.mean(epoch_throughput)
+        metrics["system/avg_data_load_sec"]         = np.mean(epoch_data_time)
+        metrics["system/avg_batch_process_sec"]     = np.mean(epoch_batch_time)
+        metrics["system/compute_efficiency"]        = 1.0 - (metrics["system/avg_data_load_sec"] / metrics["system/avg_batch_process_sec"])
     
     extra_info = {}
     if not train:

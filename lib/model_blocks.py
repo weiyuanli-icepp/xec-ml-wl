@@ -124,7 +124,10 @@ class HexGraphConv(nn.Module):
         out = self.act(self.self_lin(x_f) + agg)
         return out.to(x.dtype)
 
-class HexGraphEncoder(nn.Module):
+class HexGraphEncoder(nn.Module): # deprecated
+    """
+    Simple 2-layer Hex Graph Conv Encoder.
+    """
     def __init__(self, in_dim=1, embed_dim=128, hidden_dim=64):
         super().__init__()
         self.conv1 = HexGraphConv(in_dim, hidden_dim)
@@ -215,7 +218,7 @@ class HexNeXtBlock(nn.Module):
         self.pwconv2 = nn.Linear(4 * dim, dim)
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
-    def forward(self, x, edge_index, deg=None):
+    def forward(self, x, edge_index):
         input = x
         x = self.spatial_conv(x, edge_index)
         x = self.norm(x)

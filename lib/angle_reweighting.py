@@ -1,6 +1,6 @@
 import numpy as np
 import os
-from .angle_utils import iterate_chunks
+from .utils import iterate_chunks
 
 def scan_angle_hist_1d(root, tree="tree", comp=0, nbins=30, step_size=4000):
     root = os.path.expanduser(root)

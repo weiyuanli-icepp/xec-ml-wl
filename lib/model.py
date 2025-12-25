@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from .model_blocks import ConvNeXtV2Block, LayerNorm, HexGraphEncoder, HexNeXtBlock
+from .model_blocks import ConvNeXtV2Block, LayerNorm, HexNeXtBlock
 from .geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
     OUTER_COARSE_FULL_INDEX_MAP, OUTER_CENTER_INDEX_MAP,
@@ -102,9 +102,12 @@ class FaceBackbone(nn.Module):
         x = F.interpolate(x, size=self.pooled_hw, mode='bilinear', align_corners=False)
         return x.flatten(1)
 
-class AngleRegressorSharedFaces(nn.Module):
+class XECRegressor(nn.Module):
+    # def __init__(self, tasks=["angle", "energy", "xyz"], hidden_dim=256, out_dim=2, outer_mode="split", outer_fine_pool=None, drop_path_rate=0.0): <---
     def __init__(self, hidden_dim=256, out_dim=2, outer_mode="split", outer_fine_pool=None, drop_path_rate=0.0):
         super().__init__()
+        # self.tasks = tasks <---
+        
         self.outer_mode = outer_mode
         self.outer_fine_pool = outer_fine_pool
         
@@ -117,11 +120,9 @@ class AngleRegressorSharedFaces(nn.Module):
             pooled_hw=(4, 4),
             drop_path_rate=drop_path_rate
         )
-        # self.hex_embed_dim = self.backbone.out_dim
-        self.face_embed_dim = self.backbone.out_dim # 1024
+        self.face_embed_dim = self.backbone.out_dim
 
         # Hex Encoder        
-        # self.hex_encoder = HexGraphEncoder(in_dim=input_channels, embed_dim=self.hex_embed_dim, hidden_dim=64)
         self.hex_encoder = DeepHexEncoder(
             in_dim=input_channels, 
             embed_dim=self.face_embed_dim, 
@@ -156,14 +157,12 @@ class AngleRegressorSharedFaces(nn.Module):
         self.register_buffer("top_hex_indices", torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long())
         self.register_buffer("bottom_hex_indices", torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long())
         self.register_buffer("hex_edge_index", torch.from_numpy(HEX_EDGE_INDEX_NP).long())
-        # self.register_buffer("hex_deg", torch.from_numpy(HEX_DEG_NP.astype(np.float32)))
 
         # Head
         # extra_cnn = 1 if self.outer_fine else 0
         # self.num_cnn_components = len(self.cnn_face_names) + extra_cnn
         # self.num_hex_components = 2 # Top + Bottom
         
-        # in_fc = self.backbone.out_dim * self.num_cnn_components + self.hex_embed_dim * self.num_hex_components
         num_cnn = len(self.cnn_face_names) + (1 if self.outer_fine else 0)
         num_hex = 2
         total_tokens = num_cnn + num_hex
@@ -179,6 +178,15 @@ class AngleRegressorSharedFaces(nn.Module):
             nn.Dropout(0.2),
             nn.Linear(hidden_dim, out_dim)
         )
+        
+        # self.heads = nn.ModuleDict()
+        # if "angle" in self.tasks:
+            # self.heads["angle"] = nn.Sequential(
+                # nn.Linear(embed_dim, hidden_dim),
+                # nn.LayerNorm(hidden_dim),
+                # nn.GELU(),
+        
+        
 
     def forward(self, x_batch):
         if x_batch.dim() == 4:
