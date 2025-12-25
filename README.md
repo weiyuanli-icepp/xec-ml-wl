@@ -2,7 +2,7 @@
 
 ## Machine Learning Model for the MEG II Liquid Xenon (LXe) Detector
 
-This repository contains machine learning model based mainly on CNN to regress the emission angle (**$\theta$**, **$\phi$**) of photons detected by the LXe detector, utilizing both photon count (**$N_{\mathrm{pho}}$**) and timing information (**$t_{\mathrm{pm}}$**) in each photo-sensor (4092 SiPMs and 668 PMTs).
+This repository contains machine learning model (CNN + Graph Transformer) to regress the emission angle (**$\theta$**, **$\phi$**) of photons detected by the LXe detector, utilizing both photon count (**$N_{\mathrm{pho}}$**) and timing information (**$t_{\mathrm{pm}}$**) in each photo-sensor (4092 SiPMs and 668 PMTs).
 
 This model respects the complex topology of the detector by combining:
 1.  **ConvNeXt V2** for rectangular faces (Inner, Outer, US, DS).
@@ -97,6 +97,13 @@ export LOSS_BETA=1.0
 ./submit_job.sh scan_run_01 ...
 ```
 
+#### 3. Optimization Best Practices
+
+For GH nodes, use the following settings in run_scan.sh to maximize the throughput:
+* **Batch Size**: 16384 (Uses ~65GB VRAM, ~70% capacity)
+* **Chunk Size**: 524880 (320 Batches)
+* **Memory**: Normally uses 5-10GB RAM
+
 ### B. Interactive Jupyter Session
 
 ```bash
@@ -112,7 +119,7 @@ export LOSS_BETA=1.0
 
 ## 3. Output & Artifacts
 
-All results are logged to **MLflow** and stored in the `artifacts/` directory.
+All results are logged to **MLflow** and stored in the `artifacts/<RUN_NAME>/` directory.
 
 ### Key Artifacts
 
@@ -144,7 +151,7 @@ $ tensorboard --logdir runs --host 0.0.0.0 --port YYYY
 
 #### 1. Physics Performance Metrics
 
-These metrics evaluate the quality of the photon direction reconstruction. They are calculated during the validation phase using eval_stats and eval_resolution.
+These metrics evaluate the quality of the photon direction reconstruction. They are calculated during the validation phase using `eval_stats` and `eval_resolution`.
 
 | Metric | Definition | Formula |
 | ------ | ---------- | ------- | 
@@ -156,7 +163,7 @@ These metrics evaluate the quality of the photon direction reconstruction. They 
 #### 2. System Engineering Metrics
 These metrics monitor the health of the training infrastructure (GPU/CPU) to detect bottlenecks or imminent crashes.
 
-| Metric           | Definition                       | Interpretation                                                                            |
+| Metric           | Key in MLflow                    | Interpretation                                                                            |
 | ---------------- | -------------------------------- | --------------------------------- |
 | Allocated Memory | `system/` `memory_allocated_GB`  | The actual size of tensors (weights, gradients, data) on the GPU. Steady growth indicates a memory leak.Reserved Memorysystem/memory_reserved_GBThe total memory PyTorch has requested from the OS. If this hits the hardware limit, an OOM crash occurs.                                                      |
 | Peak Memory      | `system/` `memory_peak_GB`       | The highest memory usage recorded (usually during the backward pass). Use this to tune batch_size.                          |
@@ -165,33 +172,192 @@ These metrics monitor the health of the training infrastructure (GPU/CPU) to det
 | RAM Usage        | `system/` `ram_used_gb`          | System RAM used by the process. High usage warns that step_size for ROOT file reading is too large.                            | 
 | Throughput       | `system/` `epoch_duration_sec`   | Wall-clock time per epoch. If high while GPU utilization is low, the pipeline is CPU-bound (data loading bottleneck).        |
 
+#### 3. System Performance Metrics
+These metrics determine if the training pipeline is efficient or bottlenecked.
+| Metric             | Key in MLflow                      | Definition & goal                 |
+| ------------------ | ---------------------------------- | --------------------------------- |
+| Throughput         | `system/throughput_events_per_sec` | Events processed per second.      |
+| Data Load Time     | `system/avg_data_load_sec`         | Time GPU waits for CPU. If high, increase CHUNK_SIZE. |
+| Compute Efficiency | `system/compute_efficiency`        | % of time GPU is computing.       |
+
 ---
 
 ## 4. Model Architecture
 
-The model (`AngleRegressorSharedFaces`) utilizes a multi-branch architecture to handle the heterogeneous sensor geometry (SiPMs vs PMTs), followed by an attention-based fusion mechanism.
+The model (`XECRegressor`) utilizes a multi-branch architecture to handle the heterogeneous sensor geometry (SiPMs vs PMTs), followed by an attention-based fusion mechanism.
 
 ### A. The Pipeline
 
 ```mermaid
 graph TD
-    Input[Photon Counts + Timing] -->|Split by Face| Faces
-    
-    subgraph "Branch 1: Rectangular Faces (SiPM)"
-    Faces -->|Inner/Outer/US/DS| CNN[ConvNeXt V2 Backbone]
-    CNN -->|Bilinear Pool| Emb1[Spatial Embeddings]
-    end
-    
-    subgraph "Branch 2: Hexagonal Faces (PMT)"
-    Faces -->|Top/Bottom| GNN[Deep HexNeXt Encoder]
-    GNN -->|Graph Attention| Emb2[Graph Embeddings]
-    end
-    
-    Emb1 & Emb2 -->|Stack + Positional Embed| Tokens[Face Tokens]
-    Tokens -->|Self-Attention| Trans[Transformer Fusion]
-    Trans -->|Flatten| MLP[Regression Head]
-    MLP --> Output[Theta, Phi]
+    %% -- Styles --
+    classDef tensor fill:#e1f5fe,stroke:#01579b,stroke-width:1px,color:#000000;
+    classDef op fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#000000;
 
+    subgraph "1. Input Processing"
+        Input("<b>Input Batch</b><br/>Shape: B, 4760, 2"):::tensor
+        Flatten{"Flatten if 4D"}:::op
+        
+        %% Face Gathering
+        subgraph "Geometry Gathering"
+            GatherInn(Gather Inner):::op
+            GatherUS(Gather US):::op
+            GatherDS(Gather DS):::op
+            GatherOutC(Gather Outer Coarse):::op
+            GatherOutF(Gather Outer Center):::op
+            
+            GatherHexT(Gather Hex Top):::op
+            GatherHexB(Gather Hex Bottom):::op
+        end
+        
+        %% Outer Fine Grid Logic
+        subgraph "Outer Face Construction"
+            Fuse("<b>Build Fine Grid</b><br/>Fuse Coarse + Center"):::op
+            PoolFine(AvgPool2d Kernel=3):::op
+        end
+        
+        %% Destinations
+        ToFaceIn(To FaceBackbone):::tensor
+        ToHexIn(To HexEncoder):::tensor
+    end
+
+    Input --> Flatten
+    Flatten --> GatherInn & GatherUS & GatherDS
+    Flatten --> GatherOutC & GatherOutF
+    Flatten --> GatherHexT & GatherHexB
+    
+    %% Outer Grid Flow
+    GatherOutC & GatherOutF --> Fuse --> PoolFine
+    
+    %% Output connections
+    PoolFine --> ToFaceIn
+    GatherInn & GatherUS & GatherDS --> ToFaceIn
+    GatherHexT & GatherHexB --> ToHexIn
+```
+```mermaid
+graph TD
+    %% -- Styles --
+    classDef tensor fill:#e1f5fe,stroke:#01579b,stroke-width:1px,color:#000000;
+    classDef op fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#000000;
+    classDef block fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px,color:#000000;
+    classDef fusion fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000000;
+    classDef param fill:#fff9c4,stroke:#fbc02d,stroke-dasharray: 5 5,color:#000000;
+
+    %% ==========================================
+    %% 2. CNN BACKBONE (SHARED)
+    %% ==========================================
+    subgraph "2. ConvNeXt V2 Path"
+        FaceIn(Face Input):::tensor
+
+        %% Stem
+        subgraph "Stem"
+            StemConv("Conv2d 2->32<br/>k=4, s=1, p=1"):::op
+            StemLN(LayerNorm):::op
+        end
+
+        %% Stage 1
+        subgraph "Stage 1 (Dim=32)"
+            CNBlock1("<b>ConvNeXtV2 Block 1</b><br/>DWConv k=7 -> LN -> PWLinear -> GELU -> GRN -> PWLinear"):::block
+            CNBlock2("<b>ConvNeXtV2 Block 2</b><br/>DWConv k=7 -> LN -> PWLinear -> GELU -> GRN -> PWLinear"):::block
+        end
+        
+        %% Downsample
+        subgraph "Downsample"
+            DS_LN(LayerNorm):::op
+            DS_Conv("Conv2d 32->64<br/>k=2, s=2"):::op
+        end
+
+        %% Stage 2
+        subgraph "Stage 2 (Dim=64)"
+            CNBlock3(<b>ConvNeXtV2 Block 1</b>):::block
+            CNBlock4(<b>ConvNeXtV2 Block 2</b>):::block
+            CNBlock5(<b>ConvNeXtV2 Block 3</b>):::block
+        end
+
+        %% Output
+        Interp(Interpolate to 4x4):::op
+        FlatCNN(Flatten):::op
+        FaceOut("<b>Face Token</b><br/>Dim: 1024"):::tensor
+    end
+
+    %% ==========================================
+    %% 3. HEX ENCODER (SHARED)
+    %% ==========================================
+    subgraph "3. GraphAttention Path"
+        HexIn(Hex Nodes):::tensor
+        
+        %% Stem
+        subgraph "Hex Stem"
+            HexStemLin(Linear 2->96):::op
+            HexStemLN(LayerNorm):::op
+            HexStemAct(GELU):::op
+        end
+        
+        %% HexNeXt Stack
+        subgraph "HexNeXt Stack (4 Layers)"
+            HNBlock1("<b>HexNeXt Block 1</b><br/>HexDepthwise -> LN -> Linear -> GELU -> GRN -> Linear"):::block
+            HNBlock2(<b>HexNeXt Block 2</b>):::block
+            HNBlock3(<b>HexNeXt Block 3</b>):::block
+            HNBlock4(<b>HexNeXt Block 4</b>):::block
+        end
+        
+        %% Pooling
+        HexPool(Global Mean Pool):::op
+        
+        %% Projection
+        subgraph "Projection"
+            HexProjLN(LayerNorm):::op
+            HexProjLin(Linear 96->1024):::op
+        end
+        
+        HexOut("<b>Hex Token</b><br/>Dim: 1024"):::tensor
+    end
+
+    %% ==========================================
+    %% 4. FUSION & HEAD
+    %% ==========================================
+    subgraph "4. Fusion & Regression (XECRegressor)"
+        TokenStack("<b>Stack Tokens</b><br/>[Inner, US, DS, Outer, Top, Bot]<br/>Shape: (B, 6, 1024)"):::op
+        PosEmbed(Add Pos Embed):::op
+        
+        subgraph "Transformer Encoder (Dim=1024)"
+            TransL1("<b>Layer 1</b><br/>SelfAttn 8-Head -> Add&Norm -> FeedForward 4096 -> Add&Norm"):::fusion
+            TransL2("<b>Layer 2</b><br/>SelfAttn 8-Head -> Add&Norm -> FeedForward 4096 -> Add&Norm"):::fusion
+        end
+        
+        FlatAll("<b>Flatten Sequence</b><br/>Dim: 6 * 1024 = 6144"):::op
+        
+        subgraph "Regression Head"
+            HeadLin1(Linear 6144 -> 256):::op
+            HeadLN(LayerNorm):::op
+            HeadGELU(GELU):::op
+            HeadDrop(Dropout 0.2):::op
+            HeadLin2(Linear 256 -> 2):::op
+        end
+        
+        FinalOut(("<b>Output</b><br/>Theta, Phi")):::tensor
+    end
+
+    %% ==========================================
+    %% CONNECTIONS
+    %% ==========================================
+    
+    %% CNN Flow
+    FaceIn --> StemConv --> StemLN --> CNBlock1
+    CNBlock1 --> CNBlock2 --> DS_LN --> DS_Conv
+    DS_Conv --> CNBlock3 --> CNBlock4 --> CNBlock5
+    CNBlock5 --> Interp --> FlatCNN --> FaceOut
+    
+    %% Hex Flow
+    HexIn --> HexStemLin --> HexStemLN --> HexStemAct
+    HexStemAct --> HNBlock1 --> HNBlock2 --> HNBlock3 --> HNBlock4
+    HNBlock4 --> HexPool --> HexProjLN --> HexProjLin --> HexOut
+    
+    %% Fusion Flow
+    FaceOut --> TokenStack
+    HexOut --> TokenStack
+    TokenStack --> PosEmbed --> TransL1 --> TransL2
+    TransL2 --> FlatAll --> HeadLin1 --> HeadLN --> HeadGELU --> HeadDrop --> HeadLin2 --> FinalOut
 ```
 
 ### B. Key Components
@@ -206,7 +372,10 @@ graph TD
 * **Problem**: Standard GCNs (isotropic) cannot easily detect "directionality" (gradients) in a single layer.
 * **Solution**: Introduce the HexNeXt Block, a custom Graph Attention (GAT) layer.It learns dynamic attention weights between neighbors (anisotropy), effectively creating a "directional kernel" on the hex grid.
 * **Structure**: Stem -> [HexDepthwiseConv -> LayerNorm -> PWConv -> GRN -> PWConv] x4.3. 
-* **Mid-Fusion**: Transformer EncoderProblem: Physics events (showers) often cross boundaries (e.g., Corner events). Independent CNNs struggle to "stitch" these images together.Solution: We treat each detector face as a Token in a sequence.
+
+#### 3. Mid-Fusion: Transformer Encoder
+* **Problem**: Physics events (showers) often cross boundaries (e.g., Corner events). Independent CNNs struggle to "stitch" these images together.
+* **Solution**: We treat each detector face as a Token in a sequence.
 * **Positional Embeddings**: Learnable vectors are added to each token so the model knows which face is where.
 * **Self-Attention**: A 2-layer Transformer Encoder allows every face to "talk" to every other face globally before the final prediction.
 
@@ -297,3 +466,89 @@ Validation using real data can be performed in the following procedure
         --output_dir \
         --outer_mode
     ```
+
+## 7. File dependency
+
+```mermaid
+graph TD
+    %% -- Styles --
+    classDef lib fill:#e1f5fe,stroke:#0277bd,stroke-width:2px,color:#000000;
+    classDef scan fill:#fce4ec,stroke:#880e4f,stroke-width:2px,color:#000000;
+    classDef val fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px,color:#000000;
+    classDef macro fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000000;
+
+    %% -- Training & Scanning (Pink) --
+    subgraph "HP-Scanning (scan_param/)"
+        RunScan(run_scan.sh):::scan
+        Submit(submit_job.sh):::scan
+        CLI(run_training_cli.py):::scan
+        TrainScript(train_xec_regressor.py):::scan
+    end
+
+    %% -- Library Core (Blue) --
+    subgraph "Core Library (lib/)"
+        %% Main Components
+        Engine(engine.py):::lib
+        Model(model.py):::lib
+        Blocks(model_blocks.py):::lib
+        
+        %% Utilities
+        Utils(utils.py):::lib
+        Reweight(angle_reweighting.py):::lib
+        Metrics(metrics.py):::lib
+        
+        %% Visualization
+        Plotting(plotting.py):::lib
+        EventDisp(event_display.py):::lib
+        
+        %% Geometry Foundation
+        Geom(geom_utils.py / geom_defs.py):::lib
+    end
+
+    %% -- Macros (Purple) --
+    subgraph "Macro (macro/)"
+        ExportONNX(export_onnx.py):::macro
+        ShowNpho(show_event_npho.py):::macro
+        ShowTime(show_event_time.py):::macro
+    end
+
+    %% -- Validation & Real Data (Green) --
+    subgraph "Validation (val_data/)"
+        Inference(inference_real_data.py):::val
+        RealPlot(plot_real_data_analysis.py):::val
+        CheckFile(check_input_file.py):::val
+    end
+
+    %% -- Dependencies --
+
+    %% 1. Scanning Flow
+    RunScan --> Submit
+    Submit --> CLI
+    CLI --> TrainScript
+
+    %% 2. Main Script Orchestration (The Glue)
+    TrainScript -->|Runs Loop| Engine
+    TrainScript -->|Init| Model
+    TrainScript -->|Calc Weights| Reweight
+    TrainScript -->|Saliency/RAM| Utils
+    TrainScript -->|End Plots| Plotting
+    TrainScript -->|Worst Events| EventDisp
+
+    %% 3. Internal Library Dependencies
+    Engine -->|Calculates Stats| Metrics
+    Engine -->|Train/Val| Model
+    Model --> Blocks
+    Model --> Geom
+    EventDisp --> Geom
+    Plotting --> Utils
+
+    %% 4. Macro & Validation Usage
+    ExportONNX --> Model
+    ShowNpho --> EventDisp
+    ShowTime --> EventDisp
+    
+    Inference -->|Produces .root| RealPlot
+    RealPlot --> Plotting
+    RealPlot --> Model
+    CheckFile -.->|Checks| Inference
+```
