@@ -14,19 +14,21 @@ import mlflow
 import mlflow.pytorch
 import uproot
 import psutil
+import glob
+import random
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="mlflow.tracking._tracking_service.utils")
 
-from angle_lib.model import AngleRegressorSharedFaces
-from angle_lib.event_display import plot_event_faces, plot_event_time
-from angle_lib.angle_reweighting import scan_angle_hist_1d, scan_angle_hist_2d
-from angle_lib.angle_engine import run_epoch_stream
-from angle_lib.angle_utils import (
+from lib.model import XECRegressor
+from lib.event_display import plot_event_faces, plot_event_time
+from lib.angle_reweighting import scan_angle_hist_1d, scan_angle_hist_2d
+from lib.engine import run_epoch_stream
+from lib.utils import (
     get_gpu_memory_stats,
     iterate_chunks,
     compute_face_saliency
 )
-from angle_lib.angle_plotting import (
+from lib.plotting import (
     plot_resolution_profile,
     plot_face_weights,
     plot_profile,
@@ -39,7 +41,7 @@ from angle_lib.angle_plotting import (
 # ------------------------------------------------------------
 #  Main training entry
 # ------------------------------------------------------------
-def main_angle_convnextv2_with_args(
+def main_xec_regressor_with_args(
     root,
     tree="tree",
     epochs=20,
@@ -71,16 +73,30 @@ def main_angle_convnextv2_with_args(
     resume_from=None, 
     ema_decay=0.999,
 ):
-    if os.path.isdir(root):
-        import glob
-        files = glob.glob(os.path.join(root, "*.root"))
-    else:
-        files = root
+
     root = os.path.expanduser(root)
+    if os.path.isdir(root):
+        print(f"[INFO] Input is a directory. Scanning for *.root files in: {root}")
+        all_files = sorted(glob.glob(os.path.join(root, "*.root")))
+    else:
+        print(f"[INFO] Input is a path pattern. Resolving glob: {root}")
+        all_files = sorted(glob.glob(root))
+        
+    if len(all_files) <= 10:
+        raise ValueError(f"[ERROR] Not enough ROOT files found ({len(all_files)}). Please check the input path.")
+    
+    print(f"[INFO] Found {len(all_files)} ROOT files. First: {os.path.basename(all_files[0])}, Last: {os.path.basename(all_files[-1])}")
+
+    random.Random(42).shuffle(all_files)
+    split_idx = int(0.9 * len(all_files))
+    train_files = all_files[:split_idx]
+    val_files = all_files[split_idx:]
+    print(f"[INFO] Data Split: {len(train_files)} Training files / {len(val_files)} Validation files")
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # --- Pass drop_path_rate to model ---
-    model = AngleRegressorSharedFaces(
+    model = XECRegressor(
         outer_mode=outer_mode,
         outer_fine_pool=outer_fine_pool,
         drop_path_rate=drop_path_rate
@@ -217,7 +233,9 @@ def main_angle_convnextv2_with_args(
             
             # TRAIN
             tr_metrics, _, _, _, _ = run_epoch_stream( 
-                model, optimizer, device, tree, root=files, 
+                model, optimizer, device, 
+                root=train_files,
+                tree=tree,
                 step_size=chunksize, 
                 batch_size=batch,
                 train=True, 
@@ -246,7 +264,9 @@ def main_angle_convnextv2_with_args(
             # VAL
             val_model_to_use = ema_model if ema_model is not None else model
             val_metrics, pred_val, true_val, _, val_stats = run_epoch_stream( 
-                val_model_to_use, optimizer, device, tree, root=files,
+                val_model_to_use, optimizer, device, 
+                root=val_files,
+                tree=tree,
                 step_size=chunksize, 
                 batch_size=max(batch,256),
                 train=False, 
@@ -298,10 +318,14 @@ def main_angle_convnextv2_with_args(
                     }, step=ep)
             
             # 2. System RAM (CPU)
+            process = psutil.Process()
+            mem_info = process.memory_info()
+            ram_gb = mem_info.rss / 1e9
             ram = psutil.virtual_memory()
             mlflow.log_metrics({
                 "system/ram_used_gb": ram.used / 1e9,
-                "system/ram_percent": ram.percent
+                "system/ram_percent": ram.percent,
+                "system/process_ram_gb": ram_gb
             }, step=ep)
             
             # 3. Throughput (Speed)
@@ -318,6 +342,17 @@ def main_angle_convnextv2_with_args(
                 "lr": current_lr,
                 **val_stats
             }
+            
+            perf_keys = [
+                "system/throughput_events_per_sec", 
+                "system/avg_data_load_sec", 
+                "system/avg_batch_process_sec", 
+                "system/compute_efficiency"
+            ]
+            for k in perf_keys:
+                if k in tr_metrics:
+                    log_dict[k] = tr_metrics[k]
+            
             mlflow.log_metrics(log_dict, step=ep)
             
             writer.add_scalar("loss/train", tr_loss, ep)
@@ -354,9 +389,10 @@ def main_angle_convnextv2_with_args(
             model.load_state_dict(best_state)
             print("[INFO] Loaded best model state for final evaluation.")
 
-        # Get final data with extra info
         _, pred_all, true_all, extra_info, _ = run_epoch_stream(
-            final_model, optimizer, device, tree, root=files,
+            final_model, optimizer, device, 
+            root=val_files,
+            tree=tree,
             step_size=chunksize, 
             batch_size=max(batch,256), 
             train=False, 
@@ -392,11 +428,11 @@ def main_angle_convnextv2_with_args(
 
             # --- WORST EVENTS ---
             worst_events = extra_info.get("worst_events", [])
-            for i, (err, raw_n, raw_t, p, t, xyz, vtx, energy) in enumerate(worst_events):
+            for i, (err, raw_n, raw_t, p, t, xyz, vtx, energy, run_id, event_id) in enumerate(worst_events):
                 energy = energy * 1e3  # GeV to MeV
                 vtx_str = f"({vtx[0]:.1f}, {vtx[1]:.1f}, {vtx[2]:.1f})"
                 xyz_str = f"({xyz[0]:.1f}, {xyz[1]:.1f}, {xyz[2]:.1f})"
-                base_title = (f"Worst #{i+1} (Loss={err:.4f})\n"
+                base_title = (f"Worst #{i+1} | Run {run_id} Event {event_id} | Loss={err:.4f}\n"
                               f"Truth E={energy:.2f} MeV | VTX={vtx_str}, XYZ={xyz_str}\n"
                               f"Truth: θ={t[0]:.2f}, φ={t[1]:.2f} | Pred: θ={p[0]:.2f}, φ={p[1]:.2f}")
 
@@ -480,21 +516,6 @@ def main_angle_convnextv2_with_args(
                 print(f"[INFO] Saving validation ROOT file to {val_root_path}...")
                 
                 with uproot.recreate(val_root_path) as f:
-                    # f["val_tree"] = {
-                    #     "event_number": root_data["event_id"],
-                    #     "pred_theta":   root_data["pred_theta"],
-                    #     "true_theta":   root_data["true_theta"],
-                    #     "pred_phi":     root_data["pred_phi"],   # Assuming Item 4 was Pred Phi
-                    #     "true_phi":     root_data["true_phi"],   # Added for completeness
-                    #     "opening_angle":root_data["opening_angle"],
-                    #     "energy_truth": root_data["energy_truth"],
-                    #     "x_truth":      root_data["x_truth"],
-                    #     "y_truth":      root_data["y_truth"],
-                    #     "z_truth":      root_data["z_truth"]
-                    #     "x_vtx":        root_data["x_vtx"],
-                    #     "y_vtx":        root_data["y_vtx"],
-                    #     "z_vtx":        root_data["z_vtx"],
-                    # }
                     branch_types = {k: v.dtype for k, v in root_data.items()}
                     f.mktree("val_tree", branch_types)
                     f["val_tree"].extend(root_data)

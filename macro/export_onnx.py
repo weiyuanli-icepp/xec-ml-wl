@@ -8,10 +8,13 @@ import sys
 ### How to use it
 # python export_onnx.py artifacts/<RUN_NAME>/checkpoint_best.pth --output meg2ang_final.onnx
 
-# Ensure we can import angle_lib
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-from angle_lib.model import AngleRegressorSharedFaces
+try:
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from lib.model import XECRegressor
+except ImportError:
+    print("Error: Could not import 'XECRegressor'.")
+    print("Please ensure 'model.py' is in the current directory or python path.")
+    sys.exit(1)
 
 def load_checkpoint_weights(checkpoint_path, prefer_ema=True):
     """
@@ -67,7 +70,7 @@ def main():
     # 1. Initialize Model
     print("[INFO] Initializing Model...")
     # Note: We set drop_path_rate to 0 for export to remove stochastic behavior
-    model = AngleRegressorSharedFaces(
+    model = XECRegressor(
         outer_mode=args.outer_mode,
         outer_fine_pool=(3,3),
         drop_path_rate=0.0 

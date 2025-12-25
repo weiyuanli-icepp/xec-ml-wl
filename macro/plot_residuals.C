@@ -17,14 +17,14 @@ void plot_residuals(const char* csv_file = "artifacts/run_cv2_test_01/prediction
 
     // 1. Setup Histograms
     // 1D Residuals
-    TH1F* h_theta = new TH1F("h_theta", "#theta Residuals; #theta_{pred} - #theta_{true} [deg]; Events", 300, -60, 60);
-    TH1F* h_phi   = new TH1F("h_phi",   "#phi Residuals; #phi_{pred} - #phi_{true} [deg]; Events",     300, -60, 60);
+    TH1F* h_theta = new TH1F("h_theta", "#theta Residuals; #theta_{pred} - #theta_{true} [deg]; Events", 400, -10, 10);
+    TH1F* h_phi   = new TH1F("h_phi",   "#phi Residuals; #phi_{pred} - #phi_{true} [deg]; Events",     400, -10, 10);
 
     // 2D Heatmaps (Truth vs Pred)
     // Adjust ranges based on expected physics range (e.g. 0-180 for theta, -180-180 for phi)
     // Here using auto-range or reasonable defaults.
-    TH2F* h2_theta = new TH2F("h2_theta", "#theta Regression; #theta_{true} [deg]; #theta_{pred} [deg]", 100, 0, 180, 100, 0, 180);
-    TH2F* h2_phi   = new TH2F("h2_phi",   "#phi Regression; #phi_{true} [deg]; #phi_{pred} [deg]",     100, -95, 95, 100, -95, 95);
+    TH2F* h2_theta = new TH2F("h2_theta", "#theta Regression; #theta_{true} [deg]; #theta_{pred} [deg]", 400, 0, 180, 400, 0, 180);
+    TH2F* h2_phi   = new TH2F("h2_phi",   "#phi Regression; #phi_{true} [deg]; #phi_{pred} [deg]",     400, -95, 95, 400, -95, 95);
 
     // 2. Read CSV
     std::ifstream file(csv_file);

@@ -3,7 +3,6 @@ import os
 import argparse
 import importlib
 
-# Add parent directory to path so we can import train_angle.py
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 def get_parser():
@@ -52,11 +51,10 @@ def get_parser():
 def main():
     parser = get_parser()
     args = parser.parse_args()
-    
-    # Handle "none" string from CLI
+
     reweight = args.reweight_mode
     if reweight.lower() in ["none", "null", ""]:
-        reweight = "" # The main script expects "" or None for no reweighting, or logic handles "none"
+        reweight = ""
 
     print(f"[CLI] Starting training run: {args.run_name}")
     print(f"[CLI] Model: {args.model}")
@@ -64,7 +62,6 @@ def main():
     print(f"[CLI] Scheduler: {'Cosine' if args.use_scheduler == -1 else 'Constant'}")
 
     if args.model == "simple":
-        # Note: You haven't updated simple model yet, assuming old interface or you will update it later
         from legacy.train_angle import main_angle_with_args
         main_angle_with_args(
             root=os.path.expanduser(args.root),
@@ -85,8 +82,8 @@ def main():
             resume_from=args.resume_from
         )
     elif args.model == "convnextv2":
-        from train_angle_convnextv2 import main_angle_convnextv2_with_args
-        main_angle_convnextv2_with_args(
+        from train_xec_regressor import main_xec_regressor_with_args
+        main_xec_regressor_with_args(
             root=os.path.expanduser(args.root),
             tree=args.tree,
             epochs=args.epochs,

@@ -9,13 +9,13 @@ import torch
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from angle_lib.angle_plotting import (
+from lib.plotting import (
     plot_pred_truth_scatter,
     plot_resolution_profile,
     plot_profile,
     plot_face_weights
 )
-from angle_lib.model import AngleRegressorSharedFaces
+from lib.model import XECRegressor
 
 def main():
     parser = argparse.ArgumentParser(description="Generate Analysis Plots from Real Data Inference")
@@ -37,14 +37,12 @@ def main():
     pred = np.stack([data["pred_theta"], data["pred_phi"]], axis=1)
     true = np.stack([data["true_theta"], data["true_phi"]], axis=1)
     
-    # 2. Scatter Plots
+    # 2. Scatter Plot
     print("[INFO] Plotting Scatter...")
     plot_pred_truth_scatter(pred, true, outfile=os.path.join(args.output_dir, "scatter.pdf"))
     
     # 3. Opening Angle Cosine Residual
     print("[INFO] Plotting Cosine Residual...")
-    # Opening angle is in degrees. Cosine residual = 1 - cos(angle)
-    # Be careful with deg->rad
     psi_rad = np.deg2rad(data["opening_angle"])
     cos_res = 1.0 - np.cos(psi_rad)
     
@@ -68,19 +66,17 @@ def main():
     plot_profile(data["pred_phi"], data["true_phi"], label="Phi", 
                  outfile=os.path.join(args.output_dir, "profile_phi.pdf"))
 
-    # 6. Face Weights (Requires Model Checkpoint)
+    # 6. Load Model Checkpoint
     if args.checkpoint:
         if os.path.exists(args.checkpoint):
             print(f"[INFO] Loading model from {args.checkpoint} for Face Weights...")
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            
-            # Initialize model structure
-            model = AngleRegressorSharedFaces(outer_mode=args.outer_mode).to(device)
+            model = XECRegressor(outer_mode=args.outer_mode).to(device)
             
             # Load weights
             ckpt = torch.load(args.checkpoint, map_location=device)
             
-            # Handle EMA or standard
+            # EMA or standard
             state_dict = None
             if "ema_state_dict" in ckpt and ckpt["ema_state_dict"] is not None:
                 print("   Loading EMA weights...")
@@ -89,10 +85,8 @@ def main():
                 print("   Loading standard weights...")
                 state_dict = ckpt["model_state_dict"]
             else:
-                # Assuming the file itself is the state dict
                 state_dict = ckpt
             
-            # Handle 'module.' prefix if present
             clean_state = {}
             for k, v in state_dict.items():
                 if k.startswith("module."):
