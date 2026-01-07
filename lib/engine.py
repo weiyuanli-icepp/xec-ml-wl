@@ -9,6 +9,7 @@ from .metrics import eval_stats, eval_resolution
 
 def run_epoch_stream(
     model, optimizer, device, root, tree,
+    scaler=None,
     step_size=4000, batch_size=128, train=True, amp=True,
     max_chunks=None,
     npho_branch="relative_npho",
@@ -17,6 +18,7 @@ def run_epoch_stream(
     NphoScale2=13,
     time_shift=-0.29,
     time_scale=2.32e6,
+    sentinel_value=-5.0,
     reweight_mode="none",
     edges_theta=None, weights_theta=None,
     edges_phi=None,   weights_phi=None,
@@ -32,7 +34,9 @@ def run_epoch_stream(
     criterion_mse = nn.MSELoss(reduction="none")
     
     device_type = "cuda" if torch.cuda.is_available() else "cpu"
-    scaler = torch.amp.GradScaler(device_type, enabled=(amp and device_type == "cuda"))
+    # scaler = torch.amp.GradScaler(device_type, enabled=(amp and device_type == "cuda"))
+    if scaler is None and train:
+        scaler = torch.amp.GradScaler("cuda", enabled=amp)
 
     loss_sums = {"total_opt": 0.0, "smooth_l1": 0.0, "l1": 0.0, "mse": 0.0, "cos": 0.0}
     nobs = 0
@@ -120,9 +124,16 @@ def run_epoch_stream(
             raw_time = X_raw_b[:, :, 1]
             Raw_N_b = X_raw_b[:, :, 0]
             Raw_T_b = X_raw_b[:, :, 1]
-            time_norm = raw_time / time_scale - time_shift
-            npho_log = torch.log1p(raw_npho / NphoScale)
-            npho_norm = npho_log / NphoScale2
+            # time_norm = raw_time / time_scale - time_shift
+            # npho_log = torch.log1p(raw_npho / NphoScale)
+            # npho_norm = npho_log / NphoScale2
+            # X_batch = torch.stack([npho_norm, time_norm], dim=-1)
+            npho_norm = torch.log1p(raw_npho / NphoScale) / NphoScale2
+            time_norm = (raw_time / time_scale) - time_shift
+            mask_npho_bad = (raw_npho <= 0.0) | (raw_npho > 9e9) | torch.isnan(raw_npho)
+            mask_time_bad = mask_npho_bad | (torch.abs(raw_time) > 9e9) | torch.isnan(raw_time)
+            npho_norm[mask_npho_bad] = 0.0
+            time_norm[mask_time_bad] = sentinel_value
             X_batch = torch.stack([npho_norm, time_norm], dim=-1)
             
             # Reweighting

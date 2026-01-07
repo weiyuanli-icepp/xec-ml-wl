@@ -24,11 +24,12 @@ TIME="${10:-12:00:00}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-1e-4}"
 DROP_PATH="${DROP_PATH:-0.0}"
 SCHEDULER="${SCHEDULER:--1}"
-TIME_SCALE="${TIME_SCALE:-2.32e6}"
-TIME_SHIFT="${TIME_SHIFT:--0.29}"
+TIME_SCALE="${TIME_SCALE:-6.5e-8}"
+TIME_SHIFT="${TIME_SHIFT:-0.5}"
+SENTINEL_VALUE="${SENTINEL_VALUE:--5.0}"
 WARMUP_EPOCHS="${WARMUP_EPOCHS:-2}"
-NPHO_SCALE="${NPHO_SCALE:-1e5}"
-NPHO_SCALE2="${NPHO_SCALE2:-13}"
+NPHO_SCALE="${NPHO_SCALE:-0.58}"
+NPHO_SCALE2="${NPHO_SCALE2:-1.0}"
 ONNX="${ONNX:-}"
 EMA_DECAY="${EMA_DECAY:-0.999}"
 MLFLOW_EXPERIMENT="${MLFLOW_EXPERIMENT:-gamma_angle}"
@@ -109,6 +110,7 @@ python scan_param/run_training_cli.py \
     --drop_path_rate ${DROP_PATH} \
     --time_shift ${TIME_SHIFT} \
     --time_scale ${TIME_SCALE} \
+    --sentinel_value ${SENTINEL_VALUE} \
     --use_scheduler ${SCHEDULER} \
     --warmup_epochs ${WARMUP_EPOCHS} \
     --onnx "${ONNX}" \

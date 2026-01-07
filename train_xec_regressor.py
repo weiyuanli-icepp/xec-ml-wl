@@ -52,6 +52,7 @@ def main_xec_regressor_with_args(
     drop_path_rate=0.0,
     time_shift=-0.29,
     time_scale=2.32e6,
+    sentinel_value=-5.0,
     use_scheduler=-1,
     warmup_epochs=2,
     amp=True,
@@ -127,6 +128,10 @@ def main_xec_regressor_with_args(
     else:
         print(f"[INFO] EMA is DISABLED.")
     # ------------------
+    
+    # --- Initialize Scaler ---
+    scaler = torch.amp.GradScaler("cuda", enabled=(amp and torch.cuda.is_available()))
+    # -------------------------
 
     # --- Scheduler setup ---
     scheduler = None
@@ -153,24 +158,45 @@ def main_xec_regressor_with_args(
         print(f"[INFO] Resuming training from checkpoint: {resume_from}")
         checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
         
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        
-        if ema_model is not None:
-            if "ema_state_dict" in checkpoint and checkpoint["ema_state_dict"] is not None:
-                print(f"[INFO] Loading EMA state model from checkpoint.")
-                ema_model.load_state_dict(checkpoint["ema_state_dict"])
+        # Resume training
+        if "model_state_dict" in checkpoint:
+            print(f"[INFO] Detected full checkpoint. Resuming training state.")
+            model.load_state_dict(checkpoint["model_state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            
+            start_epoch = checkpoint["epoch"] + 1
+            best_val = checkpoint.get("best_val", float("inf"))
+            run_id = checkpoint.get("mlflow_run_id", None)
+            if ema_model is not None:
+                if "ema_state_dict" in checkpoint and checkpoint["ema_state_dict"] is not None:
+                    print(f"[INFO] Loading EMA state model from checkpoint.")
+                    ema_model.load_state_dict(checkpoint["ema_state_dict"])
+                else:
+                    print(f"[INFO] No EMA state in checkpoint. Re-syncing EMA.")
+                    ema_model.module.load_state_dict(model.state_dict())
+                    if hasattr(ema_model, 'n_averaged'):
+                        ema_model.n_averaged.zero_()
             else:
-                print(f"[INFO] No EMA state found in checkpoint. Syncing EMA with loaded model.")
+                print(f"[INFO] EMA is disabled. Skipping EMA state loading.")
+            
+        # MAE Fine-tuning
+        else: 
+            print(f"[INFO] Detected raw weights (MAE). Loading encoder for fine-tuning.")
+            missing, unexpected = model.load_state_dict(checkpoint, strict=False)
+            print(f"[INFO] Missing keys (expected for head): {len(missing)}")
+            print(f"[INFO] Unexpected keys: {len(unexpected)}")
+            
+            start_epoch = 1
+            best_val = float("inf")
+            run_id = None
+        
+            if ema_model is not None:
+                print(f"[INFO] Initializing EMA from MAE weights.")
                 ema_model.module.load_state_dict(model.state_dict())
                 if hasattr(ema_model, 'n_averaged'):
                     ema_model.n_averaged.zero_()
-        else:
-            print(f"[INFO] EMA disabled. Skipping EMA state loading.")
-            
-        start_epoch = checkpoint["epoch"] + 1
-        best_val = checkpoint.get("best_val", float("inf"))
-        run_id = checkpoint.get("mlflow_run_id", None)
+            else:
+                print(f"[INFO] EMA is disabled. Skipping EMA state loading.")
     # ------------------------------
         
     # --- MLflow Setup ---
@@ -198,6 +224,7 @@ def main_xec_regressor_with_args(
                 "drop_path_rate": drop_path_rate,
                 "time_shift": time_shift,
                 "time_scale": time_scale,
+                "sentinel_value": sentinel_value,
                 "scheduler": "Cosine+Warmup" if use_scheduler == -1 else "Constant",
                 "warmup_epochs": warmup_epochs,
                 "onnx_export": onnx,
@@ -234,6 +261,7 @@ def main_xec_regressor_with_args(
             # TRAIN
             tr_metrics, _, _, _, _ = run_epoch_stream( 
                 model, optimizer, device, 
+                scaler=scaler,
                 root=train_files,
                 tree=tree,
                 step_size=chunksize, 
@@ -247,6 +275,7 @@ def main_xec_regressor_with_args(
                 NphoScale2=NphoScale2, 
                 time_shift=time_shift, 
                 time_scale=time_scale,
+                sentinel_value=sentinel_value,
                 reweight_mode=reweight_mode,
                 edges_theta=edges_theta, 
                 weights_theta=weights_theta,
@@ -265,6 +294,7 @@ def main_xec_regressor_with_args(
             val_model_to_use = ema_model if ema_model is not None else model
             val_metrics, pred_val, true_val, _, val_stats = run_epoch_stream( 
                 val_model_to_use, optimizer, device, 
+                scaler=None,
                 root=val_files,
                 tree=tree,
                 step_size=chunksize, 
@@ -278,6 +308,7 @@ def main_xec_regressor_with_args(
                 NphoScale2=NphoScale2,
                 time_shift=time_shift, 
                 time_scale=time_scale,
+                sentinel_value=sentinel_value,
                 reweight_mode=reweight_mode,
                 edges_theta=edges_theta, 
                 weights_theta=weights_theta,
@@ -391,6 +422,7 @@ def main_xec_regressor_with_args(
 
         _, pred_all, true_all, extra_info, _ = run_epoch_stream(
             final_model, optimizer, device, 
+            scaler=None,
             root=val_files,
             tree=tree,
             step_size=chunksize, 
@@ -404,6 +436,7 @@ def main_xec_regressor_with_args(
             NphoScale2=NphoScale2,
             time_shift=time_shift, 
             time_scale=time_scale,
+            sentinel_value=sentinel_value,
             loss_type=loss_type,
             loss_beta=loss_beta,
             reweight_mode=reweight_mode,
@@ -480,7 +513,7 @@ def main_xec_regressor_with_args(
             plot_pred_truth_scatter(pred_all, true_all, outfile=os.path.join(artifact_dir, "scatter.pdf"))
             mlflow.log_artifact(os.path.join(artifact_dir, "scatter.pdf"))
             
-            # --- Sensity Analysis for each face ---
+            # --- Sensity Analysis for each face (potential bug in masking logic) ---
             try:                
                 for arr in iterate_chunks(root, tree, [npho_branch, time_branch], step_size=256):
                     Npho = arr[npho_branch].astype("float32")
@@ -488,7 +521,7 @@ def main_xec_regressor_with_args(
                     Npho = np.maximum(Npho, 0.0)
                     mask_garbage = (np.abs(Time) > 1.0) | np.isnan(Time)
                     mask_invalid = (Npho <= 0.0) | mask_garbage
-                    Time[mask_invalid] = 0.0
+                    Time[mask_invalid] = sentinel_value
                     
                     # Log/Scale
                     Time_norm = (Time - time_shift) / time_scale

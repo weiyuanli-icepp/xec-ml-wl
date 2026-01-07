@@ -11,20 +11,21 @@ REWEIGHT_MODE="none"
 LOSSTYPE="smooth_l1"
 LR="8e-4"
 BATCH=16384
+# BATCH=8096
 RESUME_FROM=""
-# PARTITION="a100-daily"
-PARTITION="gh-daily"
+PARTITION="a100-daily"
+# PARTITION="gh-daily"
 TIME="23:00:00"
 
 export WEIGHT_DECAY="1e-4"
 export DROP_PATH=0.0
 export SCHEDULER=1 # 1: constant, -1: cosine annealing
 export WARMUP_EPOCHS=0
-export TIME_SCALE="2.32e6"
-# export TIME_SHIFT=-0.29
-export TIME_SHIFT=0.0
-export NPHO_SCALE=1.0
-export NPHO_SCALE2=1.0
+export TIME_SCALE="6.5e-8"
+export TIME_SHIFT="0.5"
+export SENTINEL_VALUE="-5.0"
+export NPHO_SCALE="0.58"
+export NPHO_SCALE2="1.0"
 export ONNX=""
 
 export EMA_DECAY=-1
@@ -59,25 +60,42 @@ export ROOT_PATH="~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/single_run"
 # ===========================================================================
 # Scan Loss functions
 # LOSSTYPES=("smooth_l1" "cos" "l1" "mse")
+# WEIGHT_DECAYS=("1e-5" "3e-5" "1e-4" "3e-4")
+# EPOCHS=100
+# DP="0.0"
+# # WD="5e-5"
+# EMA="0.999"
 
 # for LT in "${LOSSTYPES[@]}"; do
-#     RUN_NAME="runs100_loss${LT}"
-#     CHECK_FILE="$HOME/meghome/xec-ml-wl/artifacts/${RUN_NAME}/checkpoint_last.pth"
+#     for WD in "${WEIGHT_DECAYS[@]}"; do
+#         echo "----------------------------------------"
+#         echo "Preparing job for Loss Type=$LT | WD=$WD"
+
+#         # RUN_NAME="runs100_loss${LT}"
+#         RUN_NAME="angle_E52.8_NoRandomization_lt${LT}_dp${DP}_wd${WD}_ema${EMA}"
+#         CHECK_FILE="$HOME/meghome/xec-ml-wl/artifacts/${RUN_NAME}/checkpoint_last.pth"
     
-#     if [ -f "$CHECK_FILE" ]; then
-#         RESUME_FROM="$CHECK_FILE"
-#         echo "  -> Found checkpoint: Resuming run."
-#     else
-#         RESUME_FROM=""
-#         echo "  -> No checkpoint found: Starting fresh."
-#     fi
-    
-#     echo "Submitting job for Loss Type: $LT"
-    
-#     # Pass the new params as env vars
-#     ./submit_job.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LT" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
-    
-#     sleep 1
+#         if [ -f "$CHECK_FILE" ]; then
+#             RESUME_FROM="$CHECK_FILE"
+#             echo "  -> Found checkpoint: Resuming run."
+#         else
+#             RESUME_FROM=""
+#             echo "  -> No checkpoint found: Starting fresh."
+#         fi
+
+#         echo "Submitting job for Loss Type: $LT"
+
+#         # Pass the new params as env vars
+#         # LOSS_BETA=$LB ./submit_job.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LT" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
+#         export DROP_PATH=$DP
+#         export WEIGHT_DECAY=$WD
+#         export EMA_DECAY=$EMA
+
+#         # Submit the job
+#         ./submit_job.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LT" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
+
+#         sleep 1
+#     done
 # done
 
 # ===========================================================================
@@ -117,73 +135,89 @@ export ROOT_PATH="~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/single_run"
 # ===========================================================================
 # 4. Scan Drop Path Rates & Weight Decays & ON/OFF EMA
 # Drop Path Rates to scan
+# /////////////////////////////////////////////////////////
 # DROP_PATHS=("0.0" "0.1" "0.2" "0.3")
-EPOCHS=400
+EPOCHS=3
 # PARTITION="gh-general"
 # TIME="3-00:00:00"
-DROP_PATHS=("0.0" "0.1")
+# DROP_PATHS=("0.0" "0.1") # <-
+DROP_PATHS=("0.0")
 # Weight Decays to scan
 # WEIGHT_DECAYS=("1e-4" "1e-3" "1e-2")
 # WEIGHT_DECAYS=("0.0" "1e-6" "1e-5" "1e-4") 
-# WEIGHT_DECAYS=("1e-7" "1e-6" "5e-5" "1e-4") 
-WEIGHT_DECAYS=("5e-5" "0.0")
+# WEIGHT_DECAYS=("1e-7" "1e-6" "1e-5" "1e-4") # <-
+WEIGHT_DECAYS=("5e-5")
+# WEIGHT_DECAYS=("5e-5" "0.0")
 # WEIGHT_DECAYS=("1e-6") 
 # WEIGHT_DECAYS=("1e-4") 
 # EMA Decay settings: -1 (OFF), 0.999 (ON)
-# EMA_SETTINGS=("0.999" "0.9999")
-EMA_SETTINGS=("0.9999")
+# EMA_SETTINGS=("0.99" "0.999") # <-
+EMA_SETTINGS=("-1")
 # EMA_SETTINGS=("-1" "0.999" "0.9999")
 # export TIME_SCALE="1e7"
+# LOSSTYPES=("smooth_l1" "cos" "l1" "mse") # <-
+LOSSTYPES=("smooth_l1")
 # LOSSTYPE="cos"
 
 # Set base Learning Rate from previous best result
 LR="8e-4"
-echo "Starting Drop Path, Weight Decay, EMA scan..."
-for DP in "${DROP_PATHS[@]}"; do
-    echo "Scanning Drop Path Rate: $DP"
-    for WD in "${WEIGHT_DECAYS[@]}"; do
-        echo " Scanning Weight Decay: $WD"
-        for EMA in "${EMA_SETTINGS[@]}"; do
-            echo "----------------------------------------"
-            echo "Preparing job for DP=$DP | WD=$WD | EMA=$EMA"
-            # Construct a descriptive run name
-            # e.g., runs100_reg_dp0.1_wd1e-3_ema0.999
-            EMA_LABEL="off"
-            if [ "$EMA" != "-1" ]; then
-                EMA_LABEL="$EMA"
-            fi
-            
-            # RUN_NAME="runs100_reg_dp${DP}_wd${WD}_ema${EMA_LABEL}"
-            # RUN_NAME="test_runs100_filesplit_trans"
-            # RUN_NAME="runs100_trans_lt${LOSSTYPE}_wd${WD}_ema${EMA_LABEL}"
-            # RUN_NAME="runs100_trans_ts${TIME_SCALE}_wd${WD}_ema${EMA_LABEL}"
-            RUN_NAME="angle_E52.8_NoRandomization_dp${DP}_wd${WD}_ema${EMA_LABEL}"
-            
-            # Check for existing checkpoint to resume
-            CHECK_FILE="$HOME/meghome/xec-ml-wl/artifacts/${RUN_NAME}/checkpoint_last.pth"
-            if [ -f "$CHECK_FILE" ]; then
-                RESUME_FROM="$CHECK_FILE"
-                echo "  -> Found checkpoint: Resuming run."
-            else
-                RESUME_FROM=""
-                echo "  -> No checkpoint found: Starting fresh."
-            fi
-            
-            echo "Submitting job: DP=$DP | WD=$WD | EMA=$EMA"
-            
-            # Export variables for this specific job
-            export DROP_PATH=$DP
-            export WEIGHT_DECAY=$WD
-            export EMA_DECAY=$EMA
-            
-            # Submit the job
-            ./submit_job.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LOSSTYPE" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
-            
-            sleep 1
+echo "Starting Loss type, Drop Path, Weight Decay, EMA scan..."
+for LT in "${LOSSTYPES[@]}"; do
+    LOSSTYPE=$LT
+    echo "========================================"
+    echo "Scanning Loss Type: $LOSSTYPE"
+    for DP in "${DROP_PATHS[@]}"; do
+        echo "Scanning Drop Path Rate: $DP"
+        for WD in "${WEIGHT_DECAYS[@]}"; do
+            echo "Scanning Weight Decay: $WD"
+            for EMA in "${EMA_SETTINGS[@]}"; do
+                echo "----------------------------------------"
+                echo "Preparing job for DP=$DP | WD=$WD | EMA=$EMA"
+                # Construct a descriptive run name
+                # e.g., runs100_reg_dp0.1_wd1e-3_ema0.999
+                EMA_LABEL="off"
+                if [ "$EMA" != "-1" ]; then
+                    EMA_LABEL="$EMA"
+                fi
+                
+                # RUN_NAME="runs100_reg_dp${DP}_wd${WD}_ema${EMA_LABEL}"
+                # RUN_NAME="test_runs100_filesplit_trans"
+                # RUN_NAME="runs100_trans_lt${LOSSTYPE}_wd${WD}_ema${EMA_LABEL}"
+                # RUN_NAME="runs100_trans_ts${TIME_SCALE}_wd${WD}_ema${EMA_LABEL}"
+                # RUN_NAME="angle_E52.8_NoRandomization_lt${LOSSTYPE}_dp${DP}_wd${WD}_ema${EMA_LABEL}" # <-
+                RUN_NAME="sanity_check"
+                
+                # Check for existing checkpoint to resume
+                CHECK_FILE="$HOME/meghome/xec-ml-wl/artifacts/${RUN_NAME}/checkpoint_last.pth"
+                # if RUN_NAME is "sanity_check", start fresh
+                if [ "$RUN_NAME" == "sanity_check" ]; then
+                    RESUME_FROM=""
+                    echo "  -> Sanity check run: Starting fresh."
+                else
+                    if [ -f "$CHECK_FILE" ]; then
+                        RESUME_FROM="$CHECK_FILE"
+                        echo "  -> Found checkpoint: Resuming run."
+                    else
+                        RESUME_FROM=""
+                        echo "  -> No checkpoint found: Starting fresh."
+                    fi
+                fi
+                
+                echo "Submitting job: LT=$LOSSTYPE | DP=$DP | WD=$WD | EMA=$EMA"
+                
+                # Export variables for this specific job
+                export DROP_PATH=$DP
+                export WEIGHT_DECAY=$WD
+                export EMA_DECAY=$EMA
+                
+                # Submit the job
+                ./submit_job.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LOSSTYPE" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
+                
+                sleep 1
+            done
         done
     done
 done
-
 # ===========================================================================
 # REWEIGHT_MODES=("theta" "phi" "theta_phi")
 # LOSSTYPES=("smooth_l1" "cos" "l1" "mse")

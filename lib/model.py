@@ -20,7 +20,7 @@ class DeepHexEncoder(nn.Module):
     def __init__(self, in_dim=2, embed_dim=1024, hidden_dim=96, num_layers=4, drop_path_rate=0.0):
         super().__init__()
         
-        # 1. STEM LAYER (Project 2 -> 96 immediately)
+        # 1. STEM LAYER (Project 2 -> 96)
         self.stem = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -40,11 +40,8 @@ class DeepHexEncoder(nn.Module):
         )
 
     def forward(self, node_feats, edge_index):
-        # print(f"[DeepHexEncoder] Input shape: {node_feats.shape}")
         if node_feats.dim() == 4:
-            # print("[DeepHexEncoder] Detected 4D input. Flattening batch dims...")
             node_feats = node_feats.flatten(0, 1)
-            # print(f"[DeepHexEncoder] New shape: {node_feats.shape}")
         
         # Apply Stem
         x = self.stem(node_feats)
@@ -53,12 +50,12 @@ class DeepHexEncoder(nn.Module):
         for layer in self.layers:
             x = layer(x, edge_index)
             
-        print(f"[DEBUG] HexEncoder Shape BEFORE mean: {x.shape}")
+        # print(f"[DEBUG] HexEncoder Shape BEFORE mean: {x.shape}")
             
         # Global Pooling (Mean)
         x = x.mean(dim=1)
         
-        print(f"[DEBUG] HexEncoder Shape AFTER mean: {x.shape}")
+        # print(f"[DEBUG] HexEncoder Shape AFTER mean: {x.shape}")
         
         # Project to match CNN face size
         return self.proj(x)
@@ -90,7 +87,6 @@ class FaceBackbone(nn.Module):
             ConvNeXtV2Block(dim=base_channels*2, drop_path=dp)
         )
         
-        # self.pool = nn.AdaptiveAvgPool2d(pooled_hw)
         self.pooled_hw = pooled_hw
         self.out_dim = (base_channels * 2) * pooled_hw[0] * pooled_hw[1]
 
@@ -157,11 +153,6 @@ class XECRegressor(nn.Module):
         self.register_buffer("top_hex_indices", torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long())
         self.register_buffer("bottom_hex_indices", torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long())
         self.register_buffer("hex_edge_index", torch.from_numpy(HEX_EDGE_INDEX_NP).long())
-
-        # Head
-        # extra_cnn = 1 if self.outer_fine else 0
-        # self.num_cnn_components = len(self.cnn_face_names) + extra_cnn
-        # self.num_hex_components = 2 # Top + Bottom
         
         num_cnn = len(self.cnn_face_names) + (1 if self.outer_fine else 0)
         num_hex = 2
@@ -179,61 +170,81 @@ class XECRegressor(nn.Module):
             nn.Linear(hidden_dim, out_dim)
         )
         
-        # self.heads = nn.ModuleDict()
-        # if "angle" in self.tasks:
-            # self.heads["angle"] = nn.Sequential(
-                # nn.Linear(embed_dim, hidden_dim),
-                # nn.LayerNorm(hidden_dim),
-                # nn.GELU(),
-        
-        
+    def forward_features(self, x_batch):
+        """
+        Runs the full backbone + transformer fusion.
+        Returns the sequence of context-aware face tokens.
+        Output shape: (B, T, 1024) where T depends on outer_mode.
+        """
+        x_flat = x_batch if x_batch.dim() == 3 else x_batch.flatten(1)
 
-    def forward(self, x_batch):
-        if x_batch.dim() == 4:
-            x_batch = x_batch.flatten(0, 1)
-            print(f"[AngleRegressorSharedFaces] Flattened input shape: {x_batch.shape}")
-            
-        faces = {}
-        faces["inner"] = gather_face(x_batch, INNER_INDEX_MAP)
-        faces["us"]    = gather_face(x_batch, US_INDEX_MAP)
-        faces["ds"]    = gather_face(x_batch, DS_INDEX_MAP)
+        # Rectangular faces
+        faces = {
+            "inner": gather_face(x_flat, INNER_INDEX_MAP),
+            "us": gather_face(x_flat, US_INDEX_MAP),
+            "ds": gather_face(x_flat, DS_INDEX_MAP),
+        }
         if self.outer_mode == "split":
-            faces["outer_coarse"] = gather_face(x_batch, OUTER_COARSE_FULL_INDEX_MAP)
-            faces["outer_center"] = gather_face(x_batch, OUTER_CENTER_INDEX_MAP)
+            faces["outer_coarse"] = gather_face(x_flat, OUTER_COARSE_FULL_INDEX_MAP)
+            faces["outer_center"] = gather_face(x_flat, OUTER_CENTER_INDEX_MAP)
 
-        # embeddings = []
         tokens = []
         for name in self.cnn_face_names:
-            # embeddings.append(self.backbone(faces[name]))
             tokens.append(self.backbone(faces[name]))
-        
+
         if self.outer_fine:
-            outer_fine = build_outer_fine_grid_tensor(x_batch, pool_kernel=self.outer_fine_pool)
-            # embeddings.append(self.backbone(outer_fine))
+            outer_fine = build_outer_fine_grid_tensor(x_flat, pool_kernel=self.outer_fine_pool)
             tokens.append(self.backbone(outer_fine))
-        
-        # edge_index, deg = self.hex_edge_index, self.hex_deg
+
         edge_index = self.hex_edge_index
-        top_nodes = gather_hex_nodes(x_batch, self.top_hex_indices)
-        bot_nodes = gather_hex_nodes(x_batch, self.bottom_hex_indices)
-        
-        # embeddings.append(self.hex_encoder(top_nodes, edge_index, deg))
-        # embeddings.append(self.hex_encoder(bot_nodes, edge_index, deg))
+        top_nodes = gather_hex_nodes(x_flat, self.top_hex_indices)
+        bot_nodes = gather_hex_nodes(x_flat, self.bottom_hex_indices)
+
         tokens.append(self.hex_encoder(top_nodes, edge_index))
         tokens.append(self.hex_encoder(bot_nodes, edge_index))
+
+        tokens = torch.stack(tokens, dim=1)
+        tokens = tokens + self.pos_embed
+        return self.fusion_transformer(tokens)
+    
+    def forward(self, x_batch):
+        # if x_batch.dim() == 4:
+        #     x_batch = x_batch.flatten(0, 1)
+        #     print(f"[AngleRegressorSharedFaces] Flattened input shape: {x_batch.shape}")
+            
+        # faces = {}
+        # faces["inner"] = gather_face(x_batch, INNER_INDEX_MAP)
+        # faces["us"]    = gather_face(x_batch, US_INDEX_MAP)
+        # faces["ds"]    = gather_face(x_batch, DS_INDEX_MAP)
+        # if self.outer_mode == "split":
+        #     faces["outer_coarse"] = gather_face(x_batch, OUTER_COARSE_FULL_INDEX_MAP)
+        #     faces["outer_center"] = gather_face(x_batch, OUTER_CENTER_INDEX_MAP)
+
+        # tokens = []
+        # for name in self.cnn_face_names:
+        #     tokens.append(self.backbone(faces[name]))
         
-        # print(f"\n[DEBUG] Dumping Token Shapes for Batch Size {x_batch.shape[0]}:")
-        # for i, t in enumerate(tokens):
-            # print(f"  Token [{i}] Shape: {t.shape}")
+        # if self.outer_fine:
+        #     outer_fine = build_outer_fine_grid_tensor(x_batch, pool_kernel=self.outer_fine_pool)
+        #     tokens.append(self.backbone(outer_fine))
         
-        # Stack tokens and apply Transformer
-        x_seq  = torch.stack(tokens, dim=1) # (B, T, D)
-        x_seq  = x_seq + self.pos_embed
-        x_seq  = self.fusion_transformer(x_seq)
+        # edge_index = self.hex_edge_index
+        # top_nodes = gather_hex_nodes(x_batch, self.top_hex_indices)
+        # bot_nodes = gather_hex_nodes(x_batch, self.bottom_hex_indices)
+
+        # tokens.append(self.hex_encoder(top_nodes, edge_index))
+        # tokens.append(self.hex_encoder(bot_nodes, edge_index))
         
-        # return self.head(torch.cat(embeddings, dim=1))
-        x_flat = x_seq.flatten(1)
-        return self.head(x_flat)
+        # # Stack tokens and apply Transformer
+        # x_seq  = torch.stack(tokens, dim=1) # (B, T, D)
+        # x_seq  = x_seq + self.pos_embed
+        # x_seq  = self.fusion_transformer(x_seq)
+        
+        # x_flat = x_seq.flatten(1)
+        # return self.head(x_flat)
+        latent_seq = self.forward_features(x_batch)
+        flat_feats = latent_seq.flatten(1)
+        return self.head(flat_feats)
 
     def get_concatenated_weight_norms(self):
         w = self.head[0].weight.detach().abs().mean(dim=0)

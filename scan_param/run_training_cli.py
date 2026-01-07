@@ -26,15 +26,16 @@ def get_parser():
     parser.add_argument("--ema_decay", type=float, default=0.999)
     
     # Preprocessing parameters
-    parser.add_argument("--time_shift", type=float, default=-0.29)
-    parser.add_argument("--time_scale", type=float, default=2.32e6)
+    parser.add_argument("--NphoScale", type=float, default=0.58)
+    parser.add_argument("--NphoScale2", type=float, default=1.0)
+    parser.add_argument("--time_scale", type=float, default=6.5e-8)
+    parser.add_argument("--time_shift", type=float, default=0.5)
+    parser.add_argument("--sentinel_value", type=float, default=-5.0)
     
     # Model & Data Processing
     parser.add_argument("--model", type=str, default="simple", choices=["simple", "convnextv2"], help="Model architecture to use")
     parser.add_argument("--npho_branch", type=str, default="relative_npho")
     parser.add_argument("--time_branch", type=str, default="relative_time")
-    parser.add_argument("--NphoScale", type=float, default=1e5)
-    parser.add_argument("--NphoScale2", type=float, default=13)
     parser.add_argument("--reweight_mode", type=str, default="none") 
     parser.add_argument("--loss_type", type=str, default="smooth_l1")
     parser.add_argument("--loss_beta", type=float, default=1.0, help="Beta parameter for Smooth L1 loss if used")
@@ -94,6 +95,7 @@ def main():
             drop_path_rate=args.drop_path_rate,
             time_shift=args.time_shift,
             time_scale=args.time_scale,
+            sentinel_value=args.sentinel_value,
             use_scheduler=args.use_scheduler,
             warmup_epochs=args.warmup_epochs,
             onnx=args.onnx,
