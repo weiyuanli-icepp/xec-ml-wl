@@ -115,6 +115,63 @@ For GH nodes, use the following settings in run_scan.sh to maximize the throughp
 2. Tunnel ports locally: `ssh -N -L 8888:localhost:8888 -J <user>@login001 <user>@gpuXXX`
 3. Paste the URL with token in the browser.
 
+### C. Masked Autoencoder (MAE) Pre-training
+
+The library supports self-supervised pre-training using a Masked Autoencoder (MAE) approach. This allows the model to learn geometric features from the raw detector data without requiring ground-truth labels.
+
+#### 0. Simple run (mainly for check)
+
+Pretrain the encoder with a masked autoencoder and save the encoder weights for later regression runs (use `--resume_from` in training).
+
+```bash
+# Default outer_mode=split
+python lib/train_mae.py --root /path/to/data.root --save_path mae_pretrained.pth --epochs 20 --batch_size 1024
+
+# Finegrid outer face (optional)
+python lib/train_mae.py --root /path/to/data.root --save_path mae_pretrained.pth --epochs 20 --batch_size 1024 \
+  --outer_mode finegrid --outer_fine_pool 3 3
+```
+
+#### 1. Running Pre-training
+
+Dedicated scripts are under `scan_param/` to streamline the MAE workflow.
+
+1. Configure the Run: Edit `scan_param/run_mae.sh` to set desired parameters:
+
+    - `ROOT_PATH`: Path to the dataset (wildcards supported)
+    - `EPOCHS`: Number of pre-training epochs
+    - `MASK_RATIO`: Percentage of sensors to mask (default `0.75`)
+    - `BATCH`: Batch size
+
+2. Submit the Job:
+
+    ```bash
+    cd scan_param
+    ./run_mae.sh
+    ```
+    This submits a SLURM job using `submit_mae.sh`
+
+3. Output: Checkpoints will be saved to `~/meghome/xec-ml-wl/artifacts/<RUN_NAME>/`. The weights file is typically named `mae_checkpoint.pth`
+
+#### 2. Fine-Tuning for Regression
+
+Once pre-training is complete, one can load the learned encoder weights into the regression model for fine-tuning.
+
+1. **Configure Regression**: Edit `scan_param/run_scan.sh`.
+2. **Set Resume Path**: Point the `RESUME_FRPM` variable to your MAE checkpoint:
+    ```bash
+    RESUME_FROM="$HOME/meghome/xec-ml-wl/artifacts/<RUN_NAME>/<CHECKPOINT_NAME>.pth"
+    ```
+3. **Run Regression**: Submit the training job as usual:
+    ```bash
+    ./run_scan.sh
+    ```
+
+**Note on Weight Loading**: The training script(`train_xec_regressor.py`) automatically detects the type of checkpoint provided:
+
+- **Full checkpoint**: If resuming a regression run, it loads the optimizer state, epoch, and full model to continue exactly where it left off.
+- **MAE Weights**: If loading an MAE file, it detects "raw weights", loads only the encoder (skipping the regression head), initiallize the EMA model correctly, and resets the epoch counter to 1 for fresh fine-tuning
+
 ---
 
 ## 3. Output & Artifacts
