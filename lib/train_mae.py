@@ -225,8 +225,12 @@ Examples:
     if device.type == "cuda" and not is_arm:
         try:
             import triton  # Check if triton is available
+            # Suppress verbose Triton autotuning logs
+            import logging
+            logging.getLogger("torch._inductor.autotune_process").setLevel(logging.WARNING)
             print("[INFO] Attempting torch.compile...")
-            model = torch.compile(model, mode="max-autotune", fullgraph=True, dynamic=False)
+            # Use "reduce-overhead" mode for less verbose output (vs "max-autotune")
+            model = torch.compile(model, mode="reduce-overhead", dynamic=False)
         except ImportError:
             print("[INFO] Triton not available, skipping torch.compile.")
         except Exception as e:
