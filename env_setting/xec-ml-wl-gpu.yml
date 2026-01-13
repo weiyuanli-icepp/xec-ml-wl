@@ -1,8 +1,25 @@
+# Conda environment for XEC ML with GPU support
+
+# Uses Python 3.13 and PyTorch 2.9.1 with CUDA 13.0
+# Usage:
+#   conda env create -f xec-ml-wl-gpu.yml
+#   (when updating) conda env update -f xec-ml-wl-gpu.yml --prune
+#   pip install torch-scatter torch-sparse torch-cluster torch-spline-conv torch-geometric -f https://data.pyg.org/whl/torch-2.9.0+cu130.html
+#   (Until the stable v1.24 of onnxruntime-gpu comes out, which is planned to be late Jan. 2026) 
+#   $ pip install onnx --upgrade
+#   $ pip install --pre --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-13-nightly/pypi/simple/ onnxruntime-gpu
+#   After the new version of onnxruntime-gpu is released, 
+#   add onnx>=1.20.0 and onnxruntime-gpu>=1.24.0 to the pip section
+
+# Note
+# There was not compatible version of PyG for Python 3.14 -> Downgrade to 3.13 and manually install PyG packages after environment creation
+# Also onnxruntime-gpu for Python 3.14 is not yet available -> If needed with Python 3.14, manually install the nightly build after environment creation
+
 name: xec-ml-wl
 channels:
   - conda-forge
 dependencies:
-  - python=3.10
+  - python=3.13
   - pip
   - numpy
   - scipy
@@ -14,12 +31,13 @@ dependencies:
   - scikit-learn
   - pyarrow
   - yaml
+  - psutil
   - pip:
       # PyTorch + CUDA 12.1 wheels from the official index
-      - torch==2.4.1
-      - torchvision==0.19.1
-      - torchaudio==2.4.1
-      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - --extra-index-url https://download.pytorch.org/whl/cu130
+      - torch==2.9.1
+      - torchvision==0.24.1
+      - torchaudio==2.9.1
 
       # HEP / I/O
       - uproot>=5.2
@@ -27,23 +45,16 @@ dependencies:
       - vector>=1.4
 
       # Training quality of life
-      - pytorch-lightning>=2.4
+      - pytorch-lightning>=2.2
       - torchmetrics>=1.4
       - tensorboard>=2.17
 
       # Model export / inference
-      - onnx>=1.16
-      - onnxruntime-gpu>=1.18
-
-      # GNNs
-      - pyg-lib
-      - torch-geometric
-      - torch-sparse
-      - torch-scatter
-      - torch-cluster
-      - torch-spline-conv
-      - extra-index-url https://data.pyg.org/whl/torch-2.4.1+cu121.html
+      - onnx>=1.20.0
+      - onnxruntime-gpu>=1.23.2
 
       # Experiment tracking
       - comet-ml>=3.44
+      - mlflow
+      - mlflow-export-import
       # - transformers
