@@ -242,8 +242,8 @@ Examples:
         print(f"[INFO] EMA enabled with decay={ema_decay}")
         ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
 
-    # Initialize GradScaler for AMP
-    scaler = torch.amp.GradScaler(device_type=device.type, enabled=(device.type == "cuda"))
+    # Initialize GradScaler for AMP (use cuda.amp for PyTorch 2.5.x compatibility)
+    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
 
     # Resume from checkpoint if provided
     start_epoch = 0

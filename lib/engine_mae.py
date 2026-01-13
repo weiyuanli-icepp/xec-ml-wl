@@ -21,7 +21,7 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                   num_workers=8):
     model.train()
     if scaler is None:
-        scaler = torch.amp.GradScaler('cuda', enabled=amp)
+        scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
     # Per-face total losses
     face_loss_sums = {
