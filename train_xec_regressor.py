@@ -50,7 +50,8 @@ torch.autograd.profiler.emit_nvtx(False)
 #  Main training entry
 # ------------------------------------------------------------
 def main_xec_regressor_with_args(
-    root,
+    train_path,
+    val_path,
     tree="tree",
     epochs=20,
     batch=256,
@@ -65,49 +66,50 @@ def main_xec_regressor_with_args(
     warmup_epochs=2,
     amp=True,
     max_chunks=None,
-    npho_branch="relative_npho",             
+    npho_branch="relative_npho",
     time_branch="relative_time",
     NphoScale=1e5,
     NphoScale2=13,
     onnx="meg2ang_convnextv2.onnx",
     mlflow_experiment="gamma_angle",
     run_name=None,
-    outer_mode="finegrid", 
-    outer_fine_pool=(3,3),           
+    outer_mode="finegrid",
+    outer_fine_pool=(3,3),
     reweight_mode="none",
     nbins_theta=50,
     nbins_phi=50,
     loss_type="smooth_l1",
     loss_beta=1.0,
-    resume_from=None, 
+    resume_from=None,
     ema_decay=0.999,
     channel_dropout_rate=0.1,
     tasks="angle",
     loss_balance="manual",
     **kwargs
 ):
+    # Expand train and val paths to file lists
+    def expand_path(p):
+        path = os.path.expanduser(p)
+        if os.path.isdir(path):
+            files = sorted(glob.glob(os.path.join(path, "*.root")))
+            if not files:
+                raise ValueError(f"No ROOT files found in directory: {path}")
+            return files
+        elif os.path.isfile(path):
+            return [path]
+        else:
+            # Treat as glob pattern
+            files = sorted(glob.glob(path))
+            if not files:
+                raise ValueError(f"No ROOT files found matching pattern: {path}")
+            return files
 
-    # root = os.path.expanduser(root)
-    # if os.path.isdir(root):
-    #     print(f"[INFO] Input is a directory. Scanning for *.root files in: {root}")
-    #     all_files = sorted(glob.glob(os.path.join(root, "*.root")))
-    # else:
-    #     print(f"[INFO] Input is a path pattern. Resolving glob: {root}")
-    #     all_files = sorted(glob.glob(root))
-        
-    # if len(all_files) <= 10:
-    #     raise ValueError(f"[ERROR] Not enough ROOT files found ({len(all_files)}). Please check the input path.")
-    
-    # print(f"[INFO] Found {len(all_files)} ROOT files. First: {os.path.basename(all_files[0])}, Last: {os.path.basename(all_files[-1])}")
+    train_files = expand_path(train_path)
+    val_files = expand_path(val_path)
+    print(f"[INFO] Training files: {len(train_files)}, Validation files: {len(val_files)}")
 
-    # random.Random(42).shuffle(all_files)
-    # split_idx = int(0.9 * len(all_files))
-    # train_files = all_files[:split_idx]
-    # val_files = all_files[split_idx:]
-    # print(f"[INFO] Data Split: {len(train_files)} Training files / {len(val_files)} Validation files")
-    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
     train_loader = get_dataloader(train_files, batch_size=batch, num_workers=8, num_threads=4)
     val_loader   = get_dataloader(val_files, batch_size=batch, num_workers=8, num_threads=4)
     
@@ -245,11 +247,11 @@ def main_xec_regressor_with_args(
         edges2_theta = edges2_phi = weights_2d = None
 
         if reweight_mode == "theta":
-            edges_theta, weights_theta = scan_angle_hist_1d(root, tree=tree, comp=0, nbins=nbins_theta, step_size=chunksize)
+            edges_theta, weights_theta = scan_angle_hist_1d(train_files, tree=tree, comp=0, nbins=nbins_theta, step_size=chunksize)
         elif reweight_mode == "phi":
-            edges_phi, weights_phi = scan_angle_hist_1d(root, tree=tree, comp=1, nbins=nbins_phi, step_size=chunksize)
+            edges_phi, weights_phi = scan_angle_hist_1d(train_files, tree=tree, comp=1, nbins=nbins_phi, step_size=chunksize)
         elif reweight_mode == "theta_phi":
-            edges2_theta, edges2_phi, weights_2d = scan_angle_hist_2d(root, tree=tree, nbins_theta=nbins_theta, nbins_phi=nbins_phi, step_size=chunksize)
+            edges2_theta, edges2_phi, weights_2d = scan_angle_hist_2d(train_files, tree=tree, nbins_theta=nbins_theta, nbins_phi=nbins_phi, step_size=chunksize)
         
         best_state = None
 
@@ -513,9 +515,9 @@ def main_xec_regressor_with_args(
             plot_pred_truth_scatter(pred_all, true_all, outfile=os.path.join(artifact_dir, "scatter.pdf"))
             mlflow.log_artifact(os.path.join(artifact_dir, "scatter.pdf"))
             
-            # --- Sensity Analysis for each face (potential bug in masking logic) ---
-            try:                
-                for arr in iterate_chunks(root, tree, [npho_branch, time_branch], step_size=256):
+            # --- Saliency Analysis for each face ---
+            try:
+                for arr in iterate_chunks(val_files, tree, [npho_branch, time_branch], step_size=256):
                     Npho = arr[npho_branch].astype("float32")
                     Time = arr[time_branch].astype("float32")
                     Npho = np.maximum(Npho, 0.0)
