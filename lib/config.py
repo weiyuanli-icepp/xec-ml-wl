@@ -35,7 +35,7 @@ class NormalizationConfig:
     """Input normalization parameters."""
     npho_scale: float = 0.58
     npho_scale2: float = 1.0
-    time_scale: float = 6.5e8
+    time_scale: float = 6.5e-8  # Fixed: was 6.5e8
     time_shift: float = 0.5
     sentinel_value: float = -5.0
 

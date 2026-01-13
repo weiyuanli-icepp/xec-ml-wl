@@ -85,6 +85,6 @@ HEX_EDGE_INDEX_NP, HEX_DEG_NP = build_hex_edge_index([len(r) for r in TOP_ROWS_L
 # Default Normalization Factors
 DEFAULT_NPHO_SCALE     =  0.58
 DEFAULT_NPHO_SCALE2    =  1.0
-DEFAULT_TIME_SCALE     =  6.5e8
+DEFAULT_TIME_SCALE     =  6.5e-8  # Fixed: was 6.5e8 (16 orders of magnitude wrong)
 DEFAULT_TIME_SHIFT     =  0.5
 DEFAULT_SENTINEL_VALUE = -5.0
