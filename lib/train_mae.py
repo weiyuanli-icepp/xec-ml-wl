@@ -409,11 +409,14 @@ Examples:
             except Exception as e:
                 print(f"[WARNING] Could not log CPU RAM stats: {e}")
 
-            # Save predictions to ROOT file
+            # Save predictions to ROOT file (non-fatal if awkward/uproot has issues)
             if predictions is not None:
-                root_path = save_predictions_to_root(predictions, save_path, epoch)
-                if root_path:
-                    mlflow.log_artifact(root_path)
+                try:
+                    root_path = save_predictions_to_root(predictions, save_path, epoch)
+                    if root_path:
+                        mlflow.log_artifact(root_path)
+                except Exception as e:
+                    print(f"[WARN] Could not save predictions to ROOT: {e}")
 
             # Check if this is the best model
             is_best = val_loss < best_val_loss if val_metrics else False
