@@ -36,7 +36,7 @@ dependencies:
       # PyTorch for CUDA 12.1
       - --extra-index-url https://download.pytorch.org/whl/cu121
       # PyG for PyTorch 2.5.1 + CUDA 12.1
-      - --extra-index-url https://data.pyg.org/whl/torch-2.5.1+cu121.html
+      # - --extra-index-url https://data.pyg.org/whl/torch-2.5.1+cu121.html
 
       # Core ML libraries
       - torch==2.5.1
@@ -44,11 +44,11 @@ dependencies:
       - torchaudio==2.5.1
 
       # PyTorch Geometric
-      - torch-scatter
-      - torch-sparse
-      - torch-cluster
-      - torch-spline-conv
-      - torch-geometric
+      # - torch-scatter
+      # - torch-sparse
+      # - torch-cluster
+      # - torch-spline-conv
+      # - torch-geometric
 
       # HEP / I/O
       - uproot>=5.2
@@ -62,7 +62,7 @@ dependencies:
 
       # Model export / inference
       - onnx==1.17.0
-      - onnxruntime-gpu==1.20.1
+      - onnxruntime
 
       # Experiment tracking
       - comet-ml>=3.44
