@@ -2,37 +2,39 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from .geom_defs import (
-    OUTER_COARSE_FULL_INDEX_MAP, 
+    OUTER_COARSE_FULL_INDEX_MAP,
     OUTER_CENTER_INDEX_MAP,
     OUTER_FINE_COARSE_SCALE,
     OUTER_FINE_CENTER_SCALE,
     OUTER_FINE_CENTER_START
 )
 
+# Cache for index tensors to avoid CPU->GPU transfers during cudagraph capture
+_INDEX_CACHE = {}
+
 def gather_face(x_batch: torch.Tensor, index_map: np.ndarray) -> torch.Tensor:
     device = x_batch.device
     B, N, C = x_batch.shape
     H, W = index_map.shape
-    
-    # Rechape to 1D
-    idx_flat = torch.from_numpy(index_map.reshape(-1)).to(device).long()
-    
-    # Create Mask for valid indices
-    mask = (idx_flat >= 0)
-    
-    # Create Safe Indices
-    safe_idx = idx_flat.clone()
-    safe_idx[~mask] = 0
-    
+
+    # Cache key based on index_map id and device
+    cache_key = (id(index_map), device)
+
+    if cache_key not in _INDEX_CACHE:
+        # Create and cache index tensor on device
+        idx_flat = torch.tensor(index_map.reshape(-1), device=device, dtype=torch.long)
+        mask = (idx_flat >= 0)
+        safe_idx = idx_flat.clone()
+        safe_idx[~mask] = 0
+        _INDEX_CACHE[cache_key] = (idx_flat, mask, safe_idx, H, W)
+
+    idx_flat, mask, safe_idx, H, W = _INDEX_CACHE[cache_key]
+
     # Gather
     vals = torch.index_select(x_batch, 1, safe_idx)
-    # vals[:, ~mask] = 0.0 
-    
+
     # Mask
     mask_expanded = mask.view(1, -1, 1).expand(B, -1, C)
-    
-    
-    # vals = vals.view(B, H, W, C).permute(0, 3, 1, 2)
     vals = vals * mask_expanded.float()
     vals = vals.view(B, H, W, C).permute(0, 3, 1, 2)
     return vals

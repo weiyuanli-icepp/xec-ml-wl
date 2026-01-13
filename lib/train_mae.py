@@ -1,7 +1,11 @@
+import os
+# Set MLflow tracking URI before importing mlflow to avoid deprecation warning
+if "MLFLOW_TRACKING_URI" not in os.environ:
+    os.environ["MLFLOW_TRACKING_URI"] = "sqlite:///mlruns.db"
+
 import torch
 import argparse
 import time
-import os
 import glob
 import platform
 import psutil
@@ -280,8 +284,7 @@ Examples:
             model.load_state_dict(checkpoint, strict=False)
             start_epoch = 0
 
-    # MLflow Setup - use SQLite backend (recommended over deprecated file-based backend)
-    mlflow.set_tracking_uri("sqlite:///mlruns.db")
+    # MLflow Setup (tracking URI set via env var at module load to avoid deprecation warning)
     mlflow.set_experiment(mlflow_experiment)
     print(f"Starting MAE Pre-training in experiment: {mlflow_experiment}, run name: {mlflow_run_name}")
     os.makedirs(save_path, exist_ok=True)
