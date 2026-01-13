@@ -1,13 +1,22 @@
 import os
 import warnings
+import logging
 
 # Set MLflow tracking URI before importing mlflow to avoid deprecation warning
 if "MLFLOW_TRACKING_URI" not in os.environ:
     os.environ["MLFLOW_TRACKING_URI"] = "sqlite:///mlruns.db"
 
+# Suppress MLflow/Alembic INFO messages about database initialization
+logging.getLogger("mlflow").setLevel(logging.WARNING)
+logging.getLogger("alembic").setLevel(logging.WARNING)
+
 # Suppress torch.compile/dynamo warnings about tensor construction
 warnings.filterwarnings("ignore", message=".*To copy construct from a tensor.*")
 warnings.filterwarnings("ignore", message=".*skipping cudagraphs.*")
+
+# Suppress torch dynamo verbose output
+os.environ["TORCH_LOGS"] = "-all"
+os.environ["TORCHDYNAMO_VERBOSE"] = "0"
 
 import torch
 import argparse
