@@ -1,12 +1,13 @@
+# ===========================
 # XEC Training Configuration
 # ===========================
 
 # === Data Configuration ===
 data:
-  train_path: "/path/to/train"      # Directory or file pattern for training data
-  val_path: "/path/to/val"          # Directory or file pattern for validation data
+  train_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root"
+  val_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root"
   tree_name: "tree"
-  batch_size: 256
+  batch_size: 4096
   chunksize: 256000
   num_workers: 8                    # DataLoader workers
   num_threads: 4                    # CPU preprocessing threads
@@ -15,7 +16,7 @@ data:
 normalization:
   npho_scale: 0.58
   npho_scale2: 1.0
-  time_scale: 6.5e8
+  time_scale: 6.5e-8
   time_shift: 0.5
   sentinel_value: -5.0
 

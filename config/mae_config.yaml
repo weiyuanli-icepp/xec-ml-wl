@@ -1,23 +1,22 @@
+# ===================================================
 # MAE (Masked Autoencoder) Pre-training Configuration
 # ===================================================
-# This config is for self-supervised pre-training of the encoder.
-# The pre-trained weights can be used for fine-tuning the regressor.
 
 # === Data Configuration ===
 data:
-  train_path: "/path/to/train"      # Directory or file pattern for training data
-  val_path: "/path/to/val"          # Directory or file pattern for validation data (optional)
+  train_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root"
+  val_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root"
   tree_name: "tree"
-  batch_size: 1024
+  batch_size: 8192
   chunksize: 256000
-  num_workers: 4                    # DataLoader workers
+  num_workers: 4
 
 # === Input Normalization ===
 # Same as regressor training to ensure consistency
 normalization:
   npho_scale: 0.58
   npho_scale2: 1.0
-  time_scale: 6.5e8
+  time_scale: 6.5e-8
   time_shift: 0.5
   sentinel_value: -5.0
 
@@ -25,14 +24,14 @@ normalization:
 model:
   outer_mode: "finegrid"            # "finegrid" or "split"
   outer_fine_pool: [3, 3]           # null or [h, w] for pooling
-  mask_ratio: 0.6                   # Fraction of input to mask (0.5-0.75 typical)
+  mask_ratio: 0.65                  # Fraction of input to mask (0.5-0.75 typical)
 
 # === Training Configuration ===
 training:
   epochs: 20
   lr: 1.0e-4
   weight_decay: 1.0e-4
-  channel_dropout_rate: 0.1
+  channel_dropout_rate: 0.0
 
 # === Checkpointing ===
 checkpoint:
