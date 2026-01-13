@@ -50,13 +50,9 @@ class DeepHexEncoder(nn.Module):
         for layer in self.layers:
             x = layer(x, edge_index)
             
-        # print(f"[DEBUG] HexEncoder Shape BEFORE mean: {x.shape}")
-            
         # Global Pooling (Mean)
         x = x.mean(dim=1)
-        
-        # print(f"[DEBUG] HexEncoder Shape AFTER mean: {x.shape}")
-        
+
         # Project to match CNN face size
         return self.proj(x)
 
@@ -100,7 +96,7 @@ class FaceBackbone(nn.Module):
 
 class XECRegressor(nn.Module):
     # def __init__(self, tasks=["angle", "energy", "xyz"], hidden_dim=256, out_dim=2, outer_mode="split", outer_fine_pool=None, drop_path_rate=0.0): <---
-    def __init__(self, hidden_dim=256, out_dim=2, outer_mode="split", outer_fine_pool=None, drop_path_rate=0.0):
+    def __init__(self, hidden_dim=256, out_dim=2, outer_mode="finegrid", outer_fine_pool=None, drop_path_rate=0.0):
         super().__init__()
         # self.tasks = tasks <---
         
@@ -210,7 +206,6 @@ class XECRegressor(nn.Module):
     def forward(self, x_batch):
         # if x_batch.dim() == 4:
         #     x_batch = x_batch.flatten(0, 1)
-        #     print(f"[AngleRegressorSharedFaces] Flattened input shape: {x_batch.shape}")
             
         # faces = {}
         # faces["inner"] = gather_face(x_batch, INNER_INDEX_MAP)
@@ -266,3 +261,55 @@ class XECRegressor(nn.Module):
         norms["hex_bottom"] = w[current_idx : current_idx + chunk_size].mean().item()
         
         return norms
+
+class XECMultiHeadModel(nn.Module):
+    def __init__(self, backbone : XECRegressor, hidden_dim=256, active_tasks=["angle", "energy", "xyz"]):
+        super().__init__()
+        
+        self.backbone     = backbone
+        self.active_tasks = active_tasks
+        self.embed_dim    = self.backbone.face_embed_dim
+        self.total_tokens = self.backbone.pos_embed.shape[1]
+        self.in_features  = self.embed_dim * self.total_tokens
+        
+        self.heads = nn.ModuleDict({
+            "angle":    self._make_head(self.in_features, hidden_dim, 2), # Theta, Phi
+            "energy":   self._make_head(self.in_features, hidden_dim, 1), # E_gamma
+            "timing":   self._make_head(self.in_features, hidden_dim, 1), # T_gamma
+            "uvwFI":    self._make_head(self.in_features, hidden_dim, 3), # gamma first interaction position (u,v,w)
+            "angleVec": self._make_head(self.in_features, hidden_dim, 3), # Emission vector (x,y,z)
+            "n_gamma":  self._make_head(self.in_features, hidden_dim, 5), # Number of gammas (0-4)
+        })
+        
+        self.active_tasks = active_tasks
+    
+    def _make_head(self, in_dim, hidden_dim, out_dim):
+        return nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, out_dim)
+        )
+        
+    def forward(self, x):
+        latent = self.backbone.forward_features(x)
+        flat   = latent.flatten(1)
+        results = {}
+        for task in self.active_tasks:
+            results[task] = self.heads[task](flat)        
+        return results
+    
+class AutomaticLossScaler(nn.Module):
+    def __init__(self, tasks):
+        super().__init__()
+        self.log_vars = nn.ParameterDict({
+            task: nn.Parameter(torch.zeros(1)) for task in tasks
+        })
+        
+    def forward(self, loss, task):
+        precision = torch.exp(-self.log_vars[task])
+        # Formula: 1/(2*sigma^2) * loss + log(sigma)
+        return 0.5 * precision * loss + self.log_vars[task]

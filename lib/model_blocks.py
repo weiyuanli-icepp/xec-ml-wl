@@ -107,22 +107,59 @@ class ConvNeXtV2Block(nn.Module):
 class HexGraphConv(nn.Module):
     def __init__(self, in_dim: int, out_dim: int):
         super().__init__()
-        self.self_lin = nn.Linear(in_dim, out_dim)
+        self.self_lin  = nn.Linear(in_dim, out_dim)
         self.neigh_lin = nn.Linear(in_dim, out_dim)
-        self.act = nn.LeakyReLU(0.1, inplace=True)
-    def forward(self, x, edge_index, deg):
-        src = edge_index[0]
-        dst = edge_index[1]
-        B, N, _ = x.shape
-        x_f = x.float()
-        msgs = self.neigh_lin(x_f[:, src, :])
-        agg = torch.zeros(B, N, msgs.size(-1), device=x.device, dtype=x_f.dtype)
-        idx = dst.view(1, -1, 1).expand(B, -1, msgs.size(-1))
-        msgs = msgs.to(agg.dtype) 
-        agg.scatter_add_(1, idx, msgs)
-        agg = agg / deg.to(agg.dtype).clamp(min=1).view(1, -1, 1)
-        out = self.act(self.self_lin(x_f) + agg)
-        return out.to(x.dtype)
+        self.act       = nn.LeakyReLU(0.1, inplace=True)
+        
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, deg: torch.Tensor) -> torch.Tensor:
+        """
+        Native PyTorch 2.9 implementation of Hexagonal Graph Convolution.
+        Fully compatible with torch.compile and ONNX export.
+        
+        Args:
+            x:          Node features      [Batch, Nodes, Channels]
+            edge_index: Graph connectivity [2, Edges]
+            deg:        Node degrees       [Nodes]
+        """
+        B, N, C = x.shape
+        src, dst = edge_index[0], edge_index[1]
+        
+        # 1. Transform neighbor features
+        # Optimized for PyTorch 2.9: PW-linear then scatter
+        neigh_feats = self.neigh_lin(x)  # (B, Nodes, out_dim)
+        
+        # 2. Extract source features for messages
+        msgs = neigh_feats[:, src, :]    # (B, Edges, out_dim)
+                
+        # 3. Aggregate messages using scatter_add
+        agg = torch.zeros(B, N, msgs.size(-1), device=x.device, dtype=x.dtype)  # (B, Nodes, out_dim)
+        idx = dst.view(1, -1, 1).expand(B, -1, msgs.size(-1))  # (B, Edges, out_dim)
+        agg.scatter_add_(1, idx, msgs)  # Aggregate messages
+        
+        # 4. Normalize by degree (Average Pooling on graph)
+        agg = agg / deg.to(x.dtype).clamp(min=1).view(1, -1, 1)
+        
+        # 5. Combine self and neighbor features
+        return self.act(self.self_lin(x) + agg)
+    
+    # def __init__(self, in_dim: int, out_dim: int):
+    #     super().__init__()
+    #     self.self_lin = nn.Linear(in_dim, out_dim)
+    #     self.neigh_lin = nn.Linear(in_dim, out_dim)
+    #     self.act = nn.LeakyReLU(0.1, inplace=True)
+    # def forward(self, x, edge_index, deg):
+    #     src = edge_index[0]
+    #     dst = edge_index[1]
+    #     B, N, _ = x.shape
+    #     x_f = x.float()
+    #     msgs = self.neigh_lin(x_f[:, src, :])
+    #     agg = torch.zeros(B, N, msgs.size(-1), device=x.device, dtype=x_f.dtype)
+    #     idx = dst.view(1, -1, 1).expand(B, -1, msgs.size(-1))
+    #     msgs = msgs.to(agg.dtype) 
+    #     agg.scatter_add_(1, idx, msgs)
+    #     agg = agg / deg.to(agg.dtype).clamp(min=1).view(1, -1, 1)
+    #     out = self.act(self.self_lin(x_f) + agg)
+    #     return out.to(x.dtype)
 
 class HexGraphEncoder(nn.Module): # deprecated
     """
@@ -144,64 +181,91 @@ class HexGraphEncoder(nn.Module): # deprecated
     
 class HexDepthwiseConv(nn.Module):
     """
-    The 'Spatial Mixing' layer for Hex grids. 
-    Uses a lightweight Graph Attention mechanism to learn directionality.
+    Hexagonal Depthwise Convolution Layer. Native PyTorch implementation.
+    Uses neighbor aggregation based on predefined edge_index.
     """
-    def __init__(self, dim):
+    def __init__(self, dim: int):
         super().__init__()
-        self.gate_linear = nn.Linear(dim * 2, 1)
-        self.act = nn.LeakyReLU(0.2)
-
-    def forward(self, x, edge_index):
-        # x: [Batch, Nodes, Dim]
-        input_shape = x.shape
-        is_4d = x.dim() == 4
-        if is_4d:
-            x = x.flatten(0, 1)
-            
-        src, dst = edge_index
+        self.dim = dim
+        # 7 weights for center + 6 neighbors
+        self.weight = nn.Parameter(torch.randn(1, 7, dim) * 0.02)  
+        self.bias   = nn.Parameter(torch.zeros(1, 1, dim))
         
-        # 1. Get features of pairs (Source -> Dest)
-        x_src = x[:, src]
-        x_dst = x[:, dst]
-        
-        # 2. Calculate Attention Scores
-        a_input = torch.cat([x_src, x_dst], dim=-1)
-        scores = self.gate_linear(a_input) 
-        # Simplified attention: sigmoid gating
-        # (softmax over neighbors is hard in pure tensor)
-        attention = torch.sigmoid(scores)
-        
-        # 3. Message Passing (Weighted Sum)
-        msg = x_src * attention
-        
-        # 4. Aggregation
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x:          Node features      [Batch, Nodes, Channels]
+            edge_index: Graph connectivity [2, Edges]
+        """
+        B, N, C = x.shape
+        src, dst, n_type = edge_index[0], edge_index[1], edge_index[2]
+        neighbor_features = torch.index_select(x, 1, src)  # (B, Edges, C)
+        w_per_edge = self.weight[0, n_type, :]  # (Edges, C)
+        weighted_msgs = neighbor_features * w_per_edge.unsqueeze(0)  # (B, Edges, C)        
+        idx = dst.view(1, -1, 1).expand(B, -1, C)
         out = torch.zeros_like(x)
-        # Broadcast indices for the scatter operation
-        # idx = dst.unsqueeze(-1).expand(-1, -1, x.size(-1))
-        idx_template = dst.view(1, -1, 1)
+        out = out.scatter_add(1, idx, weighted_msgs)
+        return out + self.bias
         
-        B = x.size(0)
-        D = x.size(-1)
-        
-        idx = idx_template.expand(B, -1, D)
-        
-        # if out.dim() != idx.dim():
-        #     print("\n!!! CRASH IMMINENT IN HexDepthwiseConv !!!")
-        #     print(f"x.shape:       {x.shape}")
-        #     print(f"out.shape:     {out.shape}")
-        #     print(f"dst.shape:     {dst.shape}")
-        #     print(f"idx_template:  {idx_template.shape}")
-        #     print(f"idx (expand):  {idx.shape}")
-        #     print(f"msg.shape:     {msg.shape}")
-        #     print("------------------------------------------\n")
+    # """
+    # The 'Spatial Mixing' layer for Hex grids. 
+    # Uses a lightweight Graph Attention mechanism to learn directionality.
+    # """
+    # def __init__(self, dim):
+    #     super().__init__()
+    #     self.gate_linear = nn.Linear(dim * 2, 1)
+    #     self.act = nn.LeakyReLU(0.2)
 
-        out.scatter_add_(1, idx, msg)
+    # def forward(self, x, edge_index):
+    #     # x: [Batch, Nodes, Dim]
+    #     input_shape = x.shape
+    #     is_4d = x.dim() == 4
+    #     if is_4d:
+    #         x = x.flatten(0, 1)
+            
+    #     src, dst = edge_index
         
-        if is_4d:
-            out = out.view(input_shape)
+    #     # 1. Get features of pairs (Source -> Dest)
+    #     x_src = x[:, src]
+    #     x_dst = x[:, dst]
         
-        return out
+    #     # 2. Calculate Attention Scores
+    #     a_input = torch.cat([x_src, x_dst], dim=-1)
+    #     scores = self.gate_linear(a_input) 
+    #     # Simplified attention: sigmoid gating
+    #     # (softmax over neighbors is hard in pure tensor)
+    #     attention = torch.sigmoid(scores)
+        
+    #     # 3. Message Passing (Weighted Sum)
+    #     msg = x_src * attention
+        
+    #     # 4. Aggregation
+    #     out = torch.zeros_like(x)
+    #     # Broadcast indices for the scatter operation
+    #     # idx = dst.unsqueeze(-1).expand(-1, -1, x.size(-1))
+    #     idx_template = dst.view(1, -1, 1)
+        
+    #     B = x.size(0)
+    #     D = x.size(-1)
+        
+    #     idx = idx_template.expand(B, -1, D)
+        
+    #     # if out.dim() != idx.dim():
+    #     #     print("\n!!! CRASH IMMINENT IN HexDepthwiseConv !!!")
+    #     #     print(f"x.shape:       {x.shape}")
+    #     #     print(f"out.shape:     {out.shape}")
+    #     #     print(f"dst.shape:     {dst.shape}")
+    #     #     print(f"idx_template:  {idx_template.shape}")
+    #     #     print(f"idx (expand):  {idx.shape}")
+    #     #     print(f"msg.shape:     {msg.shape}")
+    #     #     print("------------------------------------------\n")
+
+    #     out.scatter_add_(1, idx, msg)
+        
+    #     if is_4d:
+    #         out = out.view(input_shape)
+        
+    #     return out
 
 class HexNeXtBlock(nn.Module):
     """

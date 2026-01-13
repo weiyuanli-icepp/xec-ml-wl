@@ -242,3 +242,30 @@ def plot_saliency_profile(saliency_data, outfile=None):
         plt.close()
     else:
         plt.show()
+        
+def plot_mae_reconstruction(truth, masked_input, recon, title="MAE Reconstruction", savepath=None):
+    """
+    Plots Truth vs Masked Input vs Reconstruction for Npho distribution.
+    truth, masked_input, recon: 2D arrays for a specific face (e.g., Inner Face)
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    
+    # Truth
+    im0 = axes[0].imshow(truth, cmap='viridis', aspect='auto')
+    axes[0].set_title("Truth")
+    plt.colorbar(im0, ax=axes[0])
+    
+    # Masked Input (What encoder saw)
+    im1 = axes[1].imshow(masked_input, cmap='viridis', aspect='auto')
+    axes[1].set_title("Masked Input")
+    plt.colorbar(im1, ax=axes[1])
+    
+    # Reconstruction
+    im2 = axes[2].imshow(recon, cmap='viridis', aspect='auto')
+    axes[2].set_title("Reconstruction")
+    plt.colorbar(im2, ax=axes[2])
+    
+    plt.suptitle(title)
+    if savepath:
+        plt.savefig(savepath)
+    plt.close()

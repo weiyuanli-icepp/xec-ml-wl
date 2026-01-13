@@ -74,3 +74,10 @@ def build_hex_edge_index(row_lengths):
     return edge_index, deg
 
 HEX_EDGE_INDEX_NP, HEX_DEG_NP = build_hex_edge_index([len(r) for r in TOP_ROWS_LIST])
+
+# Default Normalization Factors
+DEFAULT_NPHO_SCALE     =  0.58
+DEFAULT_NPHO_SCALE2    =  1.0
+DEFAULT_TIME_SCALE     =  6.5e8
+DEFAULT_TIME_SHIFT     =  0.5
+DEFAULT_SENTINEL_VALUE = -5.0
