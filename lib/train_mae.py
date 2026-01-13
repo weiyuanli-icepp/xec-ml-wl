@@ -3,6 +3,7 @@ import argparse
 import time
 import os
 import glob
+import platform
 import psutil
 import mlflow
 import uproot
@@ -218,14 +219,21 @@ Examples:
     ).to(device)
 
     model = XEC_MAE(encoder, mask_ratio=mask_ratio).to(device)
-    
-    if device.type == "cuda":
+
+    # torch.compile requires triton, which is only available on x86_64
+    is_arm = platform.machine() in ("aarch64", "arm64")
+    if device.type == "cuda" and not is_arm:
         try:
+            import triton  # Check if triton is available
             print("[INFO] Attempting torch.compile...")
             model = torch.compile(model, mode="max-autotune", fullgraph=True, dynamic=False)
+        except ImportError:
+            print("[INFO] Triton not available, skipping torch.compile.")
         except Exception as e:
             print(f"[WARN] torch.compile failed with error: {e}.")
             print("[INFO] Proceeding with standard Eager mode.")
+    elif is_arm:
+        print("[INFO] ARM architecture detected: torch.compile disabled (triton not supported).")
     else:
         print("[INFO] Running on CPU: torch.compile is disabled for stability.")
             
