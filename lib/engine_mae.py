@@ -14,11 +14,20 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                   batch_size=8192, step_size=4000, 
                   amp=True,
                   npho_branch="relative_npho", time_branch="relative_time",
-                  NphoScale=1e5, NphoScale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0):
+                  NphoScale=1e5, NphoScale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0,
+                  channel_dropout_rate=0.1):
     model.train()
     scaler = torch.amp.GradScaler('cuda', enabled=amp)
 
-    total_loss = 0.0
+    face_loss_sums = {
+        "inner": 0.0,
+        "us":    0.0,
+        "ds":    0.0,
+        "outer": 0.0,
+        "top":   0.0,
+        "bot":   0.0
+    }
+    total_loss_sum = 0.0
     n_batches = 0
    
     branches = [npho_branch, time_branch]
@@ -52,7 +61,9 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                 
         X_raw = np.stack([Npho, Time], axis=-1).astype("float32")
         loader = DataLoader(TensorDataset(torch.from_numpy(X_raw)), 
-                            batch_size=batch_size, shuffle=True, drop_last=False)
+                            batch_size=batch_size, shuffle=True, drop_last=False,
+                            num_workers=8, pin_memory=True, 
+                            persistent_workers=True, prefetch_factor=2)
         
         for (X_b,) in loader:
             X_b = X_b.to(device, non_blocking=True)
@@ -66,6 +77,14 @@ def run_epoch_mae(model, optimizer, device, root, tree,
             
             mask_npho_bad = (raw_n <= 0.0) | (raw_n > 9e9) | torch.isnan(raw_n)
             mask_time_bad = mask_npho_bad | (torch.abs(raw_t) > 9e9) | torch.isnan(raw_t)
+            
+            # Channel Dropout
+            # if channel_dropout_rate > 0.0:
+            if False: # No Channel Dropout for MAE
+                dropout_mask = (torch.rand_like(npho_norm) < channel_dropout_rate)
+                mask_npho_bad = mask_npho_bad | dropout_mask
+                mask_time_bad = mask_time_bad | dropout_mask
+                
             npho_norm[mask_npho_bad] = 0.0
             time_norm[mask_time_bad] = sentinel_value
             x_in = torch.stack([npho_norm, time_norm], dim=-1) # (B, 4760, 2)
@@ -78,9 +97,10 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                     print("[WARNING] INPUTS ARE ZERO! Check your scale factors.")
             
             optimizer.zero_grad()
-            with torch.amp.autocast('cuda', enabled=amp):
+            # with torch.amp.autocast('cuda', enabled=amp):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
                 # 1. Forward Pass
-                recons, _ = model(x_in)
+                recons, mask = model(x_in)
                 
                 # 2. Gather Truth Targets
                 if hasattr(model, "encoder") and getattr(model.encoder, "outer_fine", False):
@@ -117,18 +137,40 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                     print(f"Target Keys: {t_keys}")
                     print(f"Recons Keys: {r_keys}")
                     print(f"Intersection: {t_keys & r_keys}")
+                    print(f"[DEBUG] Top Masked Pixels: {mask[:, top_indices].sum().item()}")
+                    print(f"[DEBUG] Bot Masked Pixels: {mask[:, bot_indices].sum().item()}")
                     
                     if len(t_keys & r_keys) == 0:
                         print("[CRITICAL ERROR] No common keys! Loss loop is skipped.")
-                
+
+                face_to_sensor_indices = {
+                    "inner": INNER_INDEX_MAP,
+                    "us":    US_INDEX_MAP,
+                    "ds":    DS_INDEX_MAP,
+                    "outer": OUTER_COARSE_FULL_INDEX_MAP if not getattr(model.encoder, "outer_fine", False) else None,
+                    "top":   top_indices,
+                    "bot":   bot_indices
+                }
                 for name, pred in recons.items():
                     if name in targets:
-                        # Simple MSE between Reconstruction and Original
-                        # (Ideally we mask this, but global MSE is stable)
-                        l = F.mse_loss(pred, targets[name])
-                        loss += l
+                        indices = face_to_sensor_indices.get(name)
+
+                        if indices is not None:
+                            m_face = mask[:, indices] # Shape: (B, num_sensors_in_face)
+                            if name in ["top", "bot"]:
+                                mask_expanded = m_face.unsqueeze(1) # (B, 1, num_hex_nodes)
+                            else:
+                                H, W = pred.shape[-2], pred.shape[-1]
+                                mask_expanded = m_face.view(mask.size(0), 1, H, W) # (B, 1, H, W)
+                        else:
+                            mask_expanded = torch.ones_like(pred)
+
+                        loss_map = F.mse_loss(pred, targets[name], reduction='none')
+                        face_loss = (loss_map * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
+                        face_loss_sums[name] += face_loss.item()
+                        loss += face_loss
                         if not debug_printed:
-                            print(f"[DEBUG] Loss Component '{name}': {l.item():.6e}")
+                            print(f"[DEBUG] Loss Component '{name}': {face_loss.item():.6e}")
                         
                 if not debug_printed:
                     print(f"[DEBUG] Total Loss: {loss.item():.6e}")
@@ -139,10 +181,14 @@ def run_epoch_mae(model, optimizer, device, root, tree,
             scaler.step(optimizer)
             scaler.update()
             
-            total_loss += loss.item()
+            total_loss_sum += loss.item()
             n_batches += 1
                         
-    return total_loss / max(1, n_batches)
+    # Return averaged face losses alongside the total
+    avg_face_losses = {f"loss_{k}": v / n_batches for k, v in face_loss_sums.items()}
+    avg_face_losses["total_loss"] = total_loss_sum / n_batches
+    return avg_face_losses
+    # return total_loss_sum / max(1, n_batches)
 
 def run_eval_mae(model, device, root, tree,
                  batch_size=8192, step_size=4000,
@@ -158,6 +204,15 @@ def run_eval_mae(model, device, root, tree,
     top_indices = torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long()
     bot_indices = torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long()
     
+    face_to_sensor_indices = {
+        "inner": INNER_INDEX_MAP,
+        "us":    US_INDEX_MAP,
+        "ds":    DS_INDEX_MAP,
+        "outer": OUTER_COARSE_FULL_INDEX_MAP if not getattr(model.encoder, "outer_fine", False) else None,
+        "top":   top_indices,
+        "bot":   bot_indices
+    }
+    
     for arr in iterate_chunks(root, tree, branches, step_size):
         Npho = np.maximum(arr[npho_branch].astype("float32"), 0.0)
         Time = arr[time_branch].astype("float32")
@@ -172,8 +227,8 @@ def run_eval_mae(model, device, root, tree,
             raw_n = X_b[:,:,0]
             raw_t = X_b[:,:,1]
             
-            time_norm = (raw_t / time_scale) - time_shift
             npho_norm = torch.log1p(raw_n / NphoScale) / NphoScale2
+            time_norm = (raw_t / time_scale) - time_shift
             
             mask_npho_bad = (raw_n <= 0.0) | (raw_n > 9e9) | torch.isnan(raw_n)
             mask_time_bad = mask_npho_bad | (torch.abs(raw_t) > 9e9) | torch.isnan(raw_t)
@@ -185,22 +240,21 @@ def run_eval_mae(model, device, root, tree,
             
             with torch.no_grad():
                 with torch.amp.autocast('cuda', enabled=amp):
-                    recons, _ = model(x_in)
+                    recons, mask = model(x_in)
                     
-                    if hasattr(model, "encoder") and getattr(model.encoder, "outer_fine", False):
-                        outer_target = build_outer_fine_grid_tensor(
-                            x_in,
-                            pool_kernel=model.encoder.outer_fine_pool
-                        )
-                    else:
-                        outer_target = gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP)
+                    # if hasattr(model, "encoder") and getattr(model.encoder, "outer_fine", False):
+                    #     outer_target = build_outer_fine_grid_tensor(
+                    #         x_in,
+                    #         pool_kernel=model.encoder.outer_fine_pool
+                    #     )
+                    # else:
+                    #     outer_target = gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP)
 
                     targets = {
                         "inner": gather_face(x_in, INNER_INDEX_MAP),
                         "us":    gather_face(x_in, US_INDEX_MAP),
                         "ds":    gather_face(x_in, DS_INDEX_MAP),
-                        "outer": outer_target,
-                        
+                        "outer": build_outer_fine_grid_tensor(x_in, model.encoder.outer_fine_pool) if getattr(model.encoder, "outer_fine", False) else gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP),
                         "top":   gather_hex_nodes(x_in, top_indices).permute(0, 2, 1),
                         "bot":   gather_hex_nodes(x_in, bot_indices).permute(0, 2, 1)
                     }
@@ -208,8 +262,12 @@ def run_eval_mae(model, device, root, tree,
                     loss = 0.0
                     for name, pred in recons.items():
                         if name in targets:
-                            l = F.mse_loss(pred, targets[name])
-                            loss += l
+                            indices = face_to_sensor_indices.get(name)
+                            if indices is not None:
+                                m_face = mask[:, indices]
+                                mask_expanded = m_face.unsqueeze(1) if name in ["top", "bot"] else m_face.view(mask.size(0), 1, *pred.shape[-2:])
+                                loss_map = F.mse_loss(pred, targets[name], reduction='none')
+                                loss += (loss_map * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
                             
             total_loss += loss.item()
             n_batches += 1

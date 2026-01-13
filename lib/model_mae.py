@@ -158,5 +158,11 @@ class XEC_MAE(nn.Module):
         }
         
         return recons, mask
-        
-        
+    
+    def get_latent_stats(self, x_batch):
+        with torch.no_grad():
+            x_masked, _ = self.random_masking(x_batch)
+            latent_seq = self.encoder.forward_features(x_masked)
+            # Calculate the average norm of the tokens
+            latent_norm = torch.norm(latent_seq, dim=-1).mean().item()
+        return {"system/latent_token_norm": latent_norm}
