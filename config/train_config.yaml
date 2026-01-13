@@ -1,0 +1,104 @@
+# XEC Training Configuration
+# ===========================
+
+# === Data Configuration ===
+data:
+  train_path: "/path/to/train"      # Directory or file pattern for training data
+  val_path: "/path/to/val"          # Directory or file pattern for validation data
+  tree_name: "tree"
+  batch_size: 256
+  chunksize: 256000
+  num_workers: 8                    # DataLoader workers
+  num_threads: 4                    # CPU preprocessing threads
+
+# === Input Normalization ===
+normalization:
+  npho_scale: 0.58
+  npho_scale2: 1.0
+  time_scale: 6.5e8
+  time_shift: 0.5
+  sentinel_value: -5.0
+
+# === Model Configuration ===
+model:
+  outer_mode: "finegrid"            # "finegrid" or "split"
+  outer_fine_pool: [3, 3]           # null or [h, w] for pooling
+  hidden_dim: 256
+  drop_path_rate: 0.0
+
+# === Active Tasks ===
+# Each task can have:
+#   enabled: true/false
+#   loss_fn: "smooth_l1", "l1", "mse", "huber"
+#   loss_beta: float (for smooth_l1/huber)
+#   weight: float (manual loss weight)
+tasks:
+  angle:
+    enabled: true
+    loss_fn: "smooth_l1"
+    loss_beta: 1.0
+    weight: 1.0
+  energy:
+    enabled: false
+    loss_fn: "l1"
+    loss_beta: 1.0
+    weight: 1.0
+  timing:
+    enabled: false
+    loss_fn: "l1"
+    loss_beta: 1.0
+    weight: 1.0
+  uvwFI:
+    enabled: false
+    loss_fn: "mse"
+    loss_beta: 1.0
+    weight: 1.0
+
+# === Training Configuration ===
+training:
+  epochs: 20
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  warmup_epochs: 2
+  use_scheduler: true
+  amp: true
+  ema_decay: 0.999
+  channel_dropout_rate: 0.1
+  grad_clip: 1.0
+
+# === Loss Balancing ===
+loss_balance: "manual"              # "manual" or "auto"
+
+# === Reweighting ===
+# Enable reweighting per task to balance sample distributions.
+# Each task can have:
+#   enabled: true/false
+#   nbins: int (for 1D histograms)
+#   nbins_2d: [int, int] (for 2D/3D histograms)
+reweighting:
+  angle:
+    enabled: false
+    nbins_2d: [20, 20]              # (theta_bins, phi_bins)
+  energy:
+    enabled: false
+    nbins: 30
+  timing:
+    enabled: false
+    nbins: 30
+  uvwFI:
+    enabled: false
+    nbins_2d: [10, 10]              # Uses same bins for u, v, w
+
+# === Checkpointing ===
+checkpoint:
+  resume_from: null                 # Path to checkpoint or null
+  save_dir: "artifacts"
+
+# === MLflow ===
+mlflow:
+  experiment: "gamma_angle"
+  run_name: null                    # null = auto-generate timestamp
+
+# === Export ===
+export:
+  onnx: "meg2ang_convnextv2.onnx"   # null to disable ONNX export
