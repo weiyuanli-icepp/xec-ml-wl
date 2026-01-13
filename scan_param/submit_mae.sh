@@ -43,18 +43,33 @@ sbatch <<EOF
 
 set -e
 [[ -f /etc/profile.d/modules.sh ]] && source /etc/profile.d/modules.sh || true
+
+ARM_CONDA="\$HOME/miniforge-arm/bin/conda"
+X86_CONDA="/opt/psi/Programming/anaconda/2024.08/conda/bin/conda"
+
+# Load module for x86 nodes
 module load anaconda/2024.08 2>/dev/null || true
 
-if command -v conda &> /dev/null; then
+# Initialize Conda based on architecture
+if [ -f "\$ARM_CONDA" ] && [ "\$(uname -m)" == "aarch64" ]; then
+    echo "[JOB] Detected ARM64 architecture. Using Miniforge."
+    eval "\$(\$ARM_CONDA shell.bash hook)"
+elif command -v conda &> /dev/null; then
     eval "\$(conda shell.bash hook)"
+elif [ -f "\$X86_CONDA" ]; then
+    eval "\$(\$X86_CONDA shell.bash hook)"
 else
-    # Fallback paths
-    export PATH="/opt/psi/Programming/anaconda/2024.08/conda/bin:\$PATH"
-    eval "\$(conda shell.bash hook)"
+    echo "CRITICAL ERROR: Could not find 'conda' on partition ${PARTITION}."
+    exit 1
 fi
 
 echo "[JOB] Activating environment: ${ENV_NAME}"
 conda activate "${ENV_NAME}"
+
+# Fix awkward_cpp libstdc++ compatibility on GH nodes
+if [ -n "\$CONDA_PREFIX" ]; then
+    export LD_LIBRARY_PATH="\$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH"
+fi
 
 cd \$HOME/meghome/xec-ml-wl
 echo "[JOB] Directory: \$(pwd)"

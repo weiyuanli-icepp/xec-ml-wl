@@ -106,6 +106,11 @@ fi
 echo "[JOB] Activating environment: ${ENV_NAME}"
 conda activate "${ENV_NAME}"
 
+# Fix awkward_cpp libstdc++ compatibility on GH nodes
+if [ -n "\$CONDA_PREFIX" ]; then
+    export LD_LIBRARY_PATH="\$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH"
+fi
+
 cd \$HOME/meghome/xec-ml-wl
 echo "[JOB] Changed directory to: \$(pwd)"
 

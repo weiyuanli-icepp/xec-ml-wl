@@ -61,7 +61,7 @@ def save_predictions_to_root(predictions, save_path, epoch):
         branches["masked_time"] = predictions["x_masked"][:, :, 1].astype(np.float32)
 
     with uproot.recreate(root_path) as f:
-        f["tree"] = branches
+        f.mktree("tree", branches)
 
     print(f"[INFO] Saved {n_events} events to {root_path}")
     return root_path
@@ -250,8 +250,8 @@ Examples:
         print(f"[INFO] EMA enabled with decay={ema_decay}")
         ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
 
-    # Initialize GradScaler for AMP (use cuda.amp for PyTorch 2.5.x compatibility)
-    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
+    # Initialize GradScaler for AMP
+    scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
 
     # Resume from checkpoint if provided
     start_epoch = 0
