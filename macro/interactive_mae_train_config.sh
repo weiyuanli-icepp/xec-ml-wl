@@ -5,6 +5,12 @@
 # 3. salloc --cluster=gmerlin7 --partition=a100-interactive --gres=gpu:1 --mem=64G --time=07:00:00
 # 4. Run this script: ./interactive_mae_train_config.sh
 
+# --- Fix for awkward_cpp libstdc++ compatibility on GH nodes ---
+# Prioritize conda's libstdc++ over system GCC module
+if [ -n "$CONDA_PREFIX" ]; then
+    export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
+fi
+
 # --- Configuration (Run-specific overrides) ---
 export RUN_NAME="sanity_mae_config"
 export EPOCHS=2
