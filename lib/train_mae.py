@@ -280,7 +280,8 @@ Examples:
             model.load_state_dict(checkpoint, strict=False)
             start_epoch = 0
 
-    # MLflow Setup
+    # MLflow Setup - use SQLite backend (recommended over deprecated file-based backend)
+    mlflow.set_tracking_uri("sqlite:///mlruns.db")
     mlflow.set_experiment(mlflow_experiment)
     print(f"Starting MAE Pre-training in experiment: {mlflow_experiment}, run name: {mlflow_run_name}")
     os.makedirs(save_path, exist_ok=True)

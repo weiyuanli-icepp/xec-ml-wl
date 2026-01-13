@@ -74,6 +74,9 @@ fi
 cd \$HOME/meghome/xec-ml-wl
 echo "[JOB] Directory: \$(pwd)"
 
+# Use SQLite backend (recommended over deprecated file-based backend)
+export MLFLOW_TRACKING_URI="sqlite:///\$(pwd)/mlruns.db"
+
 # Create artifacts dir
 mkdir -p artifacts/${RUN_NAME}
 

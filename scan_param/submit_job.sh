@@ -114,7 +114,8 @@ fi
 cd \$HOME/meghome/xec-ml-wl
 echo "[JOB] Changed directory to: \$(pwd)"
 
-export MLFLOW_TRACKING_URI="file://\$(pwd)/mlruns"
+# Use SQLite backend (recommended over deprecated file-based backend)
+export MLFLOW_TRACKING_URI="sqlite:///\$(pwd)/mlruns.db"
 
 echo "[JOB] Running training with config: ${CONFIG_FILE}..."
 python scan_param/run_training_cli.py \\

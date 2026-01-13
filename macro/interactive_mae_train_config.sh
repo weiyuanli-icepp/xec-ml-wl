@@ -11,6 +11,9 @@ if [ -n "$CONDA_PREFIX" ]; then
     export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 fi
 
+# Use SQLite backend (recommended over deprecated file-based backend)
+export MLFLOW_TRACKING_URI="sqlite:///mlruns.db"
+
 # --- Configuration (Run-specific overrides) ---
 export RUN_NAME="sanity_mae_config"
 export EPOCHS=2
