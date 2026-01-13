@@ -17,7 +17,8 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                   NphoScale=1e5, NphoScale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0,
                   channel_dropout_rate=0.1,
                   grad_clip=1.0,
-                  scaler=None):
+                  scaler=None,
+                  num_workers=8):
     model.train()
     if scaler is None:
         scaler = torch.amp.GradScaler('cuda', enabled=amp)
@@ -74,7 +75,7 @@ def run_epoch_mae(model, optimizer, device, root, tree,
         X_raw = np.stack([Npho, Time], axis=-1).astype("float32")
         loader = DataLoader(TensorDataset(torch.from_numpy(X_raw)), 
                             batch_size=batch_size, shuffle=True, drop_last=False,
-                            num_workers=8, pin_memory=True, 
+                            num_workers=num_workers, pin_memory=True, 
                             persistent_workers=True, prefetch_factor=2)
         
         for (X_b,) in loader:
@@ -241,7 +242,8 @@ def run_eval_mae(model, device, root, tree,
                  amp=True,
                  npho_branch="relative_npho", time_branch="relative_time",
                  NphoScale=1e5, NphoScale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0,
-                 collect_predictions=False, max_events=1000):
+                 collect_predictions=False, max_events=1000,
+                 num_workers=8):
     """
     Evaluate MAE model on validation data.
 
@@ -290,7 +292,8 @@ def run_eval_mae(model, device, root, tree,
         
         X_raw = np.stack([Npho, Time], axis=-1).astype("float32")
         loader = DataLoader(TensorDataset(torch.from_numpy(X_raw)),
-                            batch_size=batch_size, shuffle=False, drop_last=False)
+                            batch_size=batch_size, shuffle=False, drop_last=False,
+                            num_workers=num_workers, pin_memory=True)
         
         for (X_b,) in loader:
             X_b = X_b.to(device, non_blocking=True)

@@ -10,6 +10,7 @@ data:
   batch_size: 8192
   chunksize: 256000
   num_workers: 4                    # DataLoader workers
+  num_threads: 4                    # CPU preprocessing threads
 
 # === Input Normalization ===
 # Same as regressor training to ensure consistency

@@ -94,6 +94,7 @@ Examples:
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--chunksize",  type=int, default=None, help="Number of events per read")
     parser.add_argument("--num_workers", type=int, default=None, help="DataLoader workers")
+    parser.add_argument("--num_threads", type=int, default=None, help="CPU preprocessing threads")
 
     parser.add_argument("--npho_scale",     type=float, default=None)
     parser.add_argument("--npho_scale2",    type=float, default=None)
@@ -130,6 +131,7 @@ Examples:
         batch_size = args.batch_size if args.batch_size is not None else cfg.data.batch_size
         chunksize = args.chunksize if args.chunksize is not None else cfg.data.chunksize
         num_workers = args.num_workers if args.num_workers is not None else cfg.data.num_workers
+        num_threads = args.num_threads if args.num_threads is not None else getattr(cfg.data, 'num_threads', 4)
         npho_scale = args.npho_scale if args.npho_scale is not None else cfg.normalization.npho_scale
         npho_scale2 = args.npho_scale2 if args.npho_scale2 is not None else cfg.normalization.npho_scale2
         time_scale = args.time_scale if args.time_scale is not None else cfg.normalization.time_scale
@@ -160,6 +162,7 @@ Examples:
         batch_size = args.batch_size or 1024
         chunksize = args.chunksize or 256000
         num_workers = args.num_workers or 8
+        num_threads = args.num_threads or 4
         npho_scale = args.npho_scale or DEFAULT_NPHO_SCALE
         npho_scale2 = args.npho_scale2 or DEFAULT_NPHO_SCALE2
         time_scale = args.time_scale or DEFAULT_TIME_SCALE
@@ -196,7 +199,16 @@ Examples:
         val_files = expand_path(val_root)
         print(f"[INFO] Validation Data: {len(val_files)} files")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.get_device_name(0)
+            device = torch.device("cuda")
+        except Exception:
+            print("[WARN] CUDA driver issue detected. Falling back to CPU.")
+    else: 
+        device = torch.device("cpu")
+        
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # Initialize Model
@@ -207,11 +219,21 @@ Examples:
     ).to(device)
 
     model = XEC_MAE(encoder, mask_ratio=mask_ratio).to(device)
-    model = torch.compile(model, mode="max-autotune", fullgraph=True, dynamic=False)
+    
+    if device.type == "cuda":
+        try:
+            print("[INFO] Attempting torch.compile...")
+            model = torch.compile(model, mode="max-autotune", fullgraph=True, dynamic=False)
+        except Exception as e:
+            print(f"[WARN] torch.compile failed with error: {e}.")
+            print("[INFO] Proceeding with standard Eager mode.")
+    else:
+        print("[INFO] Running on CPU: torch.compile is disabled for stability.")
+            
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=lr,
-        fused=True,
+        fused=(device.type == "cuda"),
         weight_decay=weight_decay
     )
 
@@ -222,7 +244,7 @@ Examples:
         ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
 
     # Initialize GradScaler for AMP
-    scaler = torch.amp.GradScaler('cuda', enabled=True)
+    scaler = torch.amp.GradScaler(device_type=device.type, enabled=(device.type == "cuda"))
 
     # Resume from checkpoint if provided
     start_epoch = 0
@@ -262,6 +284,7 @@ Examples:
             "batch_size": batch_size,
             "chunksize": chunksize,
             "num_workers": num_workers,
+            "num_threads": num_threads,
             "npho_scale": npho_scale,
             "npho_scale2": npho_scale2,
             "time_scale": time_scale,
@@ -297,6 +320,7 @@ Examples:
                 channel_dropout_rate=channel_dropout_rate,
                 grad_clip=grad_clip,
                 scaler=scaler,
+                num_workers=num_workers,
             )
 
             # Update EMA model
@@ -325,6 +349,7 @@ Examples:
                     sentinel_value=sentinel_value,
                     collect_predictions=collect_preds,
                     max_events=1000,
+                    num_workers=num_workers,
                 )
 
                 if collect_preds:

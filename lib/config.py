@@ -278,6 +278,7 @@ class MAEDataConfig:
     batch_size: int = 1024
     chunksize: int = 256000
     num_workers: int = 4
+    num_threads: int = 4
 
 
 @dataclass
