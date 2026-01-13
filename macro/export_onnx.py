@@ -6,29 +6,50 @@ import torch.onnx
 import sys
 
 ### How to use it
-# python export_onnx.py artifacts/<RUN_NAME>/checkpoint_best.pth --output meg2ang_final.onnx
+# Single-task (legacy):
+#   python export_onnx.py artifacts/<RUN_NAME>/checkpoint_best.pth --output meg2ang_final.onnx
+# Multi-task (auto-detect from checkpoint):
+#   python export_onnx.py artifacts/<RUN_NAME>/checkpoint_best.pth --multi-task --output model.onnx
+# Multi-task (specify tasks):
+#   python export_onnx.py artifacts/<RUN_NAME>/checkpoint_best.pth --multi-task --tasks angle energy --output model.onnx
 
 try:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-    from lib.model import XECRegressor
+    from lib.model import XECRegressor, XECMultiHeadModel
 except ImportError:
-    print("Error: Could not import 'XECRegressor'.")
+    print("Error: Could not import 'XECRegressor' or 'XECMultiHeadModel'.")
     print("Please ensure 'model.py' is in the current directory or python path.")
     sys.exit(1)
+
+# Task output dimensions
+TASK_OUTPUT_DIMS = {
+    "angle": 2,     # (theta, phi)
+    "energy": 1,    # energy
+    "timing": 1,    # timing
+    "uvwFI": 3,     # (u, v, w) position
+}
 
 def load_checkpoint_weights(checkpoint_path, prefer_ema=True):
     """
     Loads weights from a checkpoint, preferring EMA weights if available.
-    Returns the state_dict and a status string.
+    Returns the state_dict, a status string, and optional config metadata.
     """
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
-    
+
     print(f"[INFO] Loading checkpoint: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
     state_dict = None
     source = ""
+    config_meta = {}
+
+    # Extract config metadata if available
+    if "active_tasks" in checkpoint:
+        config_meta["active_tasks"] = checkpoint["active_tasks"]
+        print(f"[INFO] Found active_tasks in checkpoint: {checkpoint['active_tasks']}")
+    if "model_config" in checkpoint:
+        config_meta["model_config"] = checkpoint["model_config"]
 
     # 1. Try Loading EMA
     if prefer_ema and "ema_state_dict" in checkpoint and checkpoint["ema_state_dict"] is not None:
@@ -52,34 +73,81 @@ def load_checkpoint_weights(checkpoint_path, prefer_ema=True):
         else:
             clean_k = k
         clean_dict[clean_k] = v
-        
-    return clean_dict, source
+
+    return clean_dict, source, config_meta
 
 def main():
-    parser = argparse.ArgumentParser(description="Export PyTorch Checkpoint to ONNX")
+    parser = argparse.ArgumentParser(
+        description="Export PyTorch Checkpoint to ONNX",
+        epilog="""
+Examples:
+  # Export single-task angle model (legacy XECRegressor)
+  python export_onnx.py artifacts/run/checkpoint_best.pth --output model.onnx
+
+  # Export multi-task model (auto-detect tasks from checkpoint)
+  python export_onnx.py artifacts/run/checkpoint_best.pth --multi-task --output model.onnx
+
+  # Export multi-task model with specific tasks
+  python export_onnx.py artifacts/run/checkpoint_best.pth --multi-task --tasks angle energy --output model.onnx
+        """
+    )
     parser.add_argument("checkpoint", type=str, help="Path to .pth checkpoint")
     parser.add_argument("--output", type=str, default="model.onnx", help="Output .onnx filename")
     parser.add_argument("--no-ema", action="store_true", help="Force using standard weights even if EMA exists")
-    
+
     # Model Architecture Args (Must match training!)
     parser.add_argument("--outer_mode", type=str, default="finegrid", choices=["finegrid", "split"])
     parser.add_argument("--drop_path_rate", type=float, default=0.0, help="Should be 0 for export/inference")
-    
+
+    # Multi-task support
+    parser.add_argument("--multi-task", action="store_true", help="Use XECMultiHeadModel instead of XECRegressor")
+    parser.add_argument("--tasks", type=str, nargs="+", default=None,
+                        choices=["angle", "energy", "timing", "uvwFI"],
+                        help="Active tasks for multi-task model (auto-detected from checkpoint if not specified)")
+
     args = parser.parse_args()
 
-    # 1. Initialize Model
+    # 1. Load Weights first to get config metadata
+    state_dict, source, config_meta = load_checkpoint_weights(args.checkpoint, prefer_ema=not args.no_ema)
+
+    # 2. Determine model type and tasks
+    active_tasks = args.tasks
+    use_multi_task = args.multi_task
+
+    # Auto-detect from checkpoint if available
+    if active_tasks is None and "active_tasks" in config_meta:
+        active_tasks = config_meta["active_tasks"]
+        if len(active_tasks) > 1 or (len(active_tasks) == 1 and active_tasks[0] != "angle"):
+            use_multi_task = True
+            print(f"[INFO] Auto-detected multi-task model with tasks: {active_tasks}")
+
+    # Default to angle-only if not specified
+    if active_tasks is None:
+        active_tasks = ["angle"]
+
+    # 3. Initialize Model
     print("[INFO] Initializing Model...")
-    # Note: We set drop_path_rate to 0 for export to remove stochastic behavior
-    model = XECRegressor(
-        outer_mode=args.outer_mode,
-        outer_fine_pool=(3,3),
-        drop_path_rate=0.0 
-    )
+    if use_multi_task:
+        # Build task_output_dims dict
+        task_output_dims = {task: TASK_OUTPUT_DIMS[task] for task in active_tasks}
+        print(f"[INFO] Creating XECMultiHeadModel with tasks: {task_output_dims}")
+
+        model = XECMultiHeadModel(
+            task_output_dims=task_output_dims,
+            outer_mode=args.outer_mode,
+            outer_fine_pool=(3, 3),
+            drop_path_rate=0.0  # Always 0 for export
+        )
+    else:
+        print("[INFO] Creating XECRegressor (single-task angle model)")
+        model = XECRegressor(
+            outer_mode=args.outer_mode,
+            outer_fine_pool=(3, 3),
+            drop_path_rate=0.0
+        )
     model.eval()
 
-    # 2. Load Weights
-    state_dict, source = load_checkpoint_weights(args.checkpoint, prefer_ema=not args.no_ema)
-    
+    # 4. Load Weights
     try:
         model.load_state_dict(state_dict, strict=True)
         print(f"[SUCCESS] Loaded {source} weights successfully.")
@@ -88,29 +156,40 @@ def main():
         print(f"Error details: {e}")
         model.load_state_dict(state_dict, strict=False)
 
-    # 3. Export
+    # 5. Export
     dummy_input = torch.randn(1, 4760, 2)
-    
+
     # Ensure directory exists
     out_dir = os.path.dirname(args.output)
     if out_dir and not os.path.exists(out_dir):
         os.makedirs(out_dir)
 
+    # Build output names for multi-task
+    if use_multi_task:
+        output_names = [f"output_{task}" for task in active_tasks]
+        dynamic_axes = {'input': {0: 'batch_size'}}
+        for name in output_names:
+            dynamic_axes[name] = {0: 'batch_size'}
+    else:
+        output_names = ['output']
+        dynamic_axes = {
+            'input': {0: 'batch_size'},
+            'output': {0: 'batch_size'}
+        }
+
     print(f"[INFO] Exporting to {args.output}...")
+    print(f"[INFO] Output names: {output_names}")
     try:
         torch.onnx.export(
             model,
             dummy_input,
             args.output,
             export_params=True,
-            opset_version=13,
+            opset_version=20,
             do_constant_folding=True,
             input_names=['input'],
-            output_names=['output'],
-            dynamic_axes={
-                'input': {0: 'batch_size'},
-                'output': {0: 'batch_size'}
-            }
+            output_names=output_names,
+            dynamic_axes=dynamic_axes
         )
         print(f"[SUCCESS] Model exported to {args.output}")
     except Exception as e:

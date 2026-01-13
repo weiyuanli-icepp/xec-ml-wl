@@ -1,43 +1,37 @@
 #!/usr/bin/env bash
-# Usage: ./submit_job.sh [RUN_NAME] [MODEL] [EPOCHS] [REWEIGHT_MODE] [LOSSTYPE] [LR] [BATCH] [RESUME_FROM] [PARTITION] [TIME]
+# Usage: ./submit_job.sh [RUN_NAME] [CONFIG_FILE] [PARTITION] [TIME]
 #
-# Optional Env Vars:
-#   WEIGHT_DECAY (default 1e-4)
-#   DROP_PATH    (default 0.0)
-#   SCHEDULER    (default -1 for Cosine, set to 1 for Constant)
-#   TIME_SCALE   (default 1e-7)
+# Optional CLI overrides via environment variables:
+#   TRAIN_PATH, VAL_PATH - Override data paths
+#   EPOCHS, LR, BATCH - Override training params
+#   TASKS - Space-separated list of tasks (e.g., "angle energy")
+#
+# Example:
+#   ./submit_job.sh my_run ../config/train_config.yaml a100-daily 12:00:00
+#   EPOCHS=100 LR=1e-4 ./submit_job.sh my_run ../config/train_config.yaml
 
 set -euo pipefail
 
 RUN_NAME="${1:-test_run}"
-MODEL="${2:-simple}"
-EPOCHS="${3:-50}"
-REWEIGHT_MODE="${4:-none}"
-LOSSTYPE="${5:-smooth_l1}"
-LR="${6:-3e-4}"
-BATCH="${7:-1024}"
-RESUME_FROM="${8:-}"
-PARTITION="${9:-a100-daily}"
-TIME="${10:-12:00:00}"
+CONFIG_FILE="${2:-../config/train_config.yaml}"
+PARTITION="${3:-a100-daily}"
+TIME="${4:-12:00:00}"
 
-# Read optional env vars or set defaults
-WEIGHT_DECAY="${WEIGHT_DECAY:-1e-4}"
-DROP_PATH="${DROP_PATH:-0.0}"
-SCHEDULER="${SCHEDULER:--1}"
-TIME_SCALE="${TIME_SCALE:-6.5e-8}"
-TIME_SHIFT="${TIME_SHIFT:-0.5}"
-SENTINEL_VALUE="${SENTINEL_VALUE:--5.0}"
-WARMUP_EPOCHS="${WARMUP_EPOCHS:-2}"
-NPHO_SCALE="${NPHO_SCALE:-0.58}"
-NPHO_SCALE2="${NPHO_SCALE2:-1.0}"
+# Optional overrides (empty string means no override)
+TRAIN_PATH="${TRAIN_PATH:-}"
+VAL_PATH="${VAL_PATH:-}"
+EPOCHS="${EPOCHS:-}"
+LR="${LR:-}"
+BATCH="${BATCH:-}"
+WEIGHT_DECAY="${WEIGHT_DECAY:-}"
+WARMUP_EPOCHS="${WARMUP_EPOCHS:-}"
+EMA_DECAY="${EMA_DECAY:-}"
+GRAD_CLIP="${GRAD_CLIP:-}"
+TASKS="${TASKS:-}"
+RESUME_FROM="${RESUME_FROM:-}"
+SAVE_DIR="${SAVE_DIR:-}"
+MLFLOW_EXPERIMENT="${MLFLOW_EXPERIMENT:-}"
 ONNX="${ONNX:-}"
-EMA_DECAY="${EMA_DECAY:-0.999}"
-MLFLOW_EXPERIMENT="${MLFLOW_EXPERIMENT:-gamma_angle}"
-
-CHUNK_SIZE="${CHUNK_SIZE:-4000}"
-TREE_NAME="${TREE_NAME:-tree}"
-ROOT_PATH="${ROOT_PATH:-~/meghome/xec-ml-wl/data/MCGammaAngle_0-49.root}"
-
 
 # 1. Determine Environment based on Partition
 if [[ "$PARTITION" == gh* ]]; then
@@ -50,7 +44,26 @@ LOG_DIR="slurm_logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/${RUN_NAME}_%j.out"
 
-echo "[SUBMIT] Run: $RUN_NAME | Model: $MODEL | WD: $WEIGHT_DECAY | Drop: $DROP_PATH"
+echo "[SUBMIT] Run: $RUN_NAME | Config: $CONFIG_FILE | Partition: $PARTITION"
+
+# Build CLI override arguments
+CLI_ARGS=""
+[ -n "$TRAIN_PATH" ] && CLI_ARGS+=" --train_path \"$TRAIN_PATH\""
+[ -n "$VAL_PATH" ] && CLI_ARGS+=" --val_path \"$VAL_PATH\""
+[ -n "$EPOCHS" ] && CLI_ARGS+=" --epochs $EPOCHS"
+[ -n "$LR" ] && CLI_ARGS+=" --lr $LR"
+[ -n "$BATCH" ] && CLI_ARGS+=" --batch $BATCH"
+[ -n "$WEIGHT_DECAY" ] && CLI_ARGS+=" --weight_decay $WEIGHT_DECAY"
+[ -n "$WARMUP_EPOCHS" ] && CLI_ARGS+=" --warmup_epochs $WARMUP_EPOCHS"
+[ -n "$EMA_DECAY" ] && CLI_ARGS+=" --ema_decay $EMA_DECAY"
+[ -n "$GRAD_CLIP" ] && CLI_ARGS+=" --grad_clip $GRAD_CLIP"
+[ -n "$TASKS" ] && CLI_ARGS+=" --tasks $TASKS"
+[ -n "$RESUME_FROM" ] && CLI_ARGS+=" --resume_from \"$RESUME_FROM\""
+[ -n "$SAVE_DIR" ] && CLI_ARGS+=" --save_dir \"$SAVE_DIR\""
+[ -n "$MLFLOW_EXPERIMENT" ] && CLI_ARGS+=" --mlflow_experiment \"$MLFLOW_EXPERIMENT\""
+[ -n "$ONNX" ] && CLI_ARGS+=" --onnx \"$ONNX\""
+
+echo "[SUBMIT] CLI overrides:$CLI_ARGS"
 
 # 2. Submit Job
 sbatch <<EOF
@@ -98,32 +111,10 @@ echo "[JOB] Changed directory to: \$(pwd)"
 
 export MLFLOW_TRACKING_URI="file://\$(pwd)/mlruns"
 
-echo "[JOB] Running training script for model: ${MODEL}..."
-python scan_param/run_training_cli.py \
-    --root "${ROOT_PATH}" \
-    --tree "${TREE_NAME}" \
-    --epochs ${EPOCHS} \
-    --batch ${BATCH} \
-    --chunksize ${CHUNK_SIZE} \
-    --lr ${LR} \
-    --weight_decay ${WEIGHT_DECAY} \
-    --drop_path_rate ${DROP_PATH} \
-    --time_shift ${TIME_SHIFT} \
-    --time_scale ${TIME_SCALE} \
-    --sentinel_value ${SENTINEL_VALUE} \
-    --use_scheduler ${SCHEDULER} \
-    --warmup_epochs ${WARMUP_EPOCHS} \
-    --onnx "${ONNX}" \
-    --mlflow_experiment "${MLFLOW_EXPERIMENT}" \
-    --NphoScale ${NPHO_SCALE} \
-    --NphoScale2 ${NPHO_SCALE2} \
-    --reweight_mode "${REWEIGHT_MODE}" \
-    --loss_type "${LOSSTYPE}" \
-    --loss_beta "${LOSS_BETA}" \
-    --run_name "${RUN_NAME}" \
-    --model "${MODEL}" \
-    --resume_from "${RESUME_FROM}" \
-    --ema_decay "${EMA_DECAY}"
+echo "[JOB] Running training with config: ${CONFIG_FILE}..."
+python scan_param/run_training_cli.py \\
+    --config "${CONFIG_FILE}" \\
+    --run_name "${RUN_NAME}" ${CLI_ARGS}
 
 echo "[JOB] Finished."
 EOF
