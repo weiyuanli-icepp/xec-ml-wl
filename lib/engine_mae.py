@@ -10,24 +10,36 @@ from .geom_defs import (
     OUTER_COARSE_FULL_INDEX_MAP, TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows
 )
 
-def run_epoch_mae(model, optimizer, device, root, tree, 
-                  batch_size=8192, step_size=4000, 
+def run_epoch_mae(model, optimizer, device, root, tree,
+                  batch_size=8192, step_size=4000,
                   amp=True,
                   npho_branch="relative_npho", time_branch="relative_time",
                   NphoScale=1e5, NphoScale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0,
-                  channel_dropout_rate=0.1):
+                  channel_dropout_rate=0.1,
+                  grad_clip=1.0,
+                  scaler=None):
     model.train()
-    scaler = torch.amp.GradScaler('cuda', enabled=amp)
+    if scaler is None:
+        scaler = torch.amp.GradScaler('cuda', enabled=amp)
 
+    # Per-face total losses
     face_loss_sums = {
-        "inner": 0.0,
-        "us":    0.0,
-        "ds":    0.0,
-        "outer": 0.0,
-        "top":   0.0,
-        "bot":   0.0
+        "inner": 0.0, "us": 0.0, "ds": 0.0,
+        "outer": 0.0, "top": 0.0, "bot": 0.0
+    }
+    # Per-face npho losses
+    face_npho_loss_sums = {
+        "inner": 0.0, "us": 0.0, "ds": 0.0,
+        "outer": 0.0, "top": 0.0, "bot": 0.0
+    }
+    # Per-face time losses
+    face_time_loss_sums = {
+        "inner": 0.0, "us": 0.0, "ds": 0.0,
+        "outer": 0.0, "top": 0.0, "bot": 0.0
     }
     total_loss_sum = 0.0
+    total_npho_loss_sum = 0.0
+    total_time_loss_sum = 0.0
     n_batches = 0
    
     branches = [npho_branch, time_branch]
@@ -165,12 +177,22 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                         else:
                             mask_expanded = torch.ones_like(pred)
 
-                        loss_map = F.mse_loss(pred, targets[name], reduction='none')
-                        face_loss = (loss_map * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
+                        # Separate npho (channel 0) and time (channel 1) losses
+                        target = targets[name]
+                        loss_map_npho = F.mse_loss(pred[:, 0:1], target[:, 0:1], reduction='none')
+                        loss_map_time = F.mse_loss(pred[:, 1:2], target[:, 1:2], reduction='none')
+
+                        npho_loss = (loss_map_npho * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
+                        time_loss = (loss_map_time * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
+                        face_loss = npho_loss + time_loss
+
                         face_loss_sums[name] += face_loss.item()
+                        face_npho_loss_sums[name] += npho_loss.item()
+                        face_time_loss_sums[name] += time_loss.item()
                         loss += face_loss
+
                         if not debug_printed:
-                            print(f"[DEBUG] Loss Component '{name}': {face_loss.item():.6e}")
+                            print(f"[DEBUG] Loss Component '{name}': {face_loss.item():.6e} (npho: {npho_loss.item():.6e}, time: {time_loss.item():.6e})")
                         
                 if not debug_printed:
                     print(f"[DEBUG] Total Loss: {loss.item():.6e}")
@@ -178,32 +200,81 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                     debug_printed = True
 
             scaler.scale(loss).backward()
+
+            # Gradient clipping
+            if grad_clip > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
             scaler.step(optimizer)
             scaler.update()
-            
+
             total_loss_sum += loss.item()
+            total_npho_loss_sum += sum(face_npho_loss_sums.values()) / max(1, len(face_npho_loss_sums))
+            total_time_loss_sum += sum(face_time_loss_sums.values()) / max(1, len(face_time_loss_sums))
             n_batches += 1
-                        
-    # Return averaged face losses alongside the total
-    avg_face_losses = {f"loss_{k}": v / n_batches for k, v in face_loss_sums.items()}
-    avg_face_losses["total_loss"] = total_loss_sum / n_batches
-    return avg_face_losses
-    # return total_loss_sum / max(1, n_batches)
+
+    # Return averaged losses with detailed breakdown
+    metrics = {}
+
+    # Total losses
+    metrics["total_loss"] = total_loss_sum / max(1, n_batches)
+    metrics["loss_npho"] = total_npho_loss_sum / max(1, n_batches)
+    metrics["loss_time"] = total_time_loss_sum / max(1, n_batches)
+
+    # Per-face total losses
+    for name, val in face_loss_sums.items():
+        metrics[f"loss_{name}"] = val / max(1, n_batches)
+
+    # Per-face npho losses
+    for name, val in face_npho_loss_sums.items():
+        metrics[f"loss_{name}_npho"] = val / max(1, n_batches)
+
+    # Per-face time losses
+    for name, val in face_time_loss_sums.items():
+        metrics[f"loss_{name}_time"] = val / max(1, n_batches)
+
+    return metrics
 
 def run_eval_mae(model, device, root, tree,
                  batch_size=8192, step_size=4000,
                  amp=True,
                  npho_branch="relative_npho", time_branch="relative_time",
-                 NphoScale=1e5, NphoScale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0):
+                 NphoScale=1e5, NphoScale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0,
+                 collect_predictions=False, max_events=1000):
+    """
+    Evaluate MAE model on validation data.
+
+    Args:
+        collect_predictions: If True, collect sensor-level predictions for ROOT output
+        max_events: Max events to collect when collect_predictions=True
+
+    Returns:
+        If collect_predictions=False: dict of metrics
+        If collect_predictions=True: (dict of metrics, dict of predictions)
+    """
     model.eval()
-    
+
+    # Loss tracking
+    face_loss_sums = {"inner": 0.0, "us": 0.0, "ds": 0.0, "outer": 0.0, "top": 0.0, "bot": 0.0}
+    face_npho_loss_sums = {"inner": 0.0, "us": 0.0, "ds": 0.0, "outer": 0.0, "top": 0.0, "bot": 0.0}
+    face_time_loss_sums = {"inner": 0.0, "us": 0.0, "ds": 0.0, "outer": 0.0, "top": 0.0, "bot": 0.0}
     total_loss = 0.0
     n_batches = 0
+
+    # Prediction collection
+    predictions = {
+        "truth_npho": [], "truth_time": [],
+        "pred_npho": [], "pred_time": [],
+        "mask": [], "x_masked": []
+    }
+    n_collected = 0
+
     branches = [npho_branch, time_branch]
-    
+
     top_indices = torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long()
     bot_indices = torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long()
-    
+
     face_to_sensor_indices = {
         "inner": INNER_INDEX_MAP,
         "us":    US_INDEX_MAP,
@@ -240,7 +311,29 @@ def run_eval_mae(model, device, root, tree,
             
             with torch.no_grad():
                 with torch.amp.autocast('cuda', enabled=amp):
-                    recons, mask = model(x_in)
+                    # Get masked input for visualization
+                    x_masked, mask = model.random_masking(x_in)
+                    latent_seq = model.encoder.forward_features(x_masked)
+
+                    # Decode each face
+                    cnn_names = list(model.encoder.cnn_face_names)
+                    name_to_idx = {name: i for i, name in enumerate(cnn_names)}
+                    if model.encoder.outer_fine:
+                        outer_idx = len(cnn_names)
+                        top_idx = outer_idx + 1
+                    else:
+                        outer_idx = name_to_idx.get("outer_coarse", name_to_idx.get("outer_center"))
+                        top_idx = len(cnn_names)
+                    bot_idx = top_idx + 1
+
+                    recons = {
+                        "inner": model.dec_inner(latent_seq[:, name_to_idx["inner"]]),
+                        "us":    model.dec_us(latent_seq[:, name_to_idx["us"]]),
+                        "ds":    model.dec_ds(latent_seq[:, name_to_idx["ds"]]),
+                        "outer": model.dec_outer(latent_seq[:, outer_idx]),
+                        "top":   model.dec_top(latent_seq[:, top_idx]),
+                        "bot":   model.dec_bot(latent_seq[:, bot_idx]),
+                    }
                     
                     # if hasattr(model, "encoder") and getattr(model.encoder, "outer_fine", False):
                     #     outer_target = build_outer_fine_grid_tensor(
@@ -258,7 +351,7 @@ def run_eval_mae(model, device, root, tree,
                         "top":   gather_hex_nodes(x_in, top_indices).permute(0, 2, 1),
                         "bot":   gather_hex_nodes(x_in, bot_indices).permute(0, 2, 1)
                     }
-                    
+
                     loss = 0.0
                     for name, pred in recons.items():
                         if name in targets:
@@ -266,10 +359,52 @@ def run_eval_mae(model, device, root, tree,
                             if indices is not None:
                                 m_face = mask[:, indices]
                                 mask_expanded = m_face.unsqueeze(1) if name in ["top", "bot"] else m_face.view(mask.size(0), 1, *pred.shape[-2:])
-                                loss_map = F.mse_loss(pred, targets[name], reduction='none')
-                                loss += (loss_map * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
-                            
+
+                                target = targets[name]
+                                loss_map_npho = F.mse_loss(pred[:, 0:1], target[:, 0:1], reduction='none')
+                                loss_map_time = F.mse_loss(pred[:, 1:2], target[:, 1:2], reduction='none')
+
+                                npho_loss = (loss_map_npho * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
+                                time_loss = (loss_map_time * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
+                                face_loss = npho_loss + time_loss
+
+                                face_loss_sums[name] += face_loss.item()
+                                face_npho_loss_sums[name] += npho_loss.item()
+                                face_time_loss_sums[name] += time_loss.item()
+                                loss += face_loss
+
+                    # Collect predictions for ROOT output
+                    if collect_predictions and n_collected < max_events:
+                        n_to_collect = min(X_b.shape[0], max_events - n_collected)
+                        predictions["truth_npho"].append(x_in[:n_to_collect, :, 0].cpu().numpy())
+                        predictions["truth_time"].append(x_in[:n_to_collect, :, 1].cpu().numpy())
+                        predictions["mask"].append(mask[:n_to_collect].cpu().numpy())
+                        predictions["x_masked"].append(x_masked[:n_to_collect].cpu().numpy())
+                        # Note: pred reconstruction is per-face, need to reassemble to full sensor array
+                        # For now, store masked input for display purposes
+                        n_collected += n_to_collect
+
             total_loss += loss.item()
             n_batches += 1
-            
-    return total_loss / max(1, n_batches)
+
+    # Build metrics dict
+    metrics = {}
+    metrics["total_loss"] = total_loss / max(1, n_batches)
+
+    for name, val in face_loss_sums.items():
+        metrics[f"loss_{name}"] = val / max(1, n_batches)
+    for name, val in face_npho_loss_sums.items():
+        metrics[f"loss_{name}_npho"] = val / max(1, n_batches)
+    for name, val in face_time_loss_sums.items():
+        metrics[f"loss_{name}_time"] = val / max(1, n_batches)
+
+    if collect_predictions:
+        # Concatenate collected predictions
+        for key in predictions:
+            if predictions[key]:
+                predictions[key] = np.concatenate(predictions[key], axis=0)
+            else:
+                predictions[key] = np.array([])
+        return metrics, predictions
+
+    return metrics

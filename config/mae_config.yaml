@@ -9,7 +9,7 @@ data:
   tree_name: "tree"
   batch_size: 8192
   chunksize: 256000
-  num_workers: 4
+  num_workers: 4                    # DataLoader workers
 
 # === Input Normalization ===
 # Same as regressor training to ensure consistency
@@ -32,11 +32,16 @@ training:
   lr: 1.0e-4
   weight_decay: 1.0e-4
   channel_dropout_rate: 0.0
+  grad_clip: 1.0                    # Gradient clipping (0 to disable)
+  ema_decay: null                   # EMA decay rate (null to disable, 0.999 typical)
+  amp: true                         # Automatic Mixed Precision
 
 # === Checkpointing ===
 checkpoint:
   resume_from: null                 # Path to checkpoint to resume from
   save_dir: "artifacts"             # Directory to save checkpoints
+  save_interval: 10                 # Save checkpoint every N epochs
+  save_predictions: true            # Save sensor-level predictions to ROOT file
 
 # === MLflow ===
 mlflow:

@@ -2,7 +2,7 @@
 
 ## Machine Learning Model for the MEG II Liquid Xenon (LXe) Detector
 
-This repository contains machine learning model (CNN + Graph Transformer) to regress the emission angle (**$\theta$**, **$\phi$**) of photons detected by the LXe detector, utilizing both photon count (**$N_{\mathrm{pho}}$**) and timing information (**$t_{\mathrm{pm}}$**) in each photo-sensor (4092 SiPMs and 668 PMTs).
+This repository contains machine learning model (CNN + Graph Transformer) to regress physical observables including emission angle (**$\theta$**, **$\phi$**), energy, timing, and position (**uvwFI**) from photons detected by the LXe detector, utilizing both photon count (**$N_{\mathrm{pho}}$**) and timing information (**$t_{\mathrm{pm}}$**) in each photo-sensor (4092 SiPMs and 668 PMTs).
 
 This model respects the complex topology of the detector by combining:
 1.  **ConvNeXt V2** for rectangular faces (Inner, Outer, US, DS).
@@ -23,7 +23,7 @@ These x86-based nodes use the system Anaconda module:
 
 ```bash
 $ module load anaconda/2024.08
-$ conda env create -f env_setting/xec-ml-wl.yml
+$ conda env create -f env_setting/xec-ml-wl-gpu.yml
 ```
 
 ### 2. Grace-Hopper Nodes (gh-* partition)
@@ -77,29 +77,42 @@ $ chmod +x start_jupyter_xec_gpu.sh submit_job.sh run_scan.sh
 
 ### A. Batch Training
 
-We use `submit_job.sh`, which automatically detects the CPU architecture of the allocated node and activates the correct environment (x86 or ARM).
+We use `submit_job.sh`, which automatically detects the CPU architecture of the allocated node and activates the correct environment (x86 or ARM). Training is now **config-based** using YAML files.
 
 #### 1. Quick Submission
 
 ```bash
 # Usage:
-# ./submit_job.sh [RUN_NAME] [MODEL] [EPOCHS] [REWEIGHT] [LOSS] [LR] [BATCH] [RESUME] [PARTITION] [TIME]
-$ ./submit_job.sh test_run_01 convnextv2 20 none smooth_l1 3e-4 1024 "" a100-hourly 04:00:00
+# ./submit_job.sh [RUN_NAME] [CONFIG_FILE] [PARTITION] [TIME]
+$ cd scan_param
+$ ./submit_job.sh test_run_01 ../config/train_config.yaml a100-daily 12:00:00
 ```
 
-#### 2. Hyperparameter Scanning
+#### 2. Config + CLI Overrides
+
+Override specific parameters via environment variables:
 
 ```bash
-# Inside run_scan.sh:
-export EMA_DECAY=0.999
-export LOSS_BETA=1.0
+# Override epochs and learning rate
+$ EPOCHS=100 LR=1e-4 ./submit_job.sh my_run ../config/train_config.yaml a100-daily 12:00:00
 
-./submit_job.sh scan_run_01 ...
+# Enable multiple tasks
+$ TASKS="angle energy" ./submit_job.sh multi_task_run ../config/train_config.yaml a100-daily 12:00:00
 ```
 
-#### 3. Optimization Best Practices
+#### 3. Direct Python Training
 
-For GH nodes, use the following settings in run_scan.sh to maximize the throughput:
+```bash
+# Config-based training
+$ python train_xec_regressor.py --config config/train_config.yaml
+
+# CLI with config file
+$ python scan_param/run_training_cli.py --config config/train_config.yaml --train_path /path/train --val_path /path/val
+```
+
+#### 4. Optimization Best Practices
+
+For GH nodes, use the following settings to maximize throughput:
 * **Batch Size**: 16384 (Uses ~65GB VRAM, ~70% capacity)
 * **Chunk Size**: 524880 (320 Batches)
 * **Memory**: Normally uses 5-10GB RAM
@@ -124,12 +137,18 @@ The library supports self-supervised pre-training using a Masked Autoencoder (MA
 Pretrain the encoder with a masked autoencoder and save the encoder weights for later regression runs (use `--resume_from` in training).
 
 ```bash
-# Default outer_mode=split
-python lib/train_mae.py --root /path/to/data.root --save_path mae_pretrained.pth --epochs 20 --batch_size 1024
+# CLI mode (legacy)
+python -m lib.train_mae --train_root /path/to/data.root --save_path mae_pretrained.pth --epochs 20 --batch_size 1024
 
 # Finegrid outer face (optional)
-python lib/train_mae.py --root /path/to/data.root --save_path mae_pretrained.pth --epochs 20 --batch_size 1024 \
+python -m lib.train_mae --train_root /path/to/data.root --save_path mae_pretrained.pth --epochs 20 --batch_size 1024 \
   --outer_mode finegrid --outer_fine_pool 3 3
+
+# Config mode (recommended)
+python -m lib.train_mae --config config/mae_config.yaml
+
+# Config + CLI override
+python -m lib.train_mae --config config/mae_config.yaml --epochs 50 --train_root /path/to/train
 ```
 
 #### 1. Running Pre-training
@@ -172,6 +191,101 @@ Once pre-training is complete, one can load the learned encoder weights into the
 - **Full checkpoint**: If resuming a regression run, it loads the optimizer state, epoch, and full model to continue exactly where it left off.
 - **MAE Weights**: If loading an MAE file, it detects "raw weights", loads only the encoder (skipping the regression head), initiallize the EMA model correctly, and resets the epoch counter to 1 for fresh fine-tuning
 
+### D. Multi-Task Learning
+
+The model supports simultaneous regression of multiple physical observables. Configure tasks in `config/train_config.yaml`:
+
+```yaml
+tasks:
+  angle:
+    enabled: true
+    loss_fn: "smooth_l1"    # smooth_l1, l1, mse, huber
+    loss_beta: 1.0
+    weight: 1.0
+  energy:
+    enabled: false
+    loss_fn: "l1"
+    weight: 1.0
+  timing:
+    enabled: false
+    loss_fn: "l1"
+    weight: 1.0
+  uvwFI:
+    enabled: false
+    loss_fn: "mse"
+    weight: 1.0
+```
+
+**Models:**
+- `XECRegressor`: Single-task (angle-only, legacy)
+- `XECMultiHeadModel`: Multi-task with shared backbone and task-specific heads
+
+**Task Output Dimensions:**
+| Task | Output | Description |
+|------|--------|-------------|
+| `angle` | 2 | (θ, φ) emission angles |
+| `energy` | 1 | Energy |
+| `timing` | 1 | Timing |
+| `uvwFI` | 3 | (u, v, w) position coordinates |
+
+**Experimental Heads** (available but not fully tested):
+| Task | Output | Description |
+|------|--------|-------------|
+| `angleVec` | 3 | Emission direction unit vector (x, y, z) |
+| `n_gamma` | 5 | Number of gammas classification (0-4) |
+
+### E. Sample Reweighting
+
+Balance training distributions using histogram-based reweighting. This helps when certain regions (e.g., specific angles or energies) are underrepresented in training data.
+
+Configure in `config/train_config.yaml`:
+
+```yaml
+reweighting:
+  angle:
+    enabled: true
+    nbins_2d: [20, 20]    # (theta_bins, phi_bins)
+  energy:
+    enabled: false
+    nbins: 30
+  timing:
+    enabled: false
+    nbins: 30
+  uvwFI:
+    enabled: false
+    nbins_2d: [10, 10]    # (u_bins, v_bins) - uses same for w
+```
+
+The `SampleReweighter` class (`lib/reweighting.py`) fits histograms on training data and computes per-sample weights to balance underrepresented regions during training.
+
+### F. Data Format
+
+ROOT files with TTree structure. Default tree name: `tree`.
+
+**Input Branches** (shape: 4760 per event):
+| Branch | Description |
+|--------|-------------|
+| `relative_npho` | Normalized photon counts per sensor |
+| `relative_time` | Normalized timing per sensor |
+
+**Truth Branches:**
+| Branch | Shape | Description |
+|--------|-------|-------------|
+| `emiAng` | (2,) | Emission angle (θ, φ) in radians |
+| `energyTruth` | (1,) | True gamma energy |
+| `timeTruth` | (1,) | True gamma timing |
+| `uvwTruth` | (3,) | First interaction position (u, v, w) |
+| `xyzTruth` | (3,) | First interaction position (x, y, z) |
+| `emiVec` | (3,) | Emission direction unit vector |
+| `xyzVTX` | (3,) | Vertex position (gamma origin) |
+| `run` | (1,) | Run number |
+| `event` | (1,) | Event number |
+
+**Preprocessing:**
+- Npho values are scaled by `npho_scale` (default: 0.58) and `npho_scale2` (default: 1.0)
+- Time values are scaled by `time_scale` (default: 6.5e-8) and shifted by `time_shift` (default: 0.5)
+- Bad/missing channels are marked with `sentinel_value` (default: -5.0)
+
 ---
 
 ## 3. Output & Artifacts
@@ -183,7 +297,7 @@ All results are logged to **MLflow** and stored in the `artifacts/<RUN_NAME>/` d
 * `checkpoint_best.pth` — Best model weights (includes EMA state).
 * `checkpoint_last.pth` — Last epoch's model weights (includes EMA state).
 * `predictions_*.csv` — Validation predictions vs truth.
-* `meg2ang_*.onnx` — Exported ONNX model for C++ inference.
+* `*.onnx` — Exported ONNX model for C++ inference (supports single-task and multi-task).
 * `validation_results_*.root` — ROOT file containing event-by-event predictions and truth variables.
 
 ### Plots
@@ -445,26 +559,30 @@ graph TD
 2. Graph Attention (GAT): Veličković, P., et al. "Graph Attention Networks." ICLR 2018.
 3. Transformer: Vaswani, A., et al. "Attention Is All You Need." NeurIPS 2017.
 
-### Argument List (`run_training_cli.py`)
+### Configuration Parameters
 
-| Argument          | Default         | Description                      |
-| ----------------- | --------------- | -------------------------------- |
-| `--root`          | Required        | Path to input ROOT file          |
-| `--model`         | `convnextv2`    | Model architecture               |
-| `--epochs`        | `20`            | Training epochs                  |
-| `--batch`         | `256`           | Batch size                       |
-| `--lr`            | `3e-4`          | Learning rate                    |
-| `--loss_type`     | `smooth_l1`     | Loss function                    |
-| `--loss_beta`     | `1.0`           | SmoothL1 parameter               |
-| `--ema_decay`     | `0.999`         | EMA decay rate (-1 disables EMA) |
-| `--reweight_mode` | `none`          | theta / phi / theta_phi          |
-| `--use_scheduler` | `-1`            | -1 for cosine, 1 for constant    |
-| `--npho_branch`   | `relative_npho` | Photon count branch              |
-| `--time_branch`   | `relative_time` | Timing branch                    |
-| `--NphoScale`     | `1e5`           | Photon count normalization       |
-| `--time_scale`    | `2.32e6`        | Time normalization               |
-| `--time_shift`    | `-0.29`         | Offset shift                     |
-| `--onnx`          | `*.onnx`        | Output ONNX filename             |
+Training is now **config-based** using `config/train_config.yaml`. CLI arguments can override config values.
+
+| Parameter | Config Path | Default | Description |
+|-----------|-------------|---------|-------------|
+| `--train_path` | `data.train_path` | Required | Path to training ROOT file(s) |
+| `--val_path` | `data.val_path` | Required | Path to validation ROOT file(s) |
+| `--batch` | `data.batch_size` | `256` | Batch size |
+| `--chunksize` | `data.chunksize` | `256000` | Events per ROOT read |
+| `--epochs` | `training.epochs` | `20` | Training epochs |
+| `--lr` | `training.lr` | `3e-4` | Learning rate |
+| `--weight_decay` | `training.weight_decay` | `1e-4` | Weight decay |
+| `--warmup_epochs` | `training.warmup_epochs` | `2` | Warmup epochs |
+| `--ema_decay` | `training.ema_decay` | `0.999` | EMA decay rate |
+| `--grad_clip` | `training.grad_clip` | `1.0` | Gradient clipping |
+| `--npho_scale` | `normalization.npho_scale` | `0.58` | Photon count normalization |
+| `--npho_scale2` | `normalization.npho_scale2` | `1.0` | Secondary npho normalization |
+| `--time_scale` | `normalization.time_scale` | `6.5e-8` | Time normalization |
+| `--time_shift` | `normalization.time_shift` | `0.5` | Time offset shift |
+| `--sentinel_value` | `normalization.sentinel_value` | `-5.0` | Bad channel marker |
+| `--outer_mode` | `model.outer_mode` | `finegrid` | Outer face mode (`finegrid` or `split`) |
+| `--tasks` | `tasks.*` | angle only | Enable specific tasks (angle, energy, timing, uvwFI) |
+| `--resume_from` | `checkpoint.resume_from` | `null` | Path to checkpoint to resume |
 
 ---
 
@@ -481,11 +599,22 @@ or
 
 ## 6. Real Data Validation
 Validation using real data can be performed in the following procedure
-### 1. Convert checkpoint files to ONNX files (`export_onnx.py`)
+### 1. Convert checkpoint files to ONNX files (`macro/export_onnx.py`)
     ```bash
-    $ python export_onnx.py \
+    # Single-task (angle-only)
+    $ python macro/export_onnx.py \
     artifacts/<RUN_NAME>/checkpoint_best.pth \
-    --output onnx/<RUN_NAME>_<date_time>.onnx
+    --output model.onnx
+
+    # Multi-task (auto-detect from checkpoint)
+    $ python macro/export_onnx.py \
+    artifacts/<RUN_NAME>/checkpoint_best.pth \
+    --multi-task --output model.onnx
+
+    # Multi-task (specify tasks)
+    $ python macro/export_onnx.py \
+    artifacts/<RUN_NAME>/checkpoint_best.pth \
+    --multi-task --tasks angle energy --output model.onnx
     ```
 ### 2. Process rec files to a input file for ONNX run time script (`macro/PrepareRealData.C`)
     ```bash
@@ -510,10 +639,12 @@ Validation using real data can be performed in the following procedure
 * Now we can start inference
     ```bash
     $ python inference_real_data.py \
-        --onnx onnx/<RUN_NAME>_<date_time>.onnx \
+        --onnx onnx/<RUN_NAME>.onnx \
         --input val_data/DataGammaAngle_<start_runnumber>-<end_runnumber>.root \
         --output Output_Run<start_runnumber>-<end_runnumber>.root \
-        --NphoScale 1.0 --time_scale 2.32e6
+        --npho_scale 0.58 --npho_scale2 1.0 \
+        --time_scale 6.5e-8 --time_shift 0.5 \
+        --sentinel_value -5.0
     ```
 ### 4. Check inference result with plotting macro
     ```bash
@@ -533,6 +664,13 @@ graph TD
     classDef scan fill:#fce4ec,stroke:#880e4f,stroke-width:2px,color:#000000;
     classDef val fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px,color:#000000;
     classDef macro fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000000;
+    classDef config fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000000;
+
+    %% -- Configuration (Yellow) --
+    subgraph "Config (config/)"
+        TrainYaml(train_config.yaml):::config
+        MaeYaml(mae_config.yaml):::config
+    end
 
     %% -- Training & Scanning (Pink) --
     subgraph "HP-Scanning (scan_param/)"
@@ -548,16 +686,26 @@ graph TD
         Engine(engine.py):::lib
         Model(model.py):::lib
         Blocks(model_blocks.py):::lib
-        
+
+        %% Config & Data
+        Config(config.py):::lib
+        Dataset(dataset.py):::lib
+
+        %% MAE Components
+        EngineMae(engine_mae.py):::lib
+        ModelMae(model_mae.py):::lib
+        TrainMae(train_mae.py):::lib
+
         %% Utilities
         Utils(utils.py):::lib
-        Reweight(angle_reweighting.py):::lib
+        Reweight(reweighting.py):::lib
+        ReweightLegacy(angle_reweighting.py):::lib
         Metrics(metrics.py):::lib
-        
+
         %% Visualization
         Plotting(plotting.py):::lib
         EventDisp(event_display.py):::lib
-        
+
         %% Geometry Foundation
         Geom(geom_utils.py / geom_defs.py):::lib
     end
@@ -578,6 +726,10 @@ graph TD
 
     %% -- Dependencies --
 
+    %% 0. Config Flow
+    TrainYaml --> CLI
+    MaeYaml --> TrainMae
+
     %% 1. Scanning Flow
     RunScan --> Submit
     Submit --> CLI
@@ -586,12 +738,20 @@ graph TD
     %% 2. Main Script Orchestration (The Glue)
     TrainScript -->|Runs Loop| Engine
     TrainScript -->|Init| Model
+    TrainScript -->|Load Config| Config
+    TrainScript -->|Load Data| Dataset
     TrainScript -->|Calc Weights| Reweight
+    TrainScript -.->|Legacy| ReweightLegacy
     TrainScript -->|Saliency/RAM| Utils
     TrainScript -->|End Plots| Plotting
     TrainScript -->|Worst Events| EventDisp
 
-    %% 3. Internal Library Dependencies
+    %% 3. MAE Training Flow
+    TrainMae -->|Runs Loop| EngineMae
+    TrainMae -->|Init| ModelMae
+    ModelMae -->|Uses Encoder| Model
+
+    %% 4. Internal Library Dependencies
     Engine -->|Calculates Stats| Metrics
     Engine -->|Train/Val| Model
     Model --> Blocks

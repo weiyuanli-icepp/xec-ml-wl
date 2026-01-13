@@ -295,6 +295,9 @@ class MAETrainingConfig:
     lr: float = 1e-4
     weight_decay: float = 1e-4
     channel_dropout_rate: float = 0.1
+    grad_clip: float = 1.0
+    ema_decay: Optional[float] = None  # None = disabled, 0.999 = typical value
+    amp: bool = True
 
 
 @dataclass
@@ -302,6 +305,8 @@ class MAECheckpointConfig:
     """Checkpoint configuration for MAE."""
     resume_from: Optional[str] = None
     save_dir: str = "artifacts"
+    save_interval: int = 10  # Save checkpoint every N epochs
+    save_predictions: bool = True  # Save ROOT file with sensor predictions
 
 
 @dataclass

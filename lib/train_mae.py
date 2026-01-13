@@ -5,6 +5,10 @@ import os
 import glob
 import psutil
 import mlflow
+import uproot
+import numpy as np
+
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 
 from .model import XECRegressor
 from .model_mae import XEC_MAE
@@ -24,6 +28,43 @@ torch.set_float32_matmul_precision('high')
 # Disable Debugging/Profiling overhead
 torch.autograd.set_detect_anomaly(False)
 torch.autograd.profiler.emit_nvtx(False)
+
+
+def save_predictions_to_root(predictions, save_path, epoch):
+    """
+    Save MAE predictions to ROOT file for analysis.
+
+    Args:
+        predictions: dict with keys: truth_npho, truth_time, pred_npho, pred_time, mask, x_masked
+        save_path: directory to save the file
+        epoch: current epoch number
+    """
+    root_path = os.path.join(save_path, f"mae_predictions_epoch_{epoch+1}.root")
+
+    n_events = len(predictions["truth_npho"])
+    if n_events == 0:
+        print(f"[WARN] No predictions to save")
+        return
+
+    # Prepare branches
+    branches = {
+        "event_id": np.arange(n_events, dtype=np.int32),
+        "truth_npho": predictions["truth_npho"].astype(np.float32),
+        "truth_time": predictions["truth_time"].astype(np.float32),
+        "mask": predictions["mask"].astype(np.float32),
+    }
+
+    # Add masked input if available
+    if "x_masked" in predictions and len(predictions["x_masked"]) > 0:
+        branches["masked_npho"] = predictions["x_masked"][:, :, 0].astype(np.float32)
+        branches["masked_time"] = predictions["x_masked"][:, :, 1].astype(np.float32)
+
+    with uproot.recreate(root_path) as f:
+        f["tree"] = branches
+
+    print(f"[INFO] Saved {n_events} events to {root_path}")
+    return root_path
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -52,6 +93,7 @@ Examples:
     parser.add_argument("--epochs",     type=int, default=None)
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--chunksize",  type=int, default=None, help="Number of events per read")
+    parser.add_argument("--num_workers", type=int, default=None, help="DataLoader workers")
 
     parser.add_argument("--npho_scale",     type=float, default=None)
     parser.add_argument("--npho_scale2",    type=float, default=None)
@@ -65,10 +107,13 @@ Examples:
     parser.add_argument("--lr",                   type=float, default=None)
     parser.add_argument("--weight_decay",         type=float, default=None)
     parser.add_argument("--channel_dropout_rate", type=float, default=None)
+    parser.add_argument("--grad_clip",            type=float, default=None)
+    parser.add_argument("--ema_decay",            type=float, default=None, help="EMA decay (None to disable)")
 
     parser.add_argument("--mlflow_experiment", type=str, default=None)
     parser.add_argument("--mlflow_run_name",   type=str, default=None)
     parser.add_argument("--resume_from",       type=str, default=None, help="Path to checkpoint to resume from")
+    parser.add_argument("--save_predictions",  action="store_true", help="Save sensor-level predictions to ROOT")
 
     args = parser.parse_args()
 
@@ -84,6 +129,7 @@ Examples:
         epochs = args.epochs if args.epochs is not None else cfg.training.epochs
         batch_size = args.batch_size if args.batch_size is not None else cfg.data.batch_size
         chunksize = args.chunksize if args.chunksize is not None else cfg.data.chunksize
+        num_workers = args.num_workers if args.num_workers is not None else cfg.data.num_workers
         npho_scale = args.npho_scale if args.npho_scale is not None else cfg.normalization.npho_scale
         npho_scale2 = args.npho_scale2 if args.npho_scale2 is not None else cfg.normalization.npho_scale2
         time_scale = args.time_scale if args.time_scale is not None else cfg.normalization.time_scale
@@ -95,9 +141,13 @@ Examples:
         lr = args.lr if args.lr is not None else cfg.training.lr
         weight_decay = args.weight_decay if args.weight_decay is not None else cfg.training.weight_decay
         channel_dropout_rate = args.channel_dropout_rate if args.channel_dropout_rate is not None else cfg.training.channel_dropout_rate
+        grad_clip = args.grad_clip if args.grad_clip is not None else getattr(cfg.training, 'grad_clip', 1.0)
+        ema_decay = args.ema_decay if args.ema_decay is not None else getattr(cfg.training, 'ema_decay', None)
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
         resume_from = args.resume_from or cfg.checkpoint.resume_from
+        save_predictions = args.save_predictions or getattr(cfg.checkpoint, 'save_predictions', False)
+        save_interval = getattr(cfg.checkpoint, 'save_interval', 10)
     else:
         # Pure CLI mode (legacy) - require train_root
         if not args.train_root:
@@ -109,6 +159,7 @@ Examples:
         epochs = args.epochs or 20
         batch_size = args.batch_size or 1024
         chunksize = args.chunksize or 256000
+        num_workers = args.num_workers or 8
         npho_scale = args.npho_scale or DEFAULT_NPHO_SCALE
         npho_scale2 = args.npho_scale2 or DEFAULT_NPHO_SCALE2
         time_scale = args.time_scale or DEFAULT_TIME_SCALE
@@ -120,10 +171,14 @@ Examples:
         lr = args.lr or 1e-4
         weight_decay = args.weight_decay or 1e-4
         channel_dropout_rate = args.channel_dropout_rate or 0.1
+        grad_clip = args.grad_clip or 1.0
+        ema_decay = args.ema_decay  # None by default
         mlflow_experiment = args.mlflow_experiment or "mae_pretraining"
         mlflow_run_name = args.mlflow_run_name
         resume_from = args.resume_from
-    
+        save_predictions = args.save_predictions
+        save_interval = 10
+
     def expand_path(p):
         path = os.path.expanduser(p)
         if os.path.isdir(path):
@@ -143,7 +198,7 @@ Examples:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    
+
     # Initialize Model
     outer_fine_pool_tuple = tuple(outer_fine_pool) if outer_fine_pool else None
     encoder = XECRegressor(
@@ -160,27 +215,43 @@ Examples:
         weight_decay=weight_decay
     )
 
+    # Initialize EMA model if enabled
+    ema_model = None
+    if ema_decay is not None and ema_decay > 0:
+        print(f"[INFO] EMA enabled with decay={ema_decay}")
+        ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
+
+    # Initialize GradScaler for AMP
+    scaler = torch.amp.GradScaler('cuda', enabled=True)
+
     # Resume from checkpoint if provided
     start_epoch = 0
+    best_val_loss = float('inf')
     if resume_from and os.path.exists(resume_from):
         print(f"[INFO] Resuming MAE from {resume_from}")
         checkpoint = torch.load(resume_from, map_location=device)
-        
+
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             model.load_state_dict(checkpoint['model_state_dict'])
             if "optimizer_state_dict" in checkpoint:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if "ema_state_dict" in checkpoint and ema_model is not None:
+                ema_model.load_state_dict(checkpoint['ema_state_dict'])
+            if "scaler_state_dict" in checkpoint:
+                scaler.load_state_dict(checkpoint['scaler_state_dict'])
             start_epoch = checkpoint.get('epoch', 0) + 1
-            print(f"[INFO] Resumed from epoch {start_epoch}")
+            best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+            print(f"[INFO] Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
         else:
             print("[WARN] Loaded raw weights. Starting from Epoch 1 (Optimizer reset).")
             model.load_state_dict(checkpoint, strict=False)
             start_epoch = 0
-    
+
     # MLflow Setup
     mlflow.set_experiment(mlflow_experiment)
     print(f"Starting MAE Pre-training in experiment: {mlflow_experiment}, run name: {mlflow_run_name}")
     os.makedirs(save_path, exist_ok=True)
+
     with mlflow.start_run(run_name=mlflow_run_name) as run:
         # Log parameters
         mlflow.log_params({
@@ -190,6 +261,7 @@ Examples:
             "epochs": epochs,
             "batch_size": batch_size,
             "chunksize": chunksize,
+            "num_workers": num_workers,
             "npho_scale": npho_scale,
             "npho_scale2": npho_scale2,
             "time_scale": time_scale,
@@ -201,15 +273,17 @@ Examples:
             "lr": lr,
             "weight_decay": weight_decay,
             "channel_dropout_rate": channel_dropout_rate,
+            "grad_clip": grad_clip,
+            "ema_decay": ema_decay,
         })
-    
-        # 5. Training Loop
+
+        # Training Loop
         print("Starting MAE epoch loop...")
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             t0 = time.time()
 
             # --- TRAIN ---
-            train_loss = run_epoch_mae(
+            train_metrics = run_epoch_mae(
                 model, optimizer, device, train_files, "tree",
                 batch_size=batch_size,
                 step_size=chunksize,
@@ -221,13 +295,25 @@ Examples:
                 time_shift=time_shift,
                 sentinel_value=sentinel_value,
                 channel_dropout_rate=channel_dropout_rate,
+                grad_clip=grad_clip,
+                scaler=scaler,
             )
 
+            # Update EMA model
+            if ema_model is not None:
+                ema_model.update_parameters(model)
+
             # --- VALIDATION ---
-            val_loss = 0.0
+            val_metrics = {}
+            predictions = None
+            eval_model = ema_model if ema_model is not None else model
+
             if val_files:
-                val_loss = run_eval_mae(
-                    model, device, val_files, "tree",
+                # Collect predictions on last epoch or at save intervals
+                collect_preds = save_predictions and ((epoch + 1) % save_interval == 0 or (epoch + 1) == epochs)
+
+                result = run_eval_mae(
+                    eval_model, device, val_files, "tree",
                     batch_size=batch_size,
                     step_size=chunksize,
                     npho_branch="relative_npho",
@@ -237,18 +323,33 @@ Examples:
                     time_scale=time_scale,
                     time_shift=time_shift,
                     sentinel_value=sentinel_value,
+                    collect_predictions=collect_preds,
+                    max_events=1000,
                 )
+
+                if collect_preds:
+                    val_metrics, predictions = result
+                else:
+                    val_metrics = result
 
             dt = time.time() - t0
 
+            # Print epoch summary
+            train_loss = train_metrics.get("total_loss", 0.0)
+            val_loss = val_metrics.get("total_loss", 0.0) if val_metrics else 0.0
             print(f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | Time: {dt:.1f}s")
-            
-            # Log training metrics
-            mlflow.log_metric("train_loss", train_loss, step=epoch)
-            if val_files:
-                mlflow.log_metric("val_loss", val_loss, step=epoch)
+
+            # Log training metrics to MLflow
+            for key, value in train_metrics.items():
+                mlflow.log_metric(f"train/{key}", value, step=epoch)
+
+            # Log validation metrics
+            if val_metrics:
+                for key, value in val_metrics.items():
+                    mlflow.log_metric(f"val/{key}", value, step=epoch)
+
             mlflow.log_metric("epoch_time_sec", dt, step=epoch)
-            
+
             # GPU stats
             if device.type == "cuda":
                 stats = get_gpu_memory_stats(device)
@@ -275,21 +376,55 @@ Examples:
                 }, step=epoch)
             except Exception as e:
                 print(f"[WARNING] Could not log CPU RAM stats: {e}")
-            
-            # Save model checkpoint every 10 epochs
-            if (epoch + 1) % 10 == 0 or (epoch + 1) == epochs:
-                full_ckpt_path = os.path.join(save_path, "mae_checkpoint_epoch_last.pth")
-                torch.save({
+
+            # Save predictions to ROOT file
+            if predictions is not None:
+                root_path = save_predictions_to_root(predictions, save_path, epoch)
+                if root_path:
+                    mlflow.log_artifact(root_path)
+
+            # Check if this is the best model
+            is_best = val_loss < best_val_loss if val_metrics else False
+            if is_best:
+                best_val_loss = val_loss
+
+            # Save model checkpoint at intervals
+            if (epoch + 1) % save_interval == 0 or (epoch + 1) == epochs or is_best:
+                checkpoint_dict = {
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
-                }, full_ckpt_path)
-                print(f"Saved full MAE checkpoint to {full_ckpt_path}")
+                    'scaler_state_dict': scaler.state_dict(),
+                    'best_val_loss': best_val_loss,
+                    'config': {
+                        'outer_mode': outer_mode,
+                        'outer_fine_pool': outer_fine_pool,
+                        'mask_ratio': mask_ratio,
+                    }
+                }
+                if ema_model is not None:
+                    checkpoint_dict['ema_state_dict'] = ema_model.state_dict()
 
+                # Save last checkpoint
+                full_ckpt_path = os.path.join(save_path, "mae_checkpoint_last.pth")
+                torch.save(checkpoint_dict, full_ckpt_path)
+                print(f"Saved MAE checkpoint to {full_ckpt_path}")
+
+                # Save best checkpoint
+                if is_best:
+                    best_ckpt_path = os.path.join(save_path, "mae_checkpoint_best.pth")
+                    torch.save(checkpoint_dict, best_ckpt_path)
+                    print(f"Saved best MAE checkpoint to {best_ckpt_path}")
+
+                # Save encoder weights for transfer learning
                 encoder_path = os.path.join(save_path, f"mae_encoder_epoch_{epoch+1}.pth")
-                torch.save(model.encoder.state_dict(), encoder_path)
+                encoder_to_save = ema_model.module.encoder if ema_model is not None else model.encoder
+                torch.save(encoder_to_save.state_dict(), encoder_path)
                 print(f"Saved encoder weights to {encoder_path}")
                 mlflow.log_artifact(encoder_path)
-                
+
+        print("[INFO] MAE Pre-training complete!")
+
+
 if __name__ == "__main__":
     main()
