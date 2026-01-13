@@ -205,10 +205,9 @@ Examples:
             device = torch.device("cuda")
         except Exception:
             print("[WARN] CUDA driver issue detected. Falling back to CPU.")
-    else: 
+            device = torch.device("cpu")
+    else:
         device = torch.device("cpu")
-        
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # Initialize Model

@@ -4,7 +4,7 @@
 # Usage:
 #   conda env create -f xec-ml-wl-gpu.yml
 #   (when updating) conda env update -f xec-ml-wl-gpu.yml --prune
-#   pip install torch-scatter torch-sparse torch-cluster torch-spline-conv torch-geometric -f https://data.pyg.org/whl/torch-2.9.0+cu130.html
+#   pip install torch-scatter torch-sparse torch-cluster torch-spline-conv torch-geometric -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
 #   (Until the stable v1.24 of onnxruntime-gpu comes out, which is planned to be late Jan. 2026) 
 #   $ pip install onnx --upgrade
 #   $ pip install --pre --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-13-nightly/pypi/simple/ onnxruntime-gpu
@@ -19,7 +19,7 @@ name: xec-ml-wl
 channels:
   - conda-forge
 dependencies:
-  - python=3.13
+  - python=3.12
   - pip
   - numpy
   - scipy
@@ -33,11 +33,22 @@ dependencies:
   - yaml
   - psutil
   - pip:
-      # PyTorch + CUDA 12.1 wheels from the official index
-      - --extra-index-url https://download.pytorch.org/whl/cu130
-      - torch==2.9.1
-      - torchvision==0.24.1
-      - torchaudio==2.9.1
+      # PyTorch for CUDA 12.1
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      # PyG for PyTorch 2.5.1 + CUDA 12.1
+      - --extra-index-url https://data.pyg.org/whl/torch-2.5.1+cu121.html
+
+      # Core ML libraries
+      - torch==2.5.1
+      - torchvision==0.20.1
+      - torchaudio==2.5.1
+
+      # PyTorch Geometric
+      - torch-scatter
+      - torch-sparse
+      - torch-cluster
+      - torch-spline-conv
+      - torch-geometric
 
       # HEP / I/O
       - uproot>=5.2
@@ -45,16 +56,15 @@ dependencies:
       - vector>=1.4
 
       # Training quality of life
-      - pytorch-lightning>=2.2
-      - torchmetrics>=1.4
+      - pytorch-lightning>=2.4.0
+      - torchmetrics==1.5.0
       - tensorboard>=2.17
 
       # Model export / inference
-      - onnx>=1.20.0
-      - onnxruntime-gpu>=1.23.2
+      - onnx==1.17.0
+      - onnxruntime-gpu==1.20.1
 
       # Experiment tracking
       - comet-ml>=3.44
       - mlflow
       - mlflow-export-import
-      # - transformers

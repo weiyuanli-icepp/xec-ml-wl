@@ -55,20 +55,27 @@ def build_hex_edge_index(row_lengths):
         for c in range(L):
             id_map[(r, c)] = node
             node += 1
-    edges = set()
+    # edges = set()
+    edges = []
     for (r, c), u in id_map.items():
+        # Self-connection
+        edges.append([u, u, 0])
+        
+        # Neighbor connections
         if r % 2 == 0:
             neigh = [(r, c-1), (r, c+1), (r-1, c-1), (r-1, c), (r+1, c-1), (r+1, c)]
         else:
             neigh = [(r, c-1), (r, c+1), (r-1, c), (r-1, c+1), (r+1, c), (r+1, c+1)]
-        for rr, cc in neigh:
+
+        for i, (rr, cc) in enumerate(neigh):
             if (rr, cc) in id_map:
-                edges.add((u, id_map[(rr, cc)]))
-                edges.add((id_map[(rr, cc)], u))
+                v = id_map[(rr, cc)]
+                edges.append([u, v, i+1])
     if edges:
-        edge_index = np.array(list(edges), dtype=np.int64).T
+        edge_index = np.array(edges, dtype=np.int64).T
     else:
-        edge_index = np.empty((2, 0), dtype=np.int64)
+        edge_index = np.empty((3, 0), dtype=np.int64)
+    
     dst = edge_index[1] if edge_index.size else np.array([], dtype=np.int64)
     deg = np.bincount(dst, minlength=node) if dst.size else np.zeros(node, dtype=np.int64)
     return edge_index, deg
