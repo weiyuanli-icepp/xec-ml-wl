@@ -21,14 +21,6 @@ except ImportError:
     print("Please ensure 'model.py' is in the current directory or python path.")
     sys.exit(1)
 
-# Task output dimensions
-TASK_OUTPUT_DIMS = {
-    "angle": 2,     # (theta, phi)
-    "energy": 1,    # energy
-    "timing": 1,    # timing
-    "uvwFI": 3,     # (u, v, w) position
-}
-
 def load_checkpoint_weights(checkpoint_path, prefer_ema=True):
     """
     Loads weights from a checkpoint, preferring EMA weights if available.
@@ -128,15 +120,19 @@ Examples:
     # 3. Initialize Model
     print("[INFO] Initializing Model...")
     if use_multi_task:
-        # Build task_output_dims dict
-        task_output_dims = {task: TASK_OUTPUT_DIMS[task] for task in active_tasks}
-        print(f"[INFO] Creating XECMultiHeadModel with tasks: {task_output_dims}")
+        print(f"[INFO] Creating XECMultiHeadModel with tasks: {active_tasks}")
 
-        model = XECMultiHeadModel(
-            task_output_dims=task_output_dims,
+        # First create the backbone (XECRegressor)
+        backbone = XECRegressor(
             outer_mode=args.outer_mode,
             outer_fine_pool=(3, 3),
             drop_path_rate=0.0  # Always 0 for export
+        )
+
+        # Then create the multi-head model with the backbone
+        model = XECMultiHeadModel(
+            backbone=backbone,
+            active_tasks=active_tasks
         )
     else:
         print("[INFO] Creating XECRegressor (single-task angle model)")
