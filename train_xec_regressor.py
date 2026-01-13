@@ -4,31 +4,33 @@ import os, time
 import numpy as np
 import pandas as pd
 import warnings
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
-from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 import mlflow
 import mlflow.pytorch
+warnings.filterwarnings("ignore", category=FutureWarning, module="mlflow.tracking._tracking_service.utils")
 import uproot
 import psutil
 import glob
 import random
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.tensorboard  import SummaryWriter
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.swa_utils    import AveragedModel, get_ema_multi_avg_fn
 
-warnings.filterwarnings("ignore", category=FutureWarning, module="mlflow.tracking._tracking_service.utils")
-
-from lib.model import XECRegressor
-from lib.event_display import plot_event_faces, plot_event_time
-from lib.angle_reweighting import scan_angle_hist_1d, scan_angle_hist_2d
-from lib.engine import run_epoch_stream
-from lib.utils import (
+from lib.model                import XECRegressor, XECMultiHeadModel, AutomaticLossScaler
+from lib.engine               import run_epoch_stream
+from lib.dataset              import get_dataloader
+from lib.event_display        import plot_event_faces, plot_event_time
+from lib.angle_reweighting    import scan_angle_hist_1d, scan_angle_hist_2d  # Legacy
+from lib.reweighting          import SampleReweighter, create_reweighter_from_config
+from lib.config               import load_config, get_active_tasks, get_task_weights, XECConfig
+from lib.utils                import (
     get_gpu_memory_stats,
     iterate_chunks,
     compute_face_saliency
 )
-from lib.plotting import (
+from lib.plotting             import (
     plot_resolution_profile,
     plot_face_weights,
     plot_profile,
@@ -37,6 +39,12 @@ from lib.plotting import (
     plot_saliency_profile
 )
 # ------------------------------------------------------------
+# Enable TensorFloat32
+torch.set_float32_matmul_precision('high')
+
+# Disable Debugging/Profiling overhead
+torch.autograd.set_detect_anomaly(False)
+torch.autograd.profiler.emit_nvtx(False)
 
 # ------------------------------------------------------------
 #  Main training entry
@@ -73,36 +81,44 @@ def main_xec_regressor_with_args(
     loss_beta=1.0,
     resume_from=None, 
     ema_decay=0.999,
+    channel_dropout_rate=0.1,
+    tasks="angle",
+    loss_balance="manual",
+    **kwargs
 ):
 
-    root = os.path.expanduser(root)
-    if os.path.isdir(root):
-        print(f"[INFO] Input is a directory. Scanning for *.root files in: {root}")
-        all_files = sorted(glob.glob(os.path.join(root, "*.root")))
-    else:
-        print(f"[INFO] Input is a path pattern. Resolving glob: {root}")
-        all_files = sorted(glob.glob(root))
+    # root = os.path.expanduser(root)
+    # if os.path.isdir(root):
+    #     print(f"[INFO] Input is a directory. Scanning for *.root files in: {root}")
+    #     all_files = sorted(glob.glob(os.path.join(root, "*.root")))
+    # else:
+    #     print(f"[INFO] Input is a path pattern. Resolving glob: {root}")
+    #     all_files = sorted(glob.glob(root))
         
-    if len(all_files) <= 10:
-        raise ValueError(f"[ERROR] Not enough ROOT files found ({len(all_files)}). Please check the input path.")
+    # if len(all_files) <= 10:
+    #     raise ValueError(f"[ERROR] Not enough ROOT files found ({len(all_files)}). Please check the input path.")
     
-    print(f"[INFO] Found {len(all_files)} ROOT files. First: {os.path.basename(all_files[0])}, Last: {os.path.basename(all_files[-1])}")
+    # print(f"[INFO] Found {len(all_files)} ROOT files. First: {os.path.basename(all_files[0])}, Last: {os.path.basename(all_files[-1])}")
 
-    random.Random(42).shuffle(all_files)
-    split_idx = int(0.9 * len(all_files))
-    train_files = all_files[:split_idx]
-    val_files = all_files[split_idx:]
-    print(f"[INFO] Data Split: {len(train_files)} Training files / {len(val_files)} Validation files")
+    # random.Random(42).shuffle(all_files)
+    # split_idx = int(0.9 * len(all_files))
+    # train_files = all_files[:split_idx]
+    # val_files = all_files[split_idx:]
+    # print(f"[INFO] Data Split: {len(train_files)} Training files / {len(val_files)} Validation files")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # --- Pass drop_path_rate to model ---
-    model = XECRegressor(
-        outer_mode=outer_mode,
-        outer_fine_pool=outer_fine_pool,
-        drop_path_rate=drop_path_rate
-    ).to(device)
-    # ------------------------------------
+    
+    train_loader = get_dataloader(train_files, batch_size=batch, num_workers=8, num_threads=4)
+    val_loader   = get_dataloader(val_files, batch_size=batch, num_workers=8, num_threads=4)
+    
+    # --- Define model ---
+    active_tasks = tasks.split(",")
+    base_regressor = XECRegressor(outer_mode=outer_mode,
+                         outer_fine_pool=outer_fine_pool,
+                         drop_path_rate=drop_path_rate)
+    model = XECMultiHeadModel(base_regressor, active_tasks=active_tasks).to(device)
+    model = torch.compile(model, mode="max-autotune", fullgraph=True, dynamic=False)
+    # --------------------
 
     # --- Optimizer ---
     decay, no_decay = [], []
@@ -113,7 +129,8 @@ def main_xec_regressor_with_args(
     optimizer = optim.AdamW(
         [{"params": decay, "weight_decay": weight_decay},
          {"params": no_decay, "weight_decay": 0.0}],
-        lr=lr
+        lr=lr,
+        fused=True
     )
     ema_model = None
     if ema_decay > 0.0:
@@ -127,6 +144,12 @@ def main_xec_regressor_with_args(
         ema_model.to(device)
     else:
         print(f"[INFO] EMA is DISABLED.")
+        
+    loss_scaler = None
+    if loss_balance == "auto":
+        print(f"[INFO] Using Automatic Loss Balancing.")
+        loss_scaler = AutomaticLossScaler(active_tasks).to(device)
+        optimizer.add_param_group({"params": loss_scaler.parameters()})
     # ------------------
     
     # --- Initialize Scaler ---
@@ -213,33 +236,8 @@ def main_xec_regressor_with_args(
         
         writer = SummaryWriter(log_dir=os.path.join("runs", run_name))
         
-        if start_epoch == 1: 
-            mlflow.log_params({
-                "root_file": root,
-                "tree": tree,
-                "epochs": epochs,
-                "batch": batch,
-                "chunksize": chunksize,
-                "weight_decay": weight_decay,
-                "drop_path_rate": drop_path_rate,
-                "time_shift": time_shift,
-                "time_scale": time_scale,
-                "sentinel_value": sentinel_value,
-                "scheduler": "Cosine+Warmup" if use_scheduler == -1 else "Constant",
-                "warmup_epochs": warmup_epochs,
-                "onnx_export": onnx,
-                "amp": amp,                
-                "npho_branch": npho_branch,
-                "time_branch": time_branch,
-                "NphoScale": NphoScale,
-                "NphoScale2": NphoScale2,
-                "reweight": reweight_mode,
-                "loss_type": loss_type,
-                "loss_beta": loss_beta,
-                "outer_mode": outer_mode,
-                "outer_fine_pool": outer_fine_pool,
-                "ema_decay": ema_decay,
-            })
+        if start_epoch == 1:
+            mlflow.log_params(locals().copy())
         
         # Reweighting histograms
         edges_theta = weights_theta = None
@@ -287,7 +285,8 @@ def main_xec_regressor_with_args(
                 loss_type=loss_type,
                 loss_beta=loss_beta,
                 scheduler=scheduler,
-                ema_model=ema_model
+                ema_model=ema_model,
+                channel_dropout_rate=channel_dropout_rate,
             )
 
             # VAL
@@ -320,7 +319,8 @@ def main_xec_regressor_with_args(
                 loss_type=loss_type,
                 loss_beta=loss_beta,
                 scheduler=scheduler,
-                ema_model=ema_model
+                ema_model=ema_model,
+                channel_dropout_rate=0.0,
             )
 
             sec = time.time() - t0
@@ -567,7 +567,7 @@ def main_xec_regressor_with_args(
                     dummy_input,
                     onnx_path,
                     export_params=True,
-                    opset_version=13,
+                    opset_version=20,
                     do_constant_folding=True,
                     input_names=['input'],
                     output_names=['output'],
@@ -581,3 +581,347 @@ def main_xec_regressor_with_args(
 
         writer.close()
     # ----------------------
+
+
+# ------------------------------------------------------------
+#  Config-based Training Entry
+# ------------------------------------------------------------
+def train_with_config(config_path: str):
+    """
+    Train XEC regressor using YAML config file.
+
+    Args:
+        config_path: Path to YAML configuration file.
+    """
+    # Load configuration
+    cfg = load_config(config_path)
+
+    # Get active tasks and their weights
+    active_tasks = get_active_tasks(cfg)
+    task_weights = get_task_weights(cfg)
+
+    if not active_tasks:
+        raise ValueError("No tasks enabled in config. Enable at least one task.")
+
+    print(f"[INFO] Active tasks: {active_tasks}")
+    print(f"[INFO] Task weights: {task_weights}")
+
+    # Device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[INFO] Using device: {device}")
+
+    # --- Data Loaders ---
+    norm_kwargs = {
+        "npho_scale": cfg.normalization.npho_scale,
+        "npho_scale2": cfg.normalization.npho_scale2,
+        "time_scale": cfg.normalization.time_scale,
+        "time_shift": cfg.normalization.time_shift,
+        "sentinel_value": cfg.normalization.sentinel_value,
+        "step_size": cfg.data.chunksize,
+    }
+
+    train_loader = get_dataloader(
+        cfg.data.train_path,
+        batch_size=cfg.data.batch_size,
+        num_workers=cfg.data.num_workers,
+        num_threads=cfg.data.num_threads,
+        **norm_kwargs
+    )
+
+    val_loader = get_dataloader(
+        cfg.data.val_path,
+        batch_size=cfg.data.batch_size,
+        num_workers=cfg.data.num_workers,
+        num_threads=cfg.data.num_threads,
+        **norm_kwargs
+    )
+
+    # --- Model ---
+    outer_fine_pool = tuple(cfg.model.outer_fine_pool) if cfg.model.outer_fine_pool else None
+    base_regressor = XECRegressor(
+        outer_mode=cfg.model.outer_mode,
+        outer_fine_pool=outer_fine_pool,
+        drop_path_rate=cfg.model.drop_path_rate
+    )
+    model = XECMultiHeadModel(
+        base_regressor,
+        active_tasks=active_tasks,
+        hidden_dim=cfg.model.hidden_dim
+    ).to(device)
+    model = torch.compile(model, mode="max-autotune", fullgraph=True, dynamic=False)
+
+    # --- Optimizer ---
+    decay, no_decay = [], []
+    for n, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        (no_decay if n.endswith(".bias") or "bn" in n.lower() or "norm" in n.lower() else decay).append(p)
+
+    optimizer = optim.AdamW(
+        [{"params": decay, "weight_decay": cfg.training.weight_decay},
+         {"params": no_decay, "weight_decay": 0.0}],
+        lr=cfg.training.lr,
+        fused=True
+    )
+
+    # --- EMA ---
+    ema_model = None
+    if cfg.training.ema_decay > 0.0:
+        print(f"[INFO] Using EMA with decay={cfg.training.ema_decay}")
+        ema_decay = cfg.training.ema_decay
+
+        def robust_ema_avg(averaged_model_parameter, model_parameter, num_averaged):
+            return ema_decay * averaged_model_parameter + (1.0 - ema_decay) * model_parameter
+
+        ema_model = AveragedModel(model, avg_fn=robust_ema_avg, use_buffers=True)
+        ema_model.to(device)
+
+    # --- Loss Scaler (Auto Balance) ---
+    loss_scaler = None
+    if cfg.loss_balance == "auto":
+        print(f"[INFO] Using Automatic Loss Balancing.")
+        loss_scaler = AutomaticLossScaler(active_tasks).to(device)
+        optimizer.add_param_group({"params": loss_scaler.parameters()})
+
+    # --- AMP Scaler ---
+    scaler = torch.amp.GradScaler("cuda", enabled=(cfg.training.amp and torch.cuda.is_available()))
+
+    # --- Scheduler ---
+    scheduler = None
+    if cfg.training.use_scheduler:
+        print(f"[INFO] Using Cosine Annealing with {cfg.training.warmup_epochs} warmup epochs.")
+        main_scheduler = CosineAnnealingLR(
+            optimizer,
+            T_max=cfg.training.epochs - cfg.training.warmup_epochs,
+            eta_min=1e-6
+        )
+        warmup_scheduler = LinearLR(
+            optimizer,
+            start_factor=0.01,
+            end_factor=1.0,
+            total_iters=cfg.training.warmup_epochs
+        )
+        scheduler = SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, main_scheduler],
+            milestones=[cfg.training.warmup_epochs]
+        )
+
+    # --- Resume from checkpoint ---
+    start_epoch = 1
+    best_val = float("inf")
+    mlflow_run_id = None
+
+    if cfg.checkpoint.resume_from and os.path.exists(cfg.checkpoint.resume_from):
+        print(f"[INFO] Resuming from checkpoint: {cfg.checkpoint.resume_from}")
+        checkpoint = torch.load(cfg.checkpoint.resume_from, map_location=device, weights_only=False)
+
+        if "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            start_epoch = checkpoint["epoch"] + 1
+            best_val = checkpoint.get("best_val", float("inf"))
+            mlflow_run_id = checkpoint.get("mlflow_run_id", None)
+
+            if ema_model is not None and "ema_state_dict" in checkpoint:
+                ema_model.load_state_dict(checkpoint["ema_state_dict"])
+        else:
+            # MAE weights
+            model.load_state_dict(checkpoint, strict=False)
+
+    # --- MLflow Setup ---
+    mlflow.set_experiment(cfg.mlflow.experiment)
+    run_name = cfg.mlflow.run_name or time.strftime("run_%Y%m%d_%H%M%S")
+
+    # --- Reweighting ---
+    reweighter = None
+    if hasattr(cfg, 'reweighting'):
+        # Convert config dataclass to dict for create_reweighter_from_config
+        rw_dict = {
+            "angle": {
+                "enabled": cfg.reweighting.angle.enabled,
+                "nbins_2d": list(cfg.reweighting.angle.nbins_2d),
+            },
+            "energy": {
+                "enabled": cfg.reweighting.energy.enabled,
+                "nbins": cfg.reweighting.energy.nbins,
+            },
+            "timing": {
+                "enabled": cfg.reweighting.timing.enabled,
+                "nbins": cfg.reweighting.timing.nbins,
+            },
+            "uvwFI": {
+                "enabled": cfg.reweighting.uvwFI.enabled,
+                "nbins_2d": list(cfg.reweighting.uvwFI.nbins_2d),
+            },
+        }
+        reweighter = create_reweighter_from_config(rw_dict)
+
+        if reweighter.is_enabled:
+            # Get training file list for fitting
+            from lib.dataset import expand_path
+            train_files = expand_path(cfg.data.train_path)
+            reweighter.fit(train_files, cfg.data.tree_name, step_size=cfg.data.chunksize)
+        else:
+            print("[INFO] No reweighting enabled.")
+
+    # --- Training Loop ---
+    with mlflow.start_run(run_id=mlflow_run_id, run_name=run_name if not mlflow_run_id else None) as run:
+        mlflow_run_id = run.info.run_id
+        artifact_dir = os.path.abspath(os.path.join(cfg.checkpoint.save_dir, run_name))
+        os.makedirs(artifact_dir, exist_ok=True)
+
+        writer = SummaryWriter(log_dir=os.path.join("runs", run_name))
+
+        # Log config
+        if start_epoch == 1:
+            mlflow.log_params({
+                "active_tasks": ",".join(active_tasks),
+                "batch_size": cfg.data.batch_size,
+                "lr": cfg.training.lr,
+                "epochs": cfg.training.epochs,
+                "outer_mode": cfg.model.outer_mode,
+                "loss_balance": cfg.loss_balance,
+            })
+
+        best_state = None
+
+        for ep in range(start_epoch, cfg.training.epochs + 1):
+            t0 = time.time()
+
+            # === TRAIN ===
+            tr_metrics, _, _, _, _ = run_epoch_stream(
+                model, optimizer, device, train_loader,
+                scaler=scaler,
+                train=True,
+                amp=cfg.training.amp,
+                task_weights=task_weights,
+                loss_scaler=loss_scaler,
+                reweighter=reweighter,
+                channel_dropout_rate=cfg.training.channel_dropout_rate,
+                scheduler=scheduler,
+                ema_model=ema_model,
+                grad_clip=cfg.training.grad_clip,
+            )
+
+            # === VALIDATION ===
+            val_model = ema_model if ema_model is not None else model
+            val_metrics, pred_val, true_val, extra_info, val_stats = run_epoch_stream(
+                val_model, optimizer, device, val_loader,
+                scaler=None,
+                train=False,
+                amp=False,
+                task_weights=task_weights,
+                reweighter=None,  # No reweighting for validation
+                channel_dropout_rate=0.0,
+                grad_clip=0.0,
+            )
+
+            sec = time.time() - t0
+            current_lr = optimizer.param_groups[0]['lr']
+
+            tr_loss = tr_metrics["total_opt"]
+            val_loss = val_metrics["total_opt"]
+
+            print(f"[{ep:03d}] tr_loss {tr_loss:.5f} val_loss {val_loss:.5f} lr {current_lr:.2e} time {sec:.1f}s")
+
+            # --- Logging ---
+            log_dict = {
+                "train_loss": tr_loss,
+                "val_loss": val_loss,
+                "lr": current_lr,
+            }
+
+            # Add task-specific metrics
+            for metric_key in ["smooth_l1", "l1", "mse", "cos"]:
+                if metric_key in val_metrics:
+                    log_dict[f"val_{metric_key}"] = val_metrics[metric_key]
+
+            if val_stats:
+                log_dict.update(val_stats)
+
+            mlflow.log_metrics(log_dict, step=ep)
+            mlflow.log_metric("system/epoch_duration_sec", sec, step=ep)
+
+            writer.add_scalar("loss/train", tr_loss, ep)
+            writer.add_scalar("loss/val", val_loss, ep)
+            writer.add_scalar("lr", current_lr, ep)
+
+            # --- Checkpointing ---
+            if val_loss < best_val:
+                best_val = val_loss
+                best_state = {k: v.cpu() for k, v in model.state_dict().items()}
+                torch.save({
+                    "epoch": ep,
+                    "model_state_dict": model.state_dict(),
+                    "ema_state_dict": ema_model.state_dict() if ema_model else None,
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_val": best_val,
+                    "mlflow_run_id": mlflow_run_id,
+                }, os.path.join(artifact_dir, "checkpoint_best.pth"))
+                print(f"   [info] New best val_loss: {best_val:.6f}")
+
+            # Save last checkpoint
+            torch.save({
+                "epoch": ep,
+                "model_state_dict": model.state_dict(),
+                "ema_state_dict": ema_model.state_dict() if ema_model else None,
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_val": best_val,
+                "mlflow_run_id": mlflow_run_id,
+            }, os.path.join(artifact_dir, "checkpoint_last.pth"))
+
+        # --- Final Evaluation & Artifacts ---
+        final_model = ema_model if ema_model is not None else model
+        if ema_model is None and best_state:
+            model.load_state_dict(best_state)
+
+        # Save predictions
+        if pred_val is not None:
+            csv_path = os.path.join(artifact_dir, f"predictions_{run_name}.csv")
+            pd.DataFrame({
+                "true_theta": true_val[:, 0], "true_phi": true_val[:, 1],
+                "pred_theta": pred_val[:, 0], "pred_phi": pred_val[:, 1]
+            }).to_csv(csv_path, index=False)
+            mlflow.log_artifact(csv_path)
+
+            # Resolution profile
+            res_pdf = os.path.join(artifact_dir, f"resolution_profile_{run_name}.pdf")
+            plot_resolution_profile(pred_val, true_val, outfile=res_pdf)
+            mlflow.log_artifact(res_pdf)
+
+        # ONNX export
+        if cfg.export.onnx:
+            onnx_path = os.path.join(artifact_dir, cfg.export.onnx)
+            final_model.eval()
+            dummy_input = torch.randn(1, 4760, 2, device=device)
+            try:
+                torch.onnx.export(
+                    final_model, dummy_input, onnx_path,
+                    export_params=True, opset_version=20,
+                    do_constant_folding=True,
+                    input_names=['input'], output_names=['output'],
+                    dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
+                )
+                mlflow.log_artifact(onnx_path)
+                print(f"[INFO] ONNX exported to {onnx_path}")
+            except Exception as e:
+                print(f"[WARN] ONNX export failed: {e}")
+
+        writer.close()
+
+    print(f"[INFO] Training complete. Best val_loss: {best_val:.6f}")
+    return best_val
+
+
+# ------------------------------------------------------------
+#  CLI Entry Point
+# ------------------------------------------------------------
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train XEC Regressor")
+    parser.add_argument("--config", type=str, required=True, help="Path to YAML config file")
+    args = parser.parse_args()
+
+    train_with_config(args.config)
