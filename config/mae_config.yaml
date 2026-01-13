@@ -7,9 +7,9 @@ data:
   train_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root"
   val_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root"
   tree_name: "tree"
-  batch_size: 8192
+  batch_size: 2048                  # Reduced from 8192 (MAE decoder needs more memory)
   chunksize: 256000
-  num_workers: 4                    # DataLoader workers
+  num_workers: 1                    # Reduced for GH nodes (system suggested max=1)
   num_threads: 4                    # CPU preprocessing threads
 
 # === Input Normalization ===
