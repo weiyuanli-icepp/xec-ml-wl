@@ -20,7 +20,7 @@ from torch.optim.swa_utils    import AveragedModel, get_ema_multi_avg_fn
 
 from lib.model                import XECRegressor, XECMultiHeadModel, AutomaticLossScaler
 from lib.engine               import run_epoch_stream
-from lib.dataset              import get_dataloader
+from lib.dataset              import get_dataloader, expand_path
 from lib.event_display        import plot_event_faces, plot_event_time
 from lib.angle_reweighting    import scan_angle_hist_1d, scan_angle_hist_2d  # Legacy
 from lib.reweighting          import SampleReweighter, create_reweighter_from_config
@@ -87,23 +87,7 @@ def main_xec_regressor_with_args(
     loss_balance="manual",
     **kwargs
 ):
-    # Expand train and val paths to file lists
-    def expand_path(p):
-        path = os.path.expanduser(p)
-        if os.path.isdir(path):
-            files = sorted(glob.glob(os.path.join(path, "*.root")))
-            if not files:
-                raise ValueError(f"No ROOT files found in directory: {path}")
-            return files
-        elif os.path.isfile(path):
-            return [path]
-        else:
-            # Treat as glob pattern
-            files = sorted(glob.glob(path))
-            if not files:
-                raise ValueError(f"No ROOT files found matching pattern: {path}")
-            return files
-
+    # Expand train and val paths to file lists (using shared function from lib/dataset.py)
     train_files = expand_path(train_path)
     val_files = expand_path(val_path)
     print(f"[INFO] Training files: {len(train_files)}, Validation files: {len(val_files)}")
@@ -762,7 +746,6 @@ def train_with_config(config_path: str):
 
         if reweighter.is_enabled:
             # Get training file list for fitting
-            from lib.dataset import expand_path
             train_files = expand_path(cfg.data.train_path)
             reweighter.fit(train_files, cfg.data.tree_name, step_size=cfg.data.chunksize)
         else:
