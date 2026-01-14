@@ -381,7 +381,13 @@ def run_epoch_stream(
         metrics["system/throughput_events_per_sec"] = np.mean(epoch_throughput)
         metrics["system/avg_data_load_sec"] = np.mean(epoch_data_time)
         metrics["system/avg_batch_process_sec"] = np.mean(epoch_batch_time)
-        metrics["system/compute_efficiency"] = 1.0 - (metrics["system/avg_data_load_sec"] / metrics["system/avg_batch_process_sec"])
+        # Compute efficiency: ratio of compute time to total time, clamped to [0, 1]
+        avg_batch = metrics["system/avg_batch_process_sec"]
+        if avg_batch > 0:
+            efficiency = 1.0 - (metrics["system/avg_data_load_sec"] / avg_batch)
+            metrics["system/compute_efficiency"] = max(0.0, min(1.0, efficiency))
+        else:
+            metrics["system/compute_efficiency"] = 0.0
 
     extra_info = {}
     val_stats = {}
