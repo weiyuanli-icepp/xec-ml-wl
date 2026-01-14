@@ -192,6 +192,8 @@ def run_epoch_stream(
 
                 # Initialize batch losses
                 batch_total_loss = 0.0
+                batch_size = X_batch.size(0)
+                sample_total_loss = torch.zeros(batch_size, device=device)  # Per-sample loss for worst case tracking
 
                 # === ANGLE TASK ===
                 if "angle" in preds and "angle" in target_dict:
@@ -207,6 +209,7 @@ def run_epoch_stream(
                     loss_sums["l1"] += l_l1.sum().item()
                     loss_sums["mse"] += l_mse.sum().item()
                     batch_total_loss += l_smooth.mean()
+                    sample_total_loss += l_smooth  # Accumulate per-sample loss
 
                     # Cosine similarity (angle-specific)
                     if t_vec is not None:
@@ -236,6 +239,7 @@ def run_epoch_stream(
                     loss_sums["l1"] += l_pos_l1.sum().item()
                     loss_sums["mse"] += l_pos_mse.sum().item()
                     batch_total_loss += l_pos_smooth.mean()
+                    sample_total_loss += l_pos_smooth  # Accumulate per-sample loss
 
                     # Per-axis resolution
                     residual = p_uvw - t_uvw
@@ -265,6 +269,7 @@ def run_epoch_stream(
                     loss_sums["l1"] += l_e_l1.sum().item()
                     loss_sums["mse"] += l_e_mse.sum().item()
                     batch_total_loss += l_e_smooth.mean()
+                    sample_total_loss += l_e_smooth  # Accumulate per-sample loss
 
                 # === TIMING TASK ===
                 if "timing" in preds and "timing" in target_dict:
@@ -281,6 +286,7 @@ def run_epoch_stream(
                     loss_sums["l1"] += l_t_l1.sum().item()
                     loss_sums["mse"] += l_t_mse.sum().item()
                     batch_total_loss += l_t_smooth.mean()
+                    sample_total_loss += l_t_smooth  # Accumulate per-sample loss
 
                 # === Common data collection ===
                 # Check for required keys and warn if missing
@@ -314,43 +320,47 @@ def run_epoch_stream(
                     val_root_data["y_vtx"].append(v_vtx[:, 1])
                     val_root_data["z_vtx"].append(v_vtx[:, 2])
 
-                # === Worst Case Tracking (angle task) ===
-                if "angle" in preds:
-                    batch_errs_np = l_smooth.cpu().numpy()
+                # === Worst Case Tracking (based on total loss across all tasks) ===
+                if active_tasks:  # Track worst cases if any task is active
+                    batch_errs_np = sample_total_loss.cpu().numpy()
 
-                    # Check for xyzTruth key
-                    xyz_truth_np = None
-                    if "xyzTruth" in target_dict:
-                        xyz_truth_np = target_dict["xyzTruth"].cpu().numpy()
-                    elif i_batch == 0:
-                        warnings.warn(
-                            "Missing 'xyzTruth' in target_dict for worst case tracking.",
-                            UserWarning
-                        )
-
+                    # Get metadata
+                    xyz_truth_np = target_dict["xyzTruth"].cpu().numpy() if "xyzTruth" in target_dict else None
                     energy_np = target_dict["energy"].cpu().numpy() if "energy" in target_dict else None
                     run_np = target_dict["run"].cpu().numpy() if "run" in target_dict else None
                     event_np = target_dict["event"].cpu().numpy() if "event" in target_dict else None
 
-                    # Only track worst events if all required data is available
-                    if all(x is not None for x in [xyz_truth_np, energy_np, run_np, event_np, v_uvw, v_vtx]):
-                        worst_idx = np.argsort(batch_errs_np)[-5:]
-                        for idx in worst_idx:
-                            worst_events_buffer.append((
-                                batch_errs_np[idx],
-                                X_batch[idx, :, 0].cpu().numpy(),
-                                X_batch[idx, :, 1].cpu().numpy(),
-                                p_angle[idx].cpu().numpy(),
-                                t_angle[idx].cpu().numpy(),
-                                v_uvw[idx],
-                                xyz_truth_np[idx],
-                                v_vtx[idx],
-                                energy_np[idx],
-                                run_np[idx],
-                                event_np[idx]
-                            ))
-                        worst_events_buffer.sort(key=lambda x: x[0], reverse=True)
-                        worst_events_buffer = worst_events_buffer[:10]
+                    # Find worst 5 samples in this batch
+                    worst_idx = np.argsort(batch_errs_np)[-5:]
+                    for idx in worst_idx:
+                        worst_event = {
+                            "total_loss": batch_errs_np[idx],
+                            "input_npho": X_batch[idx, :, 0].cpu().numpy(),
+                            "input_time": X_batch[idx, :, 1].cpu().numpy(),
+                            "run": run_np[idx] if run_np is not None else None,
+                            "event": event_np[idx] if event_np is not None else None,
+                            "energy_truth": energy_np[idx] if energy_np is not None else None,
+                            "uvw_truth": v_uvw[idx] if v_uvw is not None else None,
+                            "xyz_truth": xyz_truth_np[idx] if xyz_truth_np is not None else None,
+                            "vtx": v_vtx[idx] if v_vtx is not None else None,
+                        }
+                        # Add predictions and truths for active tasks
+                        if "angle" in preds:
+                            worst_event["pred_angle"] = preds["angle"][idx].cpu().numpy()
+                            worst_event["true_angle"] = target_dict["angle"][idx].cpu().numpy()
+                        if "energy" in preds:
+                            worst_event["pred_energy"] = preds["energy"][idx].cpu().numpy()
+                        if "timing" in preds:
+                            worst_event["pred_timing"] = preds["timing"][idx].cpu().numpy()
+                        if "uvwFI" in preds:
+                            worst_event["pred_uvwFI"] = preds["uvwFI"][idx].cpu().numpy()
+                            worst_event["true_uvwFI"] = target_dict["uvwFI"][idx].cpu().numpy()
+
+                        worst_events_buffer.append(worst_event)
+
+                    # Keep only top 10 worst events
+                    worst_events_buffer.sort(key=lambda x: x["total_loss"], reverse=True)
+                    worst_events_buffer = worst_events_buffer[:10]
 
                 loss_sums["total_opt"] += batch_total_loss.item() * X_batch.size(0)
                 nobs += X_batch.size(0)
