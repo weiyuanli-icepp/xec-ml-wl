@@ -152,11 +152,11 @@ Examples:
         chunksize = args.chunksize if args.chunksize is not None else cfg.data.chunksize
         num_workers = args.num_workers if args.num_workers is not None else cfg.data.num_workers
         num_threads = args.num_threads if args.num_threads is not None else getattr(cfg.data, 'num_threads', 4)
-        npho_scale = args.npho_scale if args.npho_scale is not None else cfg.normalization.npho_scale
-        npho_scale2 = args.npho_scale2 if args.npho_scale2 is not None else cfg.normalization.npho_scale2
-        time_scale = args.time_scale if args.time_scale is not None else cfg.normalization.time_scale
-        time_shift = args.time_shift if args.time_shift is not None else cfg.normalization.time_shift
-        sentinel_value = args.sentinel_value if args.sentinel_value is not None else cfg.normalization.sentinel_value
+        npho_scale = float(args.npho_scale if args.npho_scale is not None else cfg.normalization.npho_scale)
+        npho_scale2 = float(args.npho_scale2 if args.npho_scale2 is not None else cfg.normalization.npho_scale2)
+        time_scale = float(args.time_scale if args.time_scale is not None else cfg.normalization.time_scale)
+        time_shift = float(args.time_shift if args.time_shift is not None else cfg.normalization.time_shift)
+        sentinel_value = float(args.sentinel_value if args.sentinel_value is not None else cfg.normalization.sentinel_value)
         outer_mode = args.outer_mode or cfg.model.outer_mode
         outer_fine_pool = args.outer_fine_pool or cfg.model.outer_fine_pool
         mask_ratio = args.mask_ratio if args.mask_ratio is not None else cfg.model.mask_ratio
