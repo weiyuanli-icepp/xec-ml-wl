@@ -274,45 +274,74 @@ def run_epoch_stream(
                     batch_total_loss += l_t_smooth.mean()
 
                 # === Common data collection ===
-                val_root_data["run_id"].append(target_dict["run"].cpu().numpy())
-                val_root_data["event_id"].append(target_dict["event"].cpu().numpy())
-                val_root_data["energy_truth"].append(target_dict["energy"].cpu().numpy())
+                # Check for required keys and warn if missing
+                required_keys = ["run", "event", "energy", "uvwFI", "xyzVTX"]
+                missing_keys = [k for k in required_keys if k not in target_dict]
+                if missing_keys and i_batch == 0:
+                    warnings.warn(
+                        f"Missing keys in target_dict for validation data collection: {missing_keys}. "
+                        f"Some validation outputs may be incomplete.",
+                        UserWarning
+                    )
 
-                v_uvw = target_dict["uvwFI"].cpu().numpy()
-                val_root_data["x_truth"].append(v_uvw[:, 0])
-                val_root_data["y_truth"].append(v_uvw[:, 1])
-                val_root_data["z_truth"].append(v_uvw[:, 2])
+                if "run" in target_dict:
+                    val_root_data["run_id"].append(target_dict["run"].cpu().numpy())
+                if "event" in target_dict:
+                    val_root_data["event_id"].append(target_dict["event"].cpu().numpy())
+                if "energy" in target_dict:
+                    val_root_data["energy_truth"].append(target_dict["energy"].cpu().numpy())
 
-                v_vtx = target_dict["xyzVTX"].cpu().numpy()
-                val_root_data["x_vtx"].append(v_vtx[:, 0])
-                val_root_data["y_vtx"].append(v_vtx[:, 1])
-                val_root_data["z_vtx"].append(v_vtx[:, 2])
+                v_uvw = None
+                if "uvwFI" in target_dict:
+                    v_uvw = target_dict["uvwFI"].cpu().numpy()
+                    val_root_data["x_truth"].append(v_uvw[:, 0])
+                    val_root_data["y_truth"].append(v_uvw[:, 1])
+                    val_root_data["z_truth"].append(v_uvw[:, 2])
+
+                v_vtx = None
+                if "xyzVTX" in target_dict:
+                    v_vtx = target_dict["xyzVTX"].cpu().numpy()
+                    val_root_data["x_vtx"].append(v_vtx[:, 0])
+                    val_root_data["y_vtx"].append(v_vtx[:, 1])
+                    val_root_data["z_vtx"].append(v_vtx[:, 2])
 
                 # === Worst Case Tracking (angle task) ===
                 if "angle" in preds:
                     batch_errs_np = l_smooth.cpu().numpy()
-                    xyz_truth_np = target_dict["xyzTruth"].cpu().numpy()
-                    energy_np = target_dict["energy"].cpu().numpy()
-                    run_np = target_dict["run"].cpu().numpy()
-                    event_np = target_dict["event"].cpu().numpy()
 
-                    worst_idx = np.argsort(batch_errs_np)[-5:]
-                    for idx in worst_idx:
-                        worst_events_buffer.append((
-                            batch_errs_np[idx],
-                            X_batch[idx, :, 0].cpu().numpy(),
-                            X_batch[idx, :, 1].cpu().numpy(),
-                            p_angle[idx].cpu().numpy(),
-                            t_angle[idx].cpu().numpy(),
-                            v_uvw[idx],
-                            xyz_truth_np[idx],
-                            v_vtx[idx],
-                            energy_np[idx],
-                            run_np[idx],
-                            event_np[idx]
-                        ))
-                    worst_events_buffer.sort(key=lambda x: x[0], reverse=True)
-                    worst_events_buffer = worst_events_buffer[:10]
+                    # Check for xyzTruth key
+                    xyz_truth_np = None
+                    if "xyzTruth" in target_dict:
+                        xyz_truth_np = target_dict["xyzTruth"].cpu().numpy()
+                    elif i_batch == 0:
+                        warnings.warn(
+                            "Missing 'xyzTruth' in target_dict for worst case tracking.",
+                            UserWarning
+                        )
+
+                    energy_np = target_dict["energy"].cpu().numpy() if "energy" in target_dict else None
+                    run_np = target_dict["run"].cpu().numpy() if "run" in target_dict else None
+                    event_np = target_dict["event"].cpu().numpy() if "event" in target_dict else None
+
+                    # Only track worst events if all required data is available
+                    if all(x is not None for x in [xyz_truth_np, energy_np, run_np, event_np, v_uvw, v_vtx]):
+                        worst_idx = np.argsort(batch_errs_np)[-5:]
+                        for idx in worst_idx:
+                            worst_events_buffer.append((
+                                batch_errs_np[idx],
+                                X_batch[idx, :, 0].cpu().numpy(),
+                                X_batch[idx, :, 1].cpu().numpy(),
+                                p_angle[idx].cpu().numpy(),
+                                t_angle[idx].cpu().numpy(),
+                                v_uvw[idx],
+                                xyz_truth_np[idx],
+                                v_vtx[idx],
+                                energy_np[idx],
+                                run_np[idx],
+                                event_np[idx]
+                            ))
+                        worst_events_buffer.sort(key=lambda x: x[0], reverse=True)
+                        worst_events_buffer = worst_events_buffer[:10]
 
                 loss_sums["total_opt"] += batch_total_loss.item() * X_batch.size(0)
                 nobs += X_batch.size(0)
