@@ -362,19 +362,22 @@ def run_eval_mae(model, device, root, tree,
                             if indices is not None:
                                 m_face = mask[:, indices]
                                 mask_expanded = m_face.unsqueeze(1) if name in ["top", "bot"] else m_face.view(mask.size(0), 1, *pred.shape[-2:])
+                            else:
+                                # For outer_fine mode, indices is None - use all-ones mask
+                                mask_expanded = torch.ones_like(pred)
 
-                                target = targets[name]
-                                loss_map_npho = F.mse_loss(pred[:, 0:1], target[:, 0:1], reduction='none')
-                                loss_map_time = F.mse_loss(pred[:, 1:2], target[:, 1:2], reduction='none')
+                            target = targets[name]
+                            loss_map_npho = F.mse_loss(pred[:, 0:1], target[:, 0:1], reduction='none')
+                            loss_map_time = F.mse_loss(pred[:, 1:2], target[:, 1:2], reduction='none')
 
-                                npho_loss = (loss_map_npho * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
-                                time_loss = (loss_map_time * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
-                                face_loss = npho_loss + time_loss
+                            npho_loss = (loss_map_npho * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
+                            time_loss = (loss_map_time * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
+                            face_loss = npho_loss + time_loss
 
-                                face_loss_sums[name] += face_loss.item()
-                                face_npho_loss_sums[name] += npho_loss.item()
-                                face_time_loss_sums[name] += time_loss.item()
-                                loss += face_loss
+                            face_loss_sums[name] += face_loss.item()
+                            face_npho_loss_sums[name] += npho_loss.item()
+                            face_time_loss_sums[name] += time_loss.item()
+                            loss += face_loss
 
                     # Collect predictions for ROOT output
                     if collect_predictions and n_collected < max_events:
