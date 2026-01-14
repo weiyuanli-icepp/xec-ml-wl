@@ -32,6 +32,10 @@ training:
   epochs: 20
   lr: 8.0e-4
   weight_decay: 5.0e-5
+  loss_fn: "smooth_l1"            # Options: smooth_l1, mse, l1, huber
+  npho_weight: 1.0                # Per-channel manual weighting
+  time_weight: 1.0                # Set <1.0 to downweight time channel
+  auto_channel_weight: false      # Learn log(sigma^2) per channel (overrides manual weights)
   channel_dropout_rate: 0.0
   grad_clip: 1.0                    # Gradient clipping (0 to disable)
   ema_decay: null                   # EMA decay rate (null to disable, 0.999 typical)

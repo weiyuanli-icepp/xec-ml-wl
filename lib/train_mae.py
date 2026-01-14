@@ -127,6 +127,10 @@ Examples:
     parser.add_argument("--mask_ratio",           type=float, default=None)
     parser.add_argument("--lr",                   type=float, default=None)
     parser.add_argument("--weight_decay",         type=float, default=None)
+    parser.add_argument("--loss_fn",              type=str, default=None, choices=["smooth_l1", "mse", "l1", "huber"])
+    parser.add_argument("--npho_weight",          type=float, default=None)
+    parser.add_argument("--time_weight",          type=float, default=None)
+    parser.add_argument("--auto_channel_weight",  action="store_true", help="Enable homoscedastic channel weighting")
     parser.add_argument("--channel_dropout_rate", type=float, default=None)
     parser.add_argument("--grad_clip",            type=float, default=None)
     parser.add_argument("--ema_decay",            type=float, default=None, help="EMA decay (None to disable)")
@@ -162,6 +166,10 @@ Examples:
         mask_ratio = args.mask_ratio if args.mask_ratio is not None else cfg.model.mask_ratio
         lr = args.lr if args.lr is not None else cfg.training.lr
         weight_decay = args.weight_decay if args.weight_decay is not None else cfg.training.weight_decay
+        loss_fn = args.loss_fn or cfg.training.loss_fn
+        npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight
+        time_weight = args.time_weight if args.time_weight is not None else cfg.training.time_weight
+        auto_channel_weight = args.auto_channel_weight or cfg.training.auto_channel_weight
         channel_dropout_rate = args.channel_dropout_rate if args.channel_dropout_rate is not None else cfg.training.channel_dropout_rate
         grad_clip = args.grad_clip if args.grad_clip is not None else getattr(cfg.training, 'grad_clip', 1.0)
         ema_decay = args.ema_decay if args.ema_decay is not None else getattr(cfg.training, 'ema_decay', None)
@@ -194,6 +202,10 @@ Examples:
         mask_ratio = args.mask_ratio or 0.6
         lr = args.lr or 1e-4
         weight_decay = args.weight_decay or 1e-4
+        loss_fn = args.loss_fn or "smooth_l1"
+        npho_weight = args.npho_weight or 1.0
+        time_weight = args.time_weight or 1.0
+        auto_channel_weight = args.auto_channel_weight
         channel_dropout_rate = args.channel_dropout_rate or 0.1
         grad_clip = args.grad_clip or 1.0
         ema_decay = args.ema_decay  # None by default
@@ -239,7 +251,7 @@ Examples:
         outer_fine_pool=outer_fine_pool_tuple
     ).to(device)
 
-    model = XEC_MAE(encoder, mask_ratio=mask_ratio).to(device)
+    model = XEC_MAE(encoder, mask_ratio=mask_ratio, learn_channel_logvars=auto_channel_weight).to(device)
 
     # torch.compile requires triton, which is only available on x86_64
     # Can be disabled via config to avoid LLVM/multiprocessing conflicts
@@ -330,6 +342,10 @@ Examples:
             "mask_ratio": mask_ratio,
             "lr": lr,
             "weight_decay": weight_decay,
+            "loss_fn": loss_fn,
+            "npho_weight": npho_weight,
+            "time_weight": time_weight,
+            "auto_channel_weight": auto_channel_weight,
             "channel_dropout_rate": channel_dropout_rate,
             "grad_clip": grad_clip,
             "ema_decay": ema_decay,
@@ -352,6 +368,10 @@ Examples:
                 time_scale=time_scale,
                 time_shift=time_shift,
                 sentinel_value=sentinel_value,
+                loss_fn=loss_fn,
+                npho_weight=npho_weight,
+                time_weight=time_weight,
+                auto_channel_weight=auto_channel_weight,
                 channel_dropout_rate=channel_dropout_rate,
                 grad_clip=grad_clip,
                 scaler=scaler,
@@ -383,6 +403,10 @@ Examples:
                     time_scale=time_scale,
                     time_shift=time_shift,
                     sentinel_value=sentinel_value,
+                    loss_fn=loss_fn,
+                    npho_weight=npho_weight,
+                    time_weight=time_weight,
+                    auto_channel_weight=auto_channel_weight,
                     collect_predictions=collect_preds,
                     max_events=1000,
                     num_workers=num_workers,

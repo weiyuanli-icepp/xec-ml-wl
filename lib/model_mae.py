@@ -77,10 +77,11 @@ class GraphFaceDecoder(nn.Module):
         return out.permute(0, 2, 1) # (B, N, 2) -> (B, 2, N)
     
 class XEC_MAE(nn.Module):
-    def __init__(self, encoder: XECRegressor, mask_ratio=0.6):
+    def __init__(self, encoder: XECRegressor, mask_ratio=0.6, learn_channel_logvars: bool = False):
         super().__init__()
         self.encoder = encoder
         self.mask_ratio = mask_ratio
+        self.learn_channel_logvars = learn_channel_logvars
         
         # -- RECTANGULAR FACES DECODERS --
         self.dec_inner = FaceDecoder(out_h=93, out_w=44)
@@ -110,6 +111,9 @@ class XEC_MAE(nn.Module):
         self.dec_bot = GraphFaceDecoder(
             num_nodes=num_hex_bot, adj_matrix=edge_index, embed_dim=1024
         )
+
+        # Per-channel log(sigma^2) for homoscedastic weighting (npho, time)
+        self.channel_log_vars = nn.Parameter(torch.zeros(2)) if learn_channel_logvars else None
         
     def random_masking(self, x):
         """

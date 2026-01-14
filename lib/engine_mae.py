@@ -1,9 +1,8 @@
 import torch
-import torch.nn.functional as F
 import numpy as np
 import uproot
 from torch.utils.data import TensorDataset, DataLoader
-from .utils import iterate_chunks
+from .utils import iterate_chunks, get_pointwise_loss_fn
 from .geom_utils import build_outer_fine_grid_tensor, gather_face, gather_hex_nodes
 from .geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
@@ -16,12 +15,18 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                   npho_branch="relative_npho", time_branch="relative_time",
                   NphoScale=1e5, NphoScale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0,
                   channel_dropout_rate=0.1,
+                  loss_fn="mse",
+                  npho_weight=1.0,
+                  time_weight=1.0,
+                  auto_channel_weight=False,
                   grad_clip=1.0,
                   scaler=None,
                   num_workers=8):
     model.train()
     if scaler is None:
         scaler = torch.amp.GradScaler('cuda', enabled=amp)
+    loss_func = get_pointwise_loss_fn(loss_fn)
+    log_vars = getattr(model, "channel_log_vars", None) if auto_channel_weight else None
 
     # Per-face total losses
     face_loss_sums = {
@@ -178,11 +183,19 @@ def run_epoch_mae(model, optimizer, device, root, tree,
 
                         # Separate npho (channel 0) and time (channel 1) losses
                         target = targets[name]
-                        loss_map_npho = F.mse_loss(pred[:, 0:1], target[:, 0:1], reduction='none')
-                        loss_map_time = F.mse_loss(pred[:, 1:2], target[:, 1:2], reduction='none')
+                        loss_map_npho = loss_func(pred[:, 0:1], target[:, 0:1])
+                        loss_map_time = loss_func(pred[:, 1:2], target[:, 1:2])
 
-                        npho_loss = (loss_map_npho * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
-                        time_loss = (loss_map_time * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
+                        mask_sum = mask_expanded.sum() + 1e-8
+                        npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum
+                        time_loss = (loss_map_time * mask_expanded).sum() / mask_sum
+
+                        if log_vars is not None and log_vars.numel() >= 2:
+                            npho_loss = 0.5 * torch.exp(-log_vars[0]) * npho_loss + 0.5 * log_vars[0]
+                            time_loss = 0.5 * torch.exp(-log_vars[1]) * time_loss + 0.5 * log_vars[1]
+                        else:
+                            npho_loss = npho_loss * npho_weight
+                            time_loss = time_loss * time_weight
                         face_loss = npho_loss + time_loss
 
                         face_loss_sums[name] += face_loss.item()
@@ -234,6 +247,10 @@ def run_epoch_mae(model, optimizer, device, root, tree,
     metrics["loss_npho"] = sum(metrics[f"loss_{name}_npho"] for name in face_npho_loss_sums) / max(1, num_faces)
     metrics["loss_time"] = sum(metrics[f"loss_{name}_time"] for name in face_time_loss_sums) / max(1, num_faces)
 
+    if log_vars is not None and log_vars.numel() >= 2:
+        metrics["channel_logvar_npho"] = log_vars[0].item()
+        metrics["channel_logvar_time"] = log_vars[1].item()
+
     return metrics
 
 def run_eval_mae(model, device, root, tree,
@@ -241,6 +258,10 @@ def run_eval_mae(model, device, root, tree,
                  amp=True,
                  npho_branch="relative_npho", time_branch="relative_time",
                  NphoScale=1e5, NphoScale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0,
+                 loss_fn="mse",
+                 npho_weight=1.0,
+                 time_weight=1.0,
+                 auto_channel_weight=False,
                  collect_predictions=False, max_events=1000,
                  num_workers=8):
     """
@@ -255,6 +276,8 @@ def run_eval_mae(model, device, root, tree,
         If collect_predictions=True: (dict of metrics, dict of predictions)
     """
     model.eval()
+    loss_func = get_pointwise_loss_fn(loss_fn)
+    log_vars = getattr(model, "channel_log_vars", None) if auto_channel_weight else None
 
     # Loss tracking
     face_loss_sums = {"inner": 0.0, "us": 0.0, "ds": 0.0, "outer": 0.0, "top": 0.0, "bot": 0.0}
@@ -366,11 +389,18 @@ def run_eval_mae(model, device, root, tree,
                                 mask_expanded = torch.ones_like(pred)
 
                             target = targets[name]
-                            loss_map_npho = F.mse_loss(pred[:, 0:1], target[:, 0:1], reduction='none')
-                            loss_map_time = F.mse_loss(pred[:, 1:2], target[:, 1:2], reduction='none')
+                            loss_map_npho = loss_func(pred[:, 0:1], target[:, 0:1])
+                            loss_map_time = loss_func(pred[:, 1:2], target[:, 1:2])
 
-                            npho_loss = (loss_map_npho * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
-                            time_loss = (loss_map_time * mask_expanded).sum() / (mask_expanded.sum() + 1e-8)
+                            mask_sum = mask_expanded.sum() + 1e-8
+                            npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum
+                            time_loss = (loss_map_time * mask_expanded).sum() / mask_sum
+                            if log_vars is not None and log_vars.numel() >= 2:
+                                npho_loss = 0.5 * torch.exp(-log_vars[0]) * npho_loss + 0.5 * log_vars[0]
+                                time_loss = 0.5 * torch.exp(-log_vars[1]) * time_loss + 0.5 * log_vars[1]
+                            else:
+                                npho_loss = npho_loss * npho_weight
+                                time_loss = time_loss * time_weight
                             face_loss = npho_loss + time_loss
 
                             face_loss_sums[name] += face_loss.item()
@@ -407,6 +437,10 @@ def run_eval_mae(model, device, root, tree,
     num_faces = len(face_npho_loss_sums)
     metrics["loss_npho"] = sum(metrics[f"loss_{name}_npho"] for name in face_npho_loss_sums) / max(1, num_faces)
     metrics["loss_time"] = sum(metrics[f"loss_{name}_time"] for name in face_time_loss_sums) / max(1, num_faces)
+
+    if log_vars is not None and log_vars.numel() >= 2:
+        metrics["channel_logvar_npho"] = log_vars[0].item()
+        metrics["channel_logvar_time"] = log_vars[1].item()
 
     if collect_predictions:
         # Concatenate collected predictions

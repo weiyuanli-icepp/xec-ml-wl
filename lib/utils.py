@@ -46,6 +46,23 @@ def iterate_chunks(files, tree, branches, step_size=4000):
         yield arrays
 
 # ------------------------------------------------------------
+# Loss function helper
+# ------------------------------------------------------------
+def get_pointwise_loss_fn(loss_name: str):
+    """
+    Returns a point-wise loss function with reduction='none'.
+    Supported: smooth_l1/huber, mse, l1. Defaults to smooth_l1.
+    """
+    name = (loss_name or "").lower()
+    if name in ("smooth_l1", "huber"):
+        return lambda pred, target: torch.nn.functional.smooth_l1_loss(pred, target, reduction="none")
+    if name == "l1":
+        return lambda pred, target: torch.nn.functional.l1_loss(pred, target, reduction="none")
+    if name == "mse":
+        return lambda pred, target: torch.nn.functional.mse_loss(pred, target, reduction="none")
+    return lambda pred, target: torch.nn.functional.smooth_l1_loss(pred, target, reduction="none")
+
+# ------------------------------------------------------------
 # Angle conversion utilities
 # ------------------------------------------------------------
 def angles_deg_to_unit_vec(angles: torch.Tensor) -> torch.Tensor:
