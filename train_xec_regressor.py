@@ -380,7 +380,8 @@ def main_xec_regressor_with_args(
             # Save Checkpoint for best result
             if val_loss < best_val:
                 best_val = val_loss
-                best_state = {k: v.cpu() for k, v in model.state_dict().items()}
+                # Clone state to CPU: .cpu() both copies and moves to CPU, freeing GPU memory
+                best_state = {k: v.detach().clone().cpu() for k, v in model.state_dict().items()}
                 torch.save({
                     "epoch": ep, 
                     "model_state_dict": model.state_dict(),
@@ -837,7 +838,8 @@ def train_with_config(config_path: str):
             # --- Checkpointing ---
             if val_loss < best_val:
                 best_val = val_loss
-                best_state = {k: v.cpu() for k, v in model.state_dict().items()}
+                # Clone state to CPU: .cpu() both copies and moves to CPU, freeing GPU memory
+                best_state = {k: v.detach().clone().cpu() for k, v in model.state_dict().items()}
                 torch.save({
                     "epoch": ep,
                     "model_state_dict": model.state_dict(),
