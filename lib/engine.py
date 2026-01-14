@@ -5,7 +5,7 @@ from torch.utils.data import TensorDataset, DataLoader
 import time
 import warnings
 
-from .utils import iterate_chunks, angles_deg_to_unit_vec
+from .utils import iterate_chunks, angles_deg_to_unit_vec, get_pointwise_loss_fn
 from .metrics import eval_stats, eval_resolution
 
 def run_epoch_stream(
@@ -130,21 +130,17 @@ def run_epoch_stream(
                             task_weight = cfg.get("weight", 1.0)
                         else:
                             task_weight = cfg
-
-                    # Compute task loss with configured loss function
-                    if loss_fn_name == "smooth_l1" or loss_fn_name == "huber":
-                        l_task = criterion_smooth(pred, truth).mean(dim=-1)
-                    elif loss_fn_name == "l1":
-                        l_task = criterion_l1(pred, truth).mean(dim=-1)
-                    elif loss_fn_name == "mse":
-                        l_task = criterion_mse(pred, truth).mean(dim=-1)
-                    else:
+                    valid_names = {"smooth_l1", "huber", "l1", "mse"}
+                    if loss_fn_name not in valid_names:
                         warnings.warn(
                             f"Unknown loss function '{loss_fn_name}' for task '{task}'. "
                             f"Falling back to smooth_l1. Supported: smooth_l1, huber, l1, mse.",
                             UserWarning
                         )
-                        l_task = criterion_smooth(pred, truth).mean(dim=-1)
+                        loss_fn_name = "smooth_l1"
+
+                    loss_fn = get_pointwise_loss_fn(loss_fn_name)
+                    l_task = loss_fn(pred, truth).mean(dim=-1)
 
                     # Apply sample weights if available
                     if w is not None:
