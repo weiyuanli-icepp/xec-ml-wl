@@ -43,15 +43,9 @@ class LayerNorm(nn.Module):
 class GRN(nn.Module):
     def __init__(self, dim):
         super().__init__()
-        # self.gamma = nn.Parameter(torch.zeros(1, 1, 1, dim))
-        # self.beta = nn.Parameter(torch.zeros(1, 1, 1, dim))
         self.gamma = nn.Parameter(torch.zeros(dim))
         self.beta = nn.Parameter(torch.zeros(dim))
 
-    # def forward(self, x):
-    #     Gx = torch.norm(x, p=2, dim=(1,2), keepdim=True)
-    #     Nx = Gx / (Gx.mean(dim=-1, keepdim=True) + 1e-6)
-    #     return self.gamma * (x * Nx) + self.beta + x
     def forward(self, x):
         # Handle 3D (Batch, Nodes, Channels) vs 4D (Batch, H, W, Channels)
         if x.dim() == 3:
@@ -141,27 +135,8 @@ class HexGraphConv(nn.Module):
         
         # 5. Combine self and neighbor features
         return self.act(self.self_lin(x) + agg)
-    
-    # def __init__(self, in_dim: int, out_dim: int):
-    #     super().__init__()
-    #     self.self_lin = nn.Linear(in_dim, out_dim)
-    #     self.neigh_lin = nn.Linear(in_dim, out_dim)
-    #     self.act = nn.LeakyReLU(0.1, inplace=True)
-    # def forward(self, x, edge_index, deg):
-    #     src = edge_index[0]
-    #     dst = edge_index[1]
-    #     B, N, _ = x.shape
-    #     x_f = x.float()
-    #     msgs = self.neigh_lin(x_f[:, src, :])
-    #     agg = torch.zeros(B, N, msgs.size(-1), device=x.device, dtype=x_f.dtype)
-    #     idx = dst.view(1, -1, 1).expand(B, -1, msgs.size(-1))
-    #     msgs = msgs.to(agg.dtype) 
-    #     agg.scatter_add_(1, idx, msgs)
-    #     agg = agg / deg.to(agg.dtype).clamp(min=1).view(1, -1, 1)
-    #     out = self.act(self.self_lin(x_f) + agg)
-    #     return out.to(x.dtype)
 
-class HexGraphEncoder(nn.Module): # deprecated
+class HexGraphEncoder(nn.Module):  # deprecated
     """
     Simple 2-layer Hex Graph Conv Encoder.
     """
@@ -206,66 +181,6 @@ class HexDepthwiseConv(nn.Module):
         out = torch.zeros_like(x)
         out = out.scatter_add(1, idx, weighted_msgs)
         return out + self.bias
-        
-    # """
-    # The 'Spatial Mixing' layer for Hex grids. 
-    # Uses a lightweight Graph Attention mechanism to learn directionality.
-    # """
-    # def __init__(self, dim):
-    #     super().__init__()
-    #     self.gate_linear = nn.Linear(dim * 2, 1)
-    #     self.act = nn.LeakyReLU(0.2)
-
-    # def forward(self, x, edge_index):
-    #     # x: [Batch, Nodes, Dim]
-    #     input_shape = x.shape
-    #     is_4d = x.dim() == 4
-    #     if is_4d:
-    #         x = x.flatten(0, 1)
-            
-    #     src, dst = edge_index
-        
-    #     # 1. Get features of pairs (Source -> Dest)
-    #     x_src = x[:, src]
-    #     x_dst = x[:, dst]
-        
-    #     # 2. Calculate Attention Scores
-    #     a_input = torch.cat([x_src, x_dst], dim=-1)
-    #     scores = self.gate_linear(a_input) 
-    #     # Simplified attention: sigmoid gating
-    #     # (softmax over neighbors is hard in pure tensor)
-    #     attention = torch.sigmoid(scores)
-        
-    #     # 3. Message Passing (Weighted Sum)
-    #     msg = x_src * attention
-        
-    #     # 4. Aggregation
-    #     out = torch.zeros_like(x)
-    #     # Broadcast indices for the scatter operation
-    #     # idx = dst.unsqueeze(-1).expand(-1, -1, x.size(-1))
-    #     idx_template = dst.view(1, -1, 1)
-        
-    #     B = x.size(0)
-    #     D = x.size(-1)
-        
-    #     idx = idx_template.expand(B, -1, D)
-        
-    #     # if out.dim() != idx.dim():
-    #     #     print("\n!!! CRASH IMMINENT IN HexDepthwiseConv !!!")
-    #     #     print(f"x.shape:       {x.shape}")
-    #     #     print(f"out.shape:     {out.shape}")
-    #     #     print(f"dst.shape:     {dst.shape}")
-    #     #     print(f"idx_template:  {idx_template.shape}")
-    #     #     print(f"idx (expand):  {idx.shape}")
-    #     #     print(f"msg.shape:     {msg.shape}")
-    #     #     print("------------------------------------------\n")
-
-    #     out.scatter_add_(1, idx, msg)
-        
-    #     if is_4d:
-    #         out = out.view(input_shape)
-        
-    #     return out
 
 class HexNeXtBlock(nn.Module):
     """
