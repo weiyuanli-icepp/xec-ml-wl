@@ -17,8 +17,8 @@ data:
 normalization:
   npho_scale: 0.58
   npho_scale2: 1.0
-  time_scale: 6.5e-8
-  time_shift: 0.5
+  time_scale: 1e-7
+  time_shift: 0.1
   sentinel_value: -5.0
 
 # === Model Configuration ===
