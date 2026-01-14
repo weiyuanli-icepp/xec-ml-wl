@@ -293,6 +293,7 @@ def main_xec_regressor_with_args(
 
             # VAL
             val_model_to_use = ema_model if ema_model is not None else model
+            val_model_to_use.eval()  # Explicitly set eval mode for validation
             val_metrics, pred_val, true_val, _, val_stats = run_epoch_stream( 
                 val_model_to_use, optimizer, device, 
                 scaler=None,
@@ -808,6 +809,7 @@ def train_with_config(config_path: str):
 
             # === VALIDATION ===
             val_model = ema_model if ema_model is not None else model
+            val_model.eval()  # Explicitly set eval mode for validation
             val_metrics, pred_val, true_val, extra_info, val_stats = run_epoch_stream(
                 val_model, optimizer, device, val_loader,
                 scaler=None,

@@ -361,6 +361,7 @@ Examples:
             val_metrics = {}
             predictions = None
             eval_model = ema_model if ema_model is not None else model
+            eval_model.eval()  # Explicitly set eval mode for validation
 
             if val_files:
                 # Collect predictions on last epoch or at save intervals
