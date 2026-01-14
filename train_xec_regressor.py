@@ -59,8 +59,8 @@ def main_xec_regressor_with_args(
     lr=3e-4,
     weight_decay=1e-4,
     drop_path_rate=0.0,
-    time_shift=-0.29,
-    time_scale=2.32e6,
+    time_shift=0.5,           # Updated to match config default
+    time_scale=6.5e-8,        # Updated to match config default
     sentinel_value=-5.0,
     use_scheduler=-1,
     warmup_epochs=2,
@@ -68,8 +68,8 @@ def main_xec_regressor_with_args(
     max_chunks=None,
     npho_branch="relative_npho",
     time_branch="relative_time",
-    NphoScale=1e5,
-    NphoScale2=13,
+    NphoScale=0.58,           # Updated to match config default (npho_scale)
+    NphoScale2=1.0,           # Updated to match config default (npho_scale2)
     onnx="meg2ang_convnextv2.onnx",
     mlflow_experiment="gamma_angle",
     run_name=None,
