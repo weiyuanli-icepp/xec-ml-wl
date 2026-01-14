@@ -7,7 +7,7 @@ data:
   train_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root"
   val_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root"
   tree_name: "tree"
-  batch_size: 512                  # Reduced from 8192 (MAE decoder needs more memory)
+  batch_size: 1024                  # Reduced from 8192 (MAE decoder needs more memory)
   chunksize: 256000
   num_workers: 1                    # Reduced for GH nodes (system suggested max=1)
   num_threads: 4                    # CPU preprocessing threads
@@ -30,8 +30,8 @@ model:
 # === Training Configuration ===
 training:
   epochs: 20
-  lr: 1.0e-4
-  weight_decay: 1.0e-4
+  lr: 8.0e-4
+  weight_decay: 5.0e-5
   channel_dropout_rate: 0.0
   grad_clip: 1.0                    # Gradient clipping (0 to disable)
   ema_decay: null                   # EMA decay rate (null to disable, 0.999 typical)
