@@ -94,8 +94,19 @@ def main_xec_regressor_with_args(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_loader = get_dataloader(train_files, batch_size=batch, num_workers=8, num_threads=4)
-    val_loader   = get_dataloader(val_files, batch_size=batch, num_workers=8, num_threads=4)
+    norm_kwargs = {
+        "npho_scale": NphoScale,
+        "npho_scale2": NphoScale2,
+        "time_scale": time_scale,
+        "time_shift": time_shift,
+        "sentinel_value": sentinel_value,
+        "step_size": chunksize,
+        "npho_branch": npho_branch,
+        "time_branch": time_branch,
+    }
+
+    train_loader = get_dataloader(train_path, batch_size=batch, num_workers=8, num_threads=4, **norm_kwargs)
+    val_loader   = get_dataloader(val_path, batch_size=batch, num_workers=8, num_threads=4, **norm_kwargs)
     
     # --- Define model ---
     active_tasks = tasks.split(",")
@@ -223,7 +234,33 @@ def main_xec_regressor_with_args(
         writer = SummaryWriter(log_dir=os.path.join("runs", run_name))
         
         if start_epoch == 1:
-            mlflow.log_params(locals().copy())
+            mlflow.log_params({
+                "train_path": train_path,
+                "val_path": val_path,
+                "epochs": epochs,
+                "batch": batch,
+                "chunksize": chunksize,
+                "lr": lr,
+                "weight_decay": weight_decay,
+                "drop_path_rate": drop_path_rate,
+                "time_shift": time_shift,
+                "time_scale": time_scale,
+                "sentinel_value": sentinel_value,
+                "use_scheduler": use_scheduler,
+                "warmup_epochs": warmup_epochs,
+                "amp": amp,
+                "outer_mode": outer_mode,
+                "outer_fine_pool": str(outer_fine_pool),
+                "reweight_mode": reweight_mode,
+                "nbins_theta": nbins_theta,
+                "nbins_phi": nbins_phi,
+                "loss_type": loss_type,
+                "loss_beta": loss_beta,
+                "ema_decay": ema_decay,
+                "channel_dropout_rate": channel_dropout_rate,
+                "tasks": tasks,
+                "loss_balance": loss_balance,
+            })
         
         # Reweighting histograms
         edges_theta = weights_theta = None
@@ -243,23 +280,11 @@ def main_xec_regressor_with_args(
             t0 = time.time()
             
             # TRAIN
-            tr_metrics, _, _, _, _ = run_epoch_stream( 
-                model, optimizer, device, 
+            tr_metrics, _, _, _, _ = run_epoch_stream(
+                model, optimizer, device, train_loader,
                 scaler=scaler,
-                root=train_files,
-                tree=tree,
-                step_size=chunksize, 
-                batch_size=batch,
                 train=True, 
                 amp=amp,
-                max_chunks=max_chunks,
-                npho_branch=npho_branch, 
-                time_branch=time_branch,
-                NphoScale=NphoScale, 
-                NphoScale2=NphoScale2, 
-                time_shift=time_shift, 
-                time_scale=time_scale,
-                sentinel_value=sentinel_value,
                 reweight_mode=reweight_mode,
                 edges_theta=edges_theta, 
                 weights_theta=weights_theta,
@@ -278,23 +303,11 @@ def main_xec_regressor_with_args(
             # VAL
             val_model_to_use = ema_model if ema_model is not None else model
             val_model_to_use.eval()  # Explicitly set eval mode for validation
-            val_metrics, pred_val, true_val, _, val_stats = run_epoch_stream( 
-                val_model_to_use, optimizer, device, 
+            val_metrics, pred_val, true_val, _, val_stats = run_epoch_stream(
+                val_model_to_use, optimizer, device, val_loader,
                 scaler=None,
-                root=val_files,
-                tree=tree,
-                step_size=chunksize, 
-                batch_size=max(batch,256),
                 train=False, 
                 amp=False,
-                max_chunks=max_chunks,
-                npho_branch=npho_branch, 
-                time_branch=time_branch,
-                NphoScale=NphoScale, 
-                NphoScale2=NphoScale2,
-                time_shift=time_shift, 
-                time_scale=time_scale,
-                sentinel_value=sentinel_value,
                 reweight_mode=reweight_mode,
                 edges_theta=edges_theta, 
                 weights_theta=weights_theta,
@@ -305,8 +318,6 @@ def main_xec_regressor_with_args(
                 weights_2d=weights_2d,
                 loss_type=loss_type,
                 loss_beta=loss_beta,
-                scheduler=scheduler,
-                ema_model=ema_model,
                 channel_dropout_rate=0.0,
             )
 
@@ -409,22 +420,10 @@ def main_xec_regressor_with_args(
             print("[INFO] Loaded best model state for final evaluation.")
 
         _, pred_all, true_all, extra_info, _ = run_epoch_stream(
-            final_model, optimizer, device, 
+            final_model, optimizer, device, val_loader,
             scaler=None,
-            root=val_files,
-            tree=tree,
-            step_size=chunksize, 
-            batch_size=max(batch,256), 
             train=False, 
             amp=False,
-            max_chunks=max_chunks, 
-            npho_branch=npho_branch, 
-            time_branch=time_branch,
-            NphoScale=NphoScale, 
-            NphoScale2=NphoScale2,
-            time_shift=time_shift, 
-            time_scale=time_scale,
-            sentinel_value=sentinel_value,
             loss_type=loss_type,
             loss_beta=loss_beta,
             reweight_mode=reweight_mode,
@@ -435,7 +434,7 @@ def main_xec_regressor_with_args(
             edges2_theta=edges2_theta, 
             edges2_phi=edges2_phi, 
             weights_2d=weights_2d,
-            scheduler=scheduler
+            channel_dropout_rate=0.0,
         )
 
         if pred_all is not None:
@@ -449,29 +448,56 @@ def main_xec_regressor_with_args(
 
             # --- WORST EVENTS ---
             worst_events = extra_info.get("worst_events", [])
-            for i, (err, raw_n, raw_t, p, t, xyz, vtx, energy, run_id, event_id) in enumerate(worst_events):
-                energy = energy * 1e3  # GeV to MeV
-                vtx_str = f"({vtx[0]:.1f}, {vtx[1]:.1f}, {vtx[2]:.1f})"
-                xyz_str = f"({xyz[0]:.1f}, {xyz[1]:.1f}, {xyz[2]:.1f})"
-                base_title = (f"Worst #{i+1} | Run {run_id} Event {event_id} | Loss={err:.4f}\n"
-                              f"Truth E={energy:.2f} MeV | VTX={vtx_str}, XYZ={xyz_str}\n"
-                              f"Truth: θ={t[0]:.2f}, φ={t[1]:.2f} | Pred: θ={p[0]:.2f}, φ={p[1]:.2f}")
+            for i, event in enumerate(worst_events):
+                raw_n = event.get("input_npho")
+                raw_t = event.get("input_time")
+                if raw_n is None or raw_t is None:
+                    continue
+
+                run_id = event.get("run")
+                event_id = event.get("event")
+                energy = event.get("energy_truth")
+                uvw = event.get("uvw_truth")
+                vtx = event.get("vtx")
+                pred_angle = event.get("pred_angle")
+                true_angle = event.get("true_angle")
+                total_loss = event.get("total_loss")
+
+                base_title = f"Worst #{i+1}"
+                if run_id is not None and event_id is not None:
+                    base_title += f" | Run {run_id} Event {event_id}"
+                if total_loss is not None:
+                    base_title += f" | Loss={float(total_loss):.4f}"
+
+                if energy is not None:
+                    energy_mev = float(np.squeeze(energy)) * 1e3
+                    base_title += f" | Truth E={energy_mev:.2f} MeV"
+                if uvw is not None:
+                    base_title += f" | FI=({uvw[0]:.1f}, {uvw[1]:.1f}, {uvw[2]:.1f})"
+                if pred_angle is not None and true_angle is not None:
+                    base_title += (
+                        f"\nTruth: θ={true_angle[0]:.2f}, φ={true_angle[1]:.2f} | "
+                        f"Pred: θ={pred_angle[0]:.2f}, φ={pred_angle[1]:.2f}"
+                    )
+
+                # Reconstruct raw values from normalized inputs for visualization
+                recon_npho = np.expm1(raw_n * NphoScale2) * NphoScale
+                recon_time = (raw_t + time_shift) * time_scale
 
                 path_npho = os.path.join(artifact_dir, f"worst_event_{i}_{run_name}_npho.pdf")
                 plot_event_faces(
-                    raw_n, 
+                    recon_npho, 
                     title=f"{base_title}\n(Photon Distribution)", 
                     savepath=path_npho, 
                     outer_mode=outer_mode
                 )
                 mlflow.log_artifact(path_npho)
                 
-                time_disp = raw_t / 1e-7 
                 path_time = os.path.join(artifact_dir, f"worst_event_{i}_{run_name}_time.pdf")
                 plot_event_time(
-                    raw_n,
-                    time_disp,
-                    title=f"{base_title}\n(Time Distribution [1e-7s])", 
+                    recon_npho,
+                    recon_time,
+                    title=f"{base_title}\n(Time Distribution [s, normalized inputs reconstructed])", 
                     savepath=path_time
                 )
                 mlflow.log_artifact(path_time)

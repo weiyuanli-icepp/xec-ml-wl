@@ -3,7 +3,10 @@ import os
 from .utils import iterate_chunks
 
 def scan_angle_hist_1d(root, tree="tree", comp=0, nbins=30, step_size=4000):
-    root = os.path.expanduser(root)
+    if isinstance(root, (list, tuple)):
+        root = [os.path.expanduser(r) for r in root]
+    else:
+        root = os.path.expanduser(root)
     vmin, vmax = +np.inf, -np.inf
     for arr in iterate_chunks(root, tree, ["emiAng"], step_size):
         ang = arr["emiAng"].astype("float64")
@@ -35,7 +38,10 @@ def scan_angle_hist_1d(root, tree="tree", comp=0, nbins=30, step_size=4000):
     return edges, weights
 
 def scan_angle_hist_2d(root, tree="tree", nbins_theta=20, nbins_phi=20, step_size=4000):
-    root = os.path.expanduser(root)
+    if isinstance(root, (list, tuple)):
+        root = [os.path.expanduser(r) for r in root]
+    else:
+        root = os.path.expanduser(root)
     th_min, th_max = +np.inf, -np.inf
     ph_min, ph_max = +np.inf, -np.inf
 
