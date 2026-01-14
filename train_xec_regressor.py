@@ -234,33 +234,7 @@ def main_xec_regressor_with_args(
         writer = SummaryWriter(log_dir=os.path.join("runs", run_name))
         
         if start_epoch == 1:
-            mlflow.log_params({
-                "train_path": train_path,
-                "val_path": val_path,
-                "epochs": epochs,
-                "batch": batch,
-                "chunksize": chunksize,
-                "lr": lr,
-                "weight_decay": weight_decay,
-                "drop_path_rate": drop_path_rate,
-                "time_shift": time_shift,
-                "time_scale": time_scale,
-                "sentinel_value": sentinel_value,
-                "use_scheduler": use_scheduler,
-                "warmup_epochs": warmup_epochs,
-                "amp": amp,
-                "outer_mode": outer_mode,
-                "outer_fine_pool": str(outer_fine_pool),
-                "reweight_mode": reweight_mode,
-                "nbins_theta": nbins_theta,
-                "nbins_phi": nbins_phi,
-                "loss_type": loss_type,
-                "loss_beta": loss_beta,
-                "ema_decay": ema_decay,
-                "channel_dropout_rate": channel_dropout_rate,
-                "tasks": tasks,
-                "loss_balance": loss_balance,
-            })
+            mlflow.log_params(locals().copy())
         
         # Reweighting histograms
         edges_theta = weights_theta = None
