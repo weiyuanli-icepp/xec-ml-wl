@@ -39,8 +39,6 @@ def run_epoch_mae(model, optimizer, device, root, tree,
         "outer": 0.0, "top": 0.0, "bot": 0.0
     }
     total_loss_sum = 0.0
-    total_npho_loss_sum = 0.0
-    total_time_loss_sum = 0.0
     n_batches = 0
    
     branches = [npho_branch, time_branch]
@@ -211,17 +209,13 @@ def run_epoch_mae(model, optimizer, device, root, tree,
             scaler.update()
 
             total_loss_sum += loss.item()
-            total_npho_loss_sum += sum(face_npho_loss_sums.values()) / max(1, len(face_npho_loss_sums))
-            total_time_loss_sum += sum(face_time_loss_sums.values()) / max(1, len(face_time_loss_sums))
             n_batches += 1
 
     # Return averaged losses with detailed breakdown
     metrics = {}
 
-    # Total losses
+    # Total loss
     metrics["total_loss"] = total_loss_sum / max(1, n_batches)
-    metrics["loss_npho"] = total_npho_loss_sum / max(1, n_batches)
-    metrics["loss_time"] = total_time_loss_sum / max(1, n_batches)
 
     # Per-face total losses
     for name, val in face_loss_sums.items():
@@ -234,6 +228,11 @@ def run_epoch_mae(model, optimizer, device, root, tree,
     # Per-face time losses
     for name, val in face_time_loss_sums.items():
         metrics[f"loss_{name}_time"] = val / max(1, n_batches)
+
+    # Aggregate npho/time losses (average across faces)
+    num_faces = len(face_npho_loss_sums)
+    metrics["loss_npho"] = sum(metrics[f"loss_{name}_npho"] for name in face_npho_loss_sums) / max(1, num_faces)
+    metrics["loss_time"] = sum(metrics[f"loss_{name}_time"] for name in face_time_loss_sums) / max(1, num_faces)
 
     return metrics
 
