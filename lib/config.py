@@ -205,7 +205,15 @@ def load_config(config_path: str) -> XECConfig:
 
 def get_active_tasks(config: XECConfig) -> List[str]:
     """Get list of enabled task names."""
-    return [name for name, tc in config.tasks.items() if tc.enabled]
+    active = [name for name, tc in config.tasks.items() if tc.enabled]
+    if not active:
+        import warnings
+        warnings.warn(
+            "No tasks are enabled in the configuration. "
+            "Enable at least one task (angle, energy, timing, uvwFI) in the config file.",
+            UserWarning
+        )
+    return active
 
 
 def get_task_weights(config: XECConfig) -> Dict[str, Dict[str, Any]]:
