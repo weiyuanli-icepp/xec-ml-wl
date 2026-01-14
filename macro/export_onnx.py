@@ -113,9 +113,30 @@ Examples:
             use_multi_task = True
             print(f"[INFO] Auto-detected multi-task model with tasks: {active_tasks}")
 
+    # Try to infer multi-task from state_dict keys if not explicitly set
+    if active_tasks is None and not use_multi_task:
+        # Check for multi-head model keys in state_dict
+        multi_task_keys = [k for k in state_dict.keys() if k.startswith("heads.")]
+        if multi_task_keys:
+            # Infer tasks from head names (e.g., "heads.angle.0.weight" -> "angle")
+            inferred_tasks = set()
+            for key in multi_task_keys:
+                parts = key.split(".")
+                if len(parts) >= 2:
+                    inferred_tasks.add(parts[1])
+            if inferred_tasks:
+                active_tasks = sorted(list(inferred_tasks))
+                use_multi_task = True
+                print(f"[INFO] Inferred multi-task model from state_dict keys: {active_tasks}")
+                print("[WARN] 'active_tasks' not found in checkpoint metadata. "
+                      "Consider re-saving checkpoint with updated training code.")
+
     # Default to angle-only if not specified
     if active_tasks is None:
         active_tasks = ["angle"]
+        if not args.multi_task:
+            print("[INFO] No task info in checkpoint, defaulting to angle-only. "
+                  "Use --multi-task --tasks to specify if this is incorrect.")
 
     # 3. Initialize Model
     print("[INFO] Initializing Model...")
