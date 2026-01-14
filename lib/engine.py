@@ -144,12 +144,18 @@ def run_epoch_stream(
                 loss = total_loss
                 
 
-            scaler.scale(loss).backward()
-            if grad_clip > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                if grad_clip > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                if grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
                 
             if ema_model is not None:
                 ema_model.update_parameters(model)
