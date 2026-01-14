@@ -32,6 +32,15 @@ def run_epoch_stream(
     ema_model=None,
     grad_clip=1.0,
 ):
+    # Warn about deprecated legacy reweighting API
+    if reweight_mode != "none" and reweighter is None:
+        warnings.warn(
+            "Legacy reweighting parameters (reweight_mode, edges_*, weights_*) are deprecated. "
+            "Use the 'reweighter' parameter with a SampleReweighter instance instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
     model.train(train)
     criterion_smooth = nn.SmoothL1Loss(reduction="none", beta=loss_beta)
     criterion_l1 = nn.L1Loss(reduction="none")
