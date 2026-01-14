@@ -234,7 +234,33 @@ def main_xec_regressor_with_args(
         writer = SummaryWriter(log_dir=os.path.join("runs", run_name))
         
         if start_epoch == 1:
-            mlflow.log_params(locals().copy())
+            mlflow.log_params({
+                "train_path": train_path,
+                "val_path": val_path,
+                "epochs": epochs,
+                "batch": batch,
+                "chunksize": chunksize,
+                "lr": lr,
+                "weight_decay": weight_decay,
+                "drop_path_rate": drop_path_rate,
+                "time_shift": time_shift,
+                "time_scale": time_scale,
+                "sentinel_value": sentinel_value,
+                "use_scheduler": use_scheduler,
+                "warmup_epochs": warmup_epochs,
+                "amp": amp,
+                "outer_mode": outer_mode,
+                "outer_fine_pool": str(outer_fine_pool),
+                "reweight_mode": reweight_mode,
+                "nbins_theta": nbins_theta,
+                "nbins_phi": nbins_phi,
+                "loss_type": loss_type,
+                "loss_beta": loss_beta,
+                "ema_decay": ema_decay,
+                "channel_dropout_rate": channel_dropout_rate,
+                "tasks": tasks,
+                "loss_balance": loss_balance,
+            })
         
         # Reweighting histograms
         edges_theta = weights_theta = None
@@ -379,13 +405,17 @@ def main_xec_regressor_with_args(
             
             # Save Last Checkpoint
             torch.save({
-                "epoch": ep, 
+                "epoch": ep,
                 "model_state_dict": model.state_dict(),
                 "ema_state_dict": ema_model.state_dict() if ema_model else None,
-                "optimizer_state_dict": optimizer.state_dict(), 
+                "optimizer_state_dict": optimizer.state_dict(),
                 "best_val": best_val,
                 "mlflow_run_id": run_id,
             }, os.path.join(artifact_dir, "checkpoint_last.pth"))
+
+            # Step scheduler at end of epoch (epoch-based scheduling)
+            if scheduler is not None:
+                scheduler.step()
 
         # --- ARTIFACTS ---
         final_model = ema_model if ema_model is not None else model

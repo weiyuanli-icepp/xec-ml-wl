@@ -174,9 +174,7 @@ def run_epoch_stream(
                 
             if ema_model is not None:
                 ema_model.update_parameters(model)
-            if scheduler is not None:
-                scheduler.step()
-            
+
             loss_sums["total_opt"] += loss.item() * X_batch.size(0)
             nobs += X_batch.size(0)
 
