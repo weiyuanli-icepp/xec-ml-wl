@@ -24,6 +24,13 @@ These x86-based nodes use the system Anaconda module:
 ```bash
 $ module load anaconda/2024.08
 $ conda env create -f env_setting/xec-ml-wl-gpu.yml
+
+# To update
+$ conda env update -f env_setting/xec-ml-wl-gpu.yml --prune
+
+# When changing the python version
+$ conda env remove -n xec-ml-wl
+$ conda env create -f xec-ml-wl-gpu.yml
 ```
 
 ### 2. Grace-Hopper Nodes (gh-* partition)
