@@ -62,7 +62,17 @@ class XECStreamingDataset(IterableDataset):
         # ThreadPool for CPU-bound normalization
         self.num_threads = num_workers
         self.executor = ThreadPoolExecutor(max_workers=num_workers)
-        
+
+    def shutdown(self):
+        """Explicitly shutdown the thread pool executor."""
+        if hasattr(self, 'executor') and self.executor is not None:
+            self.executor.shutdown(wait=False)
+            self.executor = None
+
+    def __del__(self):
+        """Cleanup executor on garbage collection."""
+        self.shutdown()
+
     def _process_sub_chunk(self, arr_subset):
         """
         Normalize a subset of the chunk in a separate thread.
