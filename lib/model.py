@@ -95,11 +95,8 @@ class FaceBackbone(nn.Module):
         return x.flatten(1)
 
 class XECRegressor(nn.Module):
-    # def __init__(self, tasks=["angle", "energy", "xyz"], hidden_dim=256, out_dim=2, outer_mode="split", outer_fine_pool=None, drop_path_rate=0.0): <---
     def __init__(self, hidden_dim=256, out_dim=2, outer_mode="finegrid", outer_fine_pool=None, drop_path_rate=0.0):
         super().__init__()
-        # self.tasks = tasks <---
-        
         self.outer_mode = outer_mode
         self.outer_fine_pool = outer_fine_pool
         
@@ -204,39 +201,6 @@ class XECRegressor(nn.Module):
         return self.fusion_transformer(tokens)
     
     def forward(self, x_batch):
-        # if x_batch.dim() == 4:
-        #     x_batch = x_batch.flatten(0, 1)
-            
-        # faces = {}
-        # faces["inner"] = gather_face(x_batch, INNER_INDEX_MAP)
-        # faces["us"]    = gather_face(x_batch, US_INDEX_MAP)
-        # faces["ds"]    = gather_face(x_batch, DS_INDEX_MAP)
-        # if self.outer_mode == "split":
-        #     faces["outer_coarse"] = gather_face(x_batch, OUTER_COARSE_FULL_INDEX_MAP)
-        #     faces["outer_center"] = gather_face(x_batch, OUTER_CENTER_INDEX_MAP)
-
-        # tokens = []
-        # for name in self.cnn_face_names:
-        #     tokens.append(self.backbone(faces[name]))
-        
-        # if self.outer_fine:
-        #     outer_fine = build_outer_fine_grid_tensor(x_batch, pool_kernel=self.outer_fine_pool)
-        #     tokens.append(self.backbone(outer_fine))
-        
-        # edge_index = self.hex_edge_index
-        # top_nodes = gather_hex_nodes(x_batch, self.top_hex_indices)
-        # bot_nodes = gather_hex_nodes(x_batch, self.bottom_hex_indices)
-
-        # tokens.append(self.hex_encoder(top_nodes, edge_index))
-        # tokens.append(self.hex_encoder(bot_nodes, edge_index))
-        
-        # # Stack tokens and apply Transformer
-        # x_seq  = torch.stack(tokens, dim=1) # (B, T, D)
-        # x_seq  = x_seq + self.pos_embed
-        # x_seq  = self.fusion_transformer(x_seq)
-        
-        # x_flat = x_seq.flatten(1)
-        # return self.head(x_flat)
         latent_seq = self.forward_features(x_batch)
         flat_feats = latent_seq.flatten(1)
         return self.head(flat_feats)
