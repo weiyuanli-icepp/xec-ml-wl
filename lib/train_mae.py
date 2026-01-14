@@ -170,6 +170,7 @@ Examples:
         resume_from = args.resume_from or cfg.checkpoint.resume_from
         save_predictions = args.save_predictions or getattr(cfg.checkpoint, 'save_predictions', False)
         save_interval = getattr(cfg.checkpoint, 'save_interval', 10)
+        use_compile = getattr(cfg.training, 'compile', True)  # Default True for backward compat
     else:
         # Pure CLI mode (legacy) - require train_root
         if not args.train_root:
@@ -201,6 +202,7 @@ Examples:
         resume_from = args.resume_from
         save_predictions = args.save_predictions
         save_interval = 10
+        use_compile = True  # Default for CLI mode
 
     def expand_path(p):
         path = os.path.expanduser(p)
@@ -240,8 +242,11 @@ Examples:
     model = XEC_MAE(encoder, mask_ratio=mask_ratio).to(device)
 
     # torch.compile requires triton, which is only available on x86_64
+    # Can be disabled via config to avoid LLVM/multiprocessing conflicts
     is_arm = platform.machine() in ("aarch64", "arm64")
-    if device.type == "cuda" and not is_arm:
+    if not use_compile:
+        print("[INFO] torch.compile disabled via config.")
+    elif device.type == "cuda" and not is_arm:
         try:
             import triton  # Check if triton is available
             # Suppress verbose Triton autotuning logs

@@ -36,6 +36,7 @@ training:
   grad_clip: 1.0                    # Gradient clipping (0 to disable)
   ema_decay: null                   # EMA decay rate (null to disable, 0.999 typical)
   amp: true                         # Automatic Mixed Precision
+  compile: false                    # torch.compile (can cause LLVM errors with multiprocessing)
 
 # === Checkpointing ===
 checkpoint:
