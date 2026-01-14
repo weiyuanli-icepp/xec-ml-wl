@@ -403,6 +403,11 @@ def run_eval_mae(model, device, root, tree,
     for name, val in face_time_loss_sums.items():
         metrics[f"loss_{name}_time"] = val / max(1, n_batches)
 
+    # Aggregate npho/time losses (average across faces)
+    num_faces = len(face_npho_loss_sums)
+    metrics["loss_npho"] = sum(metrics[f"loss_{name}_npho"] for name in face_npho_loss_sums) / max(1, num_faces)
+    metrics["loss_time"] = sum(metrics[f"loss_{name}_time"] for name in face_time_loss_sums) / max(1, num_faces)
+
     if collect_predictions:
         # Concatenate collected predictions
         for key in predictions:
