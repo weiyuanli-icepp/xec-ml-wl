@@ -29,6 +29,7 @@ import uproot
 import numpy as np
 
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from .model import XECEncoder
 from .model_mae import XEC_MAE
@@ -126,6 +127,8 @@ Examples:
     parser.add_argument("--outer_fine_pool",      type=int, nargs=2, default=None)
     parser.add_argument("--mask_ratio",           type=float, default=None)
     parser.add_argument("--lr",                   type=float, default=None)
+    parser.add_argument("--lr_scheduler",         type=str, default=None, choices=["none", "cosine"])
+    parser.add_argument("--lr_min",               type=float, default=None, help="Minimum lr for cosine scheduler")
     parser.add_argument("--weight_decay",         type=float, default=None)
     parser.add_argument("--loss_fn",              type=str, default=None, choices=["smooth_l1", "mse", "l1", "huber"])
     parser.add_argument("--npho_weight",          type=float, default=None)
@@ -165,6 +168,8 @@ Examples:
         outer_fine_pool = args.outer_fine_pool or cfg.model.outer_fine_pool
         mask_ratio = args.mask_ratio if args.mask_ratio is not None else cfg.model.mask_ratio
         lr = args.lr if args.lr is not None else cfg.training.lr
+        lr_scheduler = args.lr_scheduler or getattr(cfg.training, "lr_scheduler", None)
+        lr_min = args.lr_min if args.lr_min is not None else getattr(cfg.training, "lr_min", 1e-6)
         weight_decay = args.weight_decay if args.weight_decay is not None else cfg.training.weight_decay
         loss_fn = args.loss_fn or cfg.training.loss_fn
         npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight
@@ -201,6 +206,8 @@ Examples:
         outer_fine_pool = args.outer_fine_pool
         mask_ratio = args.mask_ratio or 0.6
         lr = args.lr or 1e-4
+        lr_scheduler = args.lr_scheduler
+        lr_min = args.lr_min if args.lr_min is not None else 1e-6
         weight_decay = args.weight_decay or 1e-4
         loss_fn = args.loss_fn or "smooth_l1"
         npho_weight = args.npho_weight or 1.0
@@ -215,6 +222,9 @@ Examples:
         save_predictions = args.save_predictions
         save_interval = 10
         use_compile = True  # Default for CLI mode
+
+    if lr_scheduler == "none":
+        lr_scheduler = None
 
     def expand_path(p):
         path = os.path.expanduser(p)
@@ -290,6 +300,14 @@ Examples:
         print(f"[INFO] EMA enabled with decay={ema_decay}")
         ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
 
+    scheduler = None
+    if lr_scheduler:
+        if lr_scheduler == "cosine":
+            scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr_min)
+            print(f"[INFO] Using CosineAnnealingLR with eta_min={lr_min}")
+        else:
+            raise ValueError(f"Unsupported lr_scheduler: {lr_scheduler}")
+
     # Initialize GradScaler for AMP
     scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
 
@@ -306,6 +324,8 @@ Examples:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if "ema_state_dict" in checkpoint and ema_model is not None:
                 ema_model.load_state_dict(checkpoint['ema_state_dict'])
+            if "scheduler_state_dict" in checkpoint and scheduler is not None:
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
             if "scaler_state_dict" in checkpoint:
                 scaler.load_state_dict(checkpoint['scaler_state_dict'])
             start_epoch = checkpoint.get('epoch', 0) + 1
@@ -316,7 +336,7 @@ Examples:
             model.load_state_dict(checkpoint, strict=False)
             start_epoch = 0
 
-    # MLflow Setup (tracking URI set via env var at module load to avoid deprecation warning)
+    # MLflow Setup
     mlflow.set_experiment(mlflow_experiment)
     print(f"Starting MAE Pre-training in experiment: {mlflow_experiment}, run name: {mlflow_run_name}")
     os.makedirs(save_path, exist_ok=True)
@@ -332,11 +352,11 @@ Examples:
         else:
             channel_weights_label = f"npho {npho_weight}, time {time_weight}"
 
-        scheduler_name = None
-        if args.config:
+        scheduler_name = lr_scheduler
+        if scheduler_name is None and args.config:
             scheduler_name = (
-                getattr(cfg.training, "scheduler", None)
-                or getattr(cfg.training, "lr_scheduler", None)
+                getattr(cfg.training, "lr_scheduler", None)
+                or getattr(cfg.training, "scheduler", None)
             )
         lr_label = f"scheduler:{scheduler_name}" if scheduler_name else lr
 
@@ -406,10 +426,9 @@ Examples:
             val_metrics = {}
             predictions = None
             eval_model = ema_model if ema_model is not None else model
-            eval_model.eval()  # Explicitly set eval mode for validation
+            eval_model.eval()
 
             if val_files:
-                # Collect predictions on last epoch or at save intervals
                 collect_preds = save_predictions and ((epoch + 1) % save_interval == 0 or (epoch + 1) == epochs)
 
                 result = run_eval_mae(
@@ -439,12 +458,12 @@ Examples:
 
             dt = time.time() - t0
 
-            # Print epoch summary
+            # Epoch summary
             train_loss = train_metrics.get("total_loss", 0.0)
             val_loss = val_metrics.get("total_loss", 0.0) if val_metrics else 0.0
             print(f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | Time: {dt:.1f}s")
 
-            # Log training metrics to MLflow
+            # Log MLflow
             for key, value in train_metrics.items():
                 mlflow.log_metric(f"train/{key}", value, step=epoch)
 
@@ -494,7 +513,10 @@ Examples:
             except Exception as e:
                 print(f"[WARNING] Could not log CPU RAM stats: {e}")
 
-            # Save predictions to ROOT file (non-fatal if awkward/uproot has issues)
+            if scheduler is not None:
+                scheduler.step()
+
+            # Save predictions
             if predictions is not None:
                 try:
                     root_path = save_predictions_to_root(predictions, save_path, epoch)
@@ -508,7 +530,7 @@ Examples:
             if is_best:
                 best_val_loss = val_loss
 
-            # Save model checkpoint at intervals
+            # Save model checkpoint
             if (epoch + 1) % save_interval == 0 or (epoch + 1) == epochs or is_best:
                 checkpoint_dict = {
                     'epoch': epoch,
@@ -524,6 +546,8 @@ Examples:
                 }
                 if ema_model is not None:
                     checkpoint_dict['ema_state_dict'] = ema_model.state_dict()
+                if scheduler is not None:
+                    checkpoint_dict['scheduler_state_dict'] = scheduler.state_dict()
 
                 # Save last checkpoint
                 full_ckpt_path = os.path.join(save_path, "mae_checkpoint_last.pth")

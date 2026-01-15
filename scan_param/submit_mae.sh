@@ -11,11 +11,16 @@ MASK_RATIO="${MASK_RATIO:-0.65}"
 RESUME_FROM="${RESUME_FROM:-}"
 PARTITION="${PARTITION:-a100-daily}"
 TIME="${TIME:-23:00:00}"
+CONFIG_PATH="${CONFIG_PATH:-config/mae_config.yaml}"
 NPHO_SCALE="${NPHO_SCALE:-0.58}"
 NPHO_SCALE2="${NPHO_SCALE2:-1.0}"
 TIME_SCALE="${TIME_SCALE:-6.5e-8}"
 TIME_SHIFT="${TIME_SHIFT:-0.5}"
 SENTINEL_VALUE="${SENTINEL_VALUE:--5.0}"
+LOSS_FN="${LOSS_FN:-}"
+TIME_WEIGHT="${TIME_WEIGHT:-}"
+AUTO_WEIGHT="${AUTO_WEIGHT:-false}"
+LR_SCHEDULER="${LR_SCHEDULER:-}"
 # ROOT_PATH="${ROOT_PATH:-~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/single_run}"
 TRAIN_PATH="${TRAIN_PATH:-~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root}"
 VAL_PATH="${VAL_PATH:-~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root}"
@@ -28,7 +33,21 @@ LOG_DIR="slurm_logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/${RUN_NAME}_%j.out"
 
-echo "[SUBMIT] MAE Run: $RUN_NAME | Exp: $MLFLOW_EXPERIMENT | Mask: $MASK_RATIO"
+AUTO_CHANNEL_FLAG=""
+case "${AUTO_WEIGHT}" in
+    true|True|TRUE|1|yes|YES)
+        AUTO_CHANNEL_FLAG="--auto_channel_weight"
+        ;;
+esac
+
+LOSS_FN_FLAG=""
+if [[ -n "${LOSS_FN}" ]]; then LOSS_FN_FLAG="--loss_fn ${LOSS_FN}"; fi
+TIME_WEIGHT_FLAG=""
+if [[ -n "${TIME_WEIGHT}" ]]; then TIME_WEIGHT_FLAG="--time_weight ${TIME_WEIGHT}"; fi
+LR_SCHEDULER_FLAG=""
+if [[ -n "${LR_SCHEDULER}" ]]; then LR_SCHEDULER_FLAG="--lr_scheduler ${LR_SCHEDULER}"; fi
+
+echo "[SUBMIT] MAE Run: $RUN_NAME | Exp: $MLFLOW_EXPERIMENT | Mask: $MASK_RATIO | Config: $CONFIG_PATH"
 
 sbatch <<EOF
 #!/bin/bash
@@ -82,6 +101,7 @@ mkdir -p artifacts/${RUN_NAME}
 
 echo "[JOB] Starting MAE Pre-training with Batch=${BATCH} Chunk=${CHUNK_SIZE}..."
 python -m lib.train_mae \\
+    --config "${CONFIG_PATH}" \\
     --train_root "${TRAIN_PATH}" \\
     --val_root "${VAL_PATH}" \\
     --save_path "artifacts/${RUN_NAME}" \\
@@ -98,6 +118,10 @@ python -m lib.train_mae \\
     --outer_fine_pool 3 3 \\
     --mlflow_experiment "${MLFLOW_EXPERIMENT}" \\
     --mlflow_run_name "${RUN_NAME}" \\
+    ${LOSS_FN_FLAG} \\
+    ${TIME_WEIGHT_FLAG} \\
+    ${AUTO_CHANNEL_FLAG} \\
+    ${LR_SCHEDULER_FLAG} \\
     $( [[ -n "${RESUME_FROM}" ]] && echo "--resume_from ${RESUME_FROM}" )
 
 echo "[JOB] Finished."
