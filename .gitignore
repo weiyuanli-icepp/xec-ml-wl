@@ -105,3 +105,4 @@ datasets/
 
 # MLflow artifacts
 artifacts/
+mlruns.db
