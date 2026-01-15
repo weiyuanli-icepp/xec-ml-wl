@@ -31,6 +31,8 @@ model:
 training:
   epochs: 20
   lr: 8.0e-4
+  lr_scheduler: null           # "cosine" or null
+  lr_min: 1.0e-6
   weight_decay: 5.0e-5
   loss_fn: "smooth_l1"            # Options: smooth_l1, mse, l1, huber
   npho_weight: 1.0                # Per-channel manual weighting
