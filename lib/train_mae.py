@@ -433,6 +433,18 @@ Examples:
                 for key, value in val_metrics.items():
                     mlflow.log_metric(f"val/{key}", value, step=epoch)
 
+            # Log learned channel weights (homoscedastic uncertainty)
+            if auto_channel_weight and hasattr(model, "channel_log_vars") and model.channel_log_vars is not None:
+                log_vars = model.channel_log_vars.detach()
+                # log_var = log(sigma^2), so sigma = exp(log_var / 2)
+                # weight = 1 / (2 * sigma^2) = 0.5 * exp(-log_var)
+                mlflow.log_metrics({
+                    "channel/npho_log_var": log_vars[0].item(),
+                    "channel/time_log_var": log_vars[1].item(),
+                    "channel/npho_weight": (0.5 * torch.exp(-log_vars[0])).item(),
+                    "channel/time_weight": (0.5 * torch.exp(-log_vars[1])).item(),
+                }, step=epoch)
+
             mlflow.log_metric("epoch_time_sec", dt, step=epoch)
 
             # GPU stats
