@@ -383,7 +383,16 @@ def main_xec_regressor_with_args(
                     log_dict[k] = tr_metrics[k]
             
             mlflow.log_metrics(log_dict, step=ep)
-            
+
+            # Log learned task weights (homoscedastic uncertainty)
+            if loss_scaler is not None:
+                for task, log_var in loss_scaler.log_vars.items():
+                    weight = (0.5 * torch.exp(-log_var)).item()
+                    mlflow.log_metrics({
+                        f"task/{task}_log_var": log_var.item(),
+                        f"task/{task}_weight": weight,
+                    }, step=ep)
+
             writer.add_scalar("loss/train", tr_loss, ep)
             writer.add_scalar("loss/val", val_loss, ep)
             writer.add_scalar("lr", current_lr, ep)
@@ -860,6 +869,15 @@ def train_with_config(config_path: str):
 
             mlflow.log_metrics(log_dict, step=ep)
             mlflow.log_metric("system/epoch_duration_sec", sec, step=ep)
+
+            # Log learned task weights (homoscedastic uncertainty)
+            if loss_scaler is not None:
+                for task, log_var in loss_scaler.log_vars.items():
+                    weight = (0.5 * torch.exp(-log_var)).item()
+                    mlflow.log_metrics({
+                        f"task/{task}_log_var": log_var.item(),
+                        f"task/{task}_weight": weight,
+                    }, step=ep)
 
             writer.add_scalar("loss/train", tr_loss, ep)
             writer.add_scalar("loss/val", val_loss, ep)
