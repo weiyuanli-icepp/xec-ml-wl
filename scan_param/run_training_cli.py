@@ -220,7 +220,7 @@ def main():
         print(f"[CLI] Val path: {config_dict['data']['val_path']}")
 
         # Import and run training
-        from train_xec_regressor import train_with_config
+        from lib.train_regressor import train_with_config
         train_with_config(temp_config_path)
 
     finally:

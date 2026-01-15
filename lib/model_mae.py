@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .model import XECRegressor
+from .model import XECEncoder
 from .model_blocks import HexNeXtBlock
 from .geom_defs import (
     TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
@@ -77,7 +77,7 @@ class GraphFaceDecoder(nn.Module):
         return out.permute(0, 2, 1) # (B, N, 2) -> (B, 2, N)
     
 class XEC_MAE(nn.Module):
-    def __init__(self, encoder: XECRegressor, mask_ratio=0.6, learn_channel_logvars: bool = False):
+    def __init__(self, encoder: XECEncoder, mask_ratio=0.6, learn_channel_logvars: bool = False):
         super().__init__()
         self.encoder = encoder
         self.mask_ratio = mask_ratio

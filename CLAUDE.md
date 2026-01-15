@@ -1,0 +1,139 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+ML model for the MEG II Liquid Xenon (LXe) detector that regresses physical observables from photon sensor data:
+- **Input:** 4760 sensors (4092 SiPMs + 668 PMTs) providing photon count (Npho) and timing data
+- **Tasks:** Emission angle (θ, φ), energy, timing, position (uvwFI) regression
+
+## Commands
+
+### Environment Setup
+```bash
+# x86/A100 nodes
+module load anaconda/2024.08
+conda env create -f env_setting/xec-ml-wl-gpu.yml
+
+# ARM/Grace-Hopper nodes
+mamba create -n xec-ml-wl-gh python=3.10 ...
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+```
+
+### Training
+```bash
+# Config-based training
+python -m lib.train_regressor --config config/train_config.yaml
+
+# CLI with config file
+python scan_param/run_training_cli.py --config config/train_config.yaml --train_path /path/train --val_path /path/val
+
+# SLURM batch submission
+./scan_param/submit_job.sh [RUN_NAME] [CONFIG_FILE] [PARTITION] [TIME]
+./scan_param/submit_job.sh my_run ../config/train_config.yaml a100-daily 12:00:00
+
+# Override parameters via environment
+EPOCHS=100 LR=1e-4 ./scan_param/submit_job.sh my_run ../config/train_config.yaml
+```
+
+### MAE Pre-training
+```bash
+python lib/train_mae.py --train_root /path/data.root --save_path mae_pretrained.pth --epochs 20 --batch_size 1024
+```
+
+### Export & Inference
+```bash
+# ONNX export (single-task)
+python macro/export_onnx.py artifacts/<RUN>/checkpoint_best.pth --output model.onnx
+
+# ONNX export (multi-task)
+python macro/export_onnx.py artifacts/<RUN>/checkpoint_best.pth --multi-task --output model.onnx
+
+# Real data inference
+python val_data/inference_real_data.py --onnx model.onnx --input data.root --output output.root
+```
+
+### Monitoring
+```bash
+mlflow ui --backend-store-uri mlruns --host 0.0.0.0 --port 5000
+tensorboard --logdir runs --host 0.0.0.0 --port 6006
+```
+
+## Architecture
+
+### Training Pipeline
+```
+Data Loading (XECStreamingDataset) → Preprocessing (Normalization + Reweighting)
+    → Model Forward (XECEncoder/XECMultiHeadModel)
+    → Loss (Multi-task) → EMA Update → Validation → Checkpoint/ONNX Export
+```
+
+### Model Architecture
+Multi-branch design processing 6 detector faces:
+
+1. **Rectangular Faces (ConvNeXt V2):** Inner (93×44), Upstream (24×6), Downstream (24×6), Outer (9×24 with optional fine grid)
+   - Stem → 2× ConvNeXtV2 blocks (dim=32) → Downsample → 3× blocks (dim=64) → 1024-dim token
+
+2. **Hexagonal Faces (HexNeXt Graph Attention):** Top/Bottom PMT arrays (668 total)
+   - Stem → 4× HexNeXt blocks (dim=96) → Global Pool → 1024-dim token
+
+3. **Fusion (Transformer):** 6 face tokens → 2-layer Transformer Encoder (8 heads) → 6144-dim → Task heads
+
+### Key Components
+- `lib/model.py`: XECEncoder, XECMultiHeadModel, FaceBackbone, DeepHexEncoder
+- `lib/model_blocks.py`: ConvNeXtV2Block, HexNeXtBlock, GRN, DropPath
+- `lib/engine.py`: Training loop (run_epoch_stream), multi-task loss computation
+- `lib/dataset.py`: XECStreamingDataset (ROOT file streaming, chunked loading)
+- `lib/config.py`: Configuration dataclasses, YAML loading
+- `lib/geom_defs.py`: Detector geometry index maps
+- `lib/reweighting.py`: SampleReweighter for distribution balancing
+
+## Configuration
+
+`config/train_config.yaml` is the master configuration:
+- **data:** train_path, val_path, batch_size, chunksize, num_workers
+- **normalization:** npho_scale (0.58), time_scale (6.5e8), sentinel_value (-5.0)
+- **model:** outer_mode ("finegrid"/"split"), outer_fine_pool, drop_path_rate
+- **tasks:** Enable/disable angle, energy, timing, uvwFI with per-task loss_fn, loss_beta, weight
+- **training:** epochs, lr, weight_decay, warmup_epochs, ema_decay, grad_clip
+- **reweighting:** Per-task histogram-based sample reweighting
+
+## Data Format
+
+ROOT files with branches:
+- **Input:** `relative_npho`, `relative_time` (shape: 4760)
+- **Truth:** `angleVec` (θ,φ), `energy`, `timing`, `xyzVTX` (position)
+- **Metadata:** `emiVec` (emission direction), `run`, `event`
+
+Preprocessing normalizes Npho/time and marks bad values with sentinel (-5.0).
+
+## Multi-Task Learning
+
+Tasks configured in YAML:
+```yaml
+tasks:
+  angle:
+    enabled: true
+    loss_fn: "smooth_l1"  # smooth_l1, l1, mse, huber
+    weight: 1.0
+  energy:
+    enabled: false
+    ...
+```
+
+Models: `XECEncoder` (angle-only legacy), `XECMultiHeadModel` (multi-task)
+
+## Checkpoints
+
+- `checkpoint_best.pth`, `checkpoint_last.pth`: Full state (model, optimizer, EMA, epoch, config)
+- MAE checkpoints: Encoder weights only (no heads/EMA)
+- Auto-detection: Script differentiates full vs MAE checkpoints and resumes appropriately
+
+## Key Artifacts
+
+- `artifacts/<RUN>/checkpoint_*.pth`: Model weights
+- `artifacts/<RUN>/predictions_*.csv`: Validation predictions
+- `artifacts/<RUN>/*.onnx`: ONNX export for C++ inference
+- `mlruns/`: MLflow experiment tracking
+- `runs/`: TensorBoard logs

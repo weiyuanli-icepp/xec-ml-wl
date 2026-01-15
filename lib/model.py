@@ -94,7 +94,7 @@ class FaceBackbone(nn.Module):
         x = F.interpolate(x, size=self.pooled_hw, mode='bilinear', align_corners=False)
         return x.flatten(1)
 
-class XECRegressor(nn.Module):
+class XECEncoder(nn.Module):
     def __init__(self, hidden_dim=256, out_dim=2, outer_mode="finegrid", outer_fine_pool=None, drop_path_rate=0.0):
         super().__init__()
         self.outer_mode = outer_mode
@@ -227,7 +227,7 @@ class XECRegressor(nn.Module):
         return norms
 
 class XECMultiHeadModel(nn.Module):
-    def __init__(self, backbone : XECRegressor, hidden_dim=256, active_tasks=["angle", "energy", "xyz"]):
+    def __init__(self, backbone : XECEncoder, hidden_dim=256, active_tasks=["angle", "energy", "xyz"]):
         super().__init__()
         
         self.backbone     = backbone

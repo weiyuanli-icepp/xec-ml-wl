@@ -30,7 +30,7 @@ import numpy as np
 
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 
-from .model import XECRegressor
+from .model import XECEncoder
 from .model_mae import XEC_MAE
 from .engine_mae import run_epoch_mae, run_eval_mae
 from .utils import get_gpu_memory_stats
@@ -246,7 +246,7 @@ Examples:
 
     # Initialize Model
     outer_fine_pool_tuple = tuple(outer_fine_pool) if outer_fine_pool else None
-    encoder = XECRegressor(
+    encoder = XECEncoder(
         outer_mode=outer_mode,
         outer_fine_pool=outer_fine_pool_tuple
     ).to(device)

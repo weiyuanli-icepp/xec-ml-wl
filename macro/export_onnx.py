@@ -15,9 +15,9 @@ import sys
 
 try:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-    from lib.model import XECRegressor, XECMultiHeadModel
+    from lib.model import XECEncoder, XECMultiHeadModel
 except ImportError:
-    print("Error: Could not import 'XECRegressor' or 'XECMultiHeadModel'.")
+    print("Error: Could not import 'XECEncoder' or 'XECMultiHeadModel'.")
     print("Please ensure 'model.py' is in the current directory or python path.")
     sys.exit(1)
 
@@ -73,7 +73,7 @@ def main():
         description="Export PyTorch Checkpoint to ONNX",
         epilog="""
 Examples:
-  # Export single-task angle model (legacy XECRegressor)
+  # Export single-task angle model (legacy XECEncoder)
   python export_onnx.py artifacts/run/checkpoint_best.pth --output model.onnx
 
   # Export multi-task model (auto-detect tasks from checkpoint)
@@ -92,7 +92,7 @@ Examples:
     parser.add_argument("--drop_path_rate", type=float, default=0.0, help="Should be 0 for export/inference")
 
     # Multi-task support
-    parser.add_argument("--multi-task", action="store_true", help="Use XECMultiHeadModel instead of XECRegressor")
+    parser.add_argument("--multi-task", action="store_true", help="Use XECMultiHeadModel instead of XECEncoder")
     parser.add_argument("--tasks", type=str, nargs="+", default=None,
                         choices=["angle", "energy", "timing", "uvwFI"],
                         help="Active tasks for multi-task model (auto-detected from checkpoint if not specified)")
@@ -143,8 +143,8 @@ Examples:
     if use_multi_task:
         print(f"[INFO] Creating XECMultiHeadModel with tasks: {active_tasks}")
 
-        # First create the backbone (XECRegressor)
-        backbone = XECRegressor(
+        # First create the backbone (XECEncoder)
+        backbone = XECEncoder(
             outer_mode=args.outer_mode,
             outer_fine_pool=(3, 3),
             drop_path_rate=0.0  # Always 0 for export
@@ -156,8 +156,8 @@ Examples:
             active_tasks=active_tasks
         )
     else:
-        print("[INFO] Creating XECRegressor (single-task angle model)")
-        model = XECRegressor(
+        print("[INFO] Creating XECEncoder (single-task angle model)")
+        model = XECEncoder(
             outer_mode=args.outer_mode,
             outer_fine_pool=(3, 3),
             drop_path_rate=0.0

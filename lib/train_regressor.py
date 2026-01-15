@@ -18,19 +18,19 @@ from torch.utils.tensorboard  import SummaryWriter
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.optim.swa_utils    import AveragedModel, get_ema_multi_avg_fn
 
-from lib.model                import XECRegressor, XECMultiHeadModel, AutomaticLossScaler
-from lib.engine               import run_epoch_stream
-from lib.dataset              import get_dataloader, expand_path
-from lib.event_display        import plot_event_faces, plot_event_time
-from lib.angle_reweighting    import scan_angle_hist_1d, scan_angle_hist_2d  # Legacy
-from lib.reweighting          import SampleReweighter, create_reweighter_from_config
-from lib.config               import load_config, get_active_tasks, get_task_weights, XECConfig
-from lib.utils                import (
+from .model                import XECEncoder, XECMultiHeadModel, AutomaticLossScaler
+from .engine               import run_epoch_stream
+from .dataset              import get_dataloader, expand_path
+from .event_display        import plot_event_faces, plot_event_time
+from .angle_reweighting    import scan_angle_hist_1d, scan_angle_hist_2d  # Legacy
+from .reweighting          import SampleReweighter, create_reweighter_from_config
+from .config               import load_config, get_active_tasks, get_task_weights, XECConfig
+from .utils                import (
     get_gpu_memory_stats,
     iterate_chunks,
     compute_face_saliency
 )
-from lib.plotting             import (
+from .plotting             import (
     plot_resolution_profile,
     plot_face_weights,
     plot_profile,
@@ -110,7 +110,7 @@ def main_xec_regressor_with_args(
     
     # --- Define model ---
     active_tasks = tasks.split(",")
-    base_regressor = XECRegressor(outer_mode=outer_mode,
+    base_regressor = XECEncoder(outer_mode=outer_mode,
                          outer_fine_pool=outer_fine_pool,
                          drop_path_rate=drop_path_rate)
     model = XECMultiHeadModel(base_regressor, active_tasks=active_tasks).to(device)
@@ -665,7 +665,7 @@ def train_with_config(config_path: str):
 
     # --- Model ---
     outer_fine_pool = tuple(cfg.model.outer_fine_pool) if cfg.model.outer_fine_pool else None
-    base_regressor = XECRegressor(
+    base_regressor = XECEncoder(
         outer_mode=cfg.model.outer_mode,
         outer_fine_pool=outer_fine_pool,
         drop_path_rate=cfg.model.drop_path_rate

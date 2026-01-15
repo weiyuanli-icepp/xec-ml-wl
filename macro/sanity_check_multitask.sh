@@ -182,7 +182,7 @@ echo ""
 
 # Run training
 echo "[INFO] Starting sanity check training..."
-python train_xec_regressor.py --config "$CONFIG_FILE"
+python -m lib.train_regressor --config "$CONFIG_FILE"
 
 # Cleanup
 rm -f "$CONFIG_FILE"

@@ -15,7 +15,7 @@ from lib.plotting import (
     plot_profile,
     plot_face_weights
 )
-from lib.model import XECRegressor
+from lib.model import XECEncoder
 
 def main():
     parser = argparse.ArgumentParser(description="Generate Analysis Plots from Real Data Inference")
@@ -71,7 +71,7 @@ def main():
         if os.path.exists(args.checkpoint):
             print(f"[INFO] Loading model from {args.checkpoint} for Face Weights...")
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            model = XECRegressor(outer_mode=args.outer_mode).to(device)
+            model = XECEncoder(outer_mode=args.outer_mode).to(device)
             
             # Load weights
             ckpt = torch.load(args.checkpoint, map_location=device)

@@ -149,7 +149,7 @@ $ TASKS="angle energy" ./submit_job.sh multi_task_run ../config/train_config.yam
 
 ```bash
 # Config-based training
-$ python train_xec_regressor.py --config config/train_config.yaml
+$ python -m lib.train_regressor --config config/train_config.yaml
 
 # CLI with config file
 $ python scan_param/run_training_cli.py --config config/train_config.yaml --train_path /path/train --val_path /path/val
@@ -231,7 +231,7 @@ Once pre-training is complete, one can load the learned encoder weights into the
     ./run_scan.sh
     ```
 
-**Note on Weight Loading**: The training script(`train_xec_regressor.py`) automatically detects the type of checkpoint provided:
+**Note on Weight Loading**: The training script (`lib/train_regressor.py`) automatically detects the type of checkpoint provided:
 
 - **Full checkpoint**: If resuming a regression run, it loads the optimizer state, epoch, and full model to continue exactly where it left off.
 - **MAE Weights**: If loading an MAE file, it detects "raw weights", loads only the encoder (skipping the regression head), initiallize the EMA model correctly, and resets the epoch counter to 1 for fresh fine-tuning
@@ -262,7 +262,7 @@ tasks:
 ```
 
 **Models:**
-- `XECRegressor`: Single-task (angle-only, legacy)
+- `XECEncoder`: Single-task (angle-only, legacy)
 - `XECMultiHeadModel`: Multi-task with shared backbone and task-specific heads
 
 **Task Output Dimensions:**
@@ -400,7 +400,7 @@ These metrics determine if the training pipeline is efficient or bottlenecked.
 
 ## 4. Model Architecture
 
-The model (`XECRegressor`) utilizes a multi-branch architecture to handle the heterogeneous sensor geometry (SiPMs vs PMTs), followed by an attention-based fusion mechanism.
+The model (`XECEncoder`) utilizes a multi-branch architecture to handle the heterogeneous sensor geometry (SiPMs vs PMTs), followed by an attention-based fusion mechanism.
 
 ### A. The Pipeline
 
@@ -532,7 +532,7 @@ graph TD
     %% ==========================================
     %% 4. FUSION & HEAD
     %% ==========================================
-    subgraph "4. Fusion & Regression (XECRegressor)"
+    subgraph "4. Fusion & Regression (XECEncoder)"
         TokenStack("<b>Stack Tokens</b><br/>[Inner, US, DS, Outer, Top, Bot]<br/>Shape: (B, 6, 1024)"):::op
         PosEmbed(Add Pos Embed):::op
         
@@ -722,7 +722,7 @@ graph TD
         RunScan(run_scan.sh):::scan
         Submit(submit_job.sh):::scan
         CLI(run_training_cli.py):::scan
-        TrainScript(train_xec_regressor.py):::scan
+        TrainScript(lib/train_regressor.py):::lib
     end
 
     %% -- Library Core (Blue) --
