@@ -322,6 +322,28 @@ Examples:
     os.makedirs(save_path, exist_ok=True)
 
     with mlflow.start_run(run_name=mlflow_run_name) as run:
+        outer_mode_label = outer_mode
+        if outer_mode == "finegrid" and outer_fine_pool:
+            pool_str = ",".join(str(x) for x in outer_fine_pool)
+            outer_mode_label = f"{outer_mode}, pool [{pool_str}]"
+
+        if auto_channel_weight:
+            channel_weights_label = "auto"
+        else:
+            channel_weights_label = f"npho {npho_weight}, time {time_weight}"
+
+        scheduler_name = None
+        if args.config:
+            scheduler_name = (
+                getattr(cfg.training, "scheduler", None)
+                or getattr(cfg.training, "lr_scheduler", None)
+            )
+        lr_label = f"scheduler:{scheduler_name}" if scheduler_name else lr
+
+        resume_state = "no"
+        if resume_from:
+            resume_state = f"yes: {resume_from}" if os.path.exists(resume_from) else f"missing: {resume_from}"
+
         # Log parameters
         mlflow.log_params({
             "train_root": train_root,
@@ -337,18 +359,16 @@ Examples:
             "time_scale": time_scale,
             "time_shift": time_shift,
             "sentinel_value": sentinel_value,
-            "outer_mode": outer_mode,
-            "outer_fine_pool": outer_fine_pool,
+            "outer_mode": outer_mode_label,
             "mask_ratio": mask_ratio,
-            "lr": lr,
+            "lr": lr_label,
             "weight_decay": weight_decay,
             "loss_fn": loss_fn,
-            "npho_weight": npho_weight,
-            "time_weight": time_weight,
-            "auto_channel_weight": auto_channel_weight,
+            "channel_weights": channel_weights_label,
             "channel_dropout_rate": channel_dropout_rate,
             "grad_clip": grad_clip,
             "ema_decay": ema_decay,
+            "resume_state": resume_state,
         })
 
         # Training Loop
