@@ -43,6 +43,17 @@ def run_epoch_mae(model, optimizer, device, root, tree,
         "inner": 0.0, "us": 0.0, "ds": 0.0,
         "outer": 0.0, "top": 0.0, "bot": 0.0
     }
+    masked_abs_face_npho = {name: 0.0 for name in face_loss_sums}
+    masked_abs_face_time = {name: 0.0 for name in face_loss_sums}
+    masked_sq_face_npho = {name: 0.0 for name in face_loss_sums}
+    masked_sq_face_time = {name: 0.0 for name in face_loss_sums}
+    masked_count_face = {name: 0.0 for name in face_loss_sums}
+    masked_abs_sum_npho = 0.0
+    masked_abs_sum_time = 0.0
+    masked_sq_sum_npho = 0.0
+    masked_sq_sum_time = 0.0
+    masked_count_npho = 0.0
+    masked_count_time = 0.0
     total_loss_sum = 0.0
     n_batches = 0
    
@@ -186,9 +197,26 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                         loss_map_npho = loss_func(pred[:, 0:1], target[:, 0:1])
                         loss_map_time = loss_func(pred[:, 1:2], target[:, 1:2])
 
-                        mask_sum = mask_expanded.sum() + 1e-8
-                        npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum
-                        time_loss = (loss_map_time * mask_expanded).sum() / mask_sum
+                        mask_sum = mask_expanded.sum()
+                        mask_sum_safe = mask_sum + 1e-8
+                        npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum_safe
+                        time_loss = (loss_map_time * mask_expanded).sum() / mask_sum_safe
+
+                        diff_npho = pred[:, 0:1] - target[:, 0:1]
+                        diff_time = pred[:, 1:2] - target[:, 1:2]
+                        mask_sum_val = mask_sum.item()
+                        if mask_sum_val > 0:
+                            masked_abs_sum_npho += (diff_npho.abs() * mask_expanded).sum().item()
+                            masked_abs_sum_time += (diff_time.abs() * mask_expanded).sum().item()
+                            masked_sq_sum_npho += (diff_npho.pow(2) * mask_expanded).sum().item()
+                            masked_sq_sum_time += (diff_time.pow(2) * mask_expanded).sum().item()
+                            masked_count_npho += mask_sum_val
+                            masked_count_time += mask_sum_val
+                            masked_abs_face_npho[name] += (diff_npho.abs() * mask_expanded).sum().item()
+                            masked_abs_face_time[name] += (diff_time.abs() * mask_expanded).sum().item()
+                            masked_sq_face_npho[name] += (diff_npho.pow(2) * mask_expanded).sum().item()
+                            masked_sq_face_time[name] += (diff_time.pow(2) * mask_expanded).sum().item()
+                            masked_count_face[name] += mask_sum_val
 
                         if log_vars is not None and log_vars.numel() >= 2:
                             npho_loss = 0.5 * torch.exp(-log_vars[0]) * npho_loss + 0.5 * log_vars[0]
@@ -247,6 +275,17 @@ def run_epoch_mae(model, optimizer, device, root, tree,
     metrics["loss_npho"] = sum(metrics[f"loss_{name}_npho"] for name in face_npho_loss_sums) / max(1, num_faces)
     metrics["loss_time"] = sum(metrics[f"loss_{name}_time"] for name in face_time_loss_sums) / max(1, num_faces)
 
+    metrics["masked_mae_npho"] = masked_abs_sum_npho / max(masked_count_npho, 1e-8)
+    metrics["masked_mae_time"] = masked_abs_sum_time / max(masked_count_time, 1e-8)
+    metrics["masked_rmse_npho"] = (masked_sq_sum_npho / max(masked_count_npho, 1e-8)) ** 0.5
+    metrics["masked_rmse_time"] = (masked_sq_sum_time / max(masked_count_time, 1e-8)) ** 0.5
+    for name in face_loss_sums:
+        face_count = masked_count_face[name]
+        metrics[f"masked_mae_{name}_npho"] = masked_abs_face_npho[name] / max(face_count, 1e-8)
+        metrics[f"masked_mae_{name}_time"] = masked_abs_face_time[name] / max(face_count, 1e-8)
+        metrics[f"masked_rmse_{name}_npho"] = (masked_sq_face_npho[name] / max(face_count, 1e-8)) ** 0.5
+        metrics[f"masked_rmse_{name}_time"] = (masked_sq_face_time[name] / max(face_count, 1e-8)) ** 0.5
+
     if log_vars is not None and log_vars.numel() >= 2:
         metrics["channel_logvar_npho"] = log_vars[0].item()
         metrics["channel_logvar_time"] = log_vars[1].item()
@@ -283,6 +322,17 @@ def run_eval_mae(model, device, root, tree,
     face_loss_sums = {"inner": 0.0, "us": 0.0, "ds": 0.0, "outer": 0.0, "top": 0.0, "bot": 0.0}
     face_npho_loss_sums = {"inner": 0.0, "us": 0.0, "ds": 0.0, "outer": 0.0, "top": 0.0, "bot": 0.0}
     face_time_loss_sums = {"inner": 0.0, "us": 0.0, "ds": 0.0, "outer": 0.0, "top": 0.0, "bot": 0.0}
+    masked_abs_face_npho = {name: 0.0 for name in face_loss_sums}
+    masked_abs_face_time = {name: 0.0 for name in face_loss_sums}
+    masked_sq_face_npho = {name: 0.0 for name in face_loss_sums}
+    masked_sq_face_time = {name: 0.0 for name in face_loss_sums}
+    masked_count_face = {name: 0.0 for name in face_loss_sums}
+    masked_abs_sum_npho = 0.0
+    masked_abs_sum_time = 0.0
+    masked_sq_sum_npho = 0.0
+    masked_sq_sum_time = 0.0
+    masked_count_npho = 0.0
+    masked_count_time = 0.0
     total_loss = 0.0
     n_batches = 0
 
@@ -392,9 +442,26 @@ def run_eval_mae(model, device, root, tree,
                             loss_map_npho = loss_func(pred[:, 0:1], target[:, 0:1])
                             loss_map_time = loss_func(pred[:, 1:2], target[:, 1:2])
 
-                            mask_sum = mask_expanded.sum() + 1e-8
-                            npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum
-                            time_loss = (loss_map_time * mask_expanded).sum() / mask_sum
+                            mask_sum = mask_expanded.sum()
+                            mask_sum_safe = mask_sum + 1e-8
+                            npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum_safe
+                            time_loss = (loss_map_time * mask_expanded).sum() / mask_sum_safe
+
+                            diff_npho = pred[:, 0:1] - target[:, 0:1]
+                            diff_time = pred[:, 1:2] - target[:, 1:2]
+                            mask_sum_val = mask_sum.item()
+                            if mask_sum_val > 0:
+                                masked_abs_sum_npho += (diff_npho.abs() * mask_expanded).sum().item()
+                                masked_abs_sum_time += (diff_time.abs() * mask_expanded).sum().item()
+                                masked_sq_sum_npho += (diff_npho.pow(2) * mask_expanded).sum().item()
+                                masked_sq_sum_time += (diff_time.pow(2) * mask_expanded).sum().item()
+                                masked_count_npho += mask_sum_val
+                                masked_count_time += mask_sum_val
+                                masked_abs_face_npho[name] += (diff_npho.abs() * mask_expanded).sum().item()
+                                masked_abs_face_time[name] += (diff_time.abs() * mask_expanded).sum().item()
+                                masked_sq_face_npho[name] += (diff_npho.pow(2) * mask_expanded).sum().item()
+                                masked_sq_face_time[name] += (diff_time.pow(2) * mask_expanded).sum().item()
+                                masked_count_face[name] += mask_sum_val
                             if log_vars is not None and log_vars.numel() >= 2:
                                 npho_loss = 0.5 * torch.exp(-log_vars[0]) * npho_loss + 0.5 * log_vars[0]
                                 time_loss = 0.5 * torch.exp(-log_vars[1]) * time_loss + 0.5 * log_vars[1]
@@ -437,6 +504,17 @@ def run_eval_mae(model, device, root, tree,
     num_faces = len(face_npho_loss_sums)
     metrics["loss_npho"] = sum(metrics[f"loss_{name}_npho"] for name in face_npho_loss_sums) / max(1, num_faces)
     metrics["loss_time"] = sum(metrics[f"loss_{name}_time"] for name in face_time_loss_sums) / max(1, num_faces)
+
+    metrics["masked_mae_npho"] = masked_abs_sum_npho / max(masked_count_npho, 1e-8)
+    metrics["masked_mae_time"] = masked_abs_sum_time / max(masked_count_time, 1e-8)
+    metrics["masked_rmse_npho"] = (masked_sq_sum_npho / max(masked_count_npho, 1e-8)) ** 0.5
+    metrics["masked_rmse_time"] = (masked_sq_sum_time / max(masked_count_time, 1e-8)) ** 0.5
+    for name in face_loss_sums:
+        face_count = masked_count_face[name]
+        metrics[f"masked_mae_{name}_npho"] = masked_abs_face_npho[name] / max(face_count, 1e-8)
+        metrics[f"masked_mae_{name}_time"] = masked_abs_face_time[name] / max(face_count, 1e-8)
+        metrics[f"masked_rmse_{name}_npho"] = (masked_sq_face_npho[name] / max(face_count, 1e-8)) ** 0.5
+        metrics[f"masked_rmse_{name}_time"] = (masked_sq_face_time[name] / max(face_count, 1e-8)) ** 0.5
 
     if log_vars is not None and log_vars.numel() >= 2:
         metrics["channel_logvar_npho"] = log_vars[0].item()
