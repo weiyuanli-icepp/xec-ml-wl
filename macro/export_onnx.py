@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Usage:
+# python macro/export_onnx.py artifacts/<RUN_NAME>/checkpoint_best.pth --output model.onnx
 import os
 import argparse
 import torch

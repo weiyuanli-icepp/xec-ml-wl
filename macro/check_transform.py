@@ -1,3 +1,5 @@
+# Usage:
+# python macro/check_transform.py /path/to/data.root
 import uproot
 import numpy as np
 import matplotlib.pyplot as plt

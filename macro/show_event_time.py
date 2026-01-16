@@ -1,3 +1,5 @@
+# Usage:
+# python macro/show_event_time.py 0 --file /path/to/data.root --time_branch relative_time
 import sys
 import os
 import argparse

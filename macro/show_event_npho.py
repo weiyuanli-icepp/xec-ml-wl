@@ -1,3 +1,5 @@
+# Usage:
+# python macro/show_event_npho.py 0 --file /path/to/data.root --branch relative_npho
 import sys
 import os
 import argparse

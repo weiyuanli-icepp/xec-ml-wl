@@ -1,3 +1,5 @@
+# Usage:
+# python macro/check_data_dist.py /path/to/data.root --event 0 --N 10
 import uproot
 import numpy as np
 import matplotlib.pyplot as plt
