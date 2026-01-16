@@ -263,8 +263,8 @@ def plot_event_time(npho_data, time_data, title="Event Time", savepath=None):
 # MAE Event Display: Truth vs Masked vs Prediction
 # =========================================================
 
-def plot_mae_comparison(x_truth, x_masked, mask, event_idx=0, channel="npho",
-                        title="MAE Reconstruction", savepath=None):
+def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
+                        channel="npho", title="MAE Reconstruction", savepath=None):
     """
     Side-by-side comparison of truth, masked input, and MAE prediction.
 
@@ -272,6 +272,7 @@ def plot_mae_comparison(x_truth, x_masked, mask, event_idx=0, channel="npho",
         x_truth: (B, 4760, 2) or (4760, 2) - ground truth [npho, time]
         x_masked: (B, 4760, 2) or (4760, 2) - masked input
         mask: (B, 4760) or (4760,) - 1 where masked, 0 where visible
+        x_pred: (B, 4760, 2) or (4760, 2) - MAE prediction (optional)
         event_idx: which event to display if batched
         channel: "npho" (channel 0) or "time" (channel 1)
         title: plot title
@@ -282,6 +283,8 @@ def plot_mae_comparison(x_truth, x_masked, mask, event_idx=0, channel="npho",
         x_truth = x_truth[event_idx]
         x_masked = x_masked[event_idx]
         mask = mask[event_idx]
+        if x_pred is not None:
+            x_pred = x_pred[event_idx]
 
     if isinstance(x_truth, torch.Tensor):
         x_truth = x_truth.cpu().numpy()
@@ -289,12 +292,15 @@ def plot_mae_comparison(x_truth, x_masked, mask, event_idx=0, channel="npho",
         x_masked = x_masked.cpu().numpy()
     if isinstance(mask, torch.Tensor):
         mask = mask.cpu().numpy()
+    if isinstance(x_pred, torch.Tensor):
+        x_pred = x_pred.cpu().numpy()
 
     ch_idx = 0 if channel == "npho" else 1
     ch_label = "Npho" if channel == "npho" else "Time"
 
     truth_ch = x_truth[:, ch_idx]
     masked_ch = x_masked[:, ch_idx]
+    pred_ch = x_pred[:, ch_idx] if x_pred is not None else masked_ch
 
     # Build tensor for gathering faces
     def to_tensor(arr):
@@ -302,22 +308,25 @@ def plot_mae_comparison(x_truth, x_masked, mask, event_idx=0, channel="npho",
 
     truth_t = to_tensor(truth_ch)
     masked_t = to_tensor(masked_ch)
+    pred_t = to_tensor(pred_ch)
     mask_t = to_tensor(mask.astype("float32"))
 
     # Gather faces
     faces_truth = build_face_tensors(truth_t)
     faces_masked = build_face_tensors(masked_t)
+    faces_pred = build_face_tensors(pred_t)
     faces_mask = build_face_tensors(mask_t)
 
     outer_truth = build_outer_fine_grid_tensor(truth_t, pool_kernel=None)
     outer_masked = build_outer_fine_grid_tensor(masked_t, pool_kernel=None)
+    outer_pred = build_outer_fine_grid_tensor(pred_t, pool_kernel=None)
     outer_mask = build_outer_fine_grid_tensor(mask_t, pool_kernel=None)
 
     def to_np(t):
         return t.squeeze(0).squeeze(0).cpu().numpy()
 
     # Compute residual where masked
-    residual_ch = np.where(mask > 0.5, masked_ch - truth_ch, 0.0)
+    residual_ch = np.where(mask > 0.5, pred_ch - truth_ch, 0.0)
     residual_t = to_tensor(residual_ch)
     faces_residual = build_face_tensors(residual_t)
     outer_residual = build_outer_fine_grid_tensor(residual_t, pool_kernel=None)
@@ -344,9 +353,9 @@ def plot_mae_comparison(x_truth, x_masked, mask, event_idx=0, channel="npho",
     norm_res = Normalize(vmin=-res_max, vmax=res_max)
     cmap_res = "RdBu_r"
 
-    # Create figure: 4 rows (Truth, Masked, Residual, Mask) x 4 columns (Inner, US, DS, Outer)
-    fig, axes = plt.subplots(4, 4, figsize=(16, 12))
-    row_labels = ["Truth", "Masked", "Residual", "Mask"]
+    # Create figure: 5 rows (Truth, Masked, Pred, Residual, Mask) x 4 columns (Inner, US, DS, Outer)
+    fig, axes = plt.subplots(5, 4, figsize=(16, 15))
+    row_labels = ["Truth", "Masked", "Pred", "Residual", "Mask"]
     col_labels = ["Inner", "Upstream", "Downstream", "Outer"]
 
     face_keys = ["inner", "us", "ds"]
@@ -364,17 +373,23 @@ def plot_mae_comparison(x_truth, x_masked, mask, event_idx=0, channel="npho",
         axes[1, col_idx].set_title(f"{col_labels[col_idx]} - Masked")
         axes[1, col_idx].axis('off')
 
-        # Residual
-        axes[2, col_idx].imshow(to_np(faces_residual[face_key]), aspect='auto',
-                                 origin='upper', cmap=cmap_res, norm=norm_res)
-        axes[2, col_idx].set_title(f"{col_labels[col_idx]} - Residual")
+        # Pred
+        axes[2, col_idx].imshow(to_np(faces_pred[face_key]), aspect='auto',
+                                 origin='upper', cmap=cmap_main, norm=norm_main)
+        axes[2, col_idx].set_title(f"{col_labels[col_idx]} - Pred")
         axes[2, col_idx].axis('off')
 
-        # Mask
-        axes[3, col_idx].imshow(to_np(faces_mask[face_key]), aspect='auto',
-                                 origin='upper', cmap='gray', vmin=0, vmax=1)
-        axes[3, col_idx].set_title(f"{col_labels[col_idx]} - Mask")
+        # Residual
+        axes[3, col_idx].imshow(to_np(faces_residual[face_key]), aspect='auto',
+                                 origin='upper', cmap=cmap_res, norm=norm_res)
+        axes[3, col_idx].set_title(f"{col_labels[col_idx]} - Residual")
         axes[3, col_idx].axis('off')
+
+        # Mask
+        axes[4, col_idx].imshow(to_np(faces_mask[face_key]), aspect='auto',
+                                 origin='upper', cmap='gray', vmin=0, vmax=1)
+        axes[4, col_idx].set_title(f"{col_labels[col_idx]} - Mask")
+        axes[4, col_idx].axis('off')
 
     # Outer column
     axes[0, 3].imshow(to_np(outer_truth), aspect='auto', origin='upper', cmap=cmap_main, norm=norm_main)
@@ -385,13 +400,17 @@ def plot_mae_comparison(x_truth, x_masked, mask, event_idx=0, channel="npho",
     axes[1, 3].set_title("Outer - Masked")
     axes[1, 3].axis('off')
 
-    axes[2, 3].imshow(to_np(outer_residual), aspect='auto', origin='upper', cmap=cmap_res, norm=norm_res)
-    axes[2, 3].set_title("Outer - Residual")
+    axes[2, 3].imshow(to_np(outer_pred), aspect='auto', origin='upper', cmap=cmap_main, norm=norm_main)
+    axes[2, 3].set_title("Outer - Pred")
     axes[2, 3].axis('off')
 
-    axes[3, 3].imshow(to_np(outer_mask), aspect='auto', origin='upper', cmap='gray', vmin=0, vmax=1)
-    axes[3, 3].set_title("Outer - Mask")
+    axes[3, 3].imshow(to_np(outer_residual), aspect='auto', origin='upper', cmap=cmap_res, norm=norm_res)
+    axes[3, 3].set_title("Outer - Residual")
     axes[3, 3].axis('off')
+
+    axes[4, 3].imshow(to_np(outer_mask), aspect='auto', origin='upper', cmap='gray', vmin=0, vmax=1)
+    axes[4, 3].set_title("Outer - Mask")
+    axes[4, 3].axis('off')
 
     # Add colorbars
     cbar_ax1 = fig.add_axes([0.92, 0.55, 0.015, 0.35])

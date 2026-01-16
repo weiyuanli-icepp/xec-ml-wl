@@ -51,7 +51,7 @@ torch.autograd.set_detect_anomaly(False)
 torch.autograd.profiler.emit_nvtx(False)
 
 
-def save_predictions_to_root(predictions, save_path, epoch):
+def save_predictions_to_root(predictions, save_path, epoch, run_id=None):
     """
     Save MAE predictions to ROOT file for analysis.
 
@@ -75,10 +75,22 @@ def save_predictions_to_root(predictions, save_path, epoch):
         "mask": predictions["mask"].astype(np.float32),
     }
 
+    if run_id:
+        run_id_str = str(run_id)
+        branches["run_id"] = np.array([run_id_str] * n_events)
+
     # Add masked input if available
     if "x_masked" in predictions and len(predictions["x_masked"]) > 0:
         branches["masked_npho"] = predictions["x_masked"][:, :, 0].astype(np.float32)
         branches["masked_time"] = predictions["x_masked"][:, :, 1].astype(np.float32)
+
+    if "pred_npho" in predictions and len(predictions["pred_npho"]) > 0:
+        pred_npho = predictions["pred_npho"].astype(np.float32)
+        pred_time = predictions["pred_time"].astype(np.float32)
+        branches["pred_npho"] = pred_npho
+        branches["pred_time"] = pred_time
+        branches["err_npho"] = (pred_npho - predictions["truth_npho"]).astype(np.float32)
+        branches["err_time"] = (pred_time - predictions["truth_time"]).astype(np.float32)
 
     with uproot.recreate(root_path) as f:
         f.mktree("tree", branches)
@@ -104,7 +116,7 @@ Examples:
         """
     )
 
-    # Config file (new)
+    # Config file
     parser.add_argument("--config", type=str, default=None, help="Path to YAML config file")
 
     # Data paths (CLI or config override)
@@ -519,7 +531,7 @@ Examples:
             # Save predictions
             if predictions is not None:
                 try:
-                    root_path = save_predictions_to_root(predictions, save_path, epoch)
+                    root_path = save_predictions_to_root(predictions, save_path, epoch, run_id=run.info.run_id)
                     if root_path:
                         mlflow.log_artifact(root_path)
                 except Exception as e:

@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 import uproot
 from torch.utils.data import TensorDataset, DataLoader
@@ -6,7 +7,9 @@ from .utils import iterate_chunks, get_pointwise_loss_fn
 from .geom_utils import build_outer_fine_grid_tensor, gather_face, gather_hex_nodes
 from .geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
-    OUTER_COARSE_FULL_INDEX_MAP, TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows
+    OUTER_COARSE_FULL_INDEX_MAP, OUTER_CENTER_INDEX_MAP,
+    OUTER_FINE_COARSE_SCALE, OUTER_FINE_CENTER_SCALE, OUTER_FINE_CENTER_START,
+    TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows
 )
 
 def run_epoch_mae(model, optimizer, device, root, tree,
@@ -357,6 +360,66 @@ def run_eval_mae(model, device, root, tree,
         "top":   top_indices,
         "bot":   bot_indices
     }
+
+    num_sensors = int(max(
+        OUTER_CENTER_INDEX_MAP.max(),
+        int(top_indices.max().item()),
+        int(bot_indices.max().item()),
+    )) + 1
+
+    def scatter_rect_face(full, face_pred, index_map):
+        idx_flat = torch.tensor(index_map.reshape(-1), device=face_pred.device, dtype=torch.long)
+        valid = idx_flat >= 0
+        idx = idx_flat[valid]
+        vals = face_pred.permute(0, 2, 3, 1).reshape(face_pred.size(0), -1, 2)[:, valid]
+        full[:, idx, :] = vals
+
+    def scatter_hex_face(full, pred_nodes, indices):
+        full[:, indices, :] = pred_nodes.permute(0, 2, 1)
+
+    def reconstruct_outer_from_fine(pred_outer, pool_kernel):
+        fine_pred = pred_outer
+        if pool_kernel:
+            if isinstance(pool_kernel, int):
+                scale = (pool_kernel, pool_kernel)
+            else:
+                scale = tuple(pool_kernel)
+            fine_pred = F.interpolate(pred_outer, scale_factor=scale, mode="nearest")
+
+        cr, cc = OUTER_FINE_COARSE_SCALE
+        Hc, Wc = OUTER_COARSE_FULL_INDEX_MAP.shape
+        npho = fine_pred[:, 0:1].contiguous().view(-1, 1, Hc, cr, Wc, cc).sum(dim=(3, 5))
+        time = fine_pred[:, 1:2].contiguous().view(-1, 1, Hc, cr, Wc, cc).mean(dim=(3, 5))
+        coarse_pred = torch.cat([npho, time], dim=1)
+
+        sr, sc = OUTER_FINE_CENTER_SCALE
+        Hc_center, Wc_center = OUTER_CENTER_INDEX_MAP.shape
+        top = OUTER_FINE_CENTER_START[0] * cr
+        left = OUTER_FINE_CENTER_START[1] * cc
+        center_fine = fine_pred[:, :, top:top + Hc_center * sr, left:left + Wc_center * sc]
+        c_npho = center_fine[:, 0:1].contiguous().view(-1, 1, Hc_center, sr, Wc_center, sc).sum(dim=(3, 5))
+        c_time = center_fine[:, 1:2].contiguous().view(-1, 1, Hc_center, sr, Wc_center, sc).mean(dim=(3, 5))
+        center_pred = torch.cat([c_npho, c_time], dim=1)
+
+        return coarse_pred, center_pred
+
+    def assemble_full_pred(recons_dict):
+        full = torch.zeros((recons_dict["inner"].size(0), num_sensors, 2),
+                           device=recons_dict["inner"].device)
+        scatter_rect_face(full, recons_dict["inner"], INNER_INDEX_MAP)
+        scatter_rect_face(full, recons_dict["us"], US_INDEX_MAP)
+        scatter_rect_face(full, recons_dict["ds"], DS_INDEX_MAP)
+        if getattr(model.encoder, "outer_fine", False):
+            coarse_pred, center_pred = reconstruct_outer_from_fine(
+                recons_dict["outer"], model.encoder.outer_fine_pool
+            )
+            scatter_rect_face(full, coarse_pred, OUTER_COARSE_FULL_INDEX_MAP)
+            scatter_rect_face(full, center_pred, OUTER_CENTER_INDEX_MAP)
+        else:
+            scatter_rect_face(full, recons_dict["outer"], OUTER_COARSE_FULL_INDEX_MAP)
+        scatter_hex_face(full, recons_dict["top"], top_indices)
+        scatter_hex_face(full, recons_dict["bot"], bot_indices)
+        return full
     
     for arr in iterate_chunks(root, tree, branches, step_size):
         Npho = np.maximum(arr[npho_branch].astype("float32"), 0.0)
@@ -477,13 +540,15 @@ def run_eval_mae(model, device, root, tree,
 
                     # Collect predictions for ROOT output
                     if collect_predictions and n_collected < max_events:
+                        full_pred = assemble_full_pred(recons)
                         n_to_collect = min(X_b.shape[0], max_events - n_collected)
                         predictions["truth_npho"].append(x_in[:n_to_collect, :, 0].cpu().numpy())
                         predictions["truth_time"].append(x_in[:n_to_collect, :, 1].cpu().numpy())
+                        predictions["pred_npho"].append(full_pred[:n_to_collect, :, 0].cpu().numpy())
+                        predictions["pred_time"].append(full_pred[:n_to_collect, :, 1].cpu().numpy())
                         predictions["mask"].append(mask[:n_to_collect].cpu().numpy())
                         predictions["x_masked"].append(x_masked[:n_to_collect].cpu().numpy())
-                        # Note: pred reconstruction is per-face, need to reassemble to full sensor array
-                        # For now, store masked input for display purposes
+                        # Note: pred reconstruction is per-face, reassembled to full sensor array
                         n_collected += n_to_collect
 
             total_loss += loss.item()
