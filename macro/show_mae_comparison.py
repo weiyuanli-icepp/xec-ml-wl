@@ -1,5 +1,5 @@
 # Usage:
-# python macro/show_mae_comparison.py 0 --file artifacts/<RUN_NAME>/mae_predictions_epoch_1.root --channel npho --save outputs/event_0.pdf
+# python macro/show_mae_comparison.py 0 --file artifacts/<RUN_NAME>/mae_predictions_epoch_1.root --channel npho --include_top_bottom --save outputs/event_0.pdf
 import sys
 import os
 import argparse
@@ -32,6 +32,8 @@ def main():
     )
     parser.add_argument("--tree", type=str, default="tree", help="TTree name")
     parser.add_argument("--channel", type=str, choices=["npho", "time"], default="npho")
+    parser.add_argument("--include_top_bottom", action="store_true",
+                        help="Include top/bottom hex faces in the comparison grid")
     parser.add_argument("--save", type=str, default=None, help="Save path (PDF recommended)")
     args = parser.parse_args()
 
@@ -95,6 +97,7 @@ def main():
             channel=args.channel,
             title=title,
             savepath=savepath,
+            include_top_bottom=args.include_top_bottom,
         )
 
 

@@ -264,7 +264,8 @@ def plot_event_time(npho_data, time_data, title="Event Time", savepath=None):
 # =========================================================
 
 def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
-                        channel="npho", title="MAE Reconstruction", savepath=None):
+                        channel="npho", title="MAE Reconstruction", savepath=None,
+                        include_top_bottom=False):
     """
     Side-by-side comparison of truth, masked input, and MAE prediction.
 
@@ -277,6 +278,7 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         channel: "npho" (channel 0) or "time" (channel 1)
         title: plot title
         savepath: path to save figure (None to display)
+        include_top_bottom: include top/bottom hex faces in the comparison grid
     """
     # Handle batched input
     if x_truth.ndim == 3:
@@ -353,8 +355,35 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     norm_res = Normalize(vmin=-res_max, vmax=res_max)
     cmap_res = "RdBu_r"
 
-    # Create figure: 5 rows (Truth, Masked, Pred, Residual, Mask) x 4 columns (Inner, US, DS, Outer)
-    fig, axes = plt.subplots(5, 4, figsize=(16, 15))
+    def plot_hex_grid(ax, row_list, full_vals, title, mode, cmap, norm):
+        pitch_y, pitch_x = 7.5, 7.1
+        xs, ys, vals = [], [], []
+        all_xs, all_ys = [], []
+
+        for r_idx, ids in enumerate(row_list):
+            n_items = len(ids)
+            x_start = -(n_items - 1) * pitch_x / 2.0
+            y_pos = r_idx * pitch_y if mode == 'top' else (5 - r_idx) * pitch_y
+
+            for c_idx, pmt_id in enumerate(ids):
+                x = -(x_start + c_idx * pitch_x)
+                y = y_pos
+                all_xs.append(x)
+                all_ys.append(y)
+                xs.append(x)
+                ys.append(y)
+                vals.append(full_vals[pmt_id])
+
+        ax.scatter(all_xs, all_ys, s=280, c='lightgray', marker='h', alpha=0.3)
+        ax.scatter(xs, ys, c=vals, s=280, cmap=cmap, norm=norm, marker='h', edgecolors='none')
+        ax.set_xlim(-55, 55)
+        ax.set_ylim(-5, 45)
+        ax.axis('off')
+        ax.set_title(title)
+
+    ncols = 6 if include_top_bottom else 4
+    fig_width = 22 if include_top_bottom else 16
+    fig, axes = plt.subplots(5, ncols, figsize=(fig_width, 15))
     row_labels = ["Truth", "Masked", "Pred", "Residual", "Mask"]
     col_labels = ["Inner", "Upstream", "Downstream", "Outer"]
 
@@ -411,6 +440,27 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     axes[4, 3].imshow(to_np(outer_mask), aspect='auto', origin='upper', cmap='gray', vmin=0, vmax=1)
     axes[4, 3].set_title("Outer - Mask")
     axes[4, 3].axis('off')
+
+    if include_top_bottom:
+        mask_norm = Normalize(vmin=0, vmax=1)
+        row_vals = [truth_ch, masked_ch, pred_ch, residual_ch, mask.astype("float32")]
+        row_cmaps = [cmap_main, cmap_main, cmap_main, cmap_res, "gray"]
+        row_norms = [norm_main, norm_main, norm_main, norm_res, mask_norm]
+        hex_specs = [("Top", TOP_HEX_ROWS, "top"), ("Bottom", BOTTOM_HEX_ROWS, "bottom")]
+
+        for row_idx, label in enumerate(row_labels):
+            for col_offset, (hex_title, row_list, mode) in enumerate(hex_specs):
+                ax = axes[row_idx, 4 + col_offset]
+                title = f"{hex_title} - {label}"
+                plot_hex_grid(
+                    ax,
+                    row_list,
+                    row_vals[row_idx],
+                    title,
+                    mode=mode,
+                    cmap=row_cmaps[row_idx],
+                    norm=row_norms[row_idx],
+                )
 
     # Add colorbars
     cbar_ax1 = fig.add_axes([0.92, 0.55, 0.015, 0.35])
