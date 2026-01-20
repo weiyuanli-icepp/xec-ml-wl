@@ -20,6 +20,7 @@ SENTINEL_VALUE="${SENTINEL_VALUE:--5.0}"
 LOSS_FN="${LOSS_FN:-}"
 TIME_WEIGHT="${TIME_WEIGHT:-}"
 AUTO_WEIGHT="${AUTO_WEIGHT:-false}"
+LR="${LR:-}"
 LR_SCHEDULER="${LR_SCHEDULER:-}"
 LR_MIN="${LR_MIN:-}"
 TRAIN_PATH="${TRAIN_PATH:-~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root}"
@@ -44,6 +45,8 @@ LOSS_FN_FLAG=""
 if [[ -n "${LOSS_FN}" ]]; then LOSS_FN_FLAG="--loss_fn ${LOSS_FN}"; fi
 TIME_WEIGHT_FLAG=""
 if [[ -n "${TIME_WEIGHT}" ]]; then TIME_WEIGHT_FLAG="--time_weight ${TIME_WEIGHT}"; fi
+LR_FLAG=""
+if [[ -n "${LR}" ]]; then LR_FLAG="--lr ${LR}"; fi
 LR_SCHEDULER_FLAG=""
 if [[ -n "${LR_SCHEDULER}" ]]; then LR_SCHEDULER_FLAG="--lr_scheduler ${LR_SCHEDULER}"; fi
 LR_MIN_FLAG=""
@@ -123,6 +126,7 @@ python -m lib.train_mae \\
     ${LOSS_FN_FLAG} \\
     ${TIME_WEIGHT_FLAG} \\
     ${AUTO_CHANNEL_FLAG} \\
+    ${LR_FLAG} \\
     ${LR_SCHEDULER_FLAG} \\
     ${LR_MIN_FLAG} \\
     $( [[ -n "${RESUME_FROM}" ]] && echo "--resume_from ${RESUME_FROM}" )
