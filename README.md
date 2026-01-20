@@ -357,7 +357,9 @@ All results are logged to **MLflow** and stored in the `artifacts/<RUN_NAME>/` d
 The real time tracking of the training is available with MLflow and TensorBoard.
 ```bash
 # Start MLflow (Track metrics & PDFs)
-$ mlflow ui --backend-store-uri mlruns --host 0.0.0.0 --port XXXX
+$ cd /path/to/xec-ml-wl
+$ (activate xec-ml-wl conda environment)
+$ mlflow ui --backend-store-uri sqlite:///$(pwd)/mlruns.db --host 127.0.0.1 --port 5000
 
 # Start TensorBoard (Track Loss Curves)
 $ tensorboard --logdir runs --host 0.0.0.0 --port YYYY
