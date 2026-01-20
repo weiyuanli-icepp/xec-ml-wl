@@ -21,7 +21,7 @@ LOSS_FN="${LOSS_FN:-}"
 TIME_WEIGHT="${TIME_WEIGHT:-}"
 AUTO_WEIGHT="${AUTO_WEIGHT:-false}"
 LR_SCHEDULER="${LR_SCHEDULER:-}"
-# ROOT_PATH="${ROOT_PATH:-~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/single_run}"
+LR_MIN="${LR_MIN:-}"
 TRAIN_PATH="${TRAIN_PATH:-~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root}"
 VAL_PATH="${VAL_PATH:-~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root}"
 MLFLOW_EXPERIMENT="${MLFLOW_EXPERIMENT:-gamma_mae}"
@@ -46,6 +46,8 @@ TIME_WEIGHT_FLAG=""
 if [[ -n "${TIME_WEIGHT}" ]]; then TIME_WEIGHT_FLAG="--time_weight ${TIME_WEIGHT}"; fi
 LR_SCHEDULER_FLAG=""
 if [[ -n "${LR_SCHEDULER}" ]]; then LR_SCHEDULER_FLAG="--lr_scheduler ${LR_SCHEDULER}"; fi
+LR_MIN_FLAG=""
+if [[ -n "${LR_MIN}" ]]; then LR_MIN_FLAG="--lr_min ${LR_MIN}"; fi
 
 echo "[SUBMIT] MAE Run: $RUN_NAME | Exp: $MLFLOW_EXPERIMENT | Mask: $MASK_RATIO | Config: $CONFIG_PATH"
 
@@ -122,6 +124,7 @@ python -m lib.train_mae \\
     ${TIME_WEIGHT_FLAG} \\
     ${AUTO_CHANNEL_FLAG} \\
     ${LR_SCHEDULER_FLAG} \\
+    ${LR_MIN_FLAG} \\
     $( [[ -n "${RESUME_FROM}" ]] && echo "--resume_from ${RESUME_FROM}" )
 
 echo "[JOB] Finished."
