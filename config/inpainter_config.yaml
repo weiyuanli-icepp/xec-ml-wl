@@ -1,0 +1,54 @@
+# ===================================================
+# Inpainter (Dead Channel Recovery) Configuration
+# ===================================================
+
+# === Data Configuration ===
+data:
+  train_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root"
+  val_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root"
+  tree_name: "tree"
+  batch_size: 1024
+  chunksize: 256000
+  num_workers: 1
+  num_threads: 4
+
+# === Input Normalization ===
+# Must match MAE pretraining normalization
+normalization:
+  npho_scale: 0.58
+  npho_scale2: 1.0
+  time_scale: 5e-7
+  time_shift: 0.1
+  sentinel_value: -5.0
+
+# === Model Configuration ===
+model:
+  outer_mode: "finegrid"            # Must match MAE encoder config
+  outer_fine_pool: [3, 3]           # Must match MAE encoder config
+  mask_ratio: 0.05                  # Realistic dead channel density (1-10%)
+  freeze_encoder: true              # Freeze encoder, train only inpainting heads
+
+# === Training Configuration ===
+training:
+  mae_checkpoint: "artifacts/mae/mae_checkpoint_best.pth"  # Path to pretrained MAE
+  epochs: 50
+  lr: 1.0e-4
+  lr_scheduler: "cosine"            # "cosine" or null
+  lr_min: 1.0e-6
+  weight_decay: 1.0e-4
+  loss_fn: "smooth_l1"              # Options: smooth_l1, mse, l1, huber
+  npho_weight: 1.0                  # Weight for npho channel loss
+  time_weight: 1.0                  # Weight for time channel loss
+  grad_clip: 1.0                    # Gradient clipping (0 to disable)
+  amp: true                         # Automatic Mixed Precision
+
+# === Checkpointing ===
+checkpoint:
+  resume_from: null                 # Path to inpainter checkpoint to resume from
+  save_dir: "artifacts/inpainter"   # Directory to save checkpoints
+  save_interval: 10                 # Save checkpoint every N epochs
+
+# === MLflow ===
+mlflow:
+  experiment: "inpainting"
+  run_name: null                    # null = auto-generate timestamp

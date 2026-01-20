@@ -397,3 +397,126 @@ def load_mae_config(config_path: str) -> MAEConfig:
                 setattr(config.mlflow, k, v)
 
     return config
+
+
+# ------------------------------------------------------------
+#  Inpainter (Dead Channel Recovery) Configuration
+# ------------------------------------------------------------
+@dataclass
+class InpainterDataConfig:
+    """Data configuration for inpainter training."""
+    train_path: str = ""
+    val_path: str = ""
+    tree_name: str = "tree"
+    batch_size: int = 1024
+    chunksize: int = 256000
+    num_workers: int = 4
+    num_threads: int = 4
+
+
+@dataclass
+class InpainterModelConfig:
+    """Model configuration for inpainter."""
+    outer_mode: str = "finegrid"
+    outer_fine_pool: Optional[List[int]] = None
+    mask_ratio: float = 0.05  # Default 5% for realistic dead channel density
+    freeze_encoder: bool = True  # Freeze encoder from MAE
+
+
+@dataclass
+class InpainterTrainingConfig:
+    """Training configuration for inpainter."""
+    mae_checkpoint: str = ""  # Path to MAE checkpoint for encoder initialization
+    epochs: int = 50
+    lr: float = 1e-4
+    lr_scheduler: Optional[str] = None  # "cosine" or None
+    lr_min: float = 1e-6
+    weight_decay: float = 1e-4
+    loss_fn: str = "smooth_l1"  # smooth_l1, mse, l1, huber
+    npho_weight: float = 1.0
+    time_weight: float = 1.0
+    grad_clip: float = 1.0
+    amp: bool = True
+
+
+@dataclass
+class InpainterCheckpointConfig:
+    """Checkpoint configuration for inpainter."""
+    resume_from: Optional[str] = None
+    save_dir: str = "artifacts"
+    save_interval: int = 10
+
+
+@dataclass
+class InpainterMLflowConfig:
+    """MLflow configuration for inpainter."""
+    experiment: str = "inpainting"
+    run_name: Optional[str] = None
+
+
+@dataclass
+class InpainterConfig:
+    """Complete inpainter training configuration."""
+    data: InpainterDataConfig = field(default_factory=InpainterDataConfig)
+    normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
+    model: InpainterModelConfig = field(default_factory=InpainterModelConfig)
+    training: InpainterTrainingConfig = field(default_factory=InpainterTrainingConfig)
+    checkpoint: InpainterCheckpointConfig = field(default_factory=InpainterCheckpointConfig)
+    mlflow: InpainterMLflowConfig = field(default_factory=InpainterMLflowConfig)
+
+
+def load_inpainter_config(config_path: str) -> InpainterConfig:
+    """
+    Load inpainter configuration from YAML file.
+
+    Args:
+        config_path: Path to YAML config file.
+
+    Returns:
+        InpainterConfig object with all settings.
+    """
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    with open(config_path, 'r') as f:
+        raw_config = yaml.safe_load(f)
+
+    config = InpainterConfig()
+
+    # Data
+    if 'data' in raw_config:
+        for k, v in raw_config['data'].items():
+            if hasattr(config.data, k):
+                setattr(config.data, k, v)
+
+    # Normalization
+    if 'normalization' in raw_config:
+        for k, v in raw_config['normalization'].items():
+            if hasattr(config.normalization, k):
+                setattr(config.normalization, k, v)
+
+    # Model
+    if 'model' in raw_config:
+        for k, v in raw_config['model'].items():
+            if hasattr(config.model, k):
+                setattr(config.model, k, v)
+
+    # Training
+    if 'training' in raw_config:
+        for k, v in raw_config['training'].items():
+            if hasattr(config.training, k):
+                setattr(config.training, k, v)
+
+    # Checkpoint
+    if 'checkpoint' in raw_config:
+        for k, v in raw_config['checkpoint'].items():
+            if hasattr(config.checkpoint, k):
+                setattr(config.checkpoint, k, v)
+
+    # MLflow
+    if 'mlflow' in raw_config:
+        for k, v in raw_config['mlflow'].items():
+            if hasattr(config.mlflow, k):
+                setattr(config.mlflow, k, v)
+
+    return config
