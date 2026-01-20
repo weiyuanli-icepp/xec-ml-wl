@@ -177,7 +177,7 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                     "inner": INNER_INDEX_MAP,
                     "us":    US_INDEX_MAP,
                     "ds":    DS_INDEX_MAP,
-                    "outer": OUTER_COARSE_FULL_INDEX_MAP if not getattr(model.encoder, "outer_fine", False) else None,
+                    "outer": OUTER_COARSE_FULL_INDEX_MAP,  # Always use coarse for mask lookup
                     "top":   top_indices,
                     "bot":   bot_indices
                 }
@@ -189,11 +189,28 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                             m_face = mask[:, indices] # Shape: (B, num_sensors_in_face)
                             if name in ["top", "bot"]:
                                 mask_expanded = m_face.unsqueeze(1) # (B, 1, num_hex_nodes)
+                            elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                                # For outer fine grid: upsample coarse mask to fine grid dimensions
+                                H_coarse, W_coarse = OUTER_COARSE_FULL_INDEX_MAP.shape
+                                m_coarse = m_face.view(mask.size(0), 1, H_coarse, W_coarse)
+                                cr, cc = OUTER_FINE_COARSE_SCALE
+                                m_fine = F.interpolate(m_coarse.float(), scale_factor=(float(cr), float(cc)), mode='nearest')
+                                # Apply pooling if used
+                                pool_kernel = model.encoder.outer_fine_pool
+                                if pool_kernel:
+                                    if isinstance(pool_kernel, int):
+                                        ph, pw = pool_kernel, pool_kernel
+                                    else:
+                                        ph, pw = pool_kernel
+                                    m_fine = F.avg_pool2d(m_fine, kernel_size=(ph, pw), stride=(ph, pw))
+                                    # Convert avg back to binary (any masked → masked)
+                                    m_fine = (m_fine > 0).float()
+                                mask_expanded = m_fine
                             else:
                                 H, W = pred.shape[-2], pred.shape[-1]
                                 mask_expanded = m_face.view(mask.size(0), 1, H, W) # (B, 1, H, W)
                         else:
-                            mask_expanded = torch.ones_like(pred)
+                            mask_expanded = torch.ones_like(pred[:, 0:1])
 
                         # Separate npho (channel 0) and time (channel 1) losses
                         target = targets[name]
@@ -356,7 +373,7 @@ def run_eval_mae(model, device, root, tree,
         "inner": INNER_INDEX_MAP,
         "us":    US_INDEX_MAP,
         "ds":    DS_INDEX_MAP,
-        "outer": OUTER_COARSE_FULL_INDEX_MAP if not getattr(model.encoder, "outer_fine", False) else None,
+        "outer": OUTER_COARSE_FULL_INDEX_MAP,  # Always use coarse for mask lookup
         "top":   top_indices,
         "bot":   bot_indices
     }
@@ -501,10 +518,27 @@ def run_eval_mae(model, device, root, tree,
                             indices = face_to_sensor_indices.get(name)
                             if indices is not None:
                                 m_face = mask[:, indices]
-                                mask_expanded = m_face.unsqueeze(1) if name in ["top", "bot"] else m_face.view(mask.size(0), 1, *pred.shape[-2:])
+                                if name in ["top", "bot"]:
+                                    mask_expanded = m_face.unsqueeze(1)
+                                elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                                    # For outer fine grid: upsample coarse mask to fine grid dimensions
+                                    H_coarse, W_coarse = OUTER_COARSE_FULL_INDEX_MAP.shape
+                                    m_coarse = m_face.view(mask.size(0), 1, H_coarse, W_coarse)
+                                    cr, cc = OUTER_FINE_COARSE_SCALE
+                                    m_fine = F.interpolate(m_coarse.float(), scale_factor=(float(cr), float(cc)), mode='nearest')
+                                    pool_kernel = model.encoder.outer_fine_pool
+                                    if pool_kernel:
+                                        if isinstance(pool_kernel, int):
+                                            ph, pw = pool_kernel, pool_kernel
+                                        else:
+                                            ph, pw = pool_kernel
+                                        m_fine = F.avg_pool2d(m_fine, kernel_size=(ph, pw), stride=(ph, pw))
+                                        m_fine = (m_fine > 0).float()
+                                    mask_expanded = m_fine
+                                else:
+                                    mask_expanded = m_face.view(mask.size(0), 1, *pred.shape[-2:])
                             else:
-                                # For outer_fine mode, indices is None - use all-ones mask
-                                mask_expanded = torch.ones_like(pred)
+                                mask_expanded = torch.ones_like(pred[:, 0:1])
 
                             target = targets[name]
                             loss_map_npho = loss_func(pred[:, 0:1], target[:, 0:1])
