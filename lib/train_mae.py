@@ -527,6 +527,10 @@ Examples:
 
             if scheduler is not None:
                 scheduler.step()
+                current_lr = scheduler.get_last_lr()[0]
+            else:
+                current_lr = optimizer.param_groups[0]["lr"]
+            mlflow.log_metric("lr", current_lr, step=epoch)
 
             # Save predictions
             if predictions is not None:

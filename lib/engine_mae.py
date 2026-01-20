@@ -368,6 +368,7 @@ def run_eval_mae(model, device, root, tree,
     )) + 1
 
     def scatter_rect_face(full, face_pred, index_map):
+        face_pred = face_pred.to(full.dtype)
         idx_flat = torch.tensor(index_map.reshape(-1), device=face_pred.device, dtype=torch.long)
         valid = idx_flat >= 0
         idx = idx_flat[valid]
@@ -375,6 +376,7 @@ def run_eval_mae(model, device, root, tree,
         full[:, idx, :] = vals
 
     def scatter_hex_face(full, pred_nodes, indices):
+        pred_nodes = pred_nodes.to(full.dtype)
         full[:, indices, :] = pred_nodes.permute(0, 2, 1)
 
     def reconstruct_outer_from_fine(pred_outer, pool_kernel):
@@ -404,8 +406,11 @@ def run_eval_mae(model, device, root, tree,
         return coarse_pred, center_pred
 
     def assemble_full_pred(recons_dict):
-        full = torch.zeros((recons_dict["inner"].size(0), num_sensors, 2),
-                           device=recons_dict["inner"].device)
+        full = torch.zeros(
+            (recons_dict["inner"].size(0), num_sensors, 2),
+            device=recons_dict["inner"].device,
+            dtype=recons_dict["inner"].dtype,
+        )
         scatter_rect_face(full, recons_dict["inner"], INNER_INDEX_MAP)
         scatter_rect_face(full, recons_dict["us"], US_INDEX_MAP)
         scatter_rect_face(full, recons_dict["ds"], DS_INDEX_MAP)
