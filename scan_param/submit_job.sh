@@ -32,6 +32,7 @@ RESUME_FROM="${RESUME_FROM:-}"
 SAVE_DIR="${SAVE_DIR:-}"
 MLFLOW_EXPERIMENT="${MLFLOW_EXPERIMENT:-}"
 ONNX="${ONNX:-}"
+AUTO_WEIGHT="${AUTO_WEIGHT:-false}"
 
 # 1. Determine Environment based on Partition
 if [[ "$PARTITION" == gh* ]]; then
@@ -62,6 +63,13 @@ CLI_ARGS=""
 [ -n "$SAVE_DIR" ] && CLI_ARGS+=" --save_dir \"$SAVE_DIR\""
 [ -n "$MLFLOW_EXPERIMENT" ] && CLI_ARGS+=" --mlflow_experiment \"$MLFLOW_EXPERIMENT\""
 [ -n "$ONNX" ] && CLI_ARGS+=" --onnx \"$ONNX\""
+AUTO_CHANNEL_FLAG=""
+case "${AUTO_WEIGHT}" in
+    true|True|TRUE|1|yes|YES)
+        AUTO_CHANNEL_FLAG="--auto_channel_weight"
+        ;;
+esac
+[ -n "$AUTO_CHANNEL_FLAG" ] && CLI_ARGS+=" $AUTO_CHANNEL_FLAG"
 
 echo "[SUBMIT] CLI overrides:$CLI_ARGS"
 
