@@ -17,6 +17,8 @@ def compute_inpainting_loss(
     loss_fn: str = "smooth_l1",
     npho_weight: float = 1.0,
     time_weight: float = 1.0,
+    outer_fine: bool = False,
+    outer_fine_pool: Optional[Tuple[int, int]] = None,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Compute inpainting loss for all faces.
@@ -29,10 +31,12 @@ def compute_inpainting_loss(
         loss_fn: "smooth_l1", "mse", or "l1"
         npho_weight: weight for npho channel loss
         time_weight: weight for time channel loss
+        outer_fine: whether outer face uses fine grid
+        outer_fine_pool: pooling kernel for outer fine grid
 
     Returns:
         total_loss: scalar loss for backprop
-        metrics: dict of per-face and per-channel losses
+        metrics: dict of per-face and per-channel losses and MAE/RMSE
     """
     device = original_values.device
     B = original_values.shape[0]
@@ -48,12 +52,27 @@ def compute_inpainting_loss(
     total_loss = torch.tensor(0.0, device=device)
     metrics = {}
 
+    # Accumulators for aggregate metrics
     total_npho_loss = 0.0
     total_time_loss = 0.0
+
+    # Accumulators for MAE/RMSE (raw errors)
+    total_abs_npho = 0.0
+    total_abs_time = 0.0
+    total_sq_npho = 0.0
+    total_sq_time = 0.0
     total_count = 0
 
-    # Rectangular faces
-    for face_name in ["inner", "us", "ds"]:
+    # Per-face MAE/RMSE accumulators
+    face_abs_npho = {}
+    face_abs_time = {}
+    face_sq_npho = {}
+    face_sq_time = {}
+    face_count = {}
+
+    # Rectangular faces (inner, us, ds, outer)
+    rect_faces = ["inner", "us", "ds", "outer"]
+    for face_name in rect_faces:
         if face_name not in results:
             continue
 
@@ -66,14 +85,22 @@ def compute_inpainting_loss(
             metrics[f"loss_{face_name}"] = 0.0
             metrics[f"loss_{face_name}_npho"] = 0.0
             metrics[f"loss_{face_name}_time"] = 0.0
+            metrics[f"mae_{face_name}_npho"] = 0.0
+            metrics[f"mae_{face_name}_time"] = 0.0
+            metrics[f"rmse_{face_name}_npho"] = 0.0
+            metrics[f"rmse_{face_name}_time"] = 0.0
             continue
 
         # Get ground truth at masked positions
         idx_map = face_index_maps[face_name]  # (H, W) with flat indices
-        H, W = idx_map.shape
 
         face_losses_npho = []
         face_losses_time = []
+        face_abs_npho[face_name] = 0.0
+        face_abs_time[face_name] = 0.0
+        face_sq_npho[face_name] = 0.0
+        face_sq_time[face_name] = 0.0
+        face_count[face_name] = 0
 
         for b in range(B):
             valid_mask = valid[b]  # (max_masked,)
@@ -98,6 +125,16 @@ def compute_inpainting_loss(
             face_losses_npho.append(loss_npho)
             face_losses_time.append(loss_time)
 
+            # Accumulate raw errors for MAE/RMSE
+            diff_npho = pr[:, 0] - gt[:, 0]
+            diff_time = pr[:, 1] - gt[:, 1]
+
+            face_abs_npho[face_name] += diff_npho.abs().sum().item()
+            face_abs_time[face_name] += diff_time.abs().sum().item()
+            face_sq_npho[face_name] += (diff_npho ** 2).sum().item()
+            face_sq_time[face_name] += (diff_time ** 2).sum().item()
+            face_count[face_name] += n_valid
+
         if face_losses_npho:
             avg_npho = torch.stack(face_losses_npho).mean()
             avg_time = torch.stack(face_losses_time).mean()
@@ -105,16 +142,33 @@ def compute_inpainting_loss(
             total_loss = total_loss + face_loss
 
             metrics[f"loss_{face_name}"] = face_loss.item()
-            metrics[f"loss_{face_name}_npho"] = avg_npho.item()
-            metrics[f"loss_{face_name}_time"] = avg_time.item()
+            metrics[f"loss_{face_name}_npho"] = (npho_weight * avg_npho).item()
+            metrics[f"loss_{face_name}_time"] = (time_weight * avg_time).item()
 
-            total_npho_loss += avg_npho.item()
-            total_time_loss += avg_time.item()
-            total_count += 1
+            total_npho_loss += metrics[f"loss_{face_name}_npho"]
+            total_time_loss += metrics[f"loss_{face_name}_time"]
+
+            # Compute MAE/RMSE for this face
+            fc = max(face_count[face_name], 1)
+            metrics[f"mae_{face_name}_npho"] = face_abs_npho[face_name] / fc
+            metrics[f"mae_{face_name}_time"] = face_abs_time[face_name] / fc
+            metrics[f"rmse_{face_name}_npho"] = (face_sq_npho[face_name] / fc) ** 0.5
+            metrics[f"rmse_{face_name}_time"] = (face_sq_time[face_name] / fc) ** 0.5
+
+            # Accumulate for global MAE/RMSE
+            total_abs_npho += face_abs_npho[face_name]
+            total_abs_time += face_abs_time[face_name]
+            total_sq_npho += face_sq_npho[face_name]
+            total_sq_time += face_sq_time[face_name]
+            total_count += face_count[face_name]
         else:
             metrics[f"loss_{face_name}"] = 0.0
             metrics[f"loss_{face_name}_npho"] = 0.0
             metrics[f"loss_{face_name}_time"] = 0.0
+            metrics[f"mae_{face_name}_npho"] = 0.0
+            metrics[f"mae_{face_name}_time"] = 0.0
+            metrics[f"rmse_{face_name}_npho"] = 0.0
+            metrics[f"rmse_{face_name}_time"] = 0.0
 
     # Hex faces
     for face_name, hex_indices in [("top", face_index_maps["top"]), ("bot", face_index_maps["bot"])]:
@@ -130,10 +184,19 @@ def compute_inpainting_loss(
             metrics[f"loss_{face_name}"] = 0.0
             metrics[f"loss_{face_name}_npho"] = 0.0
             metrics[f"loss_{face_name}_time"] = 0.0
+            metrics[f"mae_{face_name}_npho"] = 0.0
+            metrics[f"mae_{face_name}_time"] = 0.0
+            metrics[f"rmse_{face_name}_npho"] = 0.0
+            metrics[f"rmse_{face_name}_time"] = 0.0
             continue
 
         face_losses_npho = []
         face_losses_time = []
+        face_abs_npho[face_name] = 0.0
+        face_abs_time[face_name] = 0.0
+        face_sq_npho[face_name] = 0.0
+        face_sq_time[face_name] = 0.0
+        face_count[face_name] = 0
 
         for b in range(B):
             valid_mask = valid[b]
@@ -156,6 +219,16 @@ def compute_inpainting_loss(
             face_losses_npho.append(loss_npho)
             face_losses_time.append(loss_time)
 
+            # Accumulate raw errors for MAE/RMSE
+            diff_npho = pr[:, 0] - gt[:, 0]
+            diff_time = pr[:, 1] - gt[:, 1]
+
+            face_abs_npho[face_name] += diff_npho.abs().sum().item()
+            face_abs_time[face_name] += diff_time.abs().sum().item()
+            face_sq_npho[face_name] += (diff_npho ** 2).sum().item()
+            face_sq_time[face_name] += (diff_time ** 2).sum().item()
+            face_count[face_name] += n_valid
+
         if face_losses_npho:
             avg_npho = torch.stack(face_losses_npho).mean()
             avg_time = torch.stack(face_losses_time).mean()
@@ -163,26 +236,48 @@ def compute_inpainting_loss(
             total_loss = total_loss + face_loss
 
             metrics[f"loss_{face_name}"] = face_loss.item()
-            metrics[f"loss_{face_name}_npho"] = avg_npho.item()
-            metrics[f"loss_{face_name}_time"] = avg_time.item()
+            metrics[f"loss_{face_name}_npho"] = (npho_weight * avg_npho).item()
+            metrics[f"loss_{face_name}_time"] = (time_weight * avg_time).item()
 
-            total_npho_loss += avg_npho.item()
-            total_time_loss += avg_time.item()
-            total_count += 1
+            total_npho_loss += metrics[f"loss_{face_name}_npho"]
+            total_time_loss += metrics[f"loss_{face_name}_time"]
+
+            # Compute MAE/RMSE for this face
+            fc = max(face_count[face_name], 1)
+            metrics[f"mae_{face_name}_npho"] = face_abs_npho[face_name] / fc
+            metrics[f"mae_{face_name}_time"] = face_abs_time[face_name] / fc
+            metrics[f"rmse_{face_name}_npho"] = (face_sq_npho[face_name] / fc) ** 0.5
+            metrics[f"rmse_{face_name}_time"] = (face_sq_time[face_name] / fc) ** 0.5
+
+            # Accumulate for global MAE/RMSE
+            total_abs_npho += face_abs_npho[face_name]
+            total_abs_time += face_abs_time[face_name]
+            total_sq_npho += face_sq_npho[face_name]
+            total_sq_time += face_sq_time[face_name]
+            total_count += face_count[face_name]
         else:
             metrics[f"loss_{face_name}"] = 0.0
             metrics[f"loss_{face_name}_npho"] = 0.0
             metrics[f"loss_{face_name}_time"] = 0.0
+            metrics[f"mae_{face_name}_npho"] = 0.0
+            metrics[f"mae_{face_name}_time"] = 0.0
+            metrics[f"rmse_{face_name}_npho"] = 0.0
+            metrics[f"rmse_{face_name}_time"] = 0.0
 
-    # Aggregate metrics
-    if total_count > 0:
-        metrics["loss_npho"] = total_npho_loss / total_count
-        metrics["loss_time"] = total_time_loss / total_count
-    else:
-        metrics["loss_npho"] = 0.0
-        metrics["loss_time"] = 0.0
-
+    # Aggregate metrics (sum across faces, consistent with total_loss)
+    metrics["loss_npho"] = total_npho_loss
+    metrics["loss_time"] = total_time_loss
     metrics["total_loss"] = total_loss.item()
+
+    # Global MAE/RMSE
+    tc = max(total_count, 1)
+    metrics["mae_npho"] = total_abs_npho / tc
+    metrics["mae_time"] = total_abs_time / tc
+    metrics["rmse_npho"] = (total_sq_npho / tc) ** 0.5
+    metrics["rmse_time"] = (total_sq_time / tc) ** 0.5
+
+    # Mask statistics
+    metrics["n_masked_total"] = total_count
 
     return total_loss, metrics
 
@@ -218,16 +313,21 @@ def run_epoch_inpainter(
     model.train()
 
     # Build face index maps
-    from .geom_defs import INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP
+    from .geom_defs import INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP, OUTER_COARSE_FULL_INDEX_MAP
     from .geom_defs import TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows
 
     face_index_maps = {
         "inner": torch.from_numpy(INNER_INDEX_MAP).to(device),
         "us": torch.from_numpy(US_INDEX_MAP).to(device),
         "ds": torch.from_numpy(DS_INDEX_MAP).to(device),
+        "outer": torch.from_numpy(OUTER_COARSE_FULL_INDEX_MAP).to(device),
         "top": torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long().to(device),
         "bot": torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long().to(device),
     }
+
+    # Get outer fine config from model
+    outer_fine = getattr(model.encoder, "outer_fine", False)
+    outer_fine_pool = getattr(model.encoder, "outer_fine_pool", None)
 
     # Accumulate metrics
     metric_sums = {}
@@ -269,6 +369,8 @@ def run_epoch_inpainter(
                     loss_fn=loss_fn,
                     npho_weight=npho_weight,
                     time_weight=time_weight,
+                    outer_fine=outer_fine,
+                    outer_fine_pool=outer_fine_pool,
                 )
 
             # Backward
@@ -320,27 +422,44 @@ def run_eval_inpainter(
     """
     Run evaluation for inpainter.
 
+    Args:
+        collect_predictions: If True, collect per-sensor predictions for ROOT output
+
     Returns:
         metrics: dict of averaged metrics
-        predictions: (optional) dict of predictions if collect_predictions=True
+        predictions: (optional) list of prediction dicts if collect_predictions=True
     """
     model.eval()
 
-    from .geom_defs import INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP
+    from .geom_defs import INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP, OUTER_COARSE_FULL_INDEX_MAP
     from .geom_defs import TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows
 
     face_index_maps = {
         "inner": torch.from_numpy(INNER_INDEX_MAP).to(device),
         "us": torch.from_numpy(US_INDEX_MAP).to(device),
         "ds": torch.from_numpy(DS_INDEX_MAP).to(device),
+        "outer": torch.from_numpy(OUTER_COARSE_FULL_INDEX_MAP).to(device),
         "top": torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long().to(device),
         "bot": torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long().to(device),
     }
 
+    # Numpy versions for prediction collection
+    face_index_maps_np = {
+        "inner": INNER_INDEX_MAP,
+        "us": US_INDEX_MAP,
+        "ds": DS_INDEX_MAP,
+        "outer": OUTER_COARSE_FULL_INDEX_MAP,
+        "top": flatten_hex_rows(TOP_HEX_ROWS),
+        "bot": flatten_hex_rows(BOTTOM_HEX_ROWS),
+    }
+
+    outer_fine = getattr(model.encoder, "outer_fine", False)
+    outer_fine_pool = getattr(model.encoder, "outer_fine_pool", None)
+
     metric_sums = {}
     num_batches = 0
 
-    # For collecting predictions
+    # For collecting predictions (per-sensor level)
     all_predictions = [] if collect_predictions else None
 
     with torch.no_grad():
@@ -377,6 +496,8 @@ def run_eval_inpainter(
                         loss_fn=loss_fn,
                         npho_weight=npho_weight,
                         time_weight=time_weight,
+                        outer_fine=outer_fine,
+                        outer_fine_pool=outer_fine_pool,
                     )
 
                 for key, value in metrics.items():
@@ -385,21 +506,136 @@ def run_eval_inpainter(
                     metric_sums[key] += value
                 num_batches += 1
 
+                # Collect predictions at sensor level
                 if collect_predictions:
-                    all_predictions.append({
-                        "mask": mask.cpu().numpy(),
-                        "original": original_values.cpu().numpy(),
-                        "results": {
-                            k: {
-                                "pred": v["pred"].cpu().numpy(),
-                                "valid": v["valid"].cpu().numpy(),
-                            }
-                            for k, v in results.items()
-                        }
-                    })
+                    B = x_batch.shape[0]
+                    original_np = original_values.cpu().numpy()
+                    mask_np = mask.cpu().numpy()
+
+                    # Process each face and collect predictions
+                    for face_name in ["inner", "us", "ds", "outer", "top", "bot"]:
+                        if face_name not in results:
+                            continue
+
+                        face_result = results[face_name]
+                        pred = face_result["pred"].cpu().numpy()  # (B, max_masked, 2)
+                        valid = face_result["valid"].cpu().numpy()  # (B, max_masked)
+
+                        if face_name in ["top", "bot"]:
+                            indices = face_result["indices"].cpu().numpy()  # (B, max_masked)
+                            hex_indices = face_index_maps_np[face_name]
+
+                            for b in range(B):
+                                n_valid = int(valid[b].sum())
+                                if n_valid == 0:
+                                    continue
+
+                                node_idx = indices[b, :n_valid]
+                                flat_idx = hex_indices[node_idx]
+
+                                for i in range(n_valid):
+                                    sensor_id = int(flat_idx[i])
+                                    all_predictions.append({
+                                        "event_idx": num_batches * batch_size + b,
+                                        "sensor_id": sensor_id,
+                                        "face": face_name,
+                                        "truth_npho": float(original_np[b, sensor_id, 0]),
+                                        "truth_time": float(original_np[b, sensor_id, 1]),
+                                        "pred_npho": float(pred[b, i, 0]),
+                                        "pred_time": float(pred[b, i, 1]),
+                                    })
+                        else:
+                            indices = face_result["indices"].cpu().numpy()  # (B, max_masked, 2)
+                            idx_map = face_index_maps_np[face_name]
+
+                            for b in range(B):
+                                n_valid = int(valid[b].sum())
+                                if n_valid == 0:
+                                    continue
+
+                                h_idx = indices[b, :n_valid, 0]
+                                w_idx = indices[b, :n_valid, 1]
+                                flat_idx = idx_map[h_idx, w_idx]
+
+                                for i in range(n_valid):
+                                    sensor_id = int(flat_idx[i])
+                                    all_predictions.append({
+                                        "event_idx": num_batches * batch_size + b,
+                                        "sensor_id": sensor_id,
+                                        "face": face_name,
+                                        "truth_npho": float(original_np[b, sensor_id, 0]),
+                                        "truth_time": float(original_np[b, sensor_id, 1]),
+                                        "pred_npho": float(pred[b, i, 0]),
+                                        "pred_time": float(pred[b, i, 1]),
+                                    })
 
     avg_metrics = {k: v / max(1, num_batches) for k, v in metric_sums.items()}
 
     if collect_predictions:
         return avg_metrics, all_predictions
     return avg_metrics
+
+
+def save_predictions_to_root(predictions: List[Dict], save_path: str, epoch: int, run_id: str = None):
+    """
+    Save inpainter predictions to a ROOT file.
+
+    Args:
+        predictions: list of dicts with keys: event_idx, sensor_id, face, truth_npho, truth_time, pred_npho, pred_time
+        save_path: directory to save the file
+        epoch: epoch number
+        run_id: optional MLflow run ID
+
+    Returns:
+        path to saved ROOT file
+    """
+    import os
+    import uproot
+
+    if not predictions:
+        return None
+
+    os.makedirs(save_path, exist_ok=True)
+
+    # Convert to arrays
+    n = len(predictions)
+    event_idx = np.array([p["event_idx"] for p in predictions], dtype=np.int32)
+    sensor_id = np.array([p["sensor_id"] for p in predictions], dtype=np.int32)
+
+    # Map face names to integers
+    face_map = {"inner": 0, "us": 1, "ds": 2, "outer": 3, "top": 4, "bot": 5}
+    face = np.array([face_map.get(p["face"], -1) for p in predictions], dtype=np.int32)
+
+    truth_npho = np.array([p["truth_npho"] for p in predictions], dtype=np.float32)
+    truth_time = np.array([p["truth_time"] for p in predictions], dtype=np.float32)
+    pred_npho = np.array([p["pred_npho"] for p in predictions], dtype=np.float32)
+    pred_time = np.array([p["pred_time"] for p in predictions], dtype=np.float32)
+
+    # Compute errors
+    error_npho = pred_npho - truth_npho
+    error_time = pred_time - truth_time
+
+    # Build output dict
+    branches = {
+        "event_idx": event_idx,
+        "sensor_id": sensor_id,
+        "face": face,
+        "truth_npho": truth_npho,
+        "truth_time": truth_time,
+        "pred_npho": pred_npho,
+        "pred_time": pred_time,
+        "error_npho": error_npho,
+        "error_time": error_time,
+    }
+
+    if run_id:
+        branches["run_id"] = np.array([run_id] * n)
+
+    # Write to ROOT file
+    filename = f"inpainter_predictions_epoch_{epoch}.root"
+    filepath = os.path.join(save_path, filename)
+
+    with uproot.recreate(filepath) as f:
+        f["tree"] = branches
+
+    return filepath

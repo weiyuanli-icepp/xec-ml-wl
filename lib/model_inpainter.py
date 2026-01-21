@@ -247,6 +247,7 @@ class XEC_Inpainter(nn.Module):
         self.register_buffer("inner_idx", torch.from_numpy(INNER_INDEX_MAP).long())
         self.register_buffer("us_idx", torch.from_numpy(US_INDEX_MAP).long())
         self.register_buffer("ds_idx", torch.from_numpy(DS_INDEX_MAP).long())
+        self.register_buffer("outer_coarse_idx", torch.from_numpy(OUTER_COARSE_FULL_INDEX_MAP).long())
         self.register_buffer("top_hex_indices", torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long())
         self.register_buffer("bottom_hex_indices", torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long())
 
@@ -362,16 +363,38 @@ class XEC_Inpainter(nn.Module):
         results["ds"] = {"pred": pred, "indices": idx, "valid": valid, "mask_2d": ds_mask_2d}
 
         # Outer face
+        # Get coarse mask first (always needed for sensor-level masking)
+        outer_mask_flat = mask[:, self.outer_coarse_idx.flatten()]  # (B, 9*24)
+        outer_mask_coarse = outer_mask_flat.view(B, 9, 24)
+
         if self.encoder.outer_fine:
             outer_tensor = build_outer_fine_grid_tensor(x_masked, pool_kernel=self.encoder.outer_fine_pool)
-            # For fine grid, we need to handle mask differently
-            # TODO: Implement proper mask gathering for fine grid
-            outer_h, outer_w = outer_tensor.shape[2], outer_tensor.shape[3]
-            outer_mask_2d = torch.zeros(B, outer_h, outer_w, device=device)
+            # Upsample coarse mask to fine grid, then pool if needed
+            from .geom_defs import OUTER_FINE_COARSE_SCALE
+            cr, cc = OUTER_FINE_COARSE_SCALE
+            outer_mask_fine = F.interpolate(
+                outer_mask_coarse.unsqueeze(1).float(),
+                scale_factor=(float(cr), float(cc)),
+                mode='nearest'
+            ).squeeze(1)  # (B, 45, 72)
+            # Apply pooling if used
+            if self.encoder.outer_fine_pool:
+                if isinstance(self.encoder.outer_fine_pool, int):
+                    ph = pw = self.encoder.outer_fine_pool
+                else:
+                    ph, pw = self.encoder.outer_fine_pool
+                outer_mask_fine = F.avg_pool2d(
+                    outer_mask_fine.unsqueeze(1),
+                    kernel_size=(ph, pw),
+                    stride=(ph, pw)
+                ).squeeze(1)
+                # Convert avg back to binary (any masked → masked)
+                outer_mask_2d = (outer_mask_fine > 0).float()
+            else:
+                outer_mask_2d = outer_mask_fine
         else:
             outer_tensor = gather_face(x_masked, OUTER_COARSE_FULL_INDEX_MAP)
-            outer_h, outer_w = 9, 24
-            outer_mask_2d = torch.zeros(B, outer_h, outer_w, device=device)  # TODO: proper mask
+            outer_mask_2d = outer_mask_coarse
 
         outer_latent = latent_seq[:, outer_idx]
         pred, idx, valid = self.head_outer(outer_tensor, outer_latent, outer_mask_2d)
