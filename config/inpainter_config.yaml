@@ -30,7 +30,8 @@ model:
 
 # === Training Configuration ===
 training:
-  mae_checkpoint: "artifacts/mae/mae_checkpoint_best.pth"  # Path to pretrained MAE
+  # mae_checkpoint: "artifacts/mae/mae_checkpoint_best.pth"  # Path to pretrained MAE
+  mae_checkpoint: null              # null = no pretrained MAE
   epochs: 50
   lr: 1.0e-4
   lr_scheduler: "cosine"            # "cosine" or null

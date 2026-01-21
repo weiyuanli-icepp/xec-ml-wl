@@ -136,7 +136,7 @@ class XECStreamingDataset(IterableDataset):
             for f in futures:
                 x_sub, t_sub = f.result()
                 for i in range(len(x_sub)):
-                    yield torch.from_numpy(x_sub[i]), {k: torch.from_numpy(v[i]) for k, v in t_sub.items()}
+                    yield torch.from_numpy(x_sub[i]), {k: torch.as_tensor(v[i]) for k, v in t_sub.items()}
 
 def expand_path(path):
     """

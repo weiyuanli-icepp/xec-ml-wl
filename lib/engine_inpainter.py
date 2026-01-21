@@ -70,6 +70,13 @@ def compute_inpainting_loss(
     face_sq_time = {}
     face_count = {}
 
+    outer_target = None
+    if outer_fine and "outer" in results:
+        from .geom_utils import build_outer_fine_grid_tensor
+        outer_target = build_outer_fine_grid_tensor(
+            original_values, pool_kernel=outer_fine_pool
+        )
+
     # Rectangular faces (inner, us, ds, outer)
     rect_faces = ["inner", "us", "ds", "outer"]
     for face_name in rect_faces:
@@ -92,7 +99,9 @@ def compute_inpainting_loss(
             continue
 
         # Get ground truth at masked positions
-        idx_map = face_index_maps[face_name]  # (H, W) with flat indices
+        idx_map = None
+        if not (face_name == "outer" and outer_fine):
+            idx_map = face_index_maps[face_name]  # (H, W) with flat indices
 
         face_losses_npho = []
         face_losses_time = []
@@ -111,11 +120,14 @@ def compute_inpainting_loss(
             h_idx = indices[b, :n_valid, 0]  # (n_valid,)
             w_idx = indices[b, :n_valid, 1]  # (n_valid,)
 
-            # Get flat indices from index map
-            flat_idx = idx_map[h_idx, w_idx]  # (n_valid,)
-
-            # Get ground truth
-            gt = original_values[b, flat_idx, :]  # (n_valid, 2)
+            if face_name == "outer" and outer_fine:
+                # Use fine-grid target for outer face
+                gt = outer_target[b, :, h_idx, w_idx].T  # (n_valid, 2)
+            else:
+                # Get flat indices from index map
+                flat_idx = idx_map[h_idx, w_idx]  # (n_valid,)
+                # Get ground truth
+                gt = original_values[b, flat_idx, :]  # (n_valid, 2)
             pr = pred[b, :n_valid, :]  # (n_valid, 2)
 
             # Compute per-channel loss
@@ -335,7 +347,7 @@ def run_epoch_inpainter(
 
     for root_file in train_files:
         dataset = XECStreamingDataset(
-            root_path=root_file,
+            root_files=root_file,
             tree_name=tree_name,
             step_size=step_size,
             npho_branch=npho_branch,
@@ -356,7 +368,11 @@ def run_epoch_inpainter(
         )
 
         for batch in loader:
-            x_batch = batch["x"].to(device, non_blocking=True)
+            if isinstance(batch, dict):
+                x_batch = batch["x"]
+            else:
+                x_batch = batch[0]
+            x_batch = x_batch.to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
 
@@ -465,7 +481,7 @@ def run_eval_inpainter(
     with torch.no_grad():
         for root_file in val_files:
             dataset = XECStreamingDataset(
-                root_path=root_file,
+                root_files=root_file,
                 tree_name=tree_name,
                 step_size=step_size,
                 npho_branch=npho_branch,
@@ -486,7 +502,11 @@ def run_eval_inpainter(
             )
 
             for batch in loader:
-                x_batch = batch["x"].to(device, non_blocking=True)
+                if isinstance(batch, dict):
+                    x_batch = batch["x"]
+                else:
+                    x_batch = batch[0]
+                x_batch = x_batch.to(device, non_blocking=True)
 
                 with torch.amp.autocast('cuda', enabled=True):
                     results, original_values, mask = model(x_batch, mask_ratio=mask_ratio)
