@@ -74,7 +74,7 @@ def main():
             model = XECEncoder(outer_mode=args.outer_mode).to(device)
             
             # Load weights
-            ckpt = torch.load(args.checkpoint, map_location=device)
+            ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
             
             # EMA or standard
             state_dict = None

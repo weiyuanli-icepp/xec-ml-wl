@@ -328,7 +328,7 @@ Examples:
     best_val_loss = float('inf')
     if resume_from and os.path.exists(resume_from):
         print(f"[INFO] Resuming MAE from {resume_from}")
-        checkpoint = torch.load(resume_from, map_location=device)
+        checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
 
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             model.load_state_dict(checkpoint['model_state_dict'])
