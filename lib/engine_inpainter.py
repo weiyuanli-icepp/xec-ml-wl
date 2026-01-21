@@ -531,6 +531,15 @@ def run_eval_inpainter(
                     B = x_batch.shape[0]
                     original_np = original_values.cpu().numpy()
                     mask_np = mask.cpu().numpy()
+                    outer_target_np = None
+                    outer_grid_w = None
+                    if outer_fine and "outer" in results:
+                        from .geom_utils import build_outer_fine_grid_tensor
+                        outer_target = build_outer_fine_grid_tensor(
+                            original_values, pool_kernel=outer_fine_pool
+                        )
+                        outer_target_np = outer_target.permute(0, 2, 3, 1).cpu().numpy()
+                        outer_grid_w = outer_target_np.shape[2]
 
                     # Process each face and collect predictions
                     for face_name in ["inner", "us", "ds", "outer", "top", "bot"]:
@@ -566,7 +575,9 @@ def run_eval_inpainter(
                                     })
                         else:
                             indices = face_result["indices"].cpu().numpy()  # (B, max_masked, 2)
-                            idx_map = face_index_maps_np[face_name]
+                            if face_name == "outer" and outer_fine:
+                                if outer_target_np is None:
+                                    continue
 
                             for b in range(B):
                                 n_valid = int(valid[b].sum())
@@ -575,6 +586,22 @@ def run_eval_inpainter(
 
                                 h_idx = indices[b, :n_valid, 0]
                                 w_idx = indices[b, :n_valid, 1]
+                                if face_name == "outer" and outer_fine:
+                                    truth_vals = outer_target_np[b, h_idx, w_idx]
+                                    for i in range(n_valid):
+                                        sensor_id = int(h_idx[i] * outer_grid_w + w_idx[i])
+                                        all_predictions.append({
+                                            "event_idx": num_batches * batch_size + b,
+                                            "sensor_id": sensor_id,
+                                            "face": face_name,
+                                            "truth_npho": float(truth_vals[i, 0]),
+                                            "truth_time": float(truth_vals[i, 1]),
+                                            "pred_npho": float(pred[b, i, 0]),
+                                            "pred_time": float(pred[b, i, 1]),
+                                        })
+                                    continue
+
+                                idx_map = face_index_maps_np[face_name]
                                 flat_idx = idx_map[h_idx, w_idx]
 
                                 for i in range(n_valid):
