@@ -59,6 +59,10 @@ def run_epoch_mae(model, optimizer, device, root, tree,
     masked_count_time = 0.0
     total_loss_sum = 0.0
     n_batches = 0
+
+    # Track actual mask ratio (randomly-masked / valid sensors)
+    total_randomly_masked = 0
+    total_valid_sensors = 0
    
     branches = [npho_branch, time_branch]
         
@@ -131,6 +135,14 @@ def run_epoch_mae(model, optimizer, device, root, tree,
             with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
                 # 1. Forward Pass
                 recons, mask = model(x_in)
+
+                # Track actual mask ratio
+                # Already-invalid sensors have time == sentinel_value and are NOT in mask
+                already_invalid = (x_in[:, :, 1] == sentinel_value)  # (B, N)
+                n_valid = (~already_invalid).sum().item()
+                n_masked = mask.sum().item()
+                total_valid_sensors += n_valid
+                total_randomly_masked += n_masked
                 
                 # 2. Gather Truth Targets
                 if hasattr(model, "encoder") and getattr(model.encoder, "outer_fine", False):
@@ -309,6 +321,12 @@ def run_epoch_mae(model, optimizer, device, root, tree,
         metrics["channel_logvar_npho"] = log_vars[0].item()
         metrics["channel_logvar_time"] = log_vars[1].item()
 
+    # Actual mask ratio (randomly-masked / valid sensors)
+    if total_valid_sensors > 0:
+        metrics["actual_mask_ratio"] = total_randomly_masked / total_valid_sensors
+    else:
+        metrics["actual_mask_ratio"] = 0.0
+
     return metrics
 
 def run_eval_mae(model, device, root, tree,
@@ -362,6 +380,10 @@ def run_eval_mae(model, device, root, tree,
         "mask": [], "x_masked": []
     }
     n_collected = 0
+
+    # Track actual mask ratio (randomly-masked / valid sensors)
+    total_randomly_masked = 0
+    total_valid_sensors = 0
 
     branches = [npho_branch, time_branch]
 
@@ -472,6 +494,14 @@ def run_eval_mae(model, device, root, tree,
                 with torch.amp.autocast('cuda', enabled=amp):
                     # Get masked input for visualization
                     x_masked, mask = model.random_masking(x_in)
+
+                    # Track actual mask ratio
+                    already_invalid = (x_in[:, :, 1] == sentinel_value)  # (B, N)
+                    n_valid = (~already_invalid).sum().item()
+                    n_masked = mask.sum().item()
+                    total_valid_sensors += n_valid
+                    total_randomly_masked += n_masked
+
                     latent_seq = model.encoder.forward_features(x_masked)
 
                     # Decode each face
@@ -621,6 +651,12 @@ def run_eval_mae(model, device, root, tree,
     if log_vars is not None and log_vars.numel() >= 2:
         metrics["channel_logvar_npho"] = log_vars[0].item()
         metrics["channel_logvar_time"] = log_vars[1].item()
+
+    # Actual mask ratio (randomly-masked / valid sensors)
+    if total_valid_sensors > 0:
+        metrics["actual_mask_ratio"] = total_randomly_masked / total_valid_sensors
+    else:
+        metrics["actual_mask_ratio"] = 0.0
 
     if collect_predictions:
         # Concatenate collected predictions

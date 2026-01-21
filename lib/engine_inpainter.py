@@ -345,6 +345,10 @@ def run_epoch_inpainter(
     metric_sums = {}
     num_batches = 0
 
+    # Track actual mask ratio (randomly-masked / valid sensors)
+    total_randomly_masked = 0
+    total_valid_sensors = 0
+
     for root_file in train_files:
         dataset = XECStreamingDataset(
             root_files=root_file,
@@ -379,6 +383,15 @@ def run_epoch_inpainter(
             # Forward with AMP
             with torch.amp.autocast('cuda', enabled=(scaler is not None)):
                 results, original_values, mask = model(x_batch, mask_ratio=mask_ratio)
+
+                # Track actual mask ratio
+                # Already-invalid sensors have time == sentinel_value and are NOT in mask
+                already_invalid = (original_values[:, :, 1] == sentinel_value)  # (B, N)
+                n_valid = (~already_invalid).sum().item()
+                n_masked = mask.sum().item()
+                total_valid_sensors += n_valid
+                total_randomly_masked += n_masked
+
                 loss, metrics = compute_inpainting_loss(
                     results, original_values, mask,
                     face_index_maps,
@@ -412,6 +425,13 @@ def run_epoch_inpainter(
 
     # Average metrics
     avg_metrics = {k: v / max(1, num_batches) for k, v in metric_sums.items()}
+
+    # Actual mask ratio (randomly-masked / valid sensors)
+    if total_valid_sensors > 0:
+        avg_metrics["actual_mask_ratio"] = total_randomly_masked / total_valid_sensors
+    else:
+        avg_metrics["actual_mask_ratio"] = 0.0
+
     return avg_metrics
 
 
@@ -475,6 +495,10 @@ def run_eval_inpainter(
     metric_sums = {}
     num_batches = 0
 
+    # Track actual mask ratio (randomly-masked / valid sensors)
+    total_randomly_masked = 0
+    total_valid_sensors = 0
+
     # For collecting predictions (per-sensor level)
     all_predictions = [] if collect_predictions else None
 
@@ -510,6 +534,14 @@ def run_eval_inpainter(
 
                 with torch.amp.autocast('cuda', enabled=True):
                     results, original_values, mask = model(x_batch, mask_ratio=mask_ratio)
+
+                    # Track actual mask ratio
+                    already_invalid = (original_values[:, :, 1] == sentinel_value)  # (B, N)
+                    n_valid = (~already_invalid).sum().item()
+                    n_masked = mask.sum().item()
+                    total_valid_sensors += n_valid
+                    total_randomly_masked += n_masked
+
                     _, metrics = compute_inpainting_loss(
                         results, original_values, mask,
                         face_index_maps,
@@ -617,6 +649,12 @@ def run_eval_inpainter(
                                     })
 
     avg_metrics = {k: v / max(1, num_batches) for k, v in metric_sums.items()}
+
+    # Actual mask ratio (randomly-masked / valid sensors)
+    if total_valid_sensors > 0:
+        avg_metrics["actual_mask_ratio"] = total_randomly_masked / total_valid_sensors
+    else:
+        avg_metrics["actual_mask_ratio"] = 0.0
 
     if collect_predictions:
         return avg_metrics, all_predictions

@@ -203,10 +203,11 @@ class XEC_Inpainter(nn.Module):
     Uses a frozen encoder from MAE pretraining and lightweight inpainting heads
     to predict sensor values at masked (dead) positions.
     """
-    def __init__(self, encoder: XECEncoder, freeze_encoder: bool = True):
+    def __init__(self, encoder: XECEncoder, freeze_encoder: bool = True, sentinel_value: float = -5.0):
         super().__init__()
         self.encoder = encoder
         self.freeze_encoder = freeze_encoder
+        self.sentinel_value = sentinel_value
 
         if freeze_encoder:
             for param in self.encoder.parameters():
@@ -258,35 +259,61 @@ class XEC_Inpainter(nn.Module):
             self.encoder.eval()
         return self
 
-    def random_masking(self, x_flat, mask_ratio=0.05):
+    def random_masking(self, x_flat, mask_ratio=0.05, sentinel=None):
         """
-        Randomly mask sensors for training.
+        Randomly mask sensors for training, excluding already-invalid sensors.
 
         Args:
-            x_flat: (B, 4760, 2) - flat sensor values
-            mask_ratio: fraction of sensors to mask
+            x_flat: (B, 4760, 2) - flat sensor values (npho, time)
+            mask_ratio: fraction of valid sensors to mask
+            sentinel: value used to mark invalid/masked sensors (defaults to self.sentinel_value)
 
         Returns:
             x_masked: (B, 4760, 2) - input with masked positions set to sentinel
-            mask: (B, 4760) - binary mask (1 = masked, 0 = valid)
+                      (includes both randomly-masked and already-invalid)
+            mask: (B, 4760) - binary mask of RANDOMLY-MASKED positions only (1 = masked)
+                  This mask is used for loss computation (we have ground truth for these)
+                  Already-invalid sensors are NOT in this mask (no ground truth)
+
+        Note: Already-invalid sensors (time == sentinel) are excluded from random
+        masking. They remain as sentinel in x_masked but are not included in the
+        loss mask since we don't have ground truth for them.
         """
+        if sentinel is None:
+            sentinel = self.sentinel_value
+
         B, N, C = x_flat.shape
         device = x_flat.device
 
-        num_mask = int(N * mask_ratio)
+        # Identify already-invalid sensors (time channel == sentinel)
+        already_invalid = (x_flat[:, :, 1] == sentinel)  # (B, N)
 
-        # Random permutation for each sample
+        # Count valid sensors per sample
+        valid_count = (~already_invalid).sum(dim=1)  # (B,)
+
+        # Calculate how many valid sensors to mask per sample
+        num_to_mask = (valid_count.float() * mask_ratio).int()  # (B,)
+
+        # Generate random noise, set invalid sensors to inf to exclude from selection
         noise = torch.rand(B, N, device=device)
+        noise[already_invalid] = float('inf')
+
+        # Sort to get indices (invalid sensors will be at the end)
         ids_shuffle = torch.argsort(noise, dim=1)
 
-        # Create mask
+        # Create mask: mark top num_to_mask sensors as masked for each sample
+        # This mask contains ONLY randomly-masked positions (for loss computation)
         mask = torch.zeros(B, N, device=device)
-        mask.scatter_(1, ids_shuffle[:, :num_mask], 1.0)
+        for b in range(B):
+            n_mask = num_to_mask[b].item()
+            if n_mask > 0:
+                mask[b, ids_shuffle[b, :n_mask]] = 1.0
 
-        # Apply mask (set to sentinel value, assuming -5.0)
-        sentinel = -5.0
+        # Apply sentinel to randomly-masked positions
+        # Note: already-invalid sensors already have sentinel value in x_flat
         x_masked = x_flat.clone()
-        x_masked[mask.bool().unsqueeze(-1).expand_as(x_flat)] = sentinel
+        mask_expanded = mask.bool().unsqueeze(-1).expand_as(x_flat)
+        x_masked[mask_expanded] = sentinel
 
         return x_masked, mask
 
@@ -315,9 +342,8 @@ class XEC_Inpainter(nn.Module):
         if mask is None:
             x_masked, mask = self.random_masking(x_flat, mask_ratio)
         else:
-            sentinel = -5.0
             x_masked = x_flat.clone()
-            x_masked[mask.bool().unsqueeze(-1).expand_as(x_flat)] = sentinel
+            x_masked[mask.bool().unsqueeze(-1).expand_as(x_flat)] = self.sentinel_value
 
         # Get encoder features (with masked input)
         with torch.set_grad_enabled(not self.freeze_encoder):

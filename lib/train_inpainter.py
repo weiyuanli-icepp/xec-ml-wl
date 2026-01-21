@@ -316,7 +316,9 @@ Examples:
         ).to(device)
 
     # Create inpainter model
-    model = XEC_Inpainter(encoder, freeze_encoder=freeze_encoder).to(device)
+    model = XEC_Inpainter(
+        encoder, freeze_encoder=freeze_encoder, sentinel_value=sentinel_value
+    ).to(device)
 
     print(f"[INFO] Inpainter created:")
     print(f"  - Total params: {model.get_num_total_params():,}")

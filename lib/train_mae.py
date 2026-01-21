@@ -276,7 +276,10 @@ Examples:
         outer_fine_pool=outer_fine_pool_tuple
     ).to(device)
 
-    model = XEC_MAE(encoder, mask_ratio=mask_ratio, learn_channel_logvars=auto_channel_weight).to(device)
+    model = XEC_MAE(
+        encoder, mask_ratio=mask_ratio, learn_channel_logvars=auto_channel_weight,
+        sentinel_value=sentinel_value
+    ).to(device)
     total_params, trainable_params = count_model_params(model)
     print("[INFO] MAE created:")
     print(f"  - Total params: {total_params:,}")

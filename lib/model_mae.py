@@ -77,11 +77,12 @@ class GraphFaceDecoder(nn.Module):
         return out.permute(0, 2, 1) # (B, N, 2) -> (B, 2, N)
     
 class XEC_MAE(nn.Module):
-    def __init__(self, encoder: XECEncoder, mask_ratio=0.6, learn_channel_logvars: bool = False):
+    def __init__(self, encoder: XECEncoder, mask_ratio=0.6, learn_channel_logvars: bool = False, sentinel_value: float = -5.0):
         super().__init__()
         self.encoder = encoder
         self.mask_ratio = mask_ratio
         self.learn_channel_logvars = learn_channel_logvars
+        self.sentinel_value = sentinel_value
         
         # -- RECTANGULAR FACES DECODERS --
         self.dec_inner = FaceDecoder(out_h=93, out_w=44)
@@ -115,25 +116,60 @@ class XEC_MAE(nn.Module):
         # Per-channel log(sigma^2) for homoscedastic weighting (npho, time)
         self.channel_log_vars = nn.Parameter(torch.zeros(2)) if learn_channel_logvars else None
         
-    def random_masking(self, x):
+    def random_masking(self, x, sentinel=None):
         """
-        Randomly drops sensors.
-        x: (B, 4760, 2)
+        Randomly masks sensors, excluding already-invalid sensors from the masking pool.
+
+        Args:
+            x: (B, 4760, 2) - sensor values (npho, time)
+            sentinel: value used to mark invalid/masked sensors (defaults to self.sentinel_value)
+
+        Returns:
+            x_masked: input with masked positions set to sentinel (includes already-invalid)
+            mask: (B, N) binary mask of RANDOMLY-MASKED positions only (1 = masked for training)
+                  This mask is used for loss computation (we have ground truth for these)
+                  Already-invalid sensors are NOT in this mask (no ground truth)
+
+        Note: Already-invalid sensors (time == sentinel) are excluded from random
+        masking. They remain as sentinel in x_masked but are not included in the
+        loss mask since we don't have ground truth for them.
         """
+        if sentinel is None:
+            sentinel = self.sentinel_value
+
         B, N, C = x.shape
-        len_keep = int(N * (1 - self.mask_ratio))
-        
-        noise = torch.rand(B, N, device=x.device)
-        
+        device = x.device
+
+        # Identify already-invalid sensors (time channel == sentinel)
+        already_invalid = (x[:, :, 1] == sentinel)  # (B, N)
+
+        # Count valid sensors per sample
+        valid_count = (~already_invalid).sum(dim=1)  # (B,)
+
+        # Calculate how many valid sensors to mask per sample
+        num_to_mask = (valid_count.float() * self.mask_ratio).int()  # (B,)
+
+        # Generate random noise, set invalid sensors to inf to exclude from selection
+        noise = torch.rand(B, N, device=device)
+        noise[already_invalid] = float('inf')
+
+        # Sort to get indices (invalid sensors will be at the end)
         ids_shuffle = torch.argsort(noise, dim=1)
-        ids_restore = torch.argsort(ids_shuffle, dim=1)
-        
-        mask = torch.ones([B, N], device=x.device)
-        mask[:, :len_keep] = 0
-        
-        mask =  torch.gather(mask, dim=1, index=ids_restore)
-        x_masked = x * (1 - mask.unsqueeze(-1)) 
-        
+
+        # Create mask: mark top num_to_mask sensors as masked for each sample
+        # This mask contains ONLY randomly-masked positions (for loss computation)
+        mask = torch.zeros(B, N, device=device)
+        for b in range(B):
+            n_mask = num_to_mask[b].item()
+            if n_mask > 0:
+                mask[b, ids_shuffle[b, :n_mask]] = 1.0
+
+        # Apply sentinel to randomly-masked positions
+        # Note: already-invalid sensors already have sentinel value in x
+        x_masked = x.clone()
+        mask_expanded = mask.bool().unsqueeze(-1).expand_as(x)
+        x_masked[mask_expanded] = sentinel
+
         return x_masked, mask
     
     def forward(self, x_batch):
