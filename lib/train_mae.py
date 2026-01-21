@@ -337,8 +337,8 @@ Examples:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if "ema_state_dict" in checkpoint and ema_model is not None:
                 ema_model.load_state_dict(checkpoint['ema_state_dict'])
-            if "scheduler_state_dict" in checkpoint and scheduler is not None:
-                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            # Note: scheduler state is intentionally NOT restored to allow
+            # configuring new epochs/lr_max/lr_min on resume
             if "scaler_state_dict" in checkpoint:
                 scaler.load_state_dict(checkpoint['scaler_state_dict'])
             start_epoch = checkpoint.get('epoch', 0) + 1
