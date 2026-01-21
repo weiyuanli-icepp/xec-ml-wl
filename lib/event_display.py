@@ -344,7 +344,10 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         vmin, vmax = -1, 1
 
     norm_main = Normalize(vmin=vmin, vmax=vmax)
-    cmap_main = "viridis" if channel == "npho" else "coolwarm"
+    cmap_main_name = "viridis" if channel == "npho" else "coolwarm"
+    cmap_main = plt.get_cmap(cmap_main_name)
+    cmap_main_masked = cmap_main.copy()
+    cmap_main_masked.set_bad("black")
 
     # Residual scale (symmetric around 0)
     res_abs = np.abs(residual_ch[mask > 0.5])
@@ -355,9 +358,10 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     norm_res = Normalize(vmin=-res_max, vmax=res_max)
     cmap_res = "RdBu_r"
 
-    def plot_hex_grid(ax, row_list, full_vals, title, mode, cmap, norm):
+    def plot_hex_grid(ax, row_list, full_vals, title, mode, cmap, norm, mask_vals=None):
         pitch_y, pitch_x = 7.5, 7.1
         xs, ys, vals = [], [], []
+        xs_masked, ys_masked = [], []
         all_xs, all_ys = [], []
 
         for r_idx, ids in enumerate(row_list):
@@ -370,12 +374,19 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
                 y = y_pos
                 all_xs.append(x)
                 all_ys.append(y)
-                xs.append(x)
-                ys.append(y)
-                vals.append(full_vals[pmt_id])
+                if mask_vals is not None and mask_vals[pmt_id] > 0.5:
+                    xs_masked.append(x)
+                    ys_masked.append(y)
+                else:
+                    xs.append(x)
+                    ys.append(y)
+                    vals.append(full_vals[pmt_id])
 
         ax.scatter(all_xs, all_ys, s=280, c='lightgray', marker='h', alpha=0.3)
-        ax.scatter(xs, ys, c=vals, s=280, cmap=cmap, norm=norm, marker='h', edgecolors='none')
+        if xs:
+            ax.scatter(xs, ys, c=vals, s=280, cmap=cmap, norm=norm, marker='h', edgecolors='none')
+        if xs_masked:
+            ax.scatter(xs_masked, ys_masked, s=280, c='black', marker='h', edgecolors='none')
         ax.set_xlim(-55, 55)
         ax.set_ylim(-5, 45)
         ax.axis('off')
@@ -397,8 +408,10 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         axes[0, col_idx].axis('off')
 
         # Masked
-        axes[1, col_idx].imshow(to_np(faces_masked[face_key]), aspect='auto',
-                                 origin='upper', cmap=cmap_main, norm=norm_main)
+        mask_face = to_np(faces_mask[face_key]) > 0.5
+        masked_img = np.ma.array(to_np(faces_masked[face_key]), mask=mask_face)
+        axes[1, col_idx].imshow(masked_img, aspect='auto',
+                                 origin='upper', cmap=cmap_main_masked, norm=norm_main)
         axes[1, col_idx].set_title(f"{col_labels[col_idx]} - Masked")
         axes[1, col_idx].axis('off')
 
@@ -425,7 +438,8 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     axes[0, 3].set_title("Outer - Truth")
     axes[0, 3].axis('off')
 
-    axes[1, 3].imshow(to_np(outer_masked), aspect='auto', origin='upper', cmap=cmap_main, norm=norm_main)
+    outer_mask_img = np.ma.array(to_np(outer_masked), mask=to_np(outer_mask) > 0.5)
+    axes[1, 3].imshow(outer_mask_img, aspect='auto', origin='upper', cmap=cmap_main_masked, norm=norm_main)
     axes[1, 3].set_title("Outer - Masked")
     axes[1, 3].axis('off')
 
@@ -444,11 +458,12 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     if include_top_bottom:
         mask_norm = Normalize(vmin=0, vmax=1)
         row_vals = [truth_ch, masked_ch, pred_ch, residual_ch, mask.astype("float32")]
-        row_cmaps = [cmap_main, cmap_main, cmap_main, cmap_res, "gray"]
+        row_cmaps = [cmap_main, cmap_main_masked, cmap_main, cmap_res, "gray"]
         row_norms = [norm_main, norm_main, norm_main, norm_res, mask_norm]
         hex_specs = [("Top", TOP_HEX_ROWS, "top"), ("Bottom", BOTTOM_HEX_ROWS, "bottom")]
 
         for row_idx, label in enumerate(row_labels):
+            mask_vals = mask if row_idx == 1 else None
             for col_offset, (hex_title, row_list, mode) in enumerate(hex_specs):
                 ax = axes[row_idx, 4 + col_offset]
                 title = f"{hex_title} - {label}"
@@ -460,6 +475,7 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
                     mode=mode,
                     cmap=row_cmaps[row_idx],
                     norm=row_norms[row_idx],
+                    mask_vals=mask_vals,
                 )
 
     # Add colorbars
