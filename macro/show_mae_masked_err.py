@@ -1,5 +1,22 @@
 # Usage:
 # python macro/show_mae_masked_err.py --file artifacts/<RUN_NAME>/mae_predictions_epoch_10.root --channel npho --mode masked --bins 200
+
+# # Masked err_npho across all channels
+# python macro/show_mae_masked_err.py \
+#   --file artifacts/mae_mask0.60/mae_predictions_epoch_10.root \
+#   --channel npho --mode masked
+
+# # Only outer union sensors, absolute error
+# python macro/show_mae_masked_err.py \
+#   --file artifacts/mae_mask0.60/mae_predictions_epoch_10.root \
+#   --channel npho --mode masked --face outer_union --abs
+
+# # Single event
+# python macro/show_mae_masked_err.py \
+#   --file artifacts/mae_mask0.60/mae_predictions_epoch_10.root \
+#   --channel npho --mode masked --event 0
+
+
 import sys
 import os
 import argparse
