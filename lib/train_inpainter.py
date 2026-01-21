@@ -235,8 +235,6 @@ Examples:
 
         if not train_root:
             raise ValueError("--train_root is required (or use --config)")
-        if not mae_checkpoint:
-            raise ValueError("--mae_checkpoint is required (or use --config)")
 
         epochs = args.epochs or 50
         batch_size = args.batch_size or 1024
@@ -277,8 +275,6 @@ Examples:
     # Validate required params
     if not train_root:
         raise ValueError("train_path must be specified in config or --train_root")
-    if not mae_checkpoint:
-        raise ValueError("mae_checkpoint must be specified in config or --mae_checkpoint")
 
     # Expand paths
     def expand_path(p):
@@ -304,12 +300,20 @@ Examples:
         device = torch.device("cpu")
     print(f"[INFO] Using device: {device}")
 
-    # Load encoder from MAE checkpoint
-    encoder = load_mae_encoder(
-        mae_checkpoint, device,
-        outer_mode=outer_mode,
-        outer_fine_pool=outer_fine_pool
-    )
+    # Load encoder from MAE checkpoint or create from scratch
+    if mae_checkpoint:
+        encoder = load_mae_encoder(
+            mae_checkpoint, device,
+            outer_mode=outer_mode,
+            outer_fine_pool=outer_fine_pool
+        )
+    else:
+        print("[INFO] No MAE checkpoint provided, initializing encoder from scratch")
+        outer_fine_pool_tuple = tuple(outer_fine_pool) if outer_fine_pool else None
+        encoder = XECEncoder(
+            outer_mode=outer_mode,
+            outer_fine_pool=outer_fine_pool_tuple
+        ).to(device)
 
     # Create inpainter model
     model = XEC_Inpainter(encoder, freeze_encoder=freeze_encoder).to(device)
