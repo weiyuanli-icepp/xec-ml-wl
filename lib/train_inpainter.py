@@ -30,7 +30,7 @@ import psutil
 import mlflow
 import numpy as np
 
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from .model import XECEncoder
 from .model_inpainter import XEC_Inpainter
@@ -164,6 +164,7 @@ Examples:
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--lr_scheduler", type=str, default=None, choices=["none", "cosine"])
     parser.add_argument("--lr_min", type=float, default=None)
+    parser.add_argument("--warmup_epochs", type=int, default=None)
     parser.add_argument("--weight_decay", type=float, default=None)
 
     # Loss
@@ -212,6 +213,7 @@ Examples:
         lr = args.lr if args.lr is not None else cfg.training.lr
         lr_scheduler = args.lr_scheduler or getattr(cfg.training, "lr_scheduler", None)
         lr_min = args.lr_min if args.lr_min is not None else getattr(cfg.training, "lr_min", 1e-6)
+        warmup_epochs = args.warmup_epochs if args.warmup_epochs is not None else getattr(cfg.training, "warmup_epochs", 0)
         weight_decay = args.weight_decay if args.weight_decay is not None else cfg.training.weight_decay
 
         loss_fn = args.loss_fn or cfg.training.loss_fn
@@ -256,6 +258,7 @@ Examples:
         lr = args.lr or 1e-4
         lr_scheduler = args.lr_scheduler
         lr_min = args.lr_min or 1e-6
+        warmup_epochs = args.warmup_epochs if args.warmup_epochs is not None else 0
         weight_decay = args.weight_decay or 1e-4
 
         loss_fn = args.loss_fn or "smooth_l1"
@@ -323,8 +326,26 @@ Examples:
     # Scheduler
     scheduler = None
     if lr_scheduler == "cosine":
-        scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr_min)
-        print(f"[INFO] Using CosineAnnealingLR with eta_min={lr_min}")
+        if warmup_epochs >= epochs:
+            print(f"[WARN] warmup_epochs ({warmup_epochs}) >= epochs ({epochs}); disabling warmup.")
+            warmup_epochs = 0
+        if warmup_epochs > 0:
+            main_scheduler = CosineAnnealingLR(optimizer, T_max=epochs - warmup_epochs, eta_min=lr_min)
+            warmup_scheduler = LinearLR(
+                optimizer,
+                start_factor=0.01,
+                end_factor=1.0,
+                total_iters=warmup_epochs,
+            )
+            scheduler = SequentialLR(
+                optimizer,
+                schedulers=[warmup_scheduler, main_scheduler],
+                milestones=[warmup_epochs],
+            )
+            print(f"[INFO] Using CosineAnnealingLR with {warmup_epochs} warmup epochs (eta_min={lr_min})")
+        else:
+            scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr_min)
+            print(f"[INFO] Using CosineAnnealingLR with eta_min={lr_min}")
 
     # AMP scaler
     scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
@@ -375,6 +396,7 @@ Examples:
             "freeze_encoder": freeze_encoder,
             "lr": lr,
             "lr_scheduler": lr_scheduler,
+            "warmup_epochs": warmup_epochs,
             "weight_decay": weight_decay,
             "loss_fn": loss_fn,
             "npho_weight": npho_weight,

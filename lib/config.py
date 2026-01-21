@@ -304,6 +304,7 @@ class MAETrainingConfig:
     lr: float = 1e-4
     lr_scheduler: Optional[str] = None  # "cosine" or None
     lr_min: float = 1e-6
+    warmup_epochs: int = 0
     weight_decay: float = 1e-4
     loss_fn: str = "smooth_l1"  # smooth_l1, mse, l1, huber
     npho_weight: float = 1.0
@@ -431,6 +432,7 @@ class InpainterTrainingConfig:
     lr: float = 1e-4
     lr_scheduler: Optional[str] = None  # "cosine" or None
     lr_min: float = 1e-6
+    warmup_epochs: int = 0
     weight_decay: float = 1e-4
     loss_fn: str = "smooth_l1"  # smooth_l1, mse, l1, huber
     npho_weight: float = 1.0

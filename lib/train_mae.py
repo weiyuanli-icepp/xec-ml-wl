@@ -29,7 +29,7 @@ import uproot
 import numpy as np
 
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from .model import XECEncoder
 from .model_mae import XEC_MAE
@@ -141,6 +141,7 @@ Examples:
     parser.add_argument("--lr",                   type=float, default=None)
     parser.add_argument("--lr_scheduler",         type=str, default=None, choices=["none", "cosine"])
     parser.add_argument("--lr_min",               type=float, default=None, help="Minimum lr for cosine scheduler")
+    parser.add_argument("--warmup_epochs",        type=int, default=None, help="Warmup epochs for cosine scheduler")
     parser.add_argument("--weight_decay",         type=float, default=None)
     parser.add_argument("--loss_fn",              type=str, default=None, choices=["smooth_l1", "mse", "l1", "huber"])
     parser.add_argument("--npho_weight",          type=float, default=None)
@@ -182,6 +183,7 @@ Examples:
         lr = args.lr if args.lr is not None else cfg.training.lr
         lr_scheduler = args.lr_scheduler or getattr(cfg.training, "lr_scheduler", None)
         lr_min = args.lr_min if args.lr_min is not None else getattr(cfg.training, "lr_min", 1e-6)
+        warmup_epochs = args.warmup_epochs if args.warmup_epochs is not None else getattr(cfg.training, "warmup_epochs", 0)
         weight_decay = args.weight_decay if args.weight_decay is not None else cfg.training.weight_decay
         loss_fn = args.loss_fn or cfg.training.loss_fn
         npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight
@@ -220,6 +222,7 @@ Examples:
         lr = args.lr or 1e-4
         lr_scheduler = args.lr_scheduler
         lr_min = args.lr_min if args.lr_min is not None else 1e-6
+        warmup_epochs = args.warmup_epochs if args.warmup_epochs is not None else 0
         weight_decay = args.weight_decay or 1e-4
         loss_fn = args.loss_fn or "smooth_l1"
         npho_weight = args.npho_weight or 1.0
@@ -315,8 +318,26 @@ Examples:
     scheduler = None
     if lr_scheduler:
         if lr_scheduler == "cosine":
-            scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr_min)
-            print(f"[INFO] Using CosineAnnealingLR with eta_min={lr_min}")
+            if warmup_epochs >= epochs:
+                print(f"[WARN] warmup_epochs ({warmup_epochs}) >= epochs ({epochs}); disabling warmup.")
+                warmup_epochs = 0
+            if warmup_epochs > 0:
+                main_scheduler = CosineAnnealingLR(optimizer, T_max=epochs - warmup_epochs, eta_min=lr_min)
+                warmup_scheduler = LinearLR(
+                    optimizer,
+                    start_factor=0.01,
+                    end_factor=1.0,
+                    total_iters=warmup_epochs,
+                )
+                scheduler = SequentialLR(
+                    optimizer,
+                    schedulers=[warmup_scheduler, main_scheduler],
+                    milestones=[warmup_epochs],
+                )
+                print(f"[INFO] Using CosineAnnealingLR with {warmup_epochs} warmup epochs (eta_min={lr_min})")
+            else:
+                scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr_min)
+                print(f"[INFO] Using CosineAnnealingLR with eta_min={lr_min}")
         else:
             raise ValueError(f"Unsupported lr_scheduler: {lr_scheduler}")
 
@@ -397,6 +418,7 @@ Examples:
             "outer_mode": outer_mode_label,
             "mask_ratio": mask_ratio,
             "lr": lr_label,
+            "warmup_epochs": warmup_epochs,
             "weight_decay": weight_decay,
             "loss_fn": loss_fn,
             "channel_weights": channel_weights_label,
