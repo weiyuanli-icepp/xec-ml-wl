@@ -332,6 +332,7 @@ Examples:
     # Resume from checkpoint
     start_epoch = 0
     best_val_loss = float('inf')
+    mlflow_run_id = None
     if resume_from and os.path.exists(resume_from):
         print(f"[INFO] Resuming from {resume_from}")
         checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
@@ -345,6 +346,7 @@ Examples:
                 scaler.load_state_dict(checkpoint['scaler_state_dict'])
             start_epoch = checkpoint.get('epoch', 0) + 1
             best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+            mlflow_run_id = checkpoint.get('mlflow_run_id', None)
             print(f"[INFO] Resumed from epoch {start_epoch}")
         else:
             model.load_state_dict(checkpoint, strict=False)
@@ -358,7 +360,8 @@ Examples:
     print(f"  - Run name: {mlflow_run_name}")
     print(f"  - Mask ratio: {mask_ratio}")
 
-    with mlflow.start_run(run_name=mlflow_run_name) as run:
+    with mlflow.start_run(run_id=mlflow_run_id, run_name=mlflow_run_name if not mlflow_run_id else None) as run:
+        mlflow_run_id = run.info.run_id
         # Log parameters
         mlflow.log_params({
             "train_root": train_root,
@@ -488,6 +491,7 @@ Examples:
                     'optimizer_state_dict': optimizer.state_dict(),
                     'scaler_state_dict': scaler.state_dict(),
                     'best_val_loss': best_val_loss,
+                    'mlflow_run_id': mlflow_run_id,
                     'config': {
                         'outer_mode': outer_mode,
                         'outer_fine_pool': outer_fine_pool,

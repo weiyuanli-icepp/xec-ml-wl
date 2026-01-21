@@ -326,6 +326,7 @@ Examples:
     # Resume from checkpoint if provided
     start_epoch = 0
     best_val_loss = float('inf')
+    mlflow_run_id = None
     if resume_from and os.path.exists(resume_from):
         print(f"[INFO] Resuming MAE from {resume_from}")
         checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
@@ -342,6 +343,7 @@ Examples:
                 scaler.load_state_dict(checkpoint['scaler_state_dict'])
             start_epoch = checkpoint.get('epoch', 0) + 1
             best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+            mlflow_run_id = checkpoint.get('mlflow_run_id', None)
             print(f"[INFO] Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
         else:
             print("[WARN] Loaded raw weights. Starting from Epoch 1 (Optimizer reset).")
@@ -353,7 +355,8 @@ Examples:
     print(f"Starting MAE Pre-training in experiment: {mlflow_experiment}, run name: {mlflow_run_name}")
     os.makedirs(save_path, exist_ok=True)
 
-    with mlflow.start_run(run_name=mlflow_run_name) as run:
+    with mlflow.start_run(run_id=mlflow_run_id, run_name=mlflow_run_name if not mlflow_run_id else None) as run:
+        mlflow_run_id = run.info.run_id
         outer_mode_label = outer_mode
         if outer_mode == "finegrid" and outer_fine_pool:
             pool_str = ",".join(str(x) for x in outer_fine_pool)
@@ -554,6 +557,7 @@ Examples:
                     'optimizer_state_dict': optimizer.state_dict(),
                     'scaler_state_dict': scaler.state_dict(),
                     'best_val_loss': best_val_loss,
+                    'mlflow_run_id': mlflow_run_id,
                     'config': {
                         'outer_mode': outer_mode,
                         'outer_fine_pool': outer_fine_pool,
