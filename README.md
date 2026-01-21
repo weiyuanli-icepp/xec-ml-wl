@@ -644,6 +644,10 @@ or
 --resume_from "artifacts/<run name>/checkpoint_best.pth"
 ```
 
+If the run configurated with a scheduler and stopped in the middle of training, it can be resumed from the learning rate ( $\mathrm{LR}$ ) where it stopped. The learning rate can be calculated with following formula:
+ $$\mathrm{LR} = \mathrm{LR}_\mathrm{min} + \frac{1}{2} \Big(\mathrm{LR}_{\mathrm{max}} - \mathrm{LR}_{\mathrm{min}}\Big) \Bigg(1 + \cos \Big(\frac{\mathrm{epoch} - \mathrm{warmup}}{\mathrm{total} - \mathrm{warmup}} \pi\Big)\Bigg)$$
+
+
 ## 6. Real Data Validation
 Validation using real data can be performed in the following procedure
 ### 1. Convert checkpoint files to ONNX files (`macro/export_onnx.py`)
