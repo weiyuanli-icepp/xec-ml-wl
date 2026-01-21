@@ -29,6 +29,11 @@ def get_gpu_memory_stats(device=None):
         "peak": peak,
     }
 
+def count_model_params(model):
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total, trainable
+
 # ------------------------------------------------------------
 #  Utilities: streaming ROOT reading
 # ------------------------------------------------------------

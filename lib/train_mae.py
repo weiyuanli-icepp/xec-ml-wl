@@ -34,7 +34,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from .model import XECEncoder
 from .model_mae import XEC_MAE
 from .engine_mae import run_epoch_mae, run_eval_mae
-from .utils import get_gpu_memory_stats
+from .utils import get_gpu_memory_stats, count_model_params
 from .geom_defs import DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
 from .config import load_mae_config
 
@@ -277,6 +277,10 @@ Examples:
     ).to(device)
 
     model = XEC_MAE(encoder, mask_ratio=mask_ratio, learn_channel_logvars=auto_channel_weight).to(device)
+    total_params, trainable_params = count_model_params(model)
+    print("[INFO] MAE created:")
+    print(f"  - Total params: {total_params:,}")
+    print(f"  - Trainable params: {trainable_params:,}")
 
     # torch.compile requires triton, which is only available on x86_64
     # Can be disabled via config to avoid LLVM/multiprocessing conflicts
@@ -417,6 +421,8 @@ Examples:
             "sentinel_value": sentinel_value,
             "outer_mode": outer_mode_label,
             "mask_ratio": mask_ratio,
+            "total_params": total_params,
+            "trainable_params": trainable_params,
             "lr": lr_label,
             "warmup_epochs": warmup_epochs,
             "weight_decay": weight_decay,

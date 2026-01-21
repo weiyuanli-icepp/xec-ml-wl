@@ -27,6 +27,7 @@ from .reweighting          import SampleReweighter, create_reweighter_from_confi
 from .config               import load_config, get_active_tasks, get_task_weights, XECConfig
 from .utils                import (
     get_gpu_memory_stats,
+    count_model_params,
     iterate_chunks,
     compute_face_saliency
 )
@@ -114,6 +115,10 @@ def main_xec_regressor_with_args(
                          outer_fine_pool=outer_fine_pool,
                          drop_path_rate=drop_path_rate)
     model = XECMultiHeadModel(base_regressor, active_tasks=active_tasks).to(device)
+    total_params, trainable_params = count_model_params(model)
+    print("[INFO] Regressor created:")
+    print(f"  - Total params: {total_params:,}")
+    print(f"  - Trainable params: {trainable_params:,}")
     model = torch.compile(model, mode="max-autotune", fullgraph=True, dynamic=False)
     # --------------------
 
@@ -251,6 +256,8 @@ def main_xec_regressor_with_args(
                 "amp": amp,
                 "outer_mode": outer_mode,
                 "outer_fine_pool": str(outer_fine_pool),
+                "total_params": total_params,
+                "trainable_params": trainable_params,
                 "reweight_mode": reweight_mode,
                 "nbins_theta": nbins_theta,
                 "nbins_phi": nbins_phi,
@@ -675,6 +682,10 @@ def train_with_config(config_path: str):
         active_tasks=active_tasks,
         hidden_dim=cfg.model.hidden_dim
     ).to(device)
+    total_params, trainable_params = count_model_params(model)
+    print("[INFO] Regressor created:")
+    print(f"  - Total params: {total_params:,}")
+    print(f"  - Trainable params: {trainable_params:,}")
     model = torch.compile(model, mode="max-autotune", fullgraph=True, dynamic=False)
 
     # --- Optimizer ---
@@ -807,6 +818,8 @@ def train_with_config(config_path: str):
                 "lr": cfg.training.lr,
                 "epochs": cfg.training.epochs,
                 "outer_mode": cfg.model.outer_mode,
+                "total_params": total_params,
+                "trainable_params": trainable_params,
                 "loss_balance": cfg.loss_balance,
             })
 
