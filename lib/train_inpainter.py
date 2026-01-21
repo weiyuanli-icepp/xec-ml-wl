@@ -486,11 +486,13 @@ Examples:
 
             # System metrics
             if device.type == "cuda":
-                gpu_stats = get_gpu_memory_stats()
-                mlflow.log_metrics({
-                    "system/gpu_allocated_GB": gpu_stats["allocated_gb"],
-                    "system/gpu_reserved_GB": gpu_stats["reserved_gb"],
-                }, step=epoch)
+                gpu_stats = get_gpu_memory_stats(device)
+                if gpu_stats:
+                    mlflow.log_metrics({
+                        "system/gpu_allocated_GB": gpu_stats["allocated"] / 1e9,
+                        "system/gpu_reserved_GB": gpu_stats["reserved"] / 1e9,
+                        "system/gpu_peak_GB": gpu_stats["peak"] / 1e9,
+                    }, step=epoch)
 
             try:
                 ram = psutil.virtual_memory()
