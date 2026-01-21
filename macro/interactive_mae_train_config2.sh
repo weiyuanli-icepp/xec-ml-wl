@@ -30,7 +30,7 @@ export MLFLOW_TRACKING_URI="sqlite:///mlruns.db"
 
 # Configuration
 export RUN_NAME="mae_mask0.65"
-export EPOCHS=2
+export EPOCHS=50
 export LOSS_FN="smooth_l1"
 # export TIME_SCALE="5e-5"
 # export TIME_SHIFT="0.0065"
