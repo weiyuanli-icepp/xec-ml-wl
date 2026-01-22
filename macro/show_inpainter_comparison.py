@@ -112,9 +112,16 @@ Examples:
             print(f"Error: Event index {args.event_idx} out of bounds (max {n_entries - 1})")
             sys.exit(1)
 
-        # Load single event
+        # Load single event with input data and truth info
+        input_branches = [args.npho_branch, args.time_branch]
+        truth_branches = ["energyTruth", "xyzVTX", "emiAng"]
+
+        # Check which truth branches exist
+        available_keys = tree.keys()
+        truth_branches = [b for b in truth_branches if b in available_keys]
+
         arrays = tree.arrays(
-            [args.npho_branch, args.time_branch],
+            input_branches + truth_branches,
             library="np",
             entry_start=args.event_idx,
             entry_stop=args.event_idx + 1
@@ -122,6 +129,18 @@ Examples:
 
         raw_npho = arrays[args.npho_branch][0].astype("float32")
         raw_time = arrays[args.time_branch][0].astype("float32")
+
+        # Extract truth info for display
+        event_info = {}
+        if "energyTruth" in arrays:
+            event_info["energy"] = float(arrays["energyTruth"][0])
+        if "xyzVTX" in arrays:
+            xyz = arrays["xyzVTX"][0]
+            event_info["xyz"] = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
+        if "emiAng" in arrays:
+            ang = arrays["emiAng"][0]
+            event_info["theta"] = float(ang[0])
+            event_info["phi"] = float(ang[1])
 
     # Normalize
     npho_norm, time_norm = normalize_input(
@@ -181,7 +200,18 @@ Examples:
     x_pred[sensor_ids, 1] = pred_time
 
     # --- Plot ---
-    title = f"Inpainter - Event {args.event_idx} ({n_masked} masked)"
+    # Build title with event features
+    title_parts = [f"Inpainter - Event {args.event_idx}"]
+
+    if "energy" in event_info:
+        title_parts.append(f"E={event_info['energy']:.1f} MeV")
+    if "xyz" in event_info:
+        x, y, z = event_info["xyz"]
+        title_parts.append(f"VTX=({x:.0f}, {y:.0f}, {z:.0f})")
+    if "theta" in event_info and "phi" in event_info:
+        title_parts.append(f"θ={event_info['theta']:.2f}, φ={event_info['phi']:.2f}")
+
+    title = " | ".join(title_parts)
 
     savepath = args.save
     if savepath and "." not in os.path.basename(savepath):
