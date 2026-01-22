@@ -439,6 +439,7 @@ class InpainterTrainingConfig:
     time_weight: float = 1.0
     grad_clip: float = 1.0
     amp: bool = True
+    track_mae_rmse: bool = True
 
 
 @dataclass

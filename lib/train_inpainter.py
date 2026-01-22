@@ -228,7 +228,7 @@ Examples:
         npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight
         time_weight = args.time_weight if args.time_weight is not None else cfg.training.time_weight
         grad_clip = args.grad_clip if args.grad_clip is not None else cfg.training.grad_clip
-        track_mae_rmse = not bool(args.disable_mae_rmse_metrics) if args.disable_mae_rmse_metrics is not None else True
+        track_mae_rmse = not bool(args.disable_mae_rmse_metrics) if args.disable_mae_rmse_metrics is not None else getattr(cfg.training, "track_mae_rmse", True)
 
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
