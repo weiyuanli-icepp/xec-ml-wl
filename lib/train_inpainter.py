@@ -180,6 +180,7 @@ Examples:
     parser.add_argument("--time_weight", type=float, default=None)
     parser.add_argument("--grad_clip", type=float, default=None)
     parser.add_argument("--disable_mae_rmse_metrics", action="store_true", help="Skip MAE/RMSE metric computation for speed")
+    parser.add_argument("--grad_accum_steps", type=int, default=None, help="Number of gradient accumulation steps")
 
     # MLflow
     parser.add_argument("--mlflow_experiment", type=str, default=None)
@@ -230,6 +231,7 @@ Examples:
         grad_clip = args.grad_clip if args.grad_clip is not None else cfg.training.grad_clip
         track_mae_rmse = not bool(args.disable_mae_rmse_metrics) if args.disable_mae_rmse_metrics is not None else getattr(cfg.training, "track_mae_rmse", True)
         save_root_predictions = getattr(cfg.training, "save_root_predictions", True)
+        grad_accum_steps = args.grad_accum_steps if args.grad_accum_steps is not None else getattr(cfg.training, "grad_accum_steps", 1)
 
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
@@ -275,6 +277,7 @@ Examples:
         grad_clip = args.grad_clip or 1.0
         track_mae_rmse = not bool(args.disable_mae_rmse_metrics)
         save_root_predictions = True
+        grad_accum_steps = args.grad_accum_steps or 1
 
         mlflow_experiment = args.mlflow_experiment or "inpainting"
         mlflow_run_name = args.mlflow_run_name
@@ -451,6 +454,7 @@ Examples:
                 track_mae_rmse=track_mae_rmse,
                 dataloader_workers=num_workers,
                 dataset_workers=num_threads,
+                grad_accum_steps=grad_accum_steps,
             )
 
             # Validation

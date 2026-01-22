@@ -45,6 +45,7 @@ training:
   amp: true                         # Automatic Mixed Precision
   track_mae_rmse: true              # Compute/log MAE/RMSE metrics (set false to skip)
   save_root_predictions: true       # Write ROOT outputs during validation (set false to skip)
+  grad_accum_steps: 1               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
 
 # === Checkpointing ===
 checkpoint:

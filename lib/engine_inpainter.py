@@ -325,6 +325,7 @@ def run_epoch_inpainter(
     track_mae_rmse: bool = True,
     dataloader_workers: int = 0,
     dataset_workers: int = 8,
+    grad_accum_steps: int = 1,
 ) -> Dict[str, float]:
     """
     Run one training epoch for inpainter.
@@ -359,6 +360,10 @@ def run_epoch_inpainter(
     total_randomly_masked = 0
     total_valid_sensors = 0
 
+    accum_step = 0
+    optimizer.zero_grad(set_to_none=True)
+    grad_accum_steps = max(int(grad_accum_steps), 1)
+
     for root_file in train_files:
         dataset = XECStreamingDataset(
             root_files=root_file,
@@ -389,8 +394,6 @@ def run_epoch_inpainter(
                 x_batch = batch[0]
             x_batch = x_batch.to(device, non_blocking=True)
 
-            optimizer.zero_grad(set_to_none=True)
-
             # Forward with AMP
             with torch.amp.autocast('cuda', enabled=(scaler is not None)):
                 results, original_values, mask = model(x_batch, mask_ratio=mask_ratio)
@@ -415,18 +418,25 @@ def run_epoch_inpainter(
                 )
 
             # Backward
+            loss = loss / grad_accum_steps
             if scaler is not None:
                 scaler.scale(loss).backward()
-                if grad_clip > 0:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                scaler.step(optimizer)
-                scaler.update()
+                if (accum_step + 1) % grad_accum_steps == 0:
+                    if grad_clip > 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad(set_to_none=True)
             else:
                 loss.backward()
-                if grad_clip > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                optimizer.step()
+                if (accum_step + 1) % grad_accum_steps == 0:
+                    if grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
+
+            accum_step += 1
 
             # Accumulate metrics
             for key, value in metrics.items():
@@ -434,6 +444,20 @@ def run_epoch_inpainter(
                     metric_sums[key] = 0.0
                 metric_sums[key] += value
             num_batches += 1
+
+    # Final optimizer step if grads remain
+    if (accum_step % grad_accum_steps) != 0:
+        if scaler is not None:
+            if grad_clip > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            if grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
 
     # Average metrics
     avg_metrics = {k: v / max(1, num_batches) for k, v in metric_sums.items()}
