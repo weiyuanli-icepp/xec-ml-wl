@@ -371,6 +371,9 @@ def run_epoch_inpainter(
     optimizer.zero_grad(set_to_none=True)
     grad_accum_steps = max(int(grad_accum_steps), 1)
 
+    total_loss_sum = 0.0
+    loss_batches = 0
+
     for root_file in train_files:
         dataset = XECStreamingDataset(
             root_files=root_file,
@@ -426,6 +429,9 @@ def run_epoch_inpainter(
                 )
 
             # Backward
+            total_loss_sum += loss.item()
+            loss_batches += 1
+
             loss = loss / grad_accum_steps
             if scaler is not None:
                 scaler.scale(loss).backward()
@@ -472,7 +478,10 @@ def run_epoch_inpainter(
     if track_metrics:
         avg_metrics = {k: v / max(1, num_batches) for k, v in metric_sums.items()}
     else:
-        avg_metrics = {"total_loss": 0.0}
+        avg_metrics = {}
+
+    # Always report average total_loss
+    avg_metrics["total_loss"] = total_loss_sum / max(1, loss_batches)
 
     # Actual mask ratio (randomly-masked / valid sensors)
     if total_valid_sensors > 0:
