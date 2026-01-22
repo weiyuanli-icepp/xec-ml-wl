@@ -34,19 +34,21 @@ export EPOCHS=50
 export LOSS_FN="smooth_l1"
 export NPHO_SCALE="0.58"
 export NPHO_SCALE2="11.54"
-export TIME_SCALE="6.5e-8"
-export TIME_SHIFT="0.5"
+export TIME_SCALE="1e-7"
+export TIME_SHIFT="0."
 export SENTINEL_VALUE="-1.0"
-export TIME_WEIGHT="0.05"
+export TIME_WEIGHT="1.0"
 # export AUTO_WEIGHT="false" // not implemented yet
 export MASK_RATIO="0.06"
 export LR="5e-4"
-# export SCHEDULER="cosine"
-# export LR_MIN="1e-8"
+export SCHEDULER="cosine"
+export LR_MIN="1e-6"
 
 # Paths (Point to your data files)
-export TRAIN_PATH="$HOME/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root"
-export VAL_PATH="$HOME/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root"
+# export TRAIN_PATH="$HOME/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root"
+# export VAL_PATH="$HOME/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root"
+export TRAIN_PATH="$HOME/meghome/xec-ml-wl/data/E35to55_AngUni_PosSQ/large_train.root"
+export VAL_PATH="$HOME/meghome/xec-ml-wl/data/E35to55_AngUni_PosSQ/large_val.root"
 
 # Set to empty string to train without MAE pre-training (from scratch)
 # Or set to a checkpoint path to use pre-trained MAE encoder

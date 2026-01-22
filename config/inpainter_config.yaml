@@ -11,17 +11,17 @@ data:
   chunksize: 256000
   num_workers: 1
   num_threads: 4
-  npho_branch: "relative_npho"        # Input branch for photon counts (or "npho")
+  npho_branch: "npho"        # Input branch for photon counts (or "npho")
   time_branch: "relative_time"        # Input branch for timing (or "time")
 
 # === Input Normalization ===
 # Must match MAE pretraining normalization
 normalization:
   npho_scale: 0.58
-  npho_scale2: 1.0
-  time_scale: 5e-7
-  time_shift: 0.1
-  sentinel_value: -5.0
+  npho_scale2: 11.54
+  time_scale: 1e-7
+  time_shift: 0.
+  sentinel_value: -1.0
 
 # === Model Configuration ===
 model:
@@ -46,7 +46,7 @@ training:
   grad_clip: 1.0                    # Gradient clipping (0 to disable)
   amp: true                         # Automatic Mixed Precision
   track_mae_rmse: false              # Compute/log MAE/RMSE metrics (set false to skip)
-  save_root_predictions: false       # Write ROOT outputs during validation (set false to skip)
+  save_root_predictions: true       # Write ROOT outputs during validation (set false to skip)
   grad_accum_steps: 2               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
 
 # === Checkpointing ===
