@@ -48,6 +48,7 @@ training:
   track_mae_rmse: false              # Compute/log MAE/RMSE metrics (set false to skip)
   save_root_predictions: true       # Write ROOT outputs during validation (set false to skip)
   grad_accum_steps: 2               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
+  track_train_metrics: true         # Track per-face metrics during training (set false to log only total_loss)
 
 # === Checkpointing ===
 checkpoint:

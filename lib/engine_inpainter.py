@@ -20,6 +20,7 @@ def compute_inpainting_loss(
     outer_fine: bool = False,
     outer_fine_pool: Optional[Tuple[int, int]] = None,
     track_mae_rmse: bool = True,
+    track_metrics: bool = True,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Compute inpainting loss for all faces.
@@ -284,21 +285,24 @@ def compute_inpainting_loss(
             total_sq_time += face_sq_time[face_name]
             total_count += face_count[face_name]
 
-    # Aggregate metrics (sum across faces, consistent with total_loss)
-    metrics["loss_npho"] = total_npho_loss
-    metrics["loss_time"] = total_time_loss
-    metrics["total_loss"] = total_loss.item()
+    if track_metrics:
+        # Aggregate metrics (sum across faces, consistent with total_loss)
+        metrics["loss_npho"] = total_npho_loss
+        metrics["loss_time"] = total_time_loss
+        metrics["total_loss"] = total_loss.item()
 
-    # Global MAE/RMSE
-    if track_mae_rmse:
-        tc = max(total_count, 1)
-        metrics["mae_npho"] = total_abs_npho / tc
-        metrics["mae_time"] = total_abs_time / tc
-        metrics["rmse_npho"] = (total_sq_npho / tc) ** 0.5
-        metrics["rmse_time"] = (total_sq_time / tc) ** 0.5
+        # Global MAE/RMSE
+        if track_mae_rmse:
+            tc = max(total_count, 1)
+            metrics["mae_npho"] = total_abs_npho / tc
+            metrics["mae_time"] = total_abs_time / tc
+            metrics["rmse_npho"] = (total_sq_npho / tc) ** 0.5
+            metrics["rmse_time"] = (total_sq_time / tc) ** 0.5
 
-    # Mask statistics
-    metrics["n_masked_total"] = total_count
+        # Mask statistics
+        metrics["n_masked_total"] = total_count
+    else:
+        metrics["total_loss"] = total_loss.item()
 
     return total_loss, metrics
 
@@ -328,6 +332,7 @@ def run_epoch_inpainter(
     dataloader_workers: int = 0,
     dataset_workers: int = 8,
     grad_accum_steps: int = 1,
+    track_metrics: bool = True,
 ) -> Dict[str, float]:
     """
     Run one training epoch for inpainter.
@@ -417,6 +422,7 @@ def run_epoch_inpainter(
                     outer_fine=outer_fine,
                     outer_fine_pool=outer_fine_pool,
                     track_mae_rmse=track_mae_rmse,
+                    track_metrics=track_metrics,
                 )
 
             # Backward
@@ -441,10 +447,11 @@ def run_epoch_inpainter(
             accum_step += 1
 
             # Accumulate metrics
-            for key, value in metrics.items():
-                if key not in metric_sums:
-                    metric_sums[key] = 0.0
-                metric_sums[key] += value
+            if track_metrics:
+                for key, value in metrics.items():
+                    if key not in metric_sums:
+                        metric_sums[key] = 0.0
+                    metric_sums[key] += value
             num_batches += 1
 
     # Final optimizer step if grads remain
@@ -462,7 +469,10 @@ def run_epoch_inpainter(
         optimizer.zero_grad(set_to_none=True)
 
     # Average metrics
-    avg_metrics = {k: v / max(1, num_batches) for k, v in metric_sums.items()}
+    if track_metrics:
+        avg_metrics = {k: v / max(1, num_batches) for k, v in metric_sums.items()}
+    else:
+        avg_metrics = {"total_loss": 0.0}
 
     # Actual mask ratio (randomly-masked / valid sensors)
     if total_valid_sensors > 0:

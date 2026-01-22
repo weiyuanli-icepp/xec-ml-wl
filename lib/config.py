@@ -448,6 +448,7 @@ class InpainterTrainingConfig:
     track_mae_rmse: bool = True
     save_root_predictions: bool = True
     grad_accum_steps: int = 1
+    track_train_metrics: bool = True
 
 
 @dataclass

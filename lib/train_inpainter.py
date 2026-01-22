@@ -236,6 +236,7 @@ Examples:
         track_mae_rmse = not bool(args.disable_mae_rmse_metrics) if args.disable_mae_rmse_metrics is not None else getattr(cfg.training, "track_mae_rmse", True)
         save_root_predictions = getattr(cfg.training, "save_root_predictions", True)
         grad_accum_steps = args.grad_accum_steps if args.grad_accum_steps is not None else getattr(cfg.training, "grad_accum_steps", 1)
+        track_train_metrics = getattr(cfg.training, "track_train_metrics", True)
 
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
@@ -284,6 +285,7 @@ Examples:
         track_mae_rmse = not bool(args.disable_mae_rmse_metrics)
         save_root_predictions = True
         grad_accum_steps = args.grad_accum_steps or 1
+        track_train_metrics = True
 
         mlflow_experiment = args.mlflow_experiment or "inpainting"
         mlflow_run_name = args.mlflow_run_name
@@ -461,6 +463,7 @@ Examples:
                 dataloader_workers=num_workers,
                 dataset_workers=num_threads,
                 grad_accum_steps=grad_accum_steps,
+                track_metrics=track_train_metrics,
             )
 
             # Validation
