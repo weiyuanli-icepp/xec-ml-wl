@@ -91,19 +91,28 @@ class FaceInpaintingHead(nn.Module):
             # No masked positions
             return torch.zeros(B, 0, 2, device=device), torch.zeros(B, 0, 2, dtype=torch.long, device=device)
 
-        # Gather predictions at masked positions
-        pred_masked = torch.zeros(B, max_masked, 2, device=device)
-        mask_indices = torch.zeros(B, max_masked, 2, dtype=torch.long, device=device)
-        valid_mask = torch.zeros(B, max_masked, dtype=torch.bool, device=device)
+        # Vectorized gather of predictions at masked positions
+        # Get all masked positions: (batch_idx, h_idx, w_idx)
+        batch_idx, h_idx, w_idx = mask_2d.nonzero(as_tuple=True)
 
-        for b in range(B):
-            masked_pos = mask_2d[b].nonzero(as_tuple=False)  # (num_masked, 2) - (h, w) pairs
-            n = masked_pos.shape[0]
-            if n > 0:
-                h_idx, w_idx = masked_pos[:, 0], masked_pos[:, 1]
-                pred_masked[b, :n, :] = pred_all[b, :, h_idx, w_idx].T  # (n, 2)
-                mask_indices[b, :n, :] = masked_pos
-                valid_mask[b, :n] = True
+        # Gather predictions at all masked positions
+        gathered_preds = pred_all[batch_idx, :, h_idx, w_idx]  # (total_masked, 2)
+
+        # Compute within-batch position indices for scattering
+        cumsum = torch.zeros(B + 1, device=device, dtype=torch.long)
+        cumsum[1:] = num_masked_per_sample.cumsum(0)
+        within_batch_idx = torch.arange(len(batch_idx), device=device) - cumsum[batch_idx]
+
+        # Scatter into output tensors
+        pred_masked = torch.zeros(B, max_masked, 2, device=device)
+        pred_masked[batch_idx, within_batch_idx] = gathered_preds
+
+        mask_indices = torch.zeros(B, max_masked, 2, dtype=torch.long, device=device)
+        mask_indices[batch_idx, within_batch_idx, 0] = h_idx
+        mask_indices[batch_idx, within_batch_idx, 1] = w_idx
+
+        valid_mask = torch.zeros(B, max_masked, dtype=torch.bool, device=device)
+        valid_mask[batch_idx, within_batch_idx] = True
 
         return pred_masked, mask_indices, valid_mask
 
@@ -181,17 +190,27 @@ class HexInpaintingHead(nn.Module):
         if max_masked == 0:
             return torch.zeros(B, 0, 2, device=device), torch.zeros(B, 0, dtype=torch.long, device=device), torch.zeros(B, 0, dtype=torch.bool, device=device)
 
-        pred_masked = torch.zeros(B, max_masked, 2, device=device)
-        mask_indices = torch.zeros(B, max_masked, dtype=torch.long, device=device)
-        valid_mask = torch.zeros(B, max_masked, dtype=torch.bool, device=device)
+        # Vectorized gather of predictions at masked positions
+        # Get all masked positions: (batch_idx, node_idx)
+        batch_idx, node_idx = node_mask.nonzero(as_tuple=True)
 
-        for b in range(B):
-            masked_idx = node_mask[b].nonzero(as_tuple=False).squeeze(-1)  # (num_masked,)
-            n = masked_idx.shape[0]
-            if n > 0:
-                pred_masked[b, :n, :] = pred_all[b, masked_idx, :]
-                mask_indices[b, :n] = masked_idx
-                valid_mask[b, :n] = True
+        # Gather predictions at all masked positions
+        gathered_preds = pred_all[batch_idx, node_idx]  # (total_masked, 2)
+
+        # Compute within-batch position indices for scattering
+        cumsum = torch.zeros(B + 1, device=device, dtype=torch.long)
+        cumsum[1:] = num_masked_per_sample.cumsum(0)
+        within_batch_idx = torch.arange(len(batch_idx), device=device) - cumsum[batch_idx]
+
+        # Scatter into output tensors
+        pred_masked = torch.zeros(B, max_masked, 2, device=device)
+        pred_masked[batch_idx, within_batch_idx] = gathered_preds
+
+        mask_indices = torch.zeros(B, max_masked, dtype=torch.long, device=device)
+        mask_indices[batch_idx, within_batch_idx] = node_idx
+
+        valid_mask = torch.zeros(B, max_masked, dtype=torch.bool, device=device)
+        valid_mask[batch_idx, within_batch_idx] = True
 
         return pred_masked, mask_indices, valid_mask
 
