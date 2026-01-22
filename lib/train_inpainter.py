@@ -229,6 +229,7 @@ Examples:
         time_weight = args.time_weight if args.time_weight is not None else cfg.training.time_weight
         grad_clip = args.grad_clip if args.grad_clip is not None else cfg.training.grad_clip
         track_mae_rmse = not bool(args.disable_mae_rmse_metrics) if args.disable_mae_rmse_metrics is not None else getattr(cfg.training, "track_mae_rmse", True)
+        save_root_predictions = getattr(cfg.training, "save_root_predictions", True)
 
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
@@ -273,6 +274,7 @@ Examples:
         time_weight = args.time_weight or 1.0
         grad_clip = args.grad_clip or 1.0
         track_mae_rmse = not bool(args.disable_mae_rmse_metrics)
+        save_root_predictions = True
 
         mlflow_experiment = args.mlflow_experiment or "inpainting"
         mlflow_run_name = args.mlflow_run_name
@@ -561,7 +563,7 @@ Examples:
 
             # Save ROOT predictions every 10 epochs (and at end)
             root_save_interval = 10
-            if val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs):
+            if save_root_predictions and val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs):
                 print(f"  Collecting predictions for ROOT output...")
                 with RootPredictionWriter(save_path, epoch + 1, run_id=mlflow_run_id) as writer:
                     val_metrics_with_pred, _ = run_eval_inpainter(
