@@ -34,9 +34,10 @@ export EPOCHS=2
 export LOSS_FN="smooth_l1"
 export TIME_SCALE="6.5e-8"
 export TIME_SHIFT="0.5"
+export SENTINEL_VALUE="-1.0"
 export TIME_WEIGHT="0.05"
 # export AUTO_WEIGHT="false" // not implemented yet
-export MASK_RATIO="0.65"
+export MASK_RATIO="0.06"
 export LR="2.5e-4"
 # export SCHEDULER="cosine"
 # export LR_MIN="1e-8"
@@ -76,6 +77,7 @@ CMD="python -m lib.train_inpainter \
     --loss_fn ${LOSS_FN} \
     --time_scale ${TIME_SCALE} \
     --time_shift ${TIME_SHIFT} \
+    --sentinel_value ${SENTINEL_VALUE} \
     --time_weight ${TIME_WEIGHT} \
     --mask_ratio ${MASK_RATIO} \
     --lr ${LR}"

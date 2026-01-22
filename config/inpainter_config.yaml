@@ -9,7 +9,7 @@ data:
   tree_name: "tree"
   batch_size: 1024
   chunksize: 256000
-  num_workers: 1
+  num_workers: 2
   num_threads: 4
 
 # === Input Normalization ===
