@@ -7,7 +7,7 @@ data:
   train_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root"
   val_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root"
   tree_name: "tree"
-  batch_size: 1024
+  batch_size: 256
   chunksize: 256000
   num_workers: 2
   num_threads: 4
@@ -26,7 +26,7 @@ model:
   outer_mode: "finegrid"            # Must match MAE encoder config
   outer_fine_pool: [3, 3]           # Must match MAE encoder config
   mask_ratio: 0.05                  # Realistic dead channel density (1-10%)
-  freeze_encoder: true              # Freeze encoder, train only inpainting heads
+  freeze_encoder: false              # Freeze encoder, train only inpainting heads
 
 # === Training Configuration ===
 training:
@@ -43,9 +43,9 @@ training:
   time_weight: 1.0                  # Weight for time channel loss
   grad_clip: 1.0                    # Gradient clipping (0 to disable)
   amp: true                         # Automatic Mixed Precision
-  track_mae_rmse: true              # Compute/log MAE/RMSE metrics (set false to skip)
-  save_root_predictions: true       # Write ROOT outputs during validation (set false to skip)
-  grad_accum_steps: 1               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
+  track_mae_rmse: false              # Compute/log MAE/RMSE metrics (set false to skip)
+  save_root_predictions: false       # Write ROOT outputs during validation (set false to skip)
+  grad_accum_steps: 4               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
 
 # === Checkpointing ===
 checkpoint:
