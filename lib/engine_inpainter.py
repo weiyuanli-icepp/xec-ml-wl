@@ -739,6 +739,9 @@ def run_eval_inpainter(
     else:
         avg_metrics["actual_mask_ratio"] = 0.0
 
+    if not track_mae_rmse:
+        avg_metrics = {k: v for k, v in avg_metrics.items() if not (k.startswith("mae_") or k.startswith("rmse_"))}
+
     if collect_predictions:
         return avg_metrics, all_predictions
     return avg_metrics
