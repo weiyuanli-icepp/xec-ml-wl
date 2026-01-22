@@ -30,15 +30,17 @@ export MLFLOW_TRACKING_URI="sqlite:///mlruns.db"
 
 # --- Configuration (Run-specific overrides) ---
 export RUN_NAME="inpainter_no_pretrain_test"
-export EPOCHS=2
+export EPOCHS=50
 export LOSS_FN="smooth_l1"
+export NPHO_SCALE="0.58"
+export NPHO_SCALE2="11.54"
 export TIME_SCALE="6.5e-8"
 export TIME_SHIFT="0.5"
 export SENTINEL_VALUE="-1.0"
 export TIME_WEIGHT="0.05"
 # export AUTO_WEIGHT="false" // not implemented yet
 export MASK_RATIO="0.06"
-export LR="2.5e-4"
+export LR="5e-4"
 # export SCHEDULER="cosine"
 # export LR_MIN="1e-8"
 
@@ -75,6 +77,8 @@ CMD="python -m lib.train_inpainter \
     --mlflow_run_name ${RUN_NAME} \
     --mlflow_experiment inpainter_training \
     --loss_fn ${LOSS_FN} \
+    --npho_scale ${NPHO_SCALE} \
+    --npho_scale2 ${NPHO_SCALE2} \
     --time_scale ${TIME_SCALE} \
     --time_shift ${TIME_SHIFT} \
     --sentinel_value ${SENTINEL_VALUE} \

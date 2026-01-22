@@ -1,5 +1,6 @@
 # Usage:
-# python macro/check_transform.py /path/to/data.root
+# 1. make sure to activate xec-ml-wl conda environment
+# 2. python macro/check_transform.py /path/to/data.root
 import uproot
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,13 +12,23 @@ import argparse
 #  CONFIGURATION
 # ==========================================
 # Time Scaling
-TIME_SCALE = 6.5e-8  
-TIME_SHIFT = 0.5     # Center signal at 0.0
-SENTINEL_VAL = -5.0  # Value for empty/invalid pixels
+# TIME_SCALE = 1e-6  
+# TIME_SHIFT = 0.
+# SENTINEL_VAL = -0.1
+TIME_SCALE = 1e-7
+TIME_SHIFT = 0.
+SENTINEL_VAL = -1.0
 
 # Npho Scaling
-NPHO_SCALE  = 0.58   
-NPHO_SCALE2 = 1.0    
+NPHO_SCALE  = 0.58
+# NPHO_SCALE  = 1
+# NPHO_SCALE2 = 1.0 # for relative_npho
+NPHO_SCALE2 = 11.54 # for npho
+
+# Branch Names
+# BRANCH_NPHO = "relative_npho"
+BRANCH_TIME = "relative_time"
+BRANCH_NPHO = "npho"
 # ==========================================
 
 def analyze_file(file_path):
@@ -26,10 +37,10 @@ def analyze_file(file_path):
     try:
         with uproot.open(file_path) as f:
             tree = f["tree"]
-            df = tree.arrays(["relative_npho", "relative_time"], library="np")
+            df = tree.arrays([BRANCH_NPHO, BRANCH_TIME], library="np")
         # Flatten to treat all sensors as a single distribution
-        raw_npho = df["relative_npho"].astype("float32").flatten()
-        raw_time = df["relative_time"].astype("float32").flatten()
+        raw_npho = df[BRANCH_NPHO].astype("float32").flatten()
+        raw_time = df[BRANCH_TIME].astype("float32").flatten()
     except Exception as e:
         print(f"Error: {e}"); return
 
@@ -88,20 +99,20 @@ def analyze_file(file_path):
     fig, ax = plt.subplots(1, 2, figsize=(14, 6))
     
     # --- Left: Npho ---
-    ax[0].hist(trans_npho, bins=100, color='blue', alpha=0.7, log=True)
+    ax[0].hist(trans_npho, bins=200, color='blue', alpha=0.7, log=True)
     ax[0].set_title(f"Transformed Npho\nScale={NPHO_SCALE}")
     ax[0].set_xlabel("Network Input Value")
     ax[0].set_ylabel("Count (Log Scale)")
     # No grid
     
     # --- Right: Time ---
-    ax[1].hist(trans_time, bins=100, color='red', alpha=0.7, log=True)
+    ax[1].hist(trans_time, bins=200, color='red', alpha=0.7, log=True)
     ax[1].set_title(f"Transformed Time\nSentinel={SENTINEL_VAL}, Shift={TIME_SHIFT}")
     ax[1].set_xlabel("Network Input Value")
     # No grid
     
     # visual guides
-    ax[1].axvline(SENTINEL_VAL, color='k', linestyle='-', linewidth=2, label="Invalid (-5.0)")
+    ax[1].axvline(SENTINEL_VAL, color='k', linestyle='-', linewidth=2, label=f"Invalid ({SENTINEL_VAL})")
     ax[1].axvline(0, color='k', linestyle='--', alpha=0.5, label="Signal Center (0.0)")
     ax[1].legend()
 

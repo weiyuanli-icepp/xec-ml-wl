@@ -7,9 +7,9 @@ data:
   train_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root"
   val_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root"
   tree_name: "tree"
-  batch_size: 256
+  batch_size: 512
   chunksize: 256000
-  num_workers: 2
+  num_workers: 1
   num_threads: 4
 
 # === Input Normalization ===
@@ -45,7 +45,7 @@ training:
   amp: true                         # Automatic Mixed Precision
   track_mae_rmse: false              # Compute/log MAE/RMSE metrics (set false to skip)
   save_root_predictions: false       # Write ROOT outputs during validation (set false to skip)
-  grad_accum_steps: 4               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
+  grad_accum_steps: 2               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
 
 # === Checkpointing ===
 checkpoint:
