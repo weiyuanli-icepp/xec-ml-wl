@@ -89,7 +89,10 @@ class FaceInpaintingHead(nn.Module):
 
         if max_masked == 0:
             # No masked positions
-            return torch.zeros(B, 0, 2, device=device), torch.zeros(B, 0, 2, dtype=torch.long, device=device)
+            return (
+                torch.zeros(B, 0, 2, device=device, dtype=face_tensor.dtype),
+                torch.zeros(B, 0, 2, dtype=torch.long, device=device),
+            )
 
         # Vectorized gather of predictions at masked positions
         # Get all masked positions: (batch_idx, h_idx, w_idx)
@@ -104,7 +107,7 @@ class FaceInpaintingHead(nn.Module):
         within_batch_idx = torch.arange(len(batch_idx), device=device) - cumsum[batch_idx]
 
         # Scatter into output tensors
-        pred_masked = torch.zeros(B, max_masked, 2, device=device)
+        pred_masked = torch.zeros(B, max_masked, 2, device=device, dtype=pred_all.dtype)
         pred_masked[batch_idx, within_batch_idx] = gathered_preds
 
         mask_indices = torch.zeros(B, max_masked, 2, dtype=torch.long, device=device)
@@ -188,7 +191,11 @@ class HexInpaintingHead(nn.Module):
         max_masked = num_masked_per_sample.max().item()
 
         if max_masked == 0:
-            return torch.zeros(B, 0, 2, device=device), torch.zeros(B, 0, dtype=torch.long, device=device), torch.zeros(B, 0, dtype=torch.bool, device=device)
+            return (
+                torch.zeros(B, 0, 2, device=device, dtype=node_features.dtype),
+                torch.zeros(B, 0, dtype=torch.long, device=device),
+                torch.zeros(B, 0, dtype=torch.bool, device=device),
+            )
 
         # Vectorized gather of predictions at masked positions
         # Get all masked positions: (batch_idx, node_idx)
@@ -203,7 +210,7 @@ class HexInpaintingHead(nn.Module):
         within_batch_idx = torch.arange(len(batch_idx), device=device) - cumsum[batch_idx]
 
         # Scatter into output tensors
-        pred_masked = torch.zeros(B, max_masked, 2, device=device)
+        pred_masked = torch.zeros(B, max_masked, 2, device=device, dtype=pred_all.dtype)
         pred_masked[batch_idx, within_batch_idx] = gathered_preds
 
         mask_indices = torch.zeros(B, max_masked, dtype=torch.long, device=device)
