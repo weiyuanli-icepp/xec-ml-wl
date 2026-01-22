@@ -652,6 +652,8 @@ def train_with_config(config_path: str):
         "time_shift": cfg.normalization.time_shift,
         "sentinel_value": cfg.normalization.sentinel_value,
         "step_size": cfg.data.chunksize,
+        "npho_branch": getattr(cfg.data, "npho_branch", "relative_npho"),
+        "time_branch": getattr(cfg.data, "time_branch", "relative_time"),
     }
 
     train_loader = get_dataloader(

@@ -28,6 +28,8 @@ class DataConfig:
     chunksize: int = 256000
     num_workers: int = 8
     num_threads: int = 4
+    npho_branch: str = "relative_npho"  # Input branch for photon counts
+    time_branch: str = "relative_time"  # Input branch for timing
 
 
 @dataclass
@@ -287,6 +289,8 @@ class MAEDataConfig:
     chunksize: int = 256000
     num_workers: int = 4
     num_threads: int = 4
+    npho_branch: str = "relative_npho"  # Input branch for photon counts
+    time_branch: str = "relative_time"  # Input branch for timing
 
 
 @dataclass
@@ -413,6 +417,8 @@ class InpainterDataConfig:
     chunksize: int = 256000
     num_workers: int = 4
     num_threads: int = 4
+    npho_branch: str = "relative_npho"  # Input branch for photon counts
+    time_branch: str = "relative_time"  # Input branch for timing
 
 
 @dataclass

@@ -152,6 +152,8 @@ Examples:
     parser.add_argument("--chunksize", type=int, default=None)
     parser.add_argument("--num_workers", type=int, default=None)
     parser.add_argument("--num_threads", type=int, default=None)
+    parser.add_argument("--npho_branch", type=str, default=None, help="Input branch for photon counts")
+    parser.add_argument("--time_branch", type=str, default=None, help="Input branch for timing")
 
     # Normalization
     parser.add_argument("--npho_scale", type=float, default=None)
@@ -207,6 +209,8 @@ Examples:
         chunksize = args.chunksize if args.chunksize is not None else cfg.data.chunksize
         num_workers = args.num_workers if args.num_workers is not None else cfg.data.num_workers
         num_threads = args.num_threads if args.num_threads is not None else cfg.data.num_threads
+        npho_branch = args.npho_branch or getattr(cfg.data, "npho_branch", "relative_npho")
+        time_branch = args.time_branch or getattr(cfg.data, "time_branch", "relative_time")
 
         npho_scale = float(args.npho_scale if args.npho_scale is not None else cfg.normalization.npho_scale)
         npho_scale2 = float(args.npho_scale2 if args.npho_scale2 is not None else cfg.normalization.npho_scale2)
@@ -253,6 +257,8 @@ Examples:
         chunksize = args.chunksize or 256000
         num_workers = args.num_workers or 1
         num_threads = args.num_threads or 4
+        npho_branch = args.npho_branch or "relative_npho"
+        time_branch = args.time_branch or "relative_time"
 
         npho_scale = args.npho_scale or DEFAULT_NPHO_SCALE
         npho_scale2 = args.npho_scale2 or DEFAULT_NPHO_SCALE2
@@ -439,8 +445,8 @@ Examples:
                 batch_size=batch_size,
                 step_size=chunksize,
                 mask_ratio=mask_ratio,
-                npho_branch="relative_npho",
-                time_branch="relative_time",
+                npho_branch=npho_branch,
+                time_branch=time_branch,
                 npho_scale=float(npho_scale),
                 npho_scale2=float(npho_scale2),
                 time_scale=float(time_scale),
@@ -466,8 +472,8 @@ Examples:
                     batch_size=batch_size,
                     step_size=chunksize,
                     mask_ratio=mask_ratio,
-                    npho_branch="relative_npho",
-                    time_branch="relative_time",
+                    npho_branch=npho_branch,
+                    time_branch=time_branch,
                     npho_scale=float(npho_scale),
                     npho_scale2=float(npho_scale2),
                     time_scale=float(time_scale),
@@ -576,8 +582,8 @@ Examples:
                         batch_size=batch_size,
                         step_size=chunksize,
                         mask_ratio=mask_ratio,
-                        npho_branch="relative_npho",
-                        time_branch="relative_time",
+                        npho_branch=npho_branch,
+                        time_branch=time_branch,
                         npho_scale=float(npho_scale),
                         npho_scale2=float(npho_scale2),
                         time_scale=float(time_scale),

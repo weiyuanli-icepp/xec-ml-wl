@@ -11,6 +11,8 @@ data:
   chunksize: 256000
   num_workers: 1
   num_threads: 4
+  npho_branch: "relative_npho"        # Input branch for photon counts (or "npho")
+  time_branch: "relative_time"        # Input branch for timing (or "time")
 
 # === Input Normalization ===
 # Must match MAE pretraining normalization
