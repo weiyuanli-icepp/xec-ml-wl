@@ -154,19 +154,6 @@ def compute_inpainting_loss(
             total_npho_loss += metrics[f"loss_{face_name}_npho"]
             total_time_loss += metrics[f"loss_{face_name}_time"]
 
-            # Compute MAE/RMSE for this face
-            fc = max(face_count[face_name], 1)
-            metrics[f"mae_{face_name}_npho"] = face_abs_npho[face_name] / fc
-            metrics[f"mae_{face_name}_time"] = face_abs_time[face_name] / fc
-            metrics[f"rmse_{face_name}_npho"] = (face_sq_npho[face_name] / fc) ** 0.5
-            metrics[f"rmse_{face_name}_time"] = (face_sq_time[face_name] / fc) ** 0.5
-
-            # Accumulate for global MAE/RMSE
-            total_abs_npho += face_abs_npho[face_name]
-            total_abs_time += face_abs_time[face_name]
-            total_sq_npho += face_sq_npho[face_name]
-            total_sq_time += face_sq_time[face_name]
-            total_count += face_count[face_name]
         else:
             metrics[f"loss_{face_name}"] = 0.0
             metrics[f"loss_{face_name}_npho"] = 0.0
