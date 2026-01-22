@@ -204,7 +204,8 @@ Examples:
     title_parts = [f"Inpainter - Event {args.event_idx}"]
 
     if "energy" in event_info:
-        title_parts.append(f"E={event_info['energy']:.1f} MeV")
+        energy_mev = event_info['energy'] * 1000  # Convert GeV to MeV
+        title_parts.append(f"E={energy_mev:.1f} MeV")
     if "xyz" in event_info:
         x, y, z = event_info["xyz"]
         title_parts.append(f"VTX=({x:.0f}, {y:.0f}, {z:.0f})")
