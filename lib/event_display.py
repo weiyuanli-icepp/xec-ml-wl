@@ -466,12 +466,12 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
             mask_vals = mask if row_idx == 1 else None
             for col_offset, (hex_title, row_list, mode) in enumerate(hex_specs):
                 ax = axes[row_idx, 4 + col_offset]
-                title = f"{hex_title} - {label}"
+                subplot_title = f"{hex_title} - {label}"
                 plot_hex_grid(
                     ax,
                     row_list,
                     row_vals[row_idx],
-                    title,
+                    subplot_title,
                     mode=mode,
                     cmap=row_cmaps[row_idx],
                     norm=row_norms[row_idx],
