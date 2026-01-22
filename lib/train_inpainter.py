@@ -19,7 +19,9 @@ if "MLFLOW_TRACKING_URI" not in os.environ:
     os.environ["MLFLOW_TRACKING_URI"] = "sqlite:///mlruns.db"
 
 logging.getLogger("mlflow").setLevel(logging.WARNING)
+logging.getLogger("mlflow.store.db.utils").setLevel(logging.WARNING)
 logging.getLogger("alembic").setLevel(logging.WARNING)
+logging.getLogger("alembic.runtime.migration").setLevel(logging.WARNING)
 
 import torch
 import argparse
