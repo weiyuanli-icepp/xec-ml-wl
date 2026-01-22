@@ -34,7 +34,12 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from .model import XECEncoder
 from .model_inpainter import XEC_Inpainter
-from .engine_inpainter import run_epoch_inpainter, run_eval_inpainter, save_predictions_to_root
+from .engine_inpainter import (
+    run_epoch_inpainter,
+    run_eval_inpainter,
+    save_predictions_to_root,
+    RootPredictionWriter,
+)
 from .utils import get_gpu_memory_stats
 from .geom_defs import (
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
@@ -547,27 +552,27 @@ Examples:
             root_save_interval = 10
             if val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs):
                 print(f"  Collecting predictions for ROOT output...")
-                val_metrics_with_pred, predictions = run_eval_inpainter(
-                    model, device,
-                    val_files, "tree",
-                    batch_size=batch_size,
-                    step_size=chunksize,
-                    mask_ratio=mask_ratio,
-                    npho_branch="relative_npho",
-                    time_branch="relative_time",
-                    npho_scale=float(npho_scale),
-                    npho_scale2=float(npho_scale2),
-                    time_scale=float(time_scale),
-                    time_shift=float(time_shift),
-                    sentinel_value=float(sentinel_value),
-                    loss_fn=loss_fn,
-                    npho_weight=npho_weight,
-                    time_weight=time_weight,
-                    collect_predictions=True,
-                )
-                root_path = save_predictions_to_root(
-                    predictions, save_path, epoch + 1, run_id=mlflow_run_id
-                )
+                with RootPredictionWriter(save_path, epoch + 1, run_id=mlflow_run_id) as writer:
+                    val_metrics_with_pred, _ = run_eval_inpainter(
+                        model, device,
+                        val_files, "tree",
+                        batch_size=batch_size,
+                        step_size=chunksize,
+                        mask_ratio=mask_ratio,
+                        npho_branch="relative_npho",
+                        time_branch="relative_time",
+                        npho_scale=float(npho_scale),
+                        npho_scale2=float(npho_scale2),
+                        time_scale=float(time_scale),
+                        time_shift=float(time_shift),
+                        sentinel_value=float(sentinel_value),
+                        loss_fn=loss_fn,
+                        npho_weight=npho_weight,
+                        time_weight=time_weight,
+                        collect_predictions=True,
+                        prediction_writer=writer.write,
+                    )
+                root_path = writer.filepath if writer.count > 0 else None
                 if root_path:
                     print(f"  Saved predictions to {root_path}")
                     mlflow.log_artifact(root_path)

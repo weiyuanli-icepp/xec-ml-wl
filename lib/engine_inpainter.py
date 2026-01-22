@@ -5,7 +5,7 @@ Training and evaluation engine for dead channel inpainting.
 import torch
 import torch.nn.functional as F
 import numpy as np
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List, Callable
 from .dataset import XECStreamingDataset
 
 
@@ -454,12 +454,14 @@ def run_eval_inpainter(
     npho_weight: float = 1.0,
     time_weight: float = 1.0,
     collect_predictions: bool = False,
+    prediction_writer: Optional[Callable[[List[Dict]], None]] = None,
 ) -> Dict[str, float]:
     """
     Run evaluation for inpainter.
 
     Args:
         collect_predictions: If True, collect per-sensor predictions for ROOT output
+        prediction_writer: optional callable to stream predictions per batch (avoids keeping everything in memory)
 
     Returns:
         metrics: dict of averaged metrics
@@ -500,7 +502,7 @@ def run_eval_inpainter(
     total_valid_sensors = 0
 
     # For collecting predictions (per-sensor level)
-    all_predictions = [] if collect_predictions else None
+    all_predictions = [] if (collect_predictions and prediction_writer is None) else None
 
     with torch.no_grad():
         for root_file in val_files:
@@ -526,6 +528,9 @@ def run_eval_inpainter(
             )
 
             for batch in loader:
+                batch_predictions = [] if collect_predictions else None
+                event_base = num_batches * batch_size
+
                 if isinstance(batch, dict):
                     x_batch = batch["x"]
                 else:
@@ -556,13 +561,11 @@ def run_eval_inpainter(
                     if key not in metric_sums:
                         metric_sums[key] = 0.0
                     metric_sums[key] += value
-                num_batches += 1
 
                 # Collect predictions at sensor level
                 if collect_predictions:
                     B = x_batch.shape[0]
                     original_np = original_values.cpu().numpy()
-                    mask_np = mask.cpu().numpy()
                     outer_target_np = None
                     outer_grid_w = None
                     if outer_fine and "outer" in results:
@@ -596,8 +599,8 @@ def run_eval_inpainter(
 
                                 for i in range(n_valid):
                                     sensor_id = int(flat_idx[i])
-                                    all_predictions.append({
-                                        "event_idx": num_batches * batch_size + b,
+                                    batch_predictions.append({
+                                        "event_idx": event_base + b,
                                         "sensor_id": sensor_id,
                                         "face": face_name,
                                         "truth_npho": float(original_np[b, sensor_id, 0]),
@@ -622,8 +625,8 @@ def run_eval_inpainter(
                                     truth_vals = outer_target_np[b, h_idx, w_idx]
                                     for i in range(n_valid):
                                         sensor_id = int(h_idx[i] * outer_grid_w + w_idx[i])
-                                        all_predictions.append({
-                                            "event_idx": num_batches * batch_size + b,
+                                        batch_predictions.append({
+                                            "event_idx": event_base + b,
                                             "sensor_id": sensor_id,
                                             "face": face_name,
                                             "truth_npho": float(truth_vals[i, 0]),
@@ -638,8 +641,8 @@ def run_eval_inpainter(
 
                                 for i in range(n_valid):
                                     sensor_id = int(flat_idx[i])
-                                    all_predictions.append({
-                                        "event_idx": num_batches * batch_size + b,
+                                    batch_predictions.append({
+                                        "event_idx": event_base + b,
                                         "sensor_id": sensor_id,
                                         "face": face_name,
                                         "truth_npho": float(original_np[b, sensor_id, 0]),
@@ -647,6 +650,14 @@ def run_eval_inpainter(
                                         "pred_npho": float(pred[b, i, 0]),
                                         "pred_time": float(pred[b, i, 1]),
                                     })
+
+                if collect_predictions:
+                    if prediction_writer is not None:
+                        prediction_writer(batch_predictions)
+                    else:
+                        all_predictions.extend(batch_predictions)
+
+                num_batches += 1
 
     avg_metrics = {k: v / max(1, num_batches) for k, v in metric_sums.items()}
 
@@ -659,6 +670,88 @@ def run_eval_inpainter(
     if collect_predictions:
         return avg_metrics, all_predictions
     return avg_metrics
+
+
+class RootPredictionWriter:
+    """
+    Streaming writer that appends prediction batches to a ROOT TTree.
+    """
+
+    def __init__(self, save_path: str, epoch: int, run_id: str = None, tree_name: str = "tree"):
+        import os
+        import uproot
+
+        os.makedirs(save_path, exist_ok=True)
+
+        self.filename = f"inpainter_predictions_epoch_{epoch}.root"
+        self.filepath = os.path.join(save_path, self.filename)
+        self.run_id = run_id
+        self._file = uproot.recreate(self.filepath)
+        branch_types = {
+            "event_idx": np.int32,
+            "sensor_id": np.int32,
+            "face": np.int32,
+            "truth_npho": np.float32,
+            "truth_time": np.float32,
+            "pred_npho": np.float32,
+            "pred_time": np.float32,
+            "error_npho": np.float32,
+            "error_time": np.float32,
+        }
+        if self.run_id is not None:
+            branch_types["run_id"] = str
+        self._tree = self._file.mktree(tree_name, branch_types)
+        self.count = 0
+
+    def write(self, predictions: List[Dict]):
+        if not predictions:
+            return
+
+        n = len(predictions)
+        self.count += n
+
+        event_idx = np.array([p["event_idx"] for p in predictions], dtype=np.int32)
+        sensor_id = np.array([p["sensor_id"] for p in predictions], dtype=np.int32)
+
+        face_map = {"inner": 0, "us": 1, "ds": 2, "outer": 3, "top": 4, "bot": 5}
+        face = np.array([face_map.get(p["face"], -1) for p in predictions], dtype=np.int32)
+
+        truth_npho = np.array([p["truth_npho"] for p in predictions], dtype=np.float32)
+        truth_time = np.array([p["truth_time"] for p in predictions], dtype=np.float32)
+        pred_npho = np.array([p["pred_npho"] for p in predictions], dtype=np.float32)
+        pred_time = np.array([p["pred_time"] for p in predictions], dtype=np.float32)
+
+        error_npho = pred_npho - truth_npho
+        error_time = pred_time - truth_time
+
+        branches = {
+            "event_idx": event_idx,
+            "sensor_id": sensor_id,
+            "face": face,
+            "truth_npho": truth_npho,
+            "truth_time": truth_time,
+            "pred_npho": pred_npho,
+            "pred_time": pred_time,
+            "error_npho": error_npho,
+            "error_time": error_time,
+        }
+
+        if self.run_id is not None:
+            branches["run_id"] = np.full(n, self.run_id, dtype=object)
+
+        self._tree.extend(branches)
+
+    def close(self):
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+            self._tree = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
 
 
 def save_predictions_to_root(predictions: List[Dict], save_path: str, epoch: int, run_id: str = None):
@@ -674,53 +767,11 @@ def save_predictions_to_root(predictions: List[Dict], save_path: str, epoch: int
     Returns:
         path to saved ROOT file
     """
-    import os
-    import uproot
-
     if not predictions:
         return None
 
-    os.makedirs(save_path, exist_ok=True)
-
-    # Convert to arrays
-    n = len(predictions)
-    event_idx = np.array([p["event_idx"] for p in predictions], dtype=np.int32)
-    sensor_id = np.array([p["sensor_id"] for p in predictions], dtype=np.int32)
-
-    # Map face names to integers
-    face_map = {"inner": 0, "us": 1, "ds": 2, "outer": 3, "top": 4, "bot": 5}
-    face = np.array([face_map.get(p["face"], -1) for p in predictions], dtype=np.int32)
-
-    truth_npho = np.array([p["truth_npho"] for p in predictions], dtype=np.float32)
-    truth_time = np.array([p["truth_time"] for p in predictions], dtype=np.float32)
-    pred_npho = np.array([p["pred_npho"] for p in predictions], dtype=np.float32)
-    pred_time = np.array([p["pred_time"] for p in predictions], dtype=np.float32)
-
-    # Compute errors
-    error_npho = pred_npho - truth_npho
-    error_time = pred_time - truth_time
-
-    # Build output dict
-    branches = {
-        "event_idx": event_idx,
-        "sensor_id": sensor_id,
-        "face": face,
-        "truth_npho": truth_npho,
-        "truth_time": truth_time,
-        "pred_npho": pred_npho,
-        "pred_time": pred_time,
-        "error_npho": error_npho,
-        "error_time": error_time,
-    }
-
-    if run_id:
-        branches["run_id"] = np.array([run_id] * n)
-
-    # Write to ROOT file
-    filename = f"inpainter_predictions_epoch_{epoch}.root"
-    filepath = os.path.join(save_path, filename)
-
-    with uproot.recreate(filepath) as f:
-        f["tree"] = branches
-
-    return filepath
+    with RootPredictionWriter(save_path, epoch, run_id=run_id) as writer:
+        writer.write(predictions)
+        if writer.count == 0:
+            return None
+        return writer.filepath
