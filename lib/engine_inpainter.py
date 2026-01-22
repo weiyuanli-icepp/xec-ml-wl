@@ -624,7 +624,10 @@ def run_eval_inpainter(
                         outer_fine=outer_fine,
                         outer_fine_pool=outer_fine_pool,
                         track_mae_rmse=track_mae_rmse,
+                        track_metrics=True,
                     )
+                    if not track_mae_rmse:
+                        metrics = {k: v for k, v in metrics.items() if not (k.startswith("mae_") or k.startswith("rmse_"))}
 
                 for key, value in metrics.items():
                     if key not in metric_sums:
