@@ -177,6 +177,7 @@ Examples:
     parser.add_argument("--npho_weight", type=float, default=None)
     parser.add_argument("--time_weight", type=float, default=None)
     parser.add_argument("--grad_clip", type=float, default=None)
+    parser.add_argument("--disable_mae_rmse_metrics", action="store_true", help="Skip MAE/RMSE metric computation for speed")
 
     # MLflow
     parser.add_argument("--mlflow_experiment", type=str, default=None)
@@ -225,6 +226,7 @@ Examples:
         npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight
         time_weight = args.time_weight if args.time_weight is not None else cfg.training.time_weight
         grad_clip = args.grad_clip if args.grad_clip is not None else cfg.training.grad_clip
+        track_mae_rmse = not bool(args.disable_mae_rmse_metrics) if args.disable_mae_rmse_metrics is not None else True
 
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
@@ -268,6 +270,7 @@ Examples:
         npho_weight = args.npho_weight or 1.0
         time_weight = args.time_weight or 1.0
         grad_clip = args.grad_clip or 1.0
+        track_mae_rmse = not bool(args.disable_mae_rmse_metrics)
 
         mlflow_experiment = args.mlflow_experiment or "inpainting"
         mlflow_run_name = args.mlflow_run_name
@@ -441,6 +444,7 @@ Examples:
                 time_weight=time_weight,
                 grad_clip=grad_clip,
                 scaler=scaler,
+                track_mae_rmse=track_mae_rmse,
             )
 
             # Validation
@@ -462,6 +466,7 @@ Examples:
                     loss_fn=loss_fn,
                     npho_weight=npho_weight,
                     time_weight=time_weight,
+                    track_mae_rmse=track_mae_rmse,
                 )
 
             dt = time.time() - t0
@@ -571,6 +576,7 @@ Examples:
                         time_weight=time_weight,
                         collect_predictions=True,
                         prediction_writer=writer.write,
+                        track_mae_rmse=track_mae_rmse,
                     )
                 root_path = writer.filepath if writer.count > 0 else None
                 if root_path:
