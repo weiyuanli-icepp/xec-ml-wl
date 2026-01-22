@@ -5,6 +5,7 @@
 #     --channel npho --save outputs/inpainter_event_0.pdf
 #
 # Note: event_idx in predictions file corresponds to entry index in original file
+# Note: Outer face predictions are excluded when using finegrid mode (sensor_id is grid index, not flat index)
 
 import sys
 import os
@@ -161,28 +162,67 @@ Examples:
     with uproot.open(args.predictions) as f:
         pred_tree = f["tree"]
 
-        # Load all predictions for this event
+        # Load all predictions for this event (including face and truth for validation)
         all_arrays = pred_tree.arrays(
-            ["event_idx", "sensor_id", "pred_npho", "pred_time"],
+            ["event_idx", "sensor_id", "face", "pred_npho", "pred_time", "truth_npho", "truth_time"],
             library="np"
         )
 
         # Filter for this event
         event_mask = all_arrays["event_idx"] == args.event_idx
-        n_masked = event_mask.sum()
+        n_total_masked = event_mask.sum()
 
-        if n_masked == 0:
+        if n_total_masked == 0:
             print(f"Warning: No predictions found for event_idx={args.event_idx}")
             print("This could mean:")
             print("  - The event index doesn't exist in predictions file")
             print("  - No sensors were masked for this event")
             sys.exit(1)
 
-        sensor_ids = all_arrays["sensor_id"][event_mask]
-        pred_npho = all_arrays["pred_npho"][event_mask]
-        pred_time = all_arrays["pred_time"][event_mask]
+        # Face map: 0=inner, 1=us, 2=ds, 3=outer, 4=top, 5=bot
+        # For outer face in finegrid mode, sensor_id is a grid index (h*W + w), NOT a flat sensor index
+        # This causes collision with actual sensor indices from other faces (e.g., inner starts at 0)
+        # We must exclude face=3 (outer) predictions to avoid corrupting the visualization
+        face_ids = all_arrays["face"][event_mask]
 
-    print(f"Event {args.event_idx}: {n_masked} masked sensors ({100*n_masked/num_sensors:.1f}%)")
+        # Check if outer face predictions exist (face=3)
+        n_outer = (face_ids == 3).sum()
+        if n_outer > 0:
+            print(f"  Note: Excluding {n_outer} outer face predictions (finegrid mode uses grid indices)")
+
+        # Filter to only include faces with valid flat sensor indices (exclude outer=3)
+        valid_face_mask = face_ids != 3
+        sensor_ids = all_arrays["sensor_id"][event_mask][valid_face_mask]
+        pred_npho = all_arrays["pred_npho"][event_mask][valid_face_mask]
+        pred_time = all_arrays["pred_time"][event_mask][valid_face_mask]
+        truth_npho_pred = all_arrays["truth_npho"][event_mask][valid_face_mask]
+        truth_time_pred = all_arrays["truth_time"][event_mask][valid_face_mask]
+
+        n_masked = len(sensor_ids)
+
+        # Validate sensor_ids are in valid range
+        invalid_ids = (sensor_ids < 0) | (sensor_ids >= num_sensors)
+        if invalid_ids.any():
+            print(f"  Warning: {invalid_ids.sum()} sensor_ids out of range [0, {num_sensors})")
+            # Filter out invalid indices
+            valid_idx_mask = ~invalid_ids
+            sensor_ids = sensor_ids[valid_idx_mask]
+            pred_npho = pred_npho[valid_idx_mask]
+            pred_time = pred_time[valid_idx_mask]
+            truth_npho_pred = truth_npho_pred[valid_idx_mask]
+            truth_time_pred = truth_time_pred[valid_idx_mask]
+            n_masked = len(sensor_ids)
+
+    print(f"Event {args.event_idx}: {n_masked} valid masked sensors ({100*n_masked/num_sensors:.1f}%)")
+
+    # Validate normalization consistency between original file and predictions file
+    truth_from_original = x_truth[sensor_ids]
+    npho_diff = np.abs(truth_from_original[:, 0] - truth_npho_pred).mean()
+    time_diff = np.abs(truth_from_original[:, 1] - truth_time_pred).mean()
+    if npho_diff > 0.01 or time_diff > 0.01:
+        print(f"  Warning: Normalization mismatch detected!")
+        print(f"    npho diff: {npho_diff:.4f}, time diff: {time_diff:.4f}")
+        print(f"    This may indicate different normalization parameters were used.")
 
     # --- Reconstruct mask, x_masked, x_pred ---
     # mask: 1 where masked, 0 where visible
