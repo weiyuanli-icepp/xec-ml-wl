@@ -152,24 +152,27 @@ def compute_inpainting_loss(
             face_loss = npho_weight * avg_npho + time_weight * avg_time
             total_loss = total_loss + face_loss
 
-            metrics[f"loss_{face_name}"] = face_loss.item()
-            metrics[f"loss_{face_name}_npho"] = (npho_weight * avg_npho).item()
-            metrics[f"loss_{face_name}_time"] = (time_weight * avg_time).item()
+            if track_metrics:
+                metrics[f"loss_{face_name}"] = face_loss.item()
+                metrics[f"loss_{face_name}_npho"] = (npho_weight * avg_npho).item()
+                metrics[f"loss_{face_name}_time"] = (time_weight * avg_time).item()
 
-            total_npho_loss += metrics[f"loss_{face_name}_npho"]
-            total_time_loss += metrics[f"loss_{face_name}_time"]
+                total_npho_loss += metrics[f"loss_{face_name}_npho"]
+                total_time_loss += metrics[f"loss_{face_name}_time"]
 
         else:
-            metrics[f"loss_{face_name}"] = 0.0
-            metrics[f"loss_{face_name}_npho"] = 0.0
-            metrics[f"loss_{face_name}_time"] = 0.0
-            metrics[f"mae_{face_name}_npho"] = 0.0
-            metrics[f"mae_{face_name}_time"] = 0.0
-            metrics[f"rmse_{face_name}_npho"] = 0.0
-            metrics[f"rmse_{face_name}_time"] = 0.0
+            if track_metrics:
+                metrics[f"loss_{face_name}"] = 0.0
+                metrics[f"loss_{face_name}_npho"] = 0.0
+                metrics[f"loss_{face_name}_time"] = 0.0
+                if track_mae_rmse:
+                    metrics[f"mae_{face_name}_npho"] = 0.0
+                    metrics[f"mae_{face_name}_time"] = 0.0
+                    metrics[f"rmse_{face_name}_npho"] = 0.0
+                    metrics[f"rmse_{face_name}_time"] = 0.0
             continue
 
-        if track_mae_rmse:
+        if track_mae_rmse and track_metrics:
             # Accumulate raw errors for MAE/RMSE
             diff = pr_all - gt_all
             diff_npho = diff[:, 0]
@@ -211,13 +214,15 @@ def compute_inpainting_loss(
         valid = face_result["valid"]  # (B, max_masked)
 
         if not valid.any():
-            metrics[f"loss_{face_name}"] = 0.0
-            metrics[f"loss_{face_name}_npho"] = 0.0
-            metrics[f"loss_{face_name}_time"] = 0.0
-            metrics[f"mae_{face_name}_npho"] = 0.0
-            metrics[f"mae_{face_name}_time"] = 0.0
-            metrics[f"rmse_{face_name}_npho"] = 0.0
-            metrics[f"rmse_{face_name}_time"] = 0.0
+            if track_metrics:
+                metrics[f"loss_{face_name}"] = 0.0
+                metrics[f"loss_{face_name}_npho"] = 0.0
+                metrics[f"loss_{face_name}_time"] = 0.0
+                if track_mae_rmse:
+                    metrics[f"mae_{face_name}_npho"] = 0.0
+                    metrics[f"mae_{face_name}_time"] = 0.0
+                    metrics[f"rmse_{face_name}_npho"] = 0.0
+                    metrics[f"rmse_{face_name}_time"] = 0.0
             continue
 
         # Gather all valid positions across the batch
@@ -247,14 +252,15 @@ def compute_inpainting_loss(
             face_loss = npho_weight * avg_npho + time_weight * avg_time
             total_loss = total_loss + face_loss
 
-            metrics[f"loss_{face_name}"] = face_loss.item()
-            metrics[f"loss_{face_name}_npho"] = (npho_weight * avg_npho).item()
-            metrics[f"loss_{face_name}_time"] = (time_weight * avg_time).item()
+            if track_metrics:
+                metrics[f"loss_{face_name}"] = face_loss.item()
+                metrics[f"loss_{face_name}_npho"] = (npho_weight * avg_npho).item()
+                metrics[f"loss_{face_name}_time"] = (time_weight * avg_time).item()
 
-            total_npho_loss += metrics[f"loss_{face_name}_npho"]
-            total_time_loss += metrics[f"loss_{face_name}_time"]
+                total_npho_loss += metrics[f"loss_{face_name}_npho"]
+                total_time_loss += metrics[f"loss_{face_name}_time"]
 
-        if track_mae_rmse:
+        if track_mae_rmse and track_metrics:
             # Accumulate raw errors for MAE/RMSE
             diff = pr_all - gt_all
             diff_npho = diff[:, 0]
@@ -271,7 +277,8 @@ def compute_inpainting_loss(
             face_sq_time[face_name] = sq_time_sum.sum().item()
             face_count[face_name] = counts_per_batch.sum().item()
 
-            # Compute MAE/RMSE for this face
+        # Compute MAE/RMSE for this face
+        if track_mae_rmse and track_metrics:
             fc = max(face_count[face_name], 1)
             metrics[f"mae_{face_name}_npho"] = face_abs_npho[face_name] / fc
             metrics[f"mae_{face_name}_time"] = face_abs_time[face_name] / fc
