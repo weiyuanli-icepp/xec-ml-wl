@@ -445,6 +445,8 @@ Examples:
                 grad_clip=grad_clip,
                 scaler=scaler,
                 track_mae_rmse=track_mae_rmse,
+                dataloader_workers=num_workers,
+                dataset_workers=num_threads,
             )
 
             # Validation
@@ -467,6 +469,8 @@ Examples:
                     npho_weight=npho_weight,
                     time_weight=time_weight,
                     track_mae_rmse=track_mae_rmse,
+                    dataloader_workers=num_workers,
+                    dataset_workers=num_threads,
                 )
 
             dt = time.time() - t0
@@ -572,12 +576,14 @@ Examples:
                         time_shift=float(time_shift),
                         sentinel_value=float(sentinel_value),
                         loss_fn=loss_fn,
-                        npho_weight=npho_weight,
-                        time_weight=time_weight,
-                        collect_predictions=True,
-                        prediction_writer=writer.write,
-                        track_mae_rmse=track_mae_rmse,
-                    )
+                    npho_weight=npho_weight,
+                    time_weight=time_weight,
+                    collect_predictions=True,
+                    prediction_writer=writer.write,
+                    track_mae_rmse=track_mae_rmse,
+                    dataloader_workers=num_workers,
+                    dataset_workers=num_threads,
+                )
                 root_path = writer.filepath if writer.count > 0 else None
                 if root_path:
                     print(f"  Saved predictions to {root_path}")

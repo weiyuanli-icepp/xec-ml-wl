@@ -323,6 +323,8 @@ def run_epoch_inpainter(
     grad_clip: float = 1.0,
     scaler: Optional[torch.amp.GradScaler] = None,
     track_mae_rmse: bool = True,
+    dataloader_workers: int = 0,
+    dataset_workers: int = 8,
 ) -> Dict[str, float]:
     """
     Run one training epoch for inpainter.
@@ -369,13 +371,14 @@ def run_epoch_inpainter(
             time_scale=time_scale,
             time_shift=time_shift,
             sentinel_value=sentinel_value,
+            num_workers=dataset_workers,
         )
 
         loader = torch.utils.data.DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=False,  # Streaming, shuffle within chunks handled by dataset
-            num_workers=0,
+            num_workers=dataloader_workers,
             pin_memory=True,
         )
 
@@ -465,6 +468,8 @@ def run_eval_inpainter(
     collect_predictions: bool = False,
     prediction_writer: Optional[Callable[[List[Dict]], None]] = None,
     track_mae_rmse: bool = True,
+    dataloader_workers: int = 0,
+    dataset_workers: int = 8,
 ) -> Dict[str, float]:
     """
     Run evaluation for inpainter.
@@ -527,13 +532,14 @@ def run_eval_inpainter(
                 time_scale=time_scale,
                 time_shift=time_shift,
                 sentinel_value=sentinel_value,
+                num_workers=dataset_workers,
             )
 
             loader = torch.utils.data.DataLoader(
                 dataset,
                 batch_size=batch_size,
                 shuffle=False,
-                num_workers=0,
+                num_workers=dataloader_workers,
                 pin_memory=True,
             )
 
