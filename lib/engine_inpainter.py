@@ -94,10 +94,11 @@ def compute_inpainting_loss(
             metrics[f"loss_{face_name}"] = 0.0
             metrics[f"loss_{face_name}_npho"] = 0.0
             metrics[f"loss_{face_name}_time"] = 0.0
-            metrics[f"mae_{face_name}_npho"] = 0.0
-            metrics[f"mae_{face_name}_time"] = 0.0
-            metrics[f"rmse_{face_name}_npho"] = 0.0
-            metrics[f"rmse_{face_name}_time"] = 0.0
+            if track_mae_rmse:
+                metrics[f"mae_{face_name}_npho"] = 0.0
+                metrics[f"mae_{face_name}_time"] = 0.0
+                metrics[f"rmse_{face_name}_npho"] = 0.0
+                metrics[f"rmse_{face_name}_time"] = 0.0
             continue
 
         # Get ground truth at masked positions
@@ -109,10 +110,11 @@ def compute_inpainting_loss(
             metrics[f"loss_{face_name}"] = 0.0
             metrics[f"loss_{face_name}_npho"] = 0.0
             metrics[f"loss_{face_name}_time"] = 0.0
-            metrics[f"mae_{face_name}_npho"] = 0.0
-            metrics[f"mae_{face_name}_time"] = 0.0
-            metrics[f"rmse_{face_name}_npho"] = 0.0
-            metrics[f"rmse_{face_name}_time"] = 0.0
+            if track_mae_rmse:
+                metrics[f"mae_{face_name}_npho"] = 0.0
+                metrics[f"mae_{face_name}_time"] = 0.0
+                metrics[f"rmse_{face_name}_npho"] = 0.0
+                metrics[f"rmse_{face_name}_time"] = 0.0
             continue
 
         # Gather all valid positions across the batch
