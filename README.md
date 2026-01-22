@@ -1526,3 +1526,50 @@ np.random.seed(42)
 random.seed(42)
 torch.backends.cudnn.deterministic = True
 ```
+
+### FAQ
+
+**Q: Can I train on CPU?**
+A: Technically yes, but not recommended. Training is 50-100x slower. For debugging:
+```bash
+CUDA_VISIBLE_DEVICES="" python -m lib.train_mae --config config.yaml
+```
+
+**Q: How do I know if MAE pretraining helped?**
+A: Compare validation metrics:
+1. Train regressor from scratch (no `--resume_from`)
+2. Train regressor with MAE weights (`--resume_from mae_checkpoint.pth`)
+3. Compare `val_resolution_deg` after same number of epochs
+
+**Q: What mask_ratio should I use for MAE?**
+A: Typical values: 0.5-0.75. Higher masking forces the model to learn better representati but may hurt reconstruction quality. Start with 0.6.
+
+**Q: How do I export for C++ inference?**
+A: Use the ONNX export script:
+```bash
+python macro/export_onnx.py artifacts/my_run/checkpoint_best.pth --output model.onnx
+
+# Verify the export
+python -c "
+import onnxruntime as ort
+sess = ort.InferenceSession('model.onnx')
+print('Inputs:', [i.name for i in sess.get_inputs()])
+print('Outputs:', [o.name for o in sess.get_outputs()])
+"
+```
+
+**Q: Why is `actual_mask_ratio` different from `mask_ratio`?**
+A: `actual_mask_ratio` accounts for already-invalid sensors in the data. If 10% of sensorre already invalid (time == sentinel), and you set `mask_ratio=0.6`, then:
+- Valid sensors: 90% × 4760 = 4284
+- Randomly masked: 60% × 4284 = 2570
+- `actual_mask_ratio` = 2570 / 4284 ≈ 0.60
+
+**Q: Can I use different normalization for MAE and regression?**
+A: **No.** The encoder learns features based on the input distribution. If you change norization, the learned features won't transfer correctly. Always use the same `npho_scale`,ime_scale`, etc.
+
+**Q: How do I visualize what the model learned?**
+A: Several options:
+1. **Saliency maps:** Generated automatically at end of training (`saliency_profile_*.pdf`)
+2. **MAE reconstructions:** Check `mae_predictions_epoch_*.root`
+3. **Worst events:** Check `worst_event_*.pdf` for failure modes
+4. **TensorBoard:** `tensorboard --logdir runs`
