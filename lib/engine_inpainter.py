@@ -103,53 +103,47 @@ def compute_inpainting_loss(
         if not (face_name == "outer" and outer_fine):
             idx_map = face_index_maps[face_name]  # (H, W) with flat indices
 
-        face_losses_npho = []
-        face_losses_time = []
-        face_abs_npho[face_name] = 0.0
-        face_abs_time[face_name] = 0.0
-        face_sq_npho[face_name] = 0.0
-        face_sq_time[face_name] = 0.0
-        face_count[face_name] = 0
+        if not valid.any():
+            metrics[f"loss_{face_name}"] = 0.0
+            metrics[f"loss_{face_name}_npho"] = 0.0
+            metrics[f"loss_{face_name}_time"] = 0.0
+            metrics[f"mae_{face_name}_npho"] = 0.0
+            metrics[f"mae_{face_name}_time"] = 0.0
+            metrics[f"rmse_{face_name}_npho"] = 0.0
+            metrics[f"rmse_{face_name}_time"] = 0.0
+            continue
 
-        for b in range(B):
-            valid_mask = valid[b]  # (max_masked,)
-            if not valid_mask.any():
-                continue
+        # Gather all valid positions across the batch
+        batch_idx, pos_idx = valid.nonzero(as_tuple=True)
+        h_all = indices[batch_idx, pos_idx, 0]
+        w_all = indices[batch_idx, pos_idx, 1]
 
-            n_valid = valid_mask.sum().item()
-            h_idx = indices[b, :n_valid, 0]  # (n_valid,)
-            w_idx = indices[b, :n_valid, 1]  # (n_valid,)
+        if face_name == "outer" and outer_fine:
+            gt_all = outer_target[batch_idx, :, h_all, w_all]  # (total, 2)
+        else:
+            flat_idx_all = idx_map[h_all, w_all]
+            gt_all = original_values[batch_idx, flat_idx_all, :]  # (total, 2)
+        pr_all = pred[batch_idx, pos_idx, :]  # (total, 2)
 
-            if face_name == "outer" and outer_fine:
-                # Use fine-grid target for outer face
-                gt = outer_target[b, :, h_idx, w_idx].T  # (n_valid, 2)
-            else:
-                # Get flat indices from index map
-                flat_idx = idx_map[h_idx, w_idx]  # (n_valid,)
-                # Get ground truth
-                gt = original_values[b, flat_idx, :]  # (n_valid, 2)
-            pr = pred[b, :n_valid, :]  # (n_valid, 2)
+        # Per-element losses
+        loss_npho_elem = loss_func(pr_all[:, 0], gt_all[:, 0], reduction="none")
+        loss_time_elem = loss_func(pr_all[:, 1], gt_all[:, 1], reduction="none")
 
-            # Compute per-channel loss
-            loss_npho = loss_func(pr[:, 0], gt[:, 0], reduction="mean")
-            loss_time = loss_func(pr[:, 1], gt[:, 1], reduction="mean")
+        counts_per_batch = valid.sum(dim=1)  # (B,)
+        nonzero_mask = counts_per_batch > 0
+        safe_counts = counts_per_batch.clamp_min(1)
 
-            face_losses_npho.append(loss_npho)
-            face_losses_time.append(loss_time)
+        # Sum losses per batch
+        loss_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_npho_elem)
+        loss_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_time_elem)
 
-            # Accumulate raw errors for MAE/RMSE
-            diff_npho = pr[:, 0] - gt[:, 0]
-            diff_time = pr[:, 1] - gt[:, 1]
+        # Mean per batch (matching prior mean-of-samples behavior) then average over batches with masks
+        loss_npho_means = loss_npho_sum / safe_counts
+        loss_time_means = loss_time_sum / safe_counts
 
-            face_abs_npho[face_name] += diff_npho.abs().sum().item()
-            face_abs_time[face_name] += diff_time.abs().sum().item()
-            face_sq_npho[face_name] += (diff_npho ** 2).sum().item()
-            face_sq_time[face_name] += (diff_time ** 2).sum().item()
-            face_count[face_name] += n_valid
-
-        if face_losses_npho:
-            avg_npho = torch.stack(face_losses_npho).mean()
-            avg_time = torch.stack(face_losses_time).mean()
+        if nonzero_mask.any():
+            avg_npho = loss_npho_means[nonzero_mask].mean()
+            avg_time = loss_time_means[nonzero_mask].mean()
             face_loss = npho_weight * avg_npho + time_weight * avg_time
             total_loss = total_loss + face_loss
 
@@ -181,6 +175,37 @@ def compute_inpainting_loss(
             metrics[f"mae_{face_name}_time"] = 0.0
             metrics[f"rmse_{face_name}_npho"] = 0.0
             metrics[f"rmse_{face_name}_time"] = 0.0
+            continue
+
+        # Accumulate raw errors for MAE/RMSE
+        diff = pr_all - gt_all
+        diff_npho = diff[:, 0]
+        diff_time = diff[:, 1]
+
+        abs_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_npho.abs())
+        abs_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time.abs())
+        sq_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_npho ** 2)
+        sq_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time ** 2)
+
+        face_abs_npho[face_name] = abs_npho_sum.sum().item()
+        face_abs_time[face_name] = abs_time_sum.sum().item()
+        face_sq_npho[face_name] = sq_npho_sum.sum().item()
+        face_sq_time[face_name] = sq_time_sum.sum().item()
+        face_count[face_name] = counts_per_batch.sum().item()
+
+        # Metrics
+        fc = max(face_count[face_name], 1)
+        metrics[f"mae_{face_name}_npho"] = face_abs_npho[face_name] / fc
+        metrics[f"mae_{face_name}_time"] = face_abs_time[face_name] / fc
+        metrics[f"rmse_{face_name}_npho"] = (face_sq_npho[face_name] / fc) ** 0.5
+        metrics[f"rmse_{face_name}_time"] = (face_sq_time[face_name] / fc) ** 0.5
+
+        # Accumulate for global MAE/RMSE
+        total_abs_npho += face_abs_npho[face_name]
+        total_abs_time += face_abs_time[face_name]
+        total_sq_npho += face_sq_npho[face_name]
+        total_sq_time += face_sq_time[face_name]
+        total_count += face_count[face_name]
 
     # Hex faces
     for face_name, hex_indices in [("top", face_index_maps["top"]), ("bot", face_index_maps["bot"])]:
@@ -202,48 +227,30 @@ def compute_inpainting_loss(
             metrics[f"rmse_{face_name}_time"] = 0.0
             continue
 
-        face_losses_npho = []
-        face_losses_time = []
-        face_abs_npho[face_name] = 0.0
-        face_abs_time[face_name] = 0.0
-        face_sq_npho[face_name] = 0.0
-        face_sq_time[face_name] = 0.0
-        face_count[face_name] = 0
+        # Gather all valid positions across the batch
+        batch_idx, pos_idx = valid.nonzero(as_tuple=True)
+        node_idx_all = indices[batch_idx, pos_idx]
+        flat_idx_all = hex_indices[node_idx_all]
+        pr_all = pred[batch_idx, pos_idx, :]
+        gt_all = original_values[batch_idx, flat_idx_all, :]
 
-        for b in range(B):
-            valid_mask = valid[b]
-            if not valid_mask.any():
-                continue
+        # Per-element losses
+        loss_npho_elem = loss_func(pr_all[:, 0], gt_all[:, 0], reduction="none")
+        loss_time_elem = loss_func(pr_all[:, 1], gt_all[:, 1], reduction="none")
 
-            n_valid = valid_mask.sum().item()
-            node_idx = indices[b, :n_valid]  # (n_valid,)
+        counts_per_batch = valid.sum(dim=1)
+        nonzero_mask = counts_per_batch > 0
+        safe_counts = counts_per_batch.clamp_min(1)
 
-            # Map to flat indices
-            flat_idx = hex_indices[node_idx]  # (n_valid,)
+        loss_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_npho_elem)
+        loss_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_time_elem)
 
-            # Get ground truth
-            gt = original_values[b, flat_idx, :]  # (n_valid, 2)
-            pr = pred[b, :n_valid, :]  # (n_valid, 2)
+        loss_npho_means = loss_npho_sum / safe_counts
+        loss_time_means = loss_time_sum / safe_counts
 
-            loss_npho = loss_func(pr[:, 0], gt[:, 0], reduction="mean")
-            loss_time = loss_func(pr[:, 1], gt[:, 1], reduction="mean")
-
-            face_losses_npho.append(loss_npho)
-            face_losses_time.append(loss_time)
-
-            # Accumulate raw errors for MAE/RMSE
-            diff_npho = pr[:, 0] - gt[:, 0]
-            diff_time = pr[:, 1] - gt[:, 1]
-
-            face_abs_npho[face_name] += diff_npho.abs().sum().item()
-            face_abs_time[face_name] += diff_time.abs().sum().item()
-            face_sq_npho[face_name] += (diff_npho ** 2).sum().item()
-            face_sq_time[face_name] += (diff_time ** 2).sum().item()
-            face_count[face_name] += n_valid
-
-        if face_losses_npho:
-            avg_npho = torch.stack(face_losses_npho).mean()
-            avg_time = torch.stack(face_losses_time).mean()
+        if nonzero_mask.any():
+            avg_npho = loss_npho_means[nonzero_mask].mean()
+            avg_time = loss_time_means[nonzero_mask].mean()
             face_loss = npho_weight * avg_npho + time_weight * avg_time
             total_loss = total_loss + face_loss
 
@@ -254,27 +261,35 @@ def compute_inpainting_loss(
             total_npho_loss += metrics[f"loss_{face_name}_npho"]
             total_time_loss += metrics[f"loss_{face_name}_time"]
 
-            # Compute MAE/RMSE for this face
-            fc = max(face_count[face_name], 1)
-            metrics[f"mae_{face_name}_npho"] = face_abs_npho[face_name] / fc
-            metrics[f"mae_{face_name}_time"] = face_abs_time[face_name] / fc
-            metrics[f"rmse_{face_name}_npho"] = (face_sq_npho[face_name] / fc) ** 0.5
-            metrics[f"rmse_{face_name}_time"] = (face_sq_time[face_name] / fc) ** 0.5
+        # Accumulate raw errors for MAE/RMSE
+        diff = pr_all - gt_all
+        diff_npho = diff[:, 0]
+        diff_time = diff[:, 1]
 
-            # Accumulate for global MAE/RMSE
-            total_abs_npho += face_abs_npho[face_name]
-            total_abs_time += face_abs_time[face_name]
-            total_sq_npho += face_sq_npho[face_name]
-            total_sq_time += face_sq_time[face_name]
-            total_count += face_count[face_name]
-        else:
-            metrics[f"loss_{face_name}"] = 0.0
-            metrics[f"loss_{face_name}_npho"] = 0.0
-            metrics[f"loss_{face_name}_time"] = 0.0
-            metrics[f"mae_{face_name}_npho"] = 0.0
-            metrics[f"mae_{face_name}_time"] = 0.0
-            metrics[f"rmse_{face_name}_npho"] = 0.0
-            metrics[f"rmse_{face_name}_time"] = 0.0
+        abs_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_npho.abs())
+        abs_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time.abs())
+        sq_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_npho ** 2)
+        sq_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time ** 2)
+
+        face_abs_npho[face_name] = abs_npho_sum.sum().item()
+        face_abs_time[face_name] = abs_time_sum.sum().item()
+        face_sq_npho[face_name] = sq_npho_sum.sum().item()
+        face_sq_time[face_name] = sq_time_sum.sum().item()
+        face_count[face_name] = counts_per_batch.sum().item()
+
+        # Compute MAE/RMSE for this face
+        fc = max(face_count[face_name], 1)
+        metrics[f"mae_{face_name}_npho"] = face_abs_npho[face_name] / fc
+        metrics[f"mae_{face_name}_time"] = face_abs_time[face_name] / fc
+        metrics[f"rmse_{face_name}_npho"] = (face_sq_npho[face_name] / fc) ** 0.5
+        metrics[f"rmse_{face_name}_time"] = (face_sq_time[face_name] / fc) ** 0.5
+
+        # Accumulate for global MAE/RMSE
+        total_abs_npho += face_abs_npho[face_name]
+        total_abs_time += face_abs_time[face_name]
+        total_sq_npho += face_sq_npho[face_name]
+        total_sq_time += face_sq_time[face_name]
+        total_count += face_count[face_name]
 
     # Aggregate metrics (sum across faces, consistent with total_loss)
     metrics["loss_npho"] = total_npho_loss
