@@ -86,9 +86,10 @@ class XECStreamingDataset(IterableDataset):
         # Identify bad values
         mask_npho_bad = (raw_n <= 0.0) | (raw_n > 9e9) | np.isnan(raw_n)
         mask_time_bad = mask_npho_bad | (np.abs(raw_t) > 9e9) | np.isnan(raw_t)
-        
-        # Normalize
-        n_norm = np.log1p(raw_n / n_sc) / n_sc2
+
+        # Normalize (replace bad values with 0 before log1p to avoid warning)
+        raw_n_safe = np.where(mask_npho_bad, 0.0, raw_n)
+        n_norm = np.log1p(raw_n_safe / n_sc) / n_sc2
         t_norm = (raw_t / t_sc) - t_sh
         n_norm[mask_npho_bad] = 0.0
         t_norm[mask_time_bad] = sent

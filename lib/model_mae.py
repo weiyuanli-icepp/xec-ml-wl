@@ -158,11 +158,11 @@ class XEC_MAE(nn.Module):
 
         # Create mask: mark top num_to_mask sensors as masked for each sample
         # This mask contains ONLY randomly-masked positions (for loss computation)
+        # Vectorized: use scatter to map sorted positions back to original indices
+        position_in_sort = torch.arange(N, device=device).unsqueeze(0).expand(B, -1)  # (B, N)
+        should_mask = (position_in_sort < num_to_mask.unsqueeze(1)).float()  # (B, N)
         mask = torch.zeros(B, N, device=device)
-        for b in range(B):
-            n_mask = num_to_mask[b].item()
-            if n_mask > 0:
-                mask[b, ids_shuffle[b, :n_mask]] = 1.0
+        mask.scatter_(1, ids_shuffle, should_mask)
 
         # Apply sentinel to randomly-masked positions
         # Note: already-invalid sensors already have sentinel value in x
