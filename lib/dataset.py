@@ -123,6 +123,8 @@ class XECStreamingDataset(IterableDataset):
             # Split files across workers
             per_worker = int(np.ceil(len(files) / float(worker_info.num_workers)))
             files = files[worker_info.id * per_worker : (worker_info.id + 1) * per_worker]
+            if len(files) == 0:
+                return
 
         for chunk in iterate_chunks(files, self.tree_name, self.all_branches, self.step_size):
             num_events = len(chunk[self.input_branches[0]])
