@@ -2,7 +2,7 @@
 
 ## Machine Learning Model for the MEG II Liquid Xenon (LXe) Detector
 
-This repository contains machine learning model (CNN + Graph Transformer) to regress physical observables including emission angle (**$\theta$**, **$\phi$**), energy, timing, and position (**uvwFI**) from photons detected by the LXe detector, utilizing both photon count (**$N_{\mathrm{pho}}$**) and timing information (**$t_{\mathrm{pm}}$**) in each photo-sensor (4614 SiPMs and 146 PMTs).
+This repository contains machine learning model (CNN + Graph Transformer) to regress physical observables including emission angle (**$\theta$**, **$\phi$**), energy, timing, and position (**uvwFI**) from photons detected by the LXe detector, utilizing both photon count (**$N_{\mathrm{pho}}$**) and timing information (**$t_{\mathrm{pm}}$**) in each photo-sensor (4092 SiPMs and 668 PMTs).
 
 This model respects the complex topology of the detector by combining:
 1.  **ConvNeXt V2** for rectangular faces (Inner, Outer, US, DS).
@@ -44,7 +44,7 @@ This model respects the complex topology of the detector by combining:
 
 ## 1. Environment Setup
 
-The repository supports both **x86 (A100)** and **ARM (Grace-Hopper)** architectures on the Merlin7 cluster. Due to binary incompatibility, I have prepared **two separate environments**.
+The repository supports both **x86 (A100)** and **ARM (Grace-Hopper)** architectures on the Merlin7 cluster. Due to binary incompatibility, **two separate environments** are prepared. 
 
 ### First-Time Setup
 
