@@ -578,7 +578,14 @@ Examples:
             root_save_interval = 10
             if save_root_predictions and val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs):
                 print(f"  Collecting predictions for ROOT output...")
-                with RootPredictionWriter(save_path, epoch + 1, run_id=mlflow_run_id) as writer:
+                with RootPredictionWriter(
+                    save_path, epoch + 1, run_id=mlflow_run_id,
+                    npho_scale=float(npho_scale),
+                    npho_scale2=float(npho_scale2),
+                    time_scale=float(time_scale),
+                    time_shift=float(time_shift),
+                    sentinel_value=float(sentinel_value),
+                ) as writer:
                     val_metrics_with_pred, _ = run_eval_inpainter(
                         model, device,
                         val_files, "tree",

@@ -599,11 +599,27 @@ def run_eval_inpainter(
                 batch_predictions = [] if collect_predictions else None
                 event_base = num_batches * batch_size
 
+                # Extract input and metadata from batch
+                # Dataset returns (x, targets_dict) where targets_dict has "run" and "event"
                 if isinstance(batch, dict):
                     x_batch = batch["x"]
-                else:
+                    run_numbers = batch.get("run", None)
+                    event_numbers = batch.get("event", None)
+                elif isinstance(batch, (tuple, list)) and len(batch) >= 2:
                     x_batch = batch[0]
+                    targets = batch[1] if isinstance(batch[1], dict) else {}
+                    run_numbers = targets.get("run", None)
+                    event_numbers = targets.get("event", None)
+                else:
+                    x_batch = batch[0] if isinstance(batch, (tuple, list)) else batch
+                    run_numbers = None
+                    event_numbers = None
+
                 x_batch = x_batch.to(device, non_blocking=True)
+
+                # Convert run/event to numpy for later use
+                run_numbers_np = run_numbers.cpu().numpy() if run_numbers is not None else None
+                event_numbers_np = event_numbers.cpu().numpy() if event_numbers is not None else None
 
                 with torch.amp.autocast('cuda', enabled=True):
                     results, original_values, mask = model(x_batch, mask_ratio=mask_ratio)
@@ -671,15 +687,18 @@ def run_eval_inpainter(
 
                                 for i in range(n_valid):
                                     sensor_id = int(flat_idx[i])
-                                    batch_predictions.append({
+                                    pred_dict = {
                                         "event_idx": event_base + b,
+                                        "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
+                                        "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
                                         "sensor_id": sensor_id,
                                         "face": face_name,
                                         "truth_npho": float(original_np[b, sensor_id, 0]),
                                         "truth_time": float(original_np[b, sensor_id, 1]),
                                         "pred_npho": float(pred[b, i, 0]),
                                         "pred_time": float(pred[b, i, 1]),
-                                    })
+                                    }
+                                    batch_predictions.append(pred_dict)
                         else:
                             indices = face_result["indices"].cpu().numpy()  # (B, max_masked, 2)
                             if face_name == "outer" and outer_fine:
@@ -697,15 +716,18 @@ def run_eval_inpainter(
                                     truth_vals = outer_target_np[b, h_idx, w_idx]
                                     for i in range(n_valid):
                                         sensor_id = int(h_idx[i] * outer_grid_w + w_idx[i])
-                                        batch_predictions.append({
+                                        pred_dict = {
                                             "event_idx": event_base + b,
+                                            "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
+                                            "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
                                             "sensor_id": sensor_id,
                                             "face": face_name,
                                             "truth_npho": float(truth_vals[i, 0]),
                                             "truth_time": float(truth_vals[i, 1]),
                                             "pred_npho": float(pred[b, i, 0]),
                                             "pred_time": float(pred[b, i, 1]),
-                                        })
+                                        }
+                                        batch_predictions.append(pred_dict)
                                     continue
 
                                 idx_map = face_index_maps_np[face_name]
@@ -713,15 +735,18 @@ def run_eval_inpainter(
 
                                 for i in range(n_valid):
                                     sensor_id = int(flat_idx[i])
-                                    batch_predictions.append({
+                                    pred_dict = {
                                         "event_idx": event_base + b,
+                                        "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
+                                        "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
                                         "sensor_id": sensor_id,
                                         "face": face_name,
                                         "truth_npho": float(original_np[b, sensor_id, 0]),
                                         "truth_time": float(original_np[b, sensor_id, 1]),
                                         "pred_npho": float(pred[b, i, 0]),
                                         "pred_time": float(pred[b, i, 1]),
-                                    })
+                                    }
+                                    batch_predictions.append(pred_dict)
 
                 if collect_predictions:
                     if prediction_writer is not None:
@@ -750,9 +775,16 @@ def run_eval_inpainter(
 class RootPredictionWriter:
     """
     Streaming writer that appends prediction batches to a ROOT TTree.
+
+    Stores:
+    - Per-sensor predictions (event_idx, run_number, event_number, sensor_id, face, truth/pred values)
+    - Normalization metadata in a separate 'metadata' tree
     """
 
-    def __init__(self, save_path: str, epoch: int, run_id: str = None, tree_name: str = "tree"):
+    def __init__(self, save_path: str, epoch: int, run_id: str = None, tree_name: str = "tree",
+                 npho_scale: float = None, npho_scale2: float = None,
+                 time_scale: float = None, time_shift: float = None,
+                 sentinel_value: float = None):
         import os
         import uproot
 
@@ -762,8 +794,19 @@ class RootPredictionWriter:
         self.filepath = os.path.join(save_path, self.filename)
         self.run_id = run_id
         self._file = uproot.recreate(self.filepath)
+
+        # Store normalization factors
+        self.npho_scale = npho_scale
+        self.npho_scale2 = npho_scale2
+        self.time_scale = time_scale
+        self.time_shift = time_shift
+        self.sentinel_value = sentinel_value
+
+        # Main predictions tree
         branch_types = {
-            "event_idx": np.int32,
+            "event_idx": np.int32,      # Batch-based index (for backwards compatibility)
+            "run_number": np.int64,     # Actual run number from input file
+            "event_number": np.int64,   # Actual event number from input file
             "sensor_id": np.int32,
             "face": np.int32,
             "truth_npho": np.float32,
@@ -778,6 +821,20 @@ class RootPredictionWriter:
         self._tree = self._file.mktree(tree_name, branch_types)
         self.count = 0
 
+        # Write normalization metadata tree (single entry)
+        self._write_metadata()
+
+    def _write_metadata(self):
+        """Write normalization factors to a separate metadata tree."""
+        metadata = {
+            "npho_scale": np.array([self.npho_scale if self.npho_scale is not None else np.nan], dtype=np.float64),
+            "npho_scale2": np.array([self.npho_scale2 if self.npho_scale2 is not None else np.nan], dtype=np.float64),
+            "time_scale": np.array([self.time_scale if self.time_scale is not None else np.nan], dtype=np.float64),
+            "time_shift": np.array([self.time_shift if self.time_shift is not None else np.nan], dtype=np.float64),
+            "sentinel_value": np.array([self.sentinel_value if self.sentinel_value is not None else np.nan], dtype=np.float64),
+        }
+        self._file["metadata"] = metadata
+
     def write(self, predictions: List[Dict]):
         if not predictions:
             return
@@ -786,6 +843,8 @@ class RootPredictionWriter:
         self.count += n
 
         event_idx = np.array([p["event_idx"] for p in predictions], dtype=np.int32)
+        run_number = np.array([p.get("run_number", -1) for p in predictions], dtype=np.int64)
+        event_number = np.array([p.get("event_number", -1) for p in predictions], dtype=np.int64)
         sensor_id = np.array([p["sensor_id"] for p in predictions], dtype=np.int32)
 
         face_map = {"inner": 0, "us": 1, "ds": 2, "outer": 3, "top": 4, "bot": 5}
@@ -801,6 +860,8 @@ class RootPredictionWriter:
 
         branches = {
             "event_idx": event_idx,
+            "run_number": run_number,
+            "event_number": event_number,
             "sensor_id": sensor_id,
             "face": face,
             "truth_npho": truth_npho,

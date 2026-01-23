@@ -6,6 +6,7 @@
 #
 # Note: event_idx in predictions file corresponds to entry index in original file
 # Note: Outer face predictions are excluded when using finegrid mode (sensor_id is grid index, not flat index)
+# Note: Normalization factors are read from predictions file metadata (if available)
 
 import sys
 import os
@@ -24,6 +25,26 @@ except ImportError as e:
     print(f"Error: Could not import required modules: {e}")
     print("Run from repo root (xec-ml-wl/) or set PYTHONPATH.")
     sys.exit(1)
+
+
+def load_metadata_from_predictions(pred_file):
+    """
+    Load normalization metadata from predictions file if available.
+    Returns dict with normalization factors, or empty dict if not found.
+    """
+    metadata = {}
+    try:
+        with uproot.open(pred_file) as f:
+            if "metadata" in f:
+                meta_tree = f["metadata"]
+                for key in ["npho_scale", "npho_scale2", "time_scale", "time_shift", "sentinel_value"]:
+                    if key in meta_tree:
+                        val = meta_tree[key].array(library="np")[0]
+                        if not np.isnan(val):
+                            metadata[key] = float(val)
+    except Exception as e:
+        print(f"  Warning: Could not read metadata from predictions file: {e}")
+    return metadata
 
 
 def normalize_input(raw_npho, raw_time,
@@ -79,12 +100,13 @@ Examples:
                         help="Include top/bottom hex faces in the comparison grid")
     parser.add_argument("--save", type=str, default=None, help="Save path (PDF recommended)")
 
-    # Normalization parameters (should match training)
-    parser.add_argument("--npho_scale", type=float, default=DEFAULT_NPHO_SCALE)
-    parser.add_argument("--npho_scale2", type=float, default=DEFAULT_NPHO_SCALE2)
-    parser.add_argument("--time_scale", type=float, default=DEFAULT_TIME_SCALE)
-    parser.add_argument("--time_shift", type=float, default=DEFAULT_TIME_SHIFT)
-    parser.add_argument("--sentinel_value", type=float, default=DEFAULT_SENTINEL_VALUE)
+    # Normalization parameters (will be loaded from predictions file if available)
+    parser.add_argument("--npho_scale", type=float, default=None,
+                        help="Override npho_scale (default: read from predictions file or use default)")
+    parser.add_argument("--npho_scale2", type=float, default=None)
+    parser.add_argument("--time_scale", type=float, default=None)
+    parser.add_argument("--time_shift", type=float, default=None)
+    parser.add_argument("--sentinel_value", type=float, default=None)
 
     # Input branch names
     parser.add_argument("--npho_branch", type=str, default="relative_npho")
@@ -99,6 +121,28 @@ Examples:
     if not os.path.exists(args.original):
         print(f"Error: Original file not found: {args.original}")
         sys.exit(1)
+
+    # --- Load normalization metadata from predictions file ---
+    print(f"Loading metadata from: {args.predictions}")
+    metadata = load_metadata_from_predictions(args.predictions)
+
+    # Use metadata values, CLI overrides, or defaults (in that order)
+    npho_scale = args.npho_scale if args.npho_scale is not None else metadata.get("npho_scale", DEFAULT_NPHO_SCALE)
+    npho_scale2 = args.npho_scale2 if args.npho_scale2 is not None else metadata.get("npho_scale2", DEFAULT_NPHO_SCALE2)
+    time_scale = args.time_scale if args.time_scale is not None else metadata.get("time_scale", DEFAULT_TIME_SCALE)
+    time_shift = args.time_shift if args.time_shift is not None else metadata.get("time_shift", DEFAULT_TIME_SHIFT)
+    sentinel_value = args.sentinel_value if args.sentinel_value is not None else metadata.get("sentinel_value", DEFAULT_SENTINEL_VALUE)
+
+    if metadata:
+        print(f"  Using normalization from predictions file:")
+        print(f"    npho_scale={npho_scale}, npho_scale2={npho_scale2}")
+        print(f"    time_scale={time_scale}, time_shift={time_shift}")
+        print(f"    sentinel_value={sentinel_value}")
+    else:
+        print(f"  Warning: No metadata found in predictions file, using defaults")
+        print(f"    npho_scale={npho_scale}, npho_scale2={npho_scale2}")
+        print(f"    time_scale={time_scale}, time_shift={time_shift}")
+        print(f"    sentinel_value={sentinel_value}")
 
     # --- Load original data ---
     print(f"Loading original data from: {args.original}")
@@ -146,11 +190,11 @@ Examples:
     # Normalize
     npho_norm, time_norm = normalize_input(
         raw_npho, raw_time,
-        npho_scale=args.npho_scale,
-        npho_scale2=args.npho_scale2,
-        time_scale=args.time_scale,
-        time_shift=args.time_shift,
-        sentinel_value=args.sentinel_value
+        npho_scale=npho_scale,
+        npho_scale2=npho_scale2,
+        time_scale=time_scale,
+        time_shift=time_shift,
+        sentinel_value=sentinel_value
     )
 
     # x_truth: full normalized sensor values
@@ -162,11 +206,17 @@ Examples:
     with uproot.open(args.predictions) as f:
         pred_tree = f["tree"]
 
-        # Load all predictions for this event (including face and truth for validation)
-        all_arrays = pred_tree.arrays(
-            ["event_idx", "sensor_id", "face", "pred_npho", "pred_time", "truth_npho", "truth_time"],
-            library="np"
-        )
+        # Check available branches
+        available_branches = pred_tree.keys()
+        base_branches = ["event_idx", "sensor_id", "face", "pred_npho", "pred_time", "truth_npho", "truth_time"]
+        branches_to_load = [b for b in base_branches if b in available_branches]
+
+        # Try to load run_number and event_number if available
+        has_run_event = "run_number" in available_branches and "event_number" in available_branches
+        if has_run_event:
+            branches_to_load.extend(["run_number", "event_number"])
+
+        all_arrays = pred_tree.arrays(branches_to_load, library="np")
 
         # Filter for this event
         event_mask = all_arrays["event_idx"] == args.event_idx
@@ -178,6 +228,17 @@ Examples:
             print("  - The event index doesn't exist in predictions file")
             print("  - No sensors were masked for this event")
             sys.exit(1)
+
+        # Extract run/event numbers if available (take first value for this event)
+        run_number = None
+        event_number = None
+        if has_run_event:
+            run_numbers = all_arrays["run_number"][event_mask]
+            event_numbers = all_arrays["event_number"][event_mask]
+            if len(run_numbers) > 0:
+                run_number = int(run_numbers[0])
+                event_number = int(event_numbers[0])
+                print(f"  Found run={run_number}, event={event_number}")
 
         # Face map: 0=inner, 1=us, 2=ds, 3=outer, 4=top, 5=bot
         # For outer face in finegrid mode, sensor_id is a grid index (h*W + w), NOT a flat sensor index
@@ -232,7 +293,7 @@ Examples:
     # x_masked: input with masked sensors set to sentinel
     x_masked = x_truth.copy()
     x_masked[sensor_ids, 0] = 0.0  # npho = 0 for masked
-    x_masked[sensor_ids, 1] = args.sentinel_value  # time = sentinel for masked
+    x_masked[sensor_ids, 1] = sentinel_value  # time = sentinel for masked
 
     # x_pred: truth with masked sensors replaced by predictions
     x_pred = x_truth.copy()
@@ -241,7 +302,10 @@ Examples:
 
     # --- Plot ---
     # Build title with event features
-    title_parts = [f"Inpainter - Event {args.event_idx}"]
+    if run_number is not None and event_number is not None:
+        title_parts = [f"Inpainter - Run {run_number} Event {event_number} (idx={args.event_idx})"]
+    else:
+        title_parts = [f"Inpainter - Event {args.event_idx}"]
 
     if "energy" in event_info:
         energy_mev = event_info['energy'] * 1000  # Convert GeV to MeV
