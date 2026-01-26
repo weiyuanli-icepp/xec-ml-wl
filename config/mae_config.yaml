@@ -57,7 +57,7 @@ checkpoint:
   resume_from: null                 # Path to checkpoint to resume from
   save_dir: "artifacts"             # Directory to save checkpoints
   save_interval: 10                 # Save checkpoint every N epochs
-  save_predictions: true            # Save sensor-level predictions to ROOT file
+  save_predictions: false            # Save sensor-level predictions to ROOT file
 
 # === MLflow ===
 mlflow:

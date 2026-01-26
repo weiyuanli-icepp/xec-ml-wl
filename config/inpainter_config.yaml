@@ -7,7 +7,7 @@ data:
   train_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root"
   val_path: "~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root"
   tree_name: "tree"
-  batch_size: 512
+  batch_size: 1024
   chunksize: 256000
   num_workers: 1
   num_threads: 4
@@ -17,10 +17,10 @@ data:
 # === Input Normalization ===
 # Must match MAE pretraining normalization
 normalization:
-  npho_scale: 0.58
-  npho_scale2: 11.54
-  time_scale: 1e-7
-  time_shift: 0.
+  npho_scale: 1000
+  npho_scale2: 4.08
+  time_scale: 1.14e-7
+  time_shift: -0.46
   sentinel_value: -1.0
 
 # === Model Configuration ===
