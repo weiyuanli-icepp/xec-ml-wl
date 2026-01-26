@@ -67,8 +67,8 @@ def save_predictions_to_root(predictions, save_path, epoch, run_id=None):
         print(f"[WARN] No predictions to save")
         return
 
-    # Prepare branches
-    branches = {
+    # Prepare branch data
+    branch_data = {
         "event_id": np.arange(n_events, dtype=np.int32),
         "truth_npho": predictions["truth_npho"].astype(np.float32),
         "truth_time": predictions["truth_time"].astype(np.float32),
@@ -77,23 +77,27 @@ def save_predictions_to_root(predictions, save_path, epoch, run_id=None):
 
     if run_id:
         run_id_str = str(run_id)
-        branches["run_id"] = np.array([run_id_str] * n_events)
+        branch_data["run_id"] = np.array([run_id_str] * n_events)
 
     # Add masked input if available
     if "x_masked" in predictions and len(predictions["x_masked"]) > 0:
-        branches["masked_npho"] = predictions["x_masked"][:, :, 0].astype(np.float32)
-        branches["masked_time"] = predictions["x_masked"][:, :, 1].astype(np.float32)
+        branch_data["masked_npho"] = predictions["x_masked"][:, :, 0].astype(np.float32)
+        branch_data["masked_time"] = predictions["x_masked"][:, :, 1].astype(np.float32)
 
     if "pred_npho" in predictions and len(predictions["pred_npho"]) > 0:
         pred_npho = predictions["pred_npho"].astype(np.float32)
         pred_time = predictions["pred_time"].astype(np.float32)
-        branches["pred_npho"] = pred_npho
-        branches["pred_time"] = pred_time
-        branches["err_npho"] = (pred_npho - predictions["truth_npho"]).astype(np.float32)
-        branches["err_time"] = (pred_time - predictions["truth_time"]).astype(np.float32)
+        branch_data["pred_npho"] = pred_npho
+        branch_data["pred_time"] = pred_time
+        branch_data["err_npho"] = (pred_npho - predictions["truth_npho"]).astype(np.float32)
+        branch_data["err_time"] = (pred_time - predictions["truth_time"]).astype(np.float32)
+
+    # Use explicit type specification to avoid awkward import issues
+    branch_types = {k: v.dtype for k, v in branch_data.items()}
 
     with uproot.recreate(root_path) as f:
-        f.mktree("tree", branches)
+        f.mktree("tree", branch_types)
+        f["tree"].extend(branch_data)
 
     print(f"[INFO] Saved {n_events} events to {root_path}")
     return root_path

@@ -966,14 +966,17 @@ class RootPredictionWriter:
 
     def _write_metadata(self):
         """Write normalization factors to a separate metadata tree."""
-        metadata = {
+        metadata_data = {
             "npho_scale": np.array([self.npho_scale if self.npho_scale is not None else np.nan], dtype=np.float64),
             "npho_scale2": np.array([self.npho_scale2 if self.npho_scale2 is not None else np.nan], dtype=np.float64),
             "time_scale": np.array([self.time_scale if self.time_scale is not None else np.nan], dtype=np.float64),
             "time_shift": np.array([self.time_shift if self.time_shift is not None else np.nan], dtype=np.float64),
             "sentinel_value": np.array([self.sentinel_value if self.sentinel_value is not None else np.nan], dtype=np.float64),
         }
-        self._file.mktree("metadata", metadata)
+        # Use explicit type specification to avoid awkward import issues
+        metadata_types = {k: np.float64 for k in metadata_data}
+        self._file.mktree("metadata", metadata_types)
+        self._file["metadata"].extend(metadata_data)
 
     def write(self, predictions: List[Dict]):
         if not predictions:
