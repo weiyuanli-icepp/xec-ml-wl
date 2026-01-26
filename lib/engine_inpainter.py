@@ -967,7 +967,7 @@ class RootPredictionWriter:
             "time_shift": np.array([self.time_shift if self.time_shift is not None else np.nan], dtype=np.float64),
             "sentinel_value": np.array([self.sentinel_value if self.sentinel_value is not None else np.nan], dtype=np.float64),
         }
-        self._file["metadata"] = metadata
+        self._file.mktree("metadata", metadata)
 
     def write(self, predictions: List[Dict]):
         if not predictions:
