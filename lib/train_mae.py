@@ -534,6 +534,7 @@ Examples:
                     npho_threshold=npho_threshold,
                     use_npho_time_weight=use_npho_time_weight,
                     track_mae_rmse=track_mae_rmse,
+                    profile=profile,
                 )
 
                 if collect_preds:

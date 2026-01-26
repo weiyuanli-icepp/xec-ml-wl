@@ -510,6 +510,7 @@ Examples:
                     dataset_workers=num_threads,
                     npho_threshold=npho_threshold,
                     use_npho_time_weight=use_npho_time_weight,
+                    profile=profile,
                 )
 
             dt = time.time() - t0
@@ -631,6 +632,7 @@ Examples:
                         dataset_workers=num_threads,
                         npho_threshold=npho_threshold,
                         use_npho_time_weight=use_npho_time_weight,
+                        profile=profile,
                     )
                 root_path = writer.filepath if writer.count > 0 else None
                 if root_path:

@@ -2,9 +2,8 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import uproot
-import time
 from torch.utils.data import TensorDataset, DataLoader
-from .utils import iterate_chunks, get_pointwise_loss_fn
+from .utils import iterate_chunks, get_pointwise_loss_fn, SimpleProfiler
 from .geom_utils import build_outer_fine_grid_tensor, gather_face, gather_hex_nodes
 from .geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
@@ -14,52 +13,6 @@ from .geom_defs import (
     DEFAULT_NPHO_THRESHOLD
 )
 
-
-class SimpleProfiler:
-    """Simple timer-based profiler for identifying training bottlenecks."""
-
-    def __init__(self, enabled=False, sync_cuda=True):
-        self.enabled = enabled
-        self.sync_cuda = sync_cuda
-        self.timings = {}
-        self.counts = {}
-        self._start_time = None
-        self._current_name = None
-
-    def start(self, name):
-        if not self.enabled:
-            return
-        if self.sync_cuda and torch.cuda.is_available():
-            torch.cuda.synchronize()
-        self._current_name = name
-        self._start_time = time.perf_counter()
-
-    def stop(self):
-        if not self.enabled or self._start_time is None:
-            return
-        if self.sync_cuda and torch.cuda.is_available():
-            torch.cuda.synchronize()
-        elapsed = time.perf_counter() - self._start_time
-        name = self._current_name
-        if name not in self.timings:
-            self.timings[name] = 0.0
-            self.counts[name] = 0
-        self.timings[name] += elapsed
-        self.counts[name] += 1
-        self._start_time = None
-        self._current_name = None
-
-    def report(self):
-        if not self.enabled or not self.timings:
-            return ""
-        lines = ["[Profiler] Timing breakdown:"]
-        total = sum(self.timings.values())
-        for name, t in sorted(self.timings.items(), key=lambda x: -x[1]):
-            pct = 100 * t / total if total > 0 else 0
-            avg = t / self.counts[name] if self.counts[name] > 0 else 0
-            lines.append(f"  {name}: {t:.2f}s ({pct:.1f}%) | {avg*1000:.2f}ms avg")
-        lines.append(f"  TOTAL: {total:.2f}s")
-        return "\n".join(lines)
 
 def run_epoch_mae(model, optimizer, device, root, tree,
                   batch_size=8192, step_size=4000,
@@ -499,7 +452,8 @@ def run_eval_mae(model, device, root, tree,
                  num_workers=8,
                  npho_threshold=None,
                  use_npho_time_weight=True,
-                 track_mae_rmse=True):
+                 track_mae_rmse=True,
+                 profile=False):
     """
     Evaluate MAE model on validation data.
 
@@ -575,6 +529,9 @@ def run_eval_mae(model, device, root, tree,
         int(bot_indices.max().item()),
     )) + 1
 
+    # Initialize profiler
+    profiler = SimpleProfiler(enabled=profile, sync_cuda=True)
+
     def scatter_rect_face(full, face_pred, index_map):
         face_pred = face_pred.to(full.dtype)
         idx_flat = torch.tensor(index_map.reshape(-1), device=face_pred.device, dtype=torch.long)
@@ -635,34 +592,41 @@ def run_eval_mae(model, device, root, tree,
         return full
     
     for arr in iterate_chunks(root, tree, branches, step_size):
+        profiler.start("data_load_cpu")
         Npho = np.maximum(arr[npho_branch].astype("float32"), 0.0)
         Time = arr[time_branch].astype("float32")
-        
+
         X_raw = np.stack([Npho, Time], axis=-1).astype("float32")
         loader = DataLoader(TensorDataset(torch.from_numpy(X_raw)),
                             batch_size=batch_size, shuffle=False, drop_last=False,
                             num_workers=num_workers, pin_memory=True)
-        
+        profiler.stop()
+
         for (X_b,) in loader:
+            profiler.start("gpu_transfer")
             X_b = X_b.to(device, non_blocking=True)
-            
+            profiler.stop()
+
+            profiler.start("preprocess")
             raw_n = X_b[:,:,0]
             raw_t = X_b[:,:,1]
-            
+
             npho_norm = torch.log1p(raw_n / NphoScale) / NphoScale2
             time_norm = (raw_t / time_scale) - time_shift
-            
+
             mask_npho_bad = (raw_n <= 0.0) | (raw_n > 9e9) | torch.isnan(raw_n)
             mask_time_bad = mask_npho_bad | (torch.abs(raw_t) > 9e9) | torch.isnan(raw_t)
-            
+
             npho_norm[mask_npho_bad] = 0.0
             time_norm[mask_time_bad] = sentinel_value
-            
+
             x_in = torch.stack([npho_norm, time_norm], dim=-1)
-            
+            profiler.stop()
+
             with torch.no_grad():
                 with torch.amp.autocast('cuda', enabled=amp):
                     # Get masked input for visualization (pass npho_threshold_norm for stratified masking)
+                    profiler.start("forward")
                     x_masked, mask = model.random_masking(x_in, npho_threshold_norm=npho_threshold_norm)
 
                     # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
@@ -691,15 +655,9 @@ def run_eval_mae(model, device, root, tree,
                         "top":   model.dec_top(latent_seq[:, top_idx]),
                         "bot":   model.dec_bot(latent_seq[:, bot_idx]),
                     }
-                    
-                    # if hasattr(model, "encoder") and getattr(model.encoder, "outer_fine", False):
-                    #     outer_target = build_outer_fine_grid_tensor(
-                    #         x_in,
-                    #         pool_kernel=model.encoder.outer_fine_pool
-                    #     )
-                    # else:
-                    #     outer_target = gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP)
+                    profiler.stop()  # forward
 
+                    profiler.start("loss_compute")
                     targets = {
                         "inner": gather_face(x_in, INNER_INDEX_MAP),
                         "us":    gather_face(x_in, US_INDEX_MAP),
@@ -837,8 +795,19 @@ def run_eval_mae(model, device, root, tree,
                         # Note: pred reconstruction is per-face, reassembled to full sensor array
                         n_collected += n_to_collect
 
+                    profiler.stop()  # loss_compute
+
             total_loss += loss.item()
             n_batches += 1
+
+            profiler.start("data_load_cpu")  # For next iteration
+
+    # Stop any pending timer
+    profiler.stop()
+
+    # Print profiler report if enabled
+    if profile:
+        print(profiler.report("Validation timing breakdown"))
 
     # Build metrics dict
     metrics = {}
