@@ -461,8 +461,9 @@ def run_epoch_inpainter(
     num_batches = 0
 
     # Track actual mask ratio (randomly-masked / valid sensors)
-    total_randomly_masked = 0
-    total_valid_sensors = 0
+    # Use tensors to avoid GPU-CPU sync every batch (only .item() at epoch end)
+    total_randomly_masked = torch.tensor(0, dtype=torch.long, device=device)
+    total_valid_sensors = torch.tensor(0, dtype=torch.long, device=device)
 
     accum_step = 0
     optimizer.zero_grad(set_to_none=True)
@@ -505,13 +506,11 @@ def run_epoch_inpainter(
             with torch.amp.autocast('cuda', enabled=(scaler is not None)):
                 results, original_values, mask = model(x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm)
 
-                # Track actual mask ratio
+                # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
                 # Already-invalid sensors have time == sentinel_value and are NOT in mask
                 already_invalid = (original_values[:, :, 1] == sentinel_value)  # (B, N)
-                n_valid = (~already_invalid).sum().item()
-                n_masked = mask.sum().item()
-                total_valid_sensors += n_valid
-                total_randomly_masked += n_masked
+                total_valid_sensors += (~already_invalid).sum()
+                total_randomly_masked += mask.sum().long()
 
                 loss, metrics = compute_inpainting_loss(
                     results, original_values, mask,
@@ -585,8 +584,12 @@ def run_epoch_inpainter(
     avg_metrics["total_loss"] = total_loss_sum / max(1, loss_batches)
 
     # Actual mask ratio (randomly-masked / valid sensors)
-    if total_valid_sensors > 0:
-        avg_metrics["actual_mask_ratio"] = total_randomly_masked / total_valid_sensors
+    # Convert tensor accumulators to Python scalars
+    total_valid_sensors_val = total_valid_sensors.item()
+    total_randomly_masked_val = total_randomly_masked.item()
+
+    if total_valid_sensors_val > 0:
+        avg_metrics["actual_mask_ratio"] = total_randomly_masked_val / total_valid_sensors_val
     else:
         avg_metrics["actual_mask_ratio"] = 0.0
 
@@ -666,8 +669,9 @@ def run_eval_inpainter(
     num_batches = 0
 
     # Track actual mask ratio (randomly-masked / valid sensors)
-    total_randomly_masked = 0
-    total_valid_sensors = 0
+    # Use tensors to avoid GPU-CPU sync every batch (only .item() at epoch end)
+    total_randomly_masked = torch.tensor(0, dtype=torch.long, device=device)
+    total_valid_sensors = torch.tensor(0, dtype=torch.long, device=device)
 
     # For collecting predictions (per-sensor level)
     all_predictions = [] if (collect_predictions and prediction_writer is None) else None
@@ -725,12 +729,10 @@ def run_eval_inpainter(
                 with torch.amp.autocast('cuda', enabled=True):
                     results, original_values, mask = model(x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm)
 
-                    # Track actual mask ratio
+                    # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
                     already_invalid = (original_values[:, :, 1] == sentinel_value)  # (B, N)
-                    n_valid = (~already_invalid).sum().item()
-                    n_masked = mask.sum().item()
-                    total_valid_sensors += n_valid
-                    total_randomly_masked += n_masked
+                    total_valid_sensors += (~already_invalid).sum()
+                    total_randomly_masked += mask.sum().long()
 
                     _, metrics = compute_inpainting_loss(
                         results, original_values, mask,
@@ -893,8 +895,12 @@ def run_eval_inpainter(
     avg_metrics = {k: v / max(1, num_batches) for k, v in metric_sums.items()}
 
     # Actual mask ratio (randomly-masked / valid sensors)
-    if total_valid_sensors > 0:
-        avg_metrics["actual_mask_ratio"] = total_randomly_masked / total_valid_sensors
+    # Convert tensor accumulators to Python scalars
+    total_valid_sensors_val = total_valid_sensors.item()
+    total_randomly_masked_val = total_randomly_masked.item()
+
+    if total_valid_sensors_val > 0:
+        avg_metrics["actual_mask_ratio"] = total_randomly_masked_val / total_valid_sensors_val
     else:
         avg_metrics["actual_mask_ratio"] = 0.0
 
