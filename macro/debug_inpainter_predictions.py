@@ -138,8 +138,12 @@ def main():
     npho_diff = np.abs(truth_from_original[:, 0] - truth_npho_file)
     time_diff = np.abs(truth_from_original[:, 1] - truth_time_file)
 
-    print(f"   Npho diff: mean={npho_diff.mean():.6f}, max={npho_diff.max():.6f}")
-    print(f"   Time diff: mean={time_diff.mean():.6f}, max={time_diff.max():.6f}")
+    # Compute percentage difference
+    npho_pct_diff = 100 * npho_diff / (np.abs(truth_npho_file) + 1e-8)
+    time_pct_diff = 100 * time_diff / (np.abs(truth_time_file) + 1e-8)
+
+    print(f"   Npho diff: mean={npho_diff.mean():.6f}, max={npho_diff.max():.6f} ({npho_pct_diff.mean():.1f}%)")
+    print(f"   Time diff: mean={time_diff.mean():.6f}, max={time_diff.max():.6f} ({time_pct_diff.mean():.1f}%)")
 
     if npho_diff.mean() > 0.01 or time_diff.mean() > 0.01:
         print("\n   *** NORMALIZATION MISMATCH DETECTED! ***")
@@ -153,21 +157,28 @@ def main():
     pred_error_npho = pred_npho - truth_npho_file
     pred_error_time = pred_time - truth_time_file
 
+    # Compute percentage errors (avoid division by zero)
+    pct_error_npho = 100 * pred_error_npho / (np.abs(truth_npho_file) + 1e-8)
+    pct_error_time = 100 * pred_error_time / (np.abs(truth_time_file) + 1e-8)
+
     print(f"   Pred - Truth (npho): mean={pred_error_npho.mean():.6f}, std={pred_error_npho.std():.6f}")
     print(f"   Pred - Truth (time): mean={pred_error_time.mean():.6f}, std={pred_error_time.std():.6f}")
+    print(f"   Percentage error (npho): mean={pct_error_npho.mean():.2f}%, std={pct_error_npho.std():.2f}%")
+    print(f"   Percentage error (time): mean={pct_error_time.mean():.2f}%, std={pct_error_time.std():.2f}%")
 
     # Show sample sensors
     print(f"\n[5] Sample sensors (first 10):")
-    print("   sensor_id | truth_npho | pred_npho | diff | face")
-    print("   " + "-"*55)
+    print("   sensor_id | truth_npho | pred_npho |   diff   |  pct%  | face")
+    print("   " + "-"*65)
     for i in range(min(10, len(sensor_ids))):
         sid = sensor_ids[i]
         t_n = truth_npho_file[i]
         p_n = pred_npho[i]
         diff = p_n - t_n
+        pct = 100 * diff / (abs(t_n) + 1e-8)
         face = faces[valid_mask][i]
         fname = ["inner", "us", "ds", "outer", "top", "bot"][face]
-        print(f"   {sid:8d} | {t_n:10.4f} | {p_n:9.4f} | {diff:+.4f} | {fname}")
+        print(f"   {sid:8d} | {t_n:10.4f} | {p_n:9.4f} | {diff:+8.4f} | {pct:+6.1f}% | {fname}")
 
     # --- Verify assignment would work ---
     print(f"\n[6] Verifying data shapes for visualization:")
