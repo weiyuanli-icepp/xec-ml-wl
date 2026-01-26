@@ -5,9 +5,57 @@ Training and evaluation engine for dead channel inpainting.
 import torch
 import torch.nn.functional as F
 import numpy as np
+import time
 from typing import Dict, Optional, Tuple, List, Callable
 from .dataset import XECStreamingDataset
 from .geom_defs import DEFAULT_NPHO_THRESHOLD
+
+
+class SimpleProfiler:
+    """Simple timer-based profiler for identifying training bottlenecks."""
+
+    def __init__(self, enabled=False, sync_cuda=True):
+        self.enabled = enabled
+        self.sync_cuda = sync_cuda
+        self.timings = {}
+        self.counts = {}
+        self._start_time = None
+        self._current_name = None
+
+    def start(self, name):
+        if not self.enabled:
+            return
+        if self.sync_cuda and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self._current_name = name
+        self._start_time = time.perf_counter()
+
+    def stop(self):
+        if not self.enabled or self._start_time is None:
+            return
+        if self.sync_cuda and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        elapsed = time.perf_counter() - self._start_time
+        name = self._current_name
+        if name not in self.timings:
+            self.timings[name] = 0.0
+            self.counts[name] = 0
+        self.timings[name] += elapsed
+        self.counts[name] += 1
+        self._start_time = None
+        self._current_name = None
+
+    def report(self):
+        if not self.enabled or not self.timings:
+            return ""
+        lines = ["[Profiler] Timing breakdown:"]
+        total = sum(self.timings.values())
+        for name, t in sorted(self.timings.items(), key=lambda x: -x[1]):
+            pct = 100 * t / total if total > 0 else 0
+            avg = t / self.counts[name] if self.counts[name] > 0 else 0
+            lines.append(f"  {name}: {t:.2f}s ({pct:.1f}%) | {avg*1000:.2f}ms avg")
+        lines.append(f"  TOTAL: {total:.2f}s")
+        return "\n".join(lines)
 
 
 def compute_inpainting_loss(
@@ -425,6 +473,7 @@ def run_epoch_inpainter(
     track_metrics: bool = True,
     npho_threshold: float = None,
     use_npho_time_weight: bool = True,
+    profile: bool = False,
 ) -> Dict[str, float]:
     """
     Run one training epoch for inpainter.
@@ -472,7 +521,11 @@ def run_epoch_inpainter(
     total_loss_sum = 0.0
     loss_batches = 0
 
+    # Initialize profiler
+    profiler = SimpleProfiler(enabled=profile, sync_cuda=True)
+
     for root_file in train_files:
+        profiler.start("data_load")
         dataset = XECStreamingDataset(
             root_files=root_file,
             tree_name=tree_name,
@@ -495,23 +548,31 @@ def run_epoch_inpainter(
             pin_memory=True,
         )
 
+        profiler.stop()  # data_load
+
         for batch in loader:
+            profiler.start("gpu_transfer")
             if isinstance(batch, dict):
                 x_batch = batch["x"]
             else:
                 x_batch = batch[0]
             x_batch = x_batch.to(device, non_blocking=True)
+            profiler.stop()
 
             # Forward with AMP (pass npho_threshold_norm for stratified masking)
+            profiler.start("forward")
             with torch.amp.autocast('cuda', enabled=(scaler is not None)):
                 results, original_values, mask = model(x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm)
+            profiler.stop()
 
-                # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
-                # Already-invalid sensors have time == sentinel_value and are NOT in mask
-                already_invalid = (original_values[:, :, 1] == sentinel_value)  # (B, N)
-                total_valid_sensors += (~already_invalid).sum()
-                total_randomly_masked += mask.sum().long()
+            # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
+            # Already-invalid sensors have time == sentinel_value and are NOT in mask
+            already_invalid = (original_values[:, :, 1] == sentinel_value)  # (B, N)
+            total_valid_sensors += (~already_invalid).sum()
+            total_randomly_masked += mask.sum().long()
 
+            profiler.start("loss_compute")
+            with torch.amp.autocast('cuda', enabled=(scaler is not None)):
                 loss, metrics = compute_inpainting_loss(
                     results, original_values, mask,
                     face_index_maps,
@@ -527,14 +588,22 @@ def run_epoch_inpainter(
                     npho_scale2=npho_scale2,
                     use_npho_time_weight=use_npho_time_weight,
                 )
+            profiler.stop()
 
             # Backward
             total_loss_sum += loss.item()
             loss_batches += 1
 
+            profiler.start("backward")
             loss = loss / grad_accum_steps
             if scaler is not None:
                 scaler.scale(loss).backward()
+            else:
+                loss.backward()
+            profiler.stop()
+
+            profiler.start("optimizer")
+            if scaler is not None:
                 if (accum_step + 1) % grad_accum_steps == 0:
                     if grad_clip > 0:
                         scaler.unscale_(optimizer)
@@ -543,12 +612,12 @@ def run_epoch_inpainter(
                     scaler.update()
                     optimizer.zero_grad(set_to_none=True)
             else:
-                loss.backward()
                 if (accum_step + 1) % grad_accum_steps == 0:
                     if grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
+            profiler.stop()
 
             accum_step += 1
 
@@ -559,6 +628,15 @@ def run_epoch_inpainter(
                         metric_sums[key] = 0.0
                     metric_sums[key] += value
             num_batches += 1
+
+        profiler.start("data_load")  # For next file/iteration
+
+    # Stop any pending timer
+    profiler.stop()
+
+    # Print profiler report if enabled
+    if profile:
+        print(profiler.report())
 
     # Final optimizer step if grads remain
     if (accum_step % grad_accum_steps) != 0:

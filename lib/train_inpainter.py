@@ -187,6 +187,7 @@ Examples:
     parser.add_argument("--npho_threshold", type=float, default=None, help="Npho threshold for conditional time loss (raw scale)")
     parser.add_argument("--use_npho_time_weight", action="store_true", help="Weight time loss by sqrt(npho)")
     parser.add_argument("--no_npho_time_weight", action="store_true", help="Disable npho time weighting")
+    parser.add_argument("--profile", action="store_true", help="Enable training profiler to identify bottlenecks")
 
     # MLflow
     parser.add_argument("--mlflow_experiment", type=str, default=None)
@@ -247,6 +248,7 @@ Examples:
             save_root_predictions = getattr(cfg.training, "save_root_predictions", True)
         grad_accum_steps = args.grad_accum_steps if args.grad_accum_steps is not None else getattr(cfg.training, "grad_accum_steps", 1)
         track_train_metrics = getattr(cfg.training, "track_train_metrics", True)
+        profile = args.profile
 
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
@@ -299,6 +301,7 @@ Examples:
         save_root_predictions = True
         grad_accum_steps = args.grad_accum_steps or 1
         track_train_metrics = True
+        profile = args.profile
 
         mlflow_experiment = args.mlflow_experiment or "inpainting"
         mlflow_run_name = args.mlflow_run_name
@@ -480,6 +483,7 @@ Examples:
                 track_metrics=track_train_metrics,
                 npho_threshold=npho_threshold,
                 use_npho_time_weight=use_npho_time_weight,
+                profile=profile,
             )
 
             # Validation

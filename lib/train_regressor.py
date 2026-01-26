@@ -620,12 +620,13 @@ def main_xec_regressor_with_args(
 # ------------------------------------------------------------
 #  Config-based Training Entry
 # ------------------------------------------------------------
-def train_with_config(config_path: str):
+def train_with_config(config_path: str, profile: bool = False):
     """
     Train XEC regressor using YAML config file.
 
     Args:
         config_path: Path to YAML configuration file.
+        profile: Enable training profiler to identify bottlenecks.
     """
     # Load configuration
     cfg = load_config(config_path)
@@ -843,6 +844,7 @@ def train_with_config(config_path: str):
                 scheduler=scheduler,
                 ema_model=ema_model,
                 grad_clip=cfg.training.grad_clip,
+                profile=profile,
             )
 
             # === VALIDATION ===
@@ -974,6 +976,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Train XEC Regressor")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config file")
+    parser.add_argument("--profile", action="store_true", help="Enable training profiler to identify bottlenecks")
     args = parser.parse_args()
 
-    train_with_config(args.config)
+    train_with_config(args.config, profile=args.profile)

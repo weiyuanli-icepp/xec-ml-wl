@@ -8,6 +8,53 @@ import warnings
 from .utils import iterate_chunks, angles_deg_to_unit_vec, get_pointwise_loss_fn
 from .metrics import eval_stats, eval_resolution
 
+
+class SimpleProfiler:
+    """Simple timer-based profiler for identifying training bottlenecks."""
+
+    def __init__(self, enabled=False, sync_cuda=True):
+        self.enabled = enabled
+        self.sync_cuda = sync_cuda
+        self.timings = {}
+        self.counts = {}
+        self._start_time = None
+        self._current_name = None
+
+    def start(self, name):
+        if not self.enabled:
+            return
+        if self.sync_cuda and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self._current_name = name
+        self._start_time = time.perf_counter()
+
+    def stop(self):
+        if not self.enabled or self._start_time is None:
+            return
+        if self.sync_cuda and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        elapsed = time.perf_counter() - self._start_time
+        name = self._current_name
+        if name not in self.timings:
+            self.timings[name] = 0.0
+            self.counts[name] = 0
+        self.timings[name] += elapsed
+        self.counts[name] += 1
+        self._start_time = None
+        self._current_name = None
+
+    def report(self):
+        if not self.enabled or not self.timings:
+            return ""
+        lines = ["[Profiler] Timing breakdown:"]
+        total = sum(self.timings.values())
+        for name, t in sorted(self.timings.items(), key=lambda x: -x[1]):
+            pct = 100 * t / total if total > 0 else 0
+            avg = t / self.counts[name] if self.counts[name] > 0 else 0
+            lines.append(f"  {name}: {t:.2f}s ({pct:.1f}%) | {avg*1000:.2f}ms avg")
+        lines.append(f"  TOTAL: {total:.2f}s")
+        return "\n".join(lines)
+
 def run_epoch_stream(
     model, optimizer, device, loader,
     scaler=None,
@@ -31,6 +78,7 @@ def run_epoch_stream(
     scheduler=None,
     ema_model=None,
     grad_clip=1.0,
+    profile=False,
 ):
     # Warn about deprecated legacy reweighting API
     if reweight_mode != "none" and reweighter is None:
@@ -65,14 +113,20 @@ def run_epoch_stream(
         "x_vtx": [],   "y_vtx": [],   "z_vtx": []
     }
 
-    worst_events_buffer = [] 
+    worst_events_buffer = []
+
+    # Initialize profiler
+    profiler = SimpleProfiler(enabled=profile, sync_cuda=True)
 
     # ========================== START OF BATCH LOOP ==========================
     for i_batch, (X_batch, target_dict) in enumerate(loader):
-        
         t_data      = time.time() - t_end
+        profiler.stop()  # data_load
+
+        profiler.start("gpu_transfer")
         X_batch     = X_batch.to(device, non_blocking=True)
         target_dict = {k: v.to(device, non_blocking=True) for k, v in target_dict.items()}
+        profiler.stop()
 
         # Channel Dropout
         if train and channel_dropout_rate > 0.0:
@@ -102,8 +156,9 @@ def run_epoch_stream(
         
         if train:
             optimizer.zero_grad(set_to_none=True)
+            profiler.start("forward")
             with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
-                
+
                 # Forward Pass
                 preds = model(X_batch)
                 if not isinstance(preds, dict):
@@ -153,34 +208,46 @@ def run_epoch_stream(
                         total_loss += l_task.mean() * task_weight
 
                 loss = total_loss
-                
 
+            profiler.stop()  # forward
+
+            profiler.start("backward")
             if scaler is not None:
                 scaler.scale(loss).backward()
+            else:
+                loss.backward()
+            profiler.stop()
+
+            profiler.start("optimizer")
+            if scaler is not None:
                 if grad_clip > 0:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                loss.backward()
                 if grad_clip > 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 optimizer.step()
-                
+
             if ema_model is not None:
                 ema_model.update_parameters(model)
+            profiler.stop()
 
             loss_sums["total_opt"] += loss.item() * X_batch.size(0)
             nobs += X_batch.size(0)
 
         # --- VALIDATION ---
         else:
+            profiler.start("forward")
             with torch.no_grad():
                 preds = model(X_batch)
                 if not isinstance(preds, dict):
                     preds = {"angle": preds}
+            profiler.stop()
 
+            profiler.start("loss_compute")
+            with torch.no_grad():
                 # Determine active tasks from predictions
                 active_tasks = list(preds.keys())
 
@@ -358,7 +425,9 @@ def run_epoch_stream(
 
                 loss_sums["total_opt"] += batch_total_loss.item() * X_batch.size(0)
                 nobs += X_batch.size(0)
-                
+
+            profiler.stop()  # loss_compute
+
         t_batch = time.time() - t_end
         current_bs = X_batch.size(0)
         if t_batch > 0:
@@ -366,7 +435,14 @@ def run_epoch_stream(
             epoch_data_time.append(t_data)
             epoch_batch_time.append(t_batch)
         t_end = time.time()
+
+        profiler.start("data_load")  # For next iteration
     # ========================== END OF BATCH LOOP ==========================
+
+    # Stop any pending timer and print report
+    profiler.stop()
+    if profile:
+        print(profiler.report())
 
     torch.cuda.empty_cache()
     # ========================== END OF CHUNK LOOP ==========================
