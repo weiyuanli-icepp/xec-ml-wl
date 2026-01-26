@@ -27,7 +27,7 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                   scaler=None,
                   num_workers=8,
                   npho_threshold=None,
-                  use_nphe_time_weight=True):
+                  use_npho_time_weight=True):
     model.train()
     if scaler is None:
         scaler = torch.amp.GradScaler('cuda', enabled=amp)
@@ -271,22 +271,22 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                         # Combined mask for time: randomly masked AND time-valid (npho > threshold)
                         time_mask_expanded = mask_expanded * time_valid_base
 
-                        # Nphe weighting for time loss (chi-square-like: weight ~ sqrt(npho))
-                        if use_nphe_time_weight and time_mask_expanded.sum() > 0:
+                        # Npho weighting for time loss (chi-square-like: weight ~ sqrt(npho))
+                        if use_npho_time_weight and time_mask_expanded.sum() > 0:
                             if name in ["top", "bot"]:
-                                nphe_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
+                                npho_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
                             elif name == "outer" and getattr(model.encoder, "outer_fine", False):
-                                nphe_coarse = raw_npho_face.view(raw_n.size(0), 1, *indices.shape)
-                                nphe_fine = F.interpolate(nphe_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
+                                npho_coarse = raw_npho_face.view(raw_n.size(0), 1, *indices.shape)
+                                npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
                                 if pool_kernel:
-                                    nphe_fine = F.avg_pool2d(nphe_fine, kernel_size=(ph, pw), stride=(ph, pw))
-                                nphe_weight_map = torch.sqrt(nphe_fine.clamp(min=npho_threshold))
+                                    npho_fine = F.avg_pool2d(npho_fine, kernel_size=(ph, pw), stride=(ph, pw))
+                                npho_weight_map = torch.sqrt(npho_fine.clamp(min=npho_threshold))
                             else:
                                 H, W = pred.shape[-2], pred.shape[-1]
-                                nphe_weight_map = torch.sqrt(raw_npho_face.view(raw_n.size(0), 1, H, W).clamp(min=npho_threshold))
+                                npho_weight_map = torch.sqrt(raw_npho_face.view(raw_n.size(0), 1, H, W).clamp(min=npho_threshold))
                             # Normalize weight so mean is ~1 for stable training
-                            nphe_weight_map = nphe_weight_map / (nphe_weight_map[time_mask_expanded.bool()].mean() + 1e-8)
-                            weighted_time_loss = (loss_map_time * time_mask_expanded * nphe_weight_map).sum()
+                            npho_weight_map = npho_weight_map / (npho_weight_map[time_mask_expanded.bool()].mean() + 1e-8)
+                            weighted_time_loss = (loss_map_time * time_mask_expanded * npho_weight_map).sum()
                         else:
                             weighted_time_loss = (loss_map_time * time_mask_expanded).sum()
 
@@ -413,7 +413,7 @@ def run_eval_mae(model, device, root, tree,
                  collect_predictions=False, max_events=1000,
                  num_workers=8,
                  npho_threshold=None,
-                 use_nphe_time_weight=True):
+                 use_npho_time_weight=True):
     """
     Evaluate MAE model on validation data.
 
@@ -682,21 +682,21 @@ def run_eval_mae(model, device, root, tree,
 
                             time_mask_expanded = mask_expanded * time_valid_base
 
-                            # Nphe weighting for time loss
-                            if use_nphe_time_weight and time_mask_expanded.sum() > 0:
+                            # Npho weighting for time loss
+                            if use_npho_time_weight and time_mask_expanded.sum() > 0:
                                 if name in ["top", "bot"]:
-                                    nphe_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
+                                    npho_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
                                 elif name == "outer" and getattr(model.encoder, "outer_fine", False):
-                                    nphe_coarse = raw_npho_face.view(raw_n.size(0), 1, *indices.shape)
-                                    nphe_fine = F.interpolate(nphe_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
+                                    npho_coarse = raw_npho_face.view(raw_n.size(0), 1, *indices.shape)
+                                    npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
                                     if pool_kernel:
-                                        nphe_fine = F.avg_pool2d(nphe_fine, kernel_size=(ph, pw), stride=(ph, pw))
-                                    nphe_weight_map = torch.sqrt(nphe_fine.clamp(min=npho_threshold))
+                                        npho_fine = F.avg_pool2d(npho_fine, kernel_size=(ph, pw), stride=(ph, pw))
+                                    npho_weight_map = torch.sqrt(npho_fine.clamp(min=npho_threshold))
                                 else:
                                     H, W = pred.shape[-2], pred.shape[-1]
-                                    nphe_weight_map = torch.sqrt(raw_npho_face.view(raw_n.size(0), 1, H, W).clamp(min=npho_threshold))
-                                nphe_weight_map = nphe_weight_map / (nphe_weight_map[time_mask_expanded.bool()].mean() + 1e-8)
-                                weighted_time_loss = (loss_map_time * time_mask_expanded * nphe_weight_map).sum()
+                                    npho_weight_map = torch.sqrt(raw_npho_face.view(raw_n.size(0), 1, H, W).clamp(min=npho_threshold))
+                                npho_weight_map = npho_weight_map / (npho_weight_map[time_mask_expanded.bool()].mean() + 1e-8)
+                                weighted_time_loss = (loss_map_time * time_mask_expanded * npho_weight_map).sum()
                             else:
                                 weighted_time_loss = (loss_map_time * time_mask_expanded).sum()
 

@@ -25,7 +25,7 @@ def compute_inpainting_loss(
     npho_threshold: float = None,
     npho_scale: float = 0.58,
     npho_scale2: float = 1.0,
-    use_nphe_time_weight: bool = True,
+    use_npho_time_weight: bool = True,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Compute inpainting loss for all faces.
@@ -44,7 +44,7 @@ def compute_inpainting_loss(
         npho_threshold: raw npho threshold for conditional time loss (default: DEFAULT_NPHO_THRESHOLD)
         npho_scale: normalization scale for npho (for de-normalizing)
         npho_scale2: normalization scale2 for npho
-        use_nphe_time_weight: whether to weight time loss by sqrt(npho)
+        use_npho_time_weight: whether to weight time loss by sqrt(npho)
 
     Returns:
         total_loss: scalar loss for backprop
@@ -151,15 +151,15 @@ def compute_inpainting_loss(
         npho_gt_norm = gt_all[:, 0]  # (total,) - normalized npho values
         time_valid = npho_gt_norm > npho_threshold_norm  # (total,) - sensors with valid time
 
-        # Apply nphe weighting to time loss if enabled
-        if use_nphe_time_weight and time_valid.any():
+        # Apply npho weighting to time loss if enabled
+        if use_npho_time_weight and time_valid.any():
             # De-normalize to get approximate raw npho for weighting
             # raw_n = npho_scale * (exp(npho_norm * npho_scale2) - 1)
             raw_npho_approx = npho_scale * (torch.exp(npho_gt_norm * npho_scale2) - 1)
-            nphe_weights = torch.sqrt(raw_npho_approx.clamp(min=npho_threshold))
+            npho_weights = torch.sqrt(raw_npho_approx.clamp(min=npho_threshold))
             # Normalize weights so mean is ~1 for valid sensors
-            nphe_weights = nphe_weights / (nphe_weights[time_valid].mean() + 1e-8)
-            loss_time_elem_weighted = loss_time_elem * nphe_weights
+            npho_weights = npho_weights / (npho_weights[time_valid].mean() + 1e-8)
+            loss_time_elem_weighted = loss_time_elem * npho_weights
         else:
             loss_time_elem_weighted = loss_time_elem
 
@@ -292,12 +292,12 @@ def compute_inpainting_loss(
         npho_gt_norm = gt_all[:, 0]  # (total,) - normalized npho values
         time_valid = npho_gt_norm > npho_threshold_norm  # (total,) - sensors with valid time
 
-        # Apply nphe weighting to time loss if enabled
-        if use_nphe_time_weight and time_valid.any():
+        # Apply npho weighting to time loss if enabled
+        if use_npho_time_weight and time_valid.any():
             raw_npho_approx = npho_scale * (torch.exp(npho_gt_norm * npho_scale2) - 1)
-            nphe_weights = torch.sqrt(raw_npho_approx.clamp(min=npho_threshold))
-            nphe_weights = nphe_weights / (nphe_weights[time_valid].mean() + 1e-8)
-            loss_time_elem_weighted = loss_time_elem * nphe_weights
+            npho_weights = torch.sqrt(raw_npho_approx.clamp(min=npho_threshold))
+            npho_weights = npho_weights / (npho_weights[time_valid].mean() + 1e-8)
+            loss_time_elem_weighted = loss_time_elem * npho_weights
         else:
             loss_time_elem_weighted = loss_time_elem
 
@@ -424,7 +424,7 @@ def run_epoch_inpainter(
     grad_accum_steps: int = 1,
     track_metrics: bool = True,
     npho_threshold: float = None,
-    use_nphe_time_weight: bool = True,
+    use_npho_time_weight: bool = True,
 ) -> Dict[str, float]:
     """
     Run one training epoch for inpainter.
@@ -526,7 +526,7 @@ def run_epoch_inpainter(
                     npho_threshold=npho_threshold,
                     npho_scale=npho_scale,
                     npho_scale2=npho_scale2,
-                    use_nphe_time_weight=use_nphe_time_weight,
+                    use_npho_time_weight=use_npho_time_weight,
                 )
 
             # Backward
@@ -617,7 +617,7 @@ def run_eval_inpainter(
     dataloader_workers: int = 0,
     dataset_workers: int = 8,
     npho_threshold: float = None,
-    use_nphe_time_weight: bool = True,
+    use_npho_time_weight: bool = True,
 ) -> Dict[str, float]:
     """
     Run evaluation for inpainter.
@@ -745,7 +745,7 @@ def run_eval_inpainter(
                         npho_threshold=npho_threshold,
                         npho_scale=npho_scale,
                         npho_scale2=npho_scale2,
-                        use_nphe_time_weight=use_nphe_time_weight,
+                        use_npho_time_weight=use_npho_time_weight,
                     )
                     if not track_mae_rmse:
                         metrics = {k: v for k, v in metrics.items() if not (k.startswith("mae_") or k.startswith("rmse_"))}

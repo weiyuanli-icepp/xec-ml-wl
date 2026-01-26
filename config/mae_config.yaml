@@ -48,7 +48,7 @@ training:
   amp: true                         # Automatic Mixed Precision
   compile: false                    # torch.compile (can cause LLVM errors with multiprocessing)
   npho_threshold: null              # Npho threshold for conditional time loss (null uses default 10.0)
-  use_nphe_time_weight: true        # Weight time loss by sqrt(npho) for chi-square-like weighting
+  use_npho_time_weight: true        # Weight time loss by sqrt(npho) for chi-square-like weighting
 
 # === Checkpointing ===
 checkpoint:

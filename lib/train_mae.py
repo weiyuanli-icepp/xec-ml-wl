@@ -154,8 +154,8 @@ Examples:
     parser.add_argument("--ema_decay",            type=float, default=None, help="EMA decay (None to disable)")
     parser.add_argument("--time_mask_ratio_scale", type=float, default=None, help="Scale factor for masking valid-time sensors (1.0=uniform)")
     parser.add_argument("--npho_threshold", type=float, default=None, help="Npho threshold for conditional time loss (raw scale)")
-    parser.add_argument("--use_nphe_time_weight", action="store_true", help="Weight time loss by sqrt(npho)")
-    parser.add_argument("--no_nphe_time_weight", action="store_true", help="Disable nphe time weighting")
+    parser.add_argument("--use_npho_time_weight", action="store_true", help="Weight time loss by sqrt(npho)")
+    parser.add_argument("--no_npho_time_weight", action="store_true", help="Disable npho time weighting")
 
     parser.add_argument("--mlflow_experiment", type=str, default=None)
     parser.add_argument("--mlflow_run_name",   type=str, default=None)
@@ -198,7 +198,7 @@ Examples:
         npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight
         time_weight = args.time_weight if args.time_weight is not None else cfg.training.time_weight
         npho_threshold = args.npho_threshold if args.npho_threshold is not None else getattr(cfg.training, "npho_threshold", None)
-        use_nphe_time_weight = not args.no_nphe_time_weight and getattr(cfg.training, "use_nphe_time_weight", True)
+        use_npho_time_weight = not args.no_npho_time_weight and getattr(cfg.training, "use_npho_time_weight", True)
         auto_channel_weight = args.auto_channel_weight or cfg.training.auto_channel_weight
         channel_dropout_rate = args.channel_dropout_rate if args.channel_dropout_rate is not None else cfg.training.channel_dropout_rate
         grad_clip = args.grad_clip if args.grad_clip is not None else getattr(cfg.training, 'grad_clip', 1.0)
@@ -242,7 +242,7 @@ Examples:
         npho_weight = args.npho_weight or 1.0
         time_weight = args.time_weight or 1.0
         npho_threshold = args.npho_threshold  # None uses DEFAULT_NPHO_THRESHOLD
-        use_nphe_time_weight = not args.no_nphe_time_weight
+        use_npho_time_weight = not args.no_npho_time_weight
         auto_channel_weight = args.auto_channel_weight
         channel_dropout_rate = args.channel_dropout_rate or 0.1
         grad_clip = args.grad_clip or 1.0
@@ -479,7 +479,7 @@ Examples:
                 scaler=scaler,
                 num_workers=num_workers,
                 npho_threshold=npho_threshold,
-                use_nphe_time_weight=use_nphe_time_weight,
+                use_npho_time_weight=use_npho_time_weight,
             )
 
             # Update EMA model
@@ -514,7 +514,7 @@ Examples:
                     max_events=1000,
                     num_workers=num_workers,
                     npho_threshold=npho_threshold,
-                    use_nphe_time_weight=use_nphe_time_weight,
+                    use_npho_time_weight=use_npho_time_weight,
                 )
 
                 if collect_preds:

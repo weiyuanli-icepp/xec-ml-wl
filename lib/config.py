@@ -321,7 +321,7 @@ class MAETrainingConfig:
     amp: bool = True
     # Conditional time loss: only compute where npho > threshold
     npho_threshold: Optional[float] = None  # None uses DEFAULT_NPHO_THRESHOLD (10.0)
-    use_nphe_time_weight: bool = True  # Weight time loss by sqrt(npho)
+    use_npho_time_weight: bool = True  # Weight time loss by sqrt(npho)
 
 
 @dataclass
@@ -456,7 +456,7 @@ class InpainterTrainingConfig:
     track_train_metrics: bool = True
     # Conditional time loss: only compute where npho > threshold
     npho_threshold: Optional[float] = None  # None uses DEFAULT_NPHO_THRESHOLD (10.0)
-    use_nphe_time_weight: bool = True  # Weight time loss by sqrt(npho)
+    use_npho_time_weight: bool = True  # Weight time loss by sqrt(npho)
 
 
 @dataclass

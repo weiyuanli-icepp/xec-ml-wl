@@ -185,8 +185,8 @@ Examples:
     parser.add_argument("--grad_accum_steps", type=int, default=None, help="Number of gradient accumulation steps")
     parser.add_argument("--time_mask_ratio_scale", type=float, default=None, help="Scale factor for masking valid-time sensors (1.0=uniform)")
     parser.add_argument("--npho_threshold", type=float, default=None, help="Npho threshold for conditional time loss (raw scale)")
-    parser.add_argument("--use_nphe_time_weight", action="store_true", help="Weight time loss by sqrt(npho)")
-    parser.add_argument("--no_nphe_time_weight", action="store_true", help="Disable nphe time weighting")
+    parser.add_argument("--use_npho_time_weight", action="store_true", help="Weight time loss by sqrt(npho)")
+    parser.add_argument("--no_npho_time_weight", action="store_true", help="Disable npho time weighting")
 
     # MLflow
     parser.add_argument("--mlflow_experiment", type=str, default=None)
@@ -238,7 +238,7 @@ Examples:
         npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight
         time_weight = args.time_weight if args.time_weight is not None else cfg.training.time_weight
         npho_threshold = args.npho_threshold if args.npho_threshold is not None else getattr(cfg.training, "npho_threshold", None)
-        use_nphe_time_weight = not args.no_nphe_time_weight and getattr(cfg.training, "use_nphe_time_weight", True)
+        use_npho_time_weight = not args.no_npho_time_weight and getattr(cfg.training, "use_npho_time_weight", True)
         grad_clip = args.grad_clip if args.grad_clip is not None else cfg.training.grad_clip
         track_mae_rmse = not bool(args.disable_mae_rmse_metrics) if args.disable_mae_rmse_metrics is not None else getattr(cfg.training, "track_mae_rmse", True)
         save_root_predictions = getattr(cfg.training, "save_root_predictions", True)
@@ -290,7 +290,7 @@ Examples:
         npho_weight = args.npho_weight or 1.0
         time_weight = args.time_weight or 1.0
         npho_threshold = args.npho_threshold  # None uses DEFAULT_NPHO_THRESHOLD
-        use_nphe_time_weight = not args.no_nphe_time_weight
+        use_npho_time_weight = not args.no_npho_time_weight
         grad_clip = args.grad_clip or 1.0
         track_mae_rmse = not bool(args.disable_mae_rmse_metrics)
         save_root_predictions = True
@@ -476,7 +476,7 @@ Examples:
                 grad_accum_steps=grad_accum_steps,
                 track_metrics=track_train_metrics,
                 npho_threshold=npho_threshold,
-                use_nphe_time_weight=use_nphe_time_weight,
+                use_npho_time_weight=use_npho_time_weight,
             )
 
             # Validation
@@ -502,7 +502,7 @@ Examples:
                     dataloader_workers=num_workers,
                     dataset_workers=num_threads,
                     npho_threshold=npho_threshold,
-                    use_nphe_time_weight=use_nphe_time_weight,
+                    use_npho_time_weight=use_npho_time_weight,
                 )
 
             dt = time.time() - t0
@@ -623,7 +623,7 @@ Examples:
                         dataloader_workers=num_workers,
                         dataset_workers=num_threads,
                         npho_threshold=npho_threshold,
-                        use_nphe_time_weight=use_nphe_time_weight,
+                        use_npho_time_weight=use_npho_time_weight,
                     )
                 root_path = writer.filepath if writer.count > 0 else None
                 if root_path:
