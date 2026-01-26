@@ -9,8 +9,11 @@ import uproot
 try:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from lib.event_display import plot_mae_comparison
-except ImportError:
-    print("Error: Could not import 'plot_mae_comparison'.")
+    from lib.geom_defs import (
+        DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_NPHO_THRESHOLD
+    )
+except ImportError as e:
+    print(f"Error: Could not import required modules: {e}")
     print("Run from repo root (xec-ml-wl/) or set PYTHONPATH.")
     sys.exit(1)
 
@@ -35,6 +38,8 @@ def main():
     parser.add_argument("--include_top_bottom", action="store_true",
                         help="Include top/bottom hex faces in the comparison grid")
     parser.add_argument("--save", type=str, default=None, help="Save path (PDF recommended)")
+    parser.add_argument("--npho_threshold", type=float, default=None,
+                        help=f"Npho threshold for time validity (raw scale, default: {DEFAULT_NPHO_THRESHOLD})")
     args = parser.parse_args()
 
     if not os.path.exists(args.file):
@@ -89,6 +94,10 @@ def main():
         if savepath and "." not in os.path.basename(savepath):
             savepath = f"{savepath}.pdf"
 
+        # Determine npho_threshold for visualization (convert from raw to normalized space)
+        raw_threshold = args.npho_threshold if args.npho_threshold is not None else DEFAULT_NPHO_THRESHOLD
+        npho_threshold_norm = np.log1p(raw_threshold / DEFAULT_NPHO_SCALE) / DEFAULT_NPHO_SCALE2
+
         plot_mae_comparison(
             x_truth,
             x_masked,
@@ -98,6 +107,7 @@ def main():
             title=title,
             savepath=savepath,
             include_top_bottom=args.include_top_bottom,
+            npho_threshold=npho_threshold_norm,
         )
 
 

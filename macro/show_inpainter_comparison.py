@@ -19,7 +19,8 @@ try:
     from lib.event_display import plot_mae_comparison
     from lib.geom_defs import (
         DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
-        DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
+        DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE,
+        DEFAULT_NPHO_THRESHOLD
     )
 except ImportError as e:
     print(f"Error: Could not import required modules: {e}")
@@ -111,6 +112,10 @@ Examples:
     # Input branch names
     parser.add_argument("--npho_branch", type=str, default="relative_npho")
     parser.add_argument("--time_branch", type=str, default="relative_time")
+
+    # Time-invalid threshold (for visualization)
+    parser.add_argument("--npho_threshold", type=float, default=None,
+                        help=f"Npho threshold for time validity (raw scale, default: {DEFAULT_NPHO_THRESHOLD})")
 
     args = parser.parse_args()
 
@@ -322,6 +327,10 @@ Examples:
     if savepath and "." not in os.path.basename(savepath):
         savepath = f"{savepath}.pdf"
 
+    # Determine npho_threshold for visualization (convert from raw to normalized space)
+    raw_threshold = args.npho_threshold if args.npho_threshold is not None else DEFAULT_NPHO_THRESHOLD
+    npho_threshold_norm = np.log1p(raw_threshold / npho_scale) / npho_scale2
+
     plot_mae_comparison(
         x_truth,
         x_masked,
@@ -331,6 +340,7 @@ Examples:
         title=title,
         savepath=savepath,
         include_top_bottom=args.include_top_bottom,
+        npho_threshold=npho_threshold_norm,
     )
 
     if savepath:

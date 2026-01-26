@@ -9,10 +9,11 @@ import torch.nn.functional as F
 # --- IMPORTS FROM GEOMETRY MODULES ---
 from .geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
-    TOP_HEX_ROWS, BOTTOM_HEX_ROWS
+    TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
+    DEFAULT_NPHO_THRESHOLD
 )
 from .geom_utils import (
-    gather_face, 
+    gather_face,
     build_outer_fine_grid_tensor
 )
 
@@ -265,7 +266,8 @@ def plot_event_time(npho_data, time_data, title="Event Time", savepath=None):
 
 def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
                         channel="npho", title="MAE Reconstruction", savepath=None,
-                        include_top_bottom=False):
+                        include_top_bottom=False,
+                        time_invalid_mask=None, npho_threshold=None):
     """
     Side-by-side comparison of truth, masked input, and MAE prediction.
 
@@ -279,6 +281,10 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         title: plot title
         savepath: path to save figure (None to display)
         include_top_bottom: include top/bottom hex faces in the comparison grid
+        time_invalid_mask: (B, 4760) or (4760,) - 1 where time is invalid (npho <= threshold)
+                          If None and channel=="time" and npho_threshold is set, computed automatically
+        npho_threshold: threshold for time validity (in normalized npho space)
+                       If None, uses DEFAULT_NPHO_THRESHOLD converted to normalized space
     """
     # Handle batched input
     if x_truth.ndim == 3:
@@ -287,6 +293,8 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         mask = mask[event_idx]
         if x_pred is not None:
             x_pred = x_pred[event_idx]
+        if time_invalid_mask is not None and time_invalid_mask.ndim == 2:
+            time_invalid_mask = time_invalid_mask[event_idx]
 
     if isinstance(x_truth, torch.Tensor):
         x_truth = x_truth.cpu().numpy()
@@ -296,8 +304,21 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         mask = mask.cpu().numpy()
     if isinstance(x_pred, torch.Tensor):
         x_pred = x_pred.cpu().numpy()
+    if isinstance(time_invalid_mask, torch.Tensor):
+        time_invalid_mask = time_invalid_mask.cpu().numpy()
 
     ch_idx = 0 if channel == "npho" else 1
+
+    # Auto-compute time_invalid_mask for time channel if not provided
+    if channel == "time" and time_invalid_mask is None:
+        # Use npho channel (index 0) from truth to determine time validity
+        npho_truth = x_truth[:, 0]
+        if npho_threshold is None:
+            # Convert default raw threshold to normalized space
+            # Assuming normalization: npho_norm = log1p(raw / 0.58) / 1.0
+            from .geom_defs import DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2
+            npho_threshold = np.log1p(DEFAULT_NPHO_THRESHOLD / DEFAULT_NPHO_SCALE) / DEFAULT_NPHO_SCALE2
+        time_invalid_mask = (npho_truth <= npho_threshold).astype(np.float32)
     ch_label = "Npho" if channel == "npho" else "Time"
 
     truth_ch = x_truth[:, ch_idx]
@@ -323,6 +344,15 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     outer_masked = build_outer_fine_grid_tensor(masked_t, pool_kernel=None)
     outer_pred = build_outer_fine_grid_tensor(pred_t, pool_kernel=None)
     outer_mask = build_outer_fine_grid_tensor(mask_t, pool_kernel=None)
+
+    # Time-invalid mask for visualization (only used for time channel)
+    if time_invalid_mask is not None:
+        time_invalid_t = to_tensor(time_invalid_mask.astype("float32"))
+        faces_time_invalid = build_face_tensors(time_invalid_t)
+        outer_time_invalid = build_outer_fine_grid_tensor(time_invalid_t, pool_kernel=None)
+    else:
+        faces_time_invalid = None
+        outer_time_invalid = None
 
     def to_np(t):
         return t.squeeze(0).squeeze(0).cpu().numpy()
@@ -358,10 +388,11 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     norm_res = Normalize(vmin=-res_max, vmax=res_max)
     cmap_res = "RdBu_r"
 
-    def plot_hex_grid(ax, row_list, full_vals, title, mode, cmap, norm, mask_vals=None):
+    def plot_hex_grid(ax, row_list, full_vals, title, mode, cmap, norm, mask_vals=None, time_invalid_vals=None):
         pitch_y, pitch_x = 7.5, 7.1
         xs, ys, vals = [], [], []
-        xs_masked, ys_masked = [], []
+        xs_masked_valid, ys_masked_valid = [], []  # Masked with valid time
+        xs_masked_invalid, ys_masked_invalid = [], []  # Masked with invalid time (npho <= threshold)
         all_xs, all_ys = [], []
 
         for r_idx, ids in enumerate(row_list):
@@ -375,8 +406,13 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
                 all_xs.append(x)
                 all_ys.append(y)
                 if mask_vals is not None and mask_vals[pmt_id] > 0.5:
-                    xs_masked.append(x)
-                    ys_masked.append(y)
+                    # Check if this masked sensor has invalid time
+                    if time_invalid_vals is not None and time_invalid_vals[pmt_id] > 0.5:
+                        xs_masked_invalid.append(x)
+                        ys_masked_invalid.append(y)
+                    else:
+                        xs_masked_valid.append(x)
+                        ys_masked_valid.append(y)
                 else:
                     xs.append(x)
                     ys.append(y)
@@ -385,8 +421,12 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         ax.scatter(all_xs, all_ys, s=280, c='lightgray', marker='h', alpha=0.3)
         if xs:
             ax.scatter(xs, ys, c=vals, s=280, cmap=cmap, norm=norm, marker='h', edgecolors='none')
-        if xs_masked:
-            ax.scatter(xs_masked, ys_masked, s=280, c='black', marker='h', edgecolors='none')
+        if xs_masked_valid:
+            ax.scatter(xs_masked_valid, ys_masked_valid, s=280, c='black', marker='h', edgecolors='none')
+        if xs_masked_invalid:
+            # Time-invalid masked sensors: show in different color (dimgray with edge)
+            ax.scatter(xs_masked_invalid, ys_masked_invalid, s=280, c='dimgray', marker='h',
+                      edgecolors='red', linewidths=1.5)
         ax.set_xlim(-55, 55)
         ax.set_ylim(-5, 45)
         ax.axis('off')
@@ -407,11 +447,20 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         axes[0, col_idx].set_title(f"{col_labels[col_idx]} - Truth")
         axes[0, col_idx].axis('off')
 
-        # Masked
+        # Masked - show time-invalid sensors differently
         mask_face = to_np(faces_mask[face_key]) > 0.5
         masked_img = np.ma.array(to_np(faces_masked[face_key]), mask=mask_face)
         axes[1, col_idx].imshow(masked_img, aspect='auto',
                                  origin='upper', cmap=cmap_main_masked, norm=norm_main)
+        # Overlay time-invalid masked sensors in different color (red tint)
+        if faces_time_invalid is not None:
+            time_inv_face = to_np(faces_time_invalid[face_key]) > 0.5
+            combined_mask = mask_face & time_inv_face  # masked AND time-invalid
+            if np.any(combined_mask):
+                # Create RGBA overlay for time-invalid masked pixels
+                overlay = np.zeros((*mask_face.shape, 4))
+                overlay[combined_mask] = [0.8, 0.2, 0.2, 0.7]  # semi-transparent red
+                axes[1, col_idx].imshow(overlay, aspect='auto', origin='upper')
         axes[1, col_idx].set_title(f"{col_labels[col_idx]} - Masked")
         axes[1, col_idx].axis('off')
 
@@ -427,8 +476,13 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         axes[3, col_idx].set_title(f"{col_labels[col_idx]} - Residual")
         axes[3, col_idx].axis('off')
 
-        # Mask
-        axes[4, col_idx].imshow(to_np(faces_mask[face_key]), aspect='auto',
+        # Mask - show time-invalid as different shade
+        mask_display = to_np(faces_mask[face_key]).copy()
+        if faces_time_invalid is not None:
+            time_inv_face = to_np(faces_time_invalid[face_key]) > 0.5
+            # Mark time-invalid masked sensors as 0.5 (gray) instead of 1 (white)
+            mask_display[mask_face & time_inv_face] = 0.5
+        axes[4, col_idx].imshow(mask_display, aspect='auto',
                                  origin='upper', cmap='gray', vmin=0, vmax=1)
         axes[4, col_idx].set_title(f"{col_labels[col_idx]} - Mask")
         axes[4, col_idx].axis('off')
@@ -438,8 +492,17 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     axes[0, 3].set_title("Outer - Truth")
     axes[0, 3].axis('off')
 
-    outer_mask_img = np.ma.array(to_np(outer_masked), mask=to_np(outer_mask) > 0.5)
+    outer_mask_face = to_np(outer_mask) > 0.5
+    outer_mask_img = np.ma.array(to_np(outer_masked), mask=outer_mask_face)
     axes[1, 3].imshow(outer_mask_img, aspect='auto', origin='upper', cmap=cmap_main_masked, norm=norm_main)
+    # Overlay time-invalid masked sensors
+    if outer_time_invalid is not None:
+        outer_time_inv = to_np(outer_time_invalid) > 0.5
+        combined_mask = outer_mask_face & outer_time_inv
+        if np.any(combined_mask):
+            overlay = np.zeros((*outer_mask_face.shape, 4))
+            overlay[combined_mask] = [0.8, 0.2, 0.2, 0.7]
+            axes[1, 3].imshow(overlay, aspect='auto', origin='upper')
     axes[1, 3].set_title("Outer - Masked")
     axes[1, 3].axis('off')
 
@@ -451,7 +514,12 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     axes[3, 3].set_title("Outer - Residual")
     axes[3, 3].axis('off')
 
-    axes[4, 3].imshow(to_np(outer_mask), aspect='auto', origin='upper', cmap='gray', vmin=0, vmax=1)
+    # Mask - show time-invalid as different shade
+    outer_mask_display = to_np(outer_mask).copy()
+    if outer_time_invalid is not None:
+        outer_time_inv = to_np(outer_time_invalid) > 0.5
+        outer_mask_display[outer_mask_face & outer_time_inv] = 0.5
+    axes[4, 3].imshow(outer_mask_display, aspect='auto', origin='upper', cmap='gray', vmin=0, vmax=1)
     axes[4, 3].set_title("Outer - Mask")
     axes[4, 3].axis('off')
 
@@ -464,6 +532,8 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
 
         for row_idx, label in enumerate(row_labels):
             mask_vals = mask if row_idx == 1 else None
+            # Only pass time_invalid for "Masked" row (row_idx=1)
+            time_invalid_vals = time_invalid_mask if (row_idx == 1 and time_invalid_mask is not None) else None
             for col_offset, (hex_title, row_list, mode) in enumerate(hex_specs):
                 ax = axes[row_idx, 4 + col_offset]
                 subplot_title = f"{hex_title} - {label}"
@@ -476,6 +546,7 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
                     cmap=row_cmaps[row_idx],
                     norm=row_norms[row_idx],
                     mask_vals=mask_vals,
+                    time_invalid_vals=time_invalid_vals,
                 )
 
     # Add colorbars
@@ -494,6 +565,13 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         stats_text = f"Mask: {mask_ratio:.1f}% | MAE: {mae:.4f} | RMSE: {rmse:.4f}"
     else:
         stats_text = f"Mask: {mask_ratio:.1f}%"
+
+    # Add time-invalid stats for time channel
+    if time_invalid_mask is not None and channel == "time":
+        n_masked = (mask > 0.5).sum()
+        n_time_invalid = ((mask > 0.5) & (time_invalid_mask > 0.5)).sum()
+        time_valid_pct = 100 * (1 - n_time_invalid / max(n_masked, 1))
+        stats_text += f" | Time-valid: {time_valid_pct:.1f}% (red=invalid)"
 
     fig.suptitle(f"{title}\n{stats_text}", fontsize=14)
     plt.tight_layout(rect=[0, 0, 0.9, 0.95])
