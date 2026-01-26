@@ -293,6 +293,25 @@ Examples:
         print(f"  Note: Small normalization difference (npho: {npho_diff:.4f}, time: {time_diff:.4f})")
         print(f"    Consider regenerating predictions with: python macro/generate_test_predictions.py")
 
+    # Debug: Show sample masked sensor values
+    print(f"\n  === Debug: Masked sensor values (first 10) ===")
+    print(f"  {'sensor_id':>10} | {'truth_npho':>12} | {'pred_npho':>12} | {'diff_npho':>12} | {'truth_time':>12} | {'pred_time':>12} | {'diff_time':>12}")
+    print(f"  {'-'*10} | {'-'*12} | {'-'*12} | {'-'*12} | {'-'*12} | {'-'*12} | {'-'*12}")
+    for i in range(min(10, n_masked)):
+        sid = sensor_ids[i]
+        t_npho = truth_from_original[i, 0]
+        p_npho = pred_npho[i]
+        t_time = truth_from_original[i, 1]
+        p_time = pred_time[i]
+        print(f"  {sid:10d} | {t_npho:12.6f} | {p_npho:12.6f} | {p_npho - t_npho:+12.6f} | {t_time:12.6f} | {p_time:12.6f} | {p_time - t_time:+12.6f}")
+
+    # Summary statistics
+    print(f"\n  === Summary statistics ===")
+    print(f"  Truth npho:  min={truth_from_original[:, 0].min():.4f}, max={truth_from_original[:, 0].max():.4f}, mean={truth_from_original[:, 0].mean():.4f}")
+    print(f"  Pred npho:   min={pred_npho.min():.4f}, max={pred_npho.max():.4f}, mean={pred_npho.mean():.4f}")
+    print(f"  Truth time:  min={truth_from_original[:, 1].min():.4f}, max={truth_from_original[:, 1].max():.4f}, mean={truth_from_original[:, 1].mean():.4f}")
+    print(f"  Pred time:   min={pred_time.min():.4f}, max={pred_time.max():.4f}, mean={pred_time.mean():.4f}")
+
     # --- Reconstruct mask, x_masked, x_pred ---
     # mask: 1 where masked, 0 where visible
     mask = np.zeros(num_sensors, dtype=np.float32)
