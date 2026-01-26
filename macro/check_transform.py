@@ -15,20 +15,23 @@ import argparse
 # TIME_SCALE = 1e-6  
 # TIME_SHIFT = 0.
 # SENTINEL_VAL = -0.1
-TIME_SCALE = 1e-7
-TIME_SHIFT = 0.
-SENTINEL_VAL = -1.0
+# TIME_SCALE = 1e-7
+# TIME_SHIFT = 0.
+# SENTINEL_VAL = -1.0
+TIME_SCALE = 6.5e-8
+TIME_SHIFT = 0.5
+SENTINEL_VAL = -5.0
 
 # Npho Scaling
 NPHO_SCALE  = 0.58
 # NPHO_SCALE  = 1
-# NPHO_SCALE2 = 1.0 # for relative_npho
-NPHO_SCALE2 = 11.54 # for npho
+NPHO_SCALE2 = 1.0 # for relative_npho
+# NPHO_SCALE2 = 11.54 # for npho
 
 # Branch Names
-# BRANCH_NPHO = "relative_npho"
+BRANCH_NPHO = "relative_npho"
 BRANCH_TIME = "relative_time"
-BRANCH_NPHO = "npho"
+# BRANCH_NPHO = "npho"
 # ==========================================
 
 def analyze_file(file_path):
