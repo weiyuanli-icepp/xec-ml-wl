@@ -569,6 +569,7 @@ Examples:
 
             # Save checkpoint
             if (epoch + 1) % save_interval == 0 or (epoch + 1) == epochs or is_best:
+                t_ckpt_start = time.time()
                 checkpoint_dict = {
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
@@ -589,17 +590,21 @@ Examples:
                 # Save last
                 ckpt_path = os.path.join(save_path, "inpainter_checkpoint_last.pth")
                 torch.save(checkpoint_dict, ckpt_path)
-                print(f"  Saved checkpoint to {ckpt_path}")
+                t_ckpt_elapsed = time.time() - t_ckpt_start
+                print(f"  Saved checkpoint to {ckpt_path} ({t_ckpt_elapsed:.1f}s)")
 
                 # Save best
                 if is_best:
+                    t_best_start = time.time()
                     best_path = os.path.join(save_path, "inpainter_checkpoint_best.pth")
                     torch.save(checkpoint_dict, best_path)
-                    print(f"  Saved best checkpoint to {best_path}")
+                    t_best_elapsed = time.time() - t_best_start
+                    print(f"  Saved best checkpoint to {best_path} ({t_best_elapsed:.1f}s)")
 
             # Save ROOT predictions every 10 epochs (and at end)
             root_save_interval = 10
             if save_root_predictions and val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs):
+                t_root_start = time.time()
                 print(f"  Collecting predictions for ROOT output...")
                 with RootPredictionWriter(
                     save_path, epoch + 1, run_id=mlflow_run_id,
@@ -635,8 +640,9 @@ Examples:
                         profile=profile,
                     )
                 root_path = writer.filepath if writer.count > 0 else None
+                t_root_elapsed = time.time() - t_root_start
                 if root_path:
-                    print(f"  Saved predictions to {root_path}")
+                    print(f"  Saved predictions to {root_path} ({t_root_elapsed:.1f}s)")
                     mlflow.log_artifact(root_path)
 
         print(f"\n[INFO] Training complete!")

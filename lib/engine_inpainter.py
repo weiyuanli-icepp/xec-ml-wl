@@ -803,6 +803,7 @@ def run_eval_inpainter(
 
                 # Collect predictions at sensor level
                 if collect_predictions:
+                    profiler.start("pred_collect")
                     B = x_batch.shape[0]
                     original_np = original_values.cpu().numpy()
                     outer_target_np = None
@@ -933,6 +934,7 @@ def run_eval_inpainter(
                         prediction_writer(batch_predictions)
                     else:
                         all_predictions.extend(batch_predictions)
+                    profiler.stop()  # pred_collect
 
                 num_batches += 1
 

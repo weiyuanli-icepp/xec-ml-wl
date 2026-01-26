@@ -57,7 +57,7 @@ checkpoint:
   resume_from: null                 # Path to inpainter checkpoint to resume from
   save_dir: "artifacts/inpainter"   # Directory to save checkpoints
   save_interval: 10                 # Save checkpoint every N epochs
-  save_predictions: true            # Write ROOT outputs during validation
+  save_predictions: false           # Write ROOT outputs during validation
 
 # === MLflow ===
 mlflow:
