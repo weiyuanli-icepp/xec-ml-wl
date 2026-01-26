@@ -216,7 +216,7 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                 # Already-invalid sensors have time == sentinel_value and are NOT in mask
                 already_invalid = (x_in[:, :, 1] == sentinel_value)  # (B, N)
                 total_valid_sensors += (~already_invalid).sum()
-                total_randomly_masked += mask.sum()
+                total_randomly_masked += mask.sum().long()
 
                 profiler.start("loss_compute")
                 # 2. Gather Truth Targets
@@ -668,7 +668,7 @@ def run_eval_mae(model, device, root, tree,
                     # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
                     already_invalid = (x_in[:, :, 1] == sentinel_value)  # (B, N)
                     total_valid_sensors += (~already_invalid).sum()
-                    total_randomly_masked += mask.sum()
+                    total_randomly_masked += mask.sum().long()
 
                     latent_seq = model.encoder.forward_features(x_masked)
 
