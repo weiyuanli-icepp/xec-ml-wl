@@ -1,15 +1,17 @@
 #!/bin/bash
 # Usage: ./run_inpainter.sh
+# Scans over multiple mask ratios
 
 # Use SQLite backend (recommended over deprecated file-based backend)
 export MLFLOW_TRACKING_URI="sqlite:///mlruns.db"
 
-# --- Configuration (Run-specific overrides) ---
-export RUN_NAME="inpainter_mask0.07"
+# --- Mask ratios to scan ---
+MASK_RATIOS=(0.05 0.10 0.15)
+
+# --- Common Configuration ---
 export EPOCHS=50
 export BATCH=1024
 export CHUNK_SIZE=256000
-export MASK_RATIO="0.07"
 export RESUME_FROM=""
 export PARTITION="a100-daily"
 export TIME="12:00:00"
@@ -44,4 +46,18 @@ export TRAIN_PATH="$HOME/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.r
 export VAL_PATH="$HOME/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root"
 export MLFLOW_EXPERIMENT="inpainting"
 
-./submit_inpainter.sh
+# --- Submit jobs for each mask ratio ---
+for MASK in "${MASK_RATIOS[@]}"; do
+    # Format mask ratio for run name (e.g., 0.05 -> mask0.05)
+    MASK_STR=$(printf "%.2f" $MASK)
+    export RUN_NAME="inpainter_mask${MASK_STR}"
+    export MASK_RATIO="$MASK"
+
+    echo "Submitting: $RUN_NAME (mask_ratio=$MASK_RATIO)"
+    ./submit_inpainter.sh
+
+    # Small delay to avoid overwhelming scheduler
+    sleep 2
+done
+
+echo "All jobs submitted!"
