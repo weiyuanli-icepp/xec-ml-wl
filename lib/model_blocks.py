@@ -84,19 +84,34 @@ class ConvNeXtV2Block(nn.Module):
         self.pwconv2 = nn.Linear(4 * dim, dim)
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
-    def forward(self, x):
+    def forward(self, x, mask_2d=None):
+        """
+        Forward pass with optional FCMAE-style masking.
+
+        Args:
+            x: (B, C, H, W) input features
+            mask_2d: (B, 1, H, W) binary mask, 1=masked/dead, 0=visible (optional)
+                     When provided, masked positions are zeroed after spatial conv.
+        """
         input = x
         x = self.dwconv(x)
-        x = x.permute(0, 2, 3, 1) # (N, C, H, W) -> (N, H, W, C)
+
+        # FCMAE-style masking: zero out masked positions after spatial conv
+        if mask_2d is not None:
+            x = x * (1.0 - mask_2d)
+
+        x = x.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
         x = self.norm(x)
         x = self.pwconv1(x)
         x = self.act(x)
         x = self.grn(x)
         x = self.pwconv2(x)
-        x = x.permute(0, 3, 1, 2) # (N, H, W, C) -> (N, C, H, W)
+        x = x.permute(0, 3, 1, 2)  # (N, H, W, C) -> (N, C, H, W)
 
-        x = input + self.drop_path(x)
-        return x
+        # Also mask residual path for consistency
+        if mask_2d is not None:
+            return input * (1.0 - mask_2d) + self.drop_path(x)
+        return input + self.drop_path(x)
 
 class HexGraphConv(nn.Module):
     def __init__(self, in_dim: int, out_dim: int):
@@ -197,12 +212,30 @@ class HexNeXtBlock(nn.Module):
         self.pwconv2 = nn.Linear(4 * dim, dim)
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
-    def forward(self, x, edge_index):
+    def forward(self, x, edge_index, mask_1d=None):
+        """
+        Forward pass with optional FCMAE-style masking.
+
+        Args:
+            x: (B, N, C) node features
+            edge_index: graph connectivity
+            mask_1d: (B, N) binary mask, 1=masked/dead, 0=visible (optional)
+                     When provided, masked nodes are zeroed after spatial conv.
+        """
         input = x
         x = self.spatial_conv(x, edge_index)
+
+        # FCMAE-style masking: zero out masked nodes after spatial conv
+        if mask_1d is not None:
+            x = x * (1.0 - mask_1d.unsqueeze(-1))
+
         x = self.norm(x)
         x = self.pwconv1(x)
         x = self.act(x)
         x = self.grn(x)
         x = self.pwconv2(x)
+
+        # Also mask residual path for consistency
+        if mask_1d is not None:
+            return input * (1.0 - mask_1d.unsqueeze(-1)) + self.drop_path(x)
         return input + self.drop_path(x)

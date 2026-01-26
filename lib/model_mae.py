@@ -172,9 +172,28 @@ class XEC_MAE(nn.Module):
 
         return x_masked, mask
     
-    def forward(self, x_batch):
+    def forward(self, x_batch, use_fcmae_masking=True):
+        """
+        Forward pass for MAE.
+
+        Args:
+            x_batch: (B, 4760, 2) sensor values
+            use_fcmae_masking: If True, pass mask through encoder for FCMAE-style
+                               zeroing after spatial convolutions. If False, only
+                               use mask for loss computation (legacy behavior).
+        """
         x_masked, mask = self.random_masking(x_batch)
-        latent_seq = self.encoder.forward_features(x_masked)
+
+        # FCMAE-style: pass mask through encoder to zero features at masked positions
+        # Include both randomly-masked AND already-invalid sensors in the encoder mask
+        # to prevent sentinel values from leaking into neighboring features
+        if use_fcmae_masking:
+            already_invalid = (x_batch[:, :, 1] == self.sentinel_value)  # (B, N)
+            encoder_mask = (mask.bool() | already_invalid).float()
+        else:
+            encoder_mask = None
+        latent_seq = self.encoder.forward_features(x_masked, mask=encoder_mask)
+
         cnn_names = list(self.encoder.cnn_face_names)
         name_to_idx = {name: i for i, name in enumerate(cnn_names)}
         if not all(k in name_to_idx for k in ("inner", "us", "ds")):
@@ -199,10 +218,15 @@ class XEC_MAE(nn.Module):
         
         return recons, mask
     
-    def get_latent_stats(self, x_batch):
+    def get_latent_stats(self, x_batch, use_fcmae_masking=True):
         with torch.no_grad():
-            x_masked, _ = self.random_masking(x_batch)
-            latent_seq = self.encoder.forward_features(x_masked)
+            x_masked, mask = self.random_masking(x_batch)
+            if use_fcmae_masking:
+                already_invalid = (x_batch[:, :, 1] == self.sentinel_value)
+                encoder_mask = (mask.bool() | already_invalid).float()
+            else:
+                encoder_mask = None
+            latent_seq = self.encoder.forward_features(x_masked, mask=encoder_mask)
             # Calculate the average norm of the tokens
             latent_norm = torch.norm(latent_seq, dim=-1).mean().item()
         return {"system/latent_token_norm": latent_norm}

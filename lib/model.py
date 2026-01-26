@@ -19,37 +19,48 @@ from .geom_utils import (
 class DeepHexEncoder(nn.Module):
     def __init__(self, in_dim=2, embed_dim=1024, hidden_dim=96, num_layers=4, drop_path_rate=0.0):
         super().__init__()
-        
+
         # 1. STEM LAYER (Project 2 -> 96)
         self.stem = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU()
         )
-        
+
         # 2. DEEP HEXNEXT STACK
         self.layers = nn.ModuleList([
-            HexNeXtBlock(dim=hidden_dim, drop_path=drop_path_rate) 
+            HexNeXtBlock(dim=hidden_dim, drop_path=drop_path_rate)
             for _ in range(num_layers)
         ])
-        
+
         # 3. PROJECTION TO BACKBONE DIM
         self.proj = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, embed_dim)
         )
 
-    def forward(self, node_feats, edge_index):
+    def forward(self, node_feats, edge_index, mask_1d=None):
+        """
+        Forward pass with optional FCMAE-style masking.
+
+        Args:
+            node_feats: (B, N, C) or (B, 1, N, C) node features
+            edge_index: graph connectivity
+            mask_1d: (B, N) binary mask, 1=masked, 0=visible (optional)
+
+        Returns:
+            (B, embed_dim) token embedding
+        """
         if node_feats.dim() == 4:
             node_feats = node_feats.flatten(0, 1)
-        
+
         # Apply Stem
         x = self.stem(node_feats)
-        
-        # Apply HexNeXt Blocks
+
+        # Apply HexNeXt Blocks with mask
         for layer in self.layers:
-            x = layer(x, edge_index)
-            
+            x = layer(x, edge_index, mask_1d)
+
         # Global Pooling (Mean)
         x = x.mean(dim=1)
 
@@ -59,38 +70,63 @@ class DeepHexEncoder(nn.Module):
 class FaceBackbone(nn.Module):
     def __init__(self, in_channels=2, base_channels=32, pooled_hw=(4, 4), drop_path_rate=0.0):
         super().__init__()
-        
+
         self.stem = nn.Sequential(
             nn.Conv2d(in_channels, base_channels, kernel_size=4, stride=1, padding=1),
             LayerNorm(base_channels, eps=1e-6, data_format="channels_first")
         )
-        
+
         dp = drop_path_rate
-        
-        self.stage1 = nn.Sequential(
+
+        # Use ModuleList instead of Sequential to support mask passing
+        self.stage1 = nn.ModuleList([
             ConvNeXtV2Block(dim=base_channels, drop_path=dp),
             ConvNeXtV2Block(dim=base_channels, drop_path=dp)
-        )
-        
+        ])
+
         self.downsample = nn.Sequential(
             LayerNorm(base_channels, eps=1e-6, data_format="channels_first"),
             nn.Conv2d(base_channels, base_channels*2, kernel_size=2, stride=2),
         )
-        
-        self.stage2 = nn.Sequential(
+
+        self.stage2 = nn.ModuleList([
             ConvNeXtV2Block(dim=base_channels*2, drop_path=dp),
             ConvNeXtV2Block(dim=base_channels*2, drop_path=dp),
             ConvNeXtV2Block(dim=base_channels*2, drop_path=dp)
-        )
-        
+        ])
+
         self.pooled_hw = pooled_hw
         self.out_dim = (base_channels * 2) * pooled_hw[0] * pooled_hw[1]
 
-    def forward(self, x):
+    def forward(self, x, mask_2d=None):
+        """
+        Forward pass with optional FCMAE-style masking.
+
+        Args:
+            x: (B, C, H, W) input tensor
+            mask_2d: (B, 1, H, W) binary mask, 1=masked, 0=visible (optional)
+
+        Returns:
+            (B, out_dim) flattened feature tensor
+        """
         x = self.stem(x)
-        x = self.stage1(x)
+
+        # Stage 1 with mask
+        for block in self.stage1:
+            x = block(x, mask_2d)
+
         x = self.downsample(x)
-        x = self.stage2(x)
+
+        # Resize mask for stage2 (downsample by factor of 2)
+        if mask_2d is not None:
+            mask_2d_s2 = F.interpolate(mask_2d.float(), size=x.shape[-2:], mode='nearest')
+        else:
+            mask_2d_s2 = None
+
+        # Stage 2 with resized mask
+        for block in self.stage2:
+            x = block(x, mask_2d_s2)
+
         x = F.interpolate(x, size=self.pooled_hw, mode='bilinear', align_corners=False)
         return x.flatten(1)
 
@@ -163,13 +199,49 @@ class XECEncoder(nn.Module):
             nn.Linear(hidden_dim, out_dim)
         )
         
-    def forward_features(self, x_batch):
+    def forward_features(self, x_batch, mask=None):
         """
-        Runs the full backbone + transformer fusion.
-        Returns the sequence of context-aware face tokens.
-        Output shape: (B, T, 1024) where T depends on outer_mode.
+        Runs the full backbone + transformer fusion with optional FCMAE-style masking.
+
+        Args:
+            x_batch: (B, 4760, 2) or (B, N, 2) sensor values
+            mask: (B, 4760) binary mask (optional), 1=masked, 0=visible
+                  When provided, masked positions are zeroed during convolution.
+
+        Returns:
+            (B, T, 1024) sequence of context-aware face tokens
         """
         x_flat = x_batch if x_batch.dim() == 3 else x_batch.flatten(1)
+        B = x_flat.shape[0]
+        device = x_flat.device
+
+        # Convert flat mask to per-face masks if provided
+        face_masks = {}
+        if mask is not None:
+            # Inner face mask: (B, 1, 93, 44)
+            inner_mask_flat = mask[:, INNER_INDEX_MAP.flatten()]
+            face_masks["inner"] = inner_mask_flat.view(B, 1, 93, 44).float()
+
+            # US face mask: (B, 1, 24, 6)
+            us_mask_flat = mask[:, US_INDEX_MAP.flatten()]
+            face_masks["us"] = us_mask_flat.view(B, 1, 24, 6).float()
+
+            # DS face mask: (B, 1, 24, 6)
+            ds_mask_flat = mask[:, DS_INDEX_MAP.flatten()]
+            face_masks["ds"] = ds_mask_flat.view(B, 1, 24, 6).float()
+
+            if self.outer_mode == "split":
+                # Outer coarse mask: (B, 1, 9, 24)
+                outer_coarse_mask_flat = mask[:, OUTER_COARSE_FULL_INDEX_MAP.flatten()]
+                face_masks["outer_coarse"] = outer_coarse_mask_flat.view(B, 1, 9, 24).float()
+
+                # Outer center mask: (B, 1, 5, 6)
+                outer_center_mask_flat = mask[:, OUTER_CENTER_INDEX_MAP.flatten()]
+                face_masks["outer_center"] = outer_center_mask_flat.view(B, 1, 5, 6).float()
+
+            # Hex face masks
+            face_masks["top"] = mask[:, self.top_hex_indices].float()
+            face_masks["bot"] = mask[:, self.bottom_hex_indices].float()
 
         # Rectangular faces
         faces = {
@@ -183,18 +255,39 @@ class XECEncoder(nn.Module):
 
         tokens = []
         for name in self.cnn_face_names:
-            tokens.append(self.backbone(faces[name]))
+            face_mask = face_masks.get(name) if mask is not None else None
+            tokens.append(self.backbone(faces[name], face_mask))
 
         if self.outer_fine:
             outer_fine = build_outer_fine_grid_tensor(x_flat, pool_kernel=self.outer_fine_pool)
-            tokens.append(self.backbone(outer_fine))
+            # Build outer fine mask from coarse mask
+            outer_fine_mask = None
+            if mask is not None:
+                outer_coarse_mask_flat = mask[:, OUTER_COARSE_FULL_INDEX_MAP.flatten()]
+                outer_coarse_mask = outer_coarse_mask_flat.view(B, 1, 9, 24).float()
+                outer_fine_mask = F.interpolate(
+                    outer_coarse_mask,
+                    scale_factor=(5.0, 3.0),  # OUTER_FINE_COARSE_SCALE
+                    mode='nearest'
+                )
+                if self.outer_fine_pool:
+                    if isinstance(self.outer_fine_pool, int):
+                        ph = pw = self.outer_fine_pool
+                    else:
+                        ph, pw = self.outer_fine_pool
+                    outer_fine_mask = F.avg_pool2d(outer_fine_mask, kernel_size=(ph, pw), stride=(ph, pw))
+                    outer_fine_mask = (outer_fine_mask > 0).float()
+            tokens.append(self.backbone(outer_fine, outer_fine_mask))
 
         edge_index = self.hex_edge_index
         top_nodes = gather_hex_nodes(x_flat, self.top_hex_indices)
         bot_nodes = gather_hex_nodes(x_flat, self.bottom_hex_indices)
 
-        tokens.append(self.hex_encoder(top_nodes, edge_index))
-        tokens.append(self.hex_encoder(bot_nodes, edge_index))
+        top_mask = face_masks.get("top") if mask is not None else None
+        bot_mask = face_masks.get("bot") if mask is not None else None
+
+        tokens.append(self.hex_encoder(top_nodes, edge_index, top_mask))
+        tokens.append(self.hex_encoder(bot_nodes, edge_index, bot_mask))
 
         tokens = torch.stack(tokens, dim=1)
         tokens = tokens + self.pos_embed

@@ -15,9 +15,11 @@ from .model import XECEncoder
 from .model_blocks import ConvNeXtV2Block, HexNeXtBlock
 from .geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
-    OUTER_COARSE_FULL_INDEX_MAP,
+    OUTER_COARSE_FULL_INDEX_MAP, OUTER_CENTER_INDEX_MAP,
     TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
-    HEX_EDGE_INDEX_NP, OUTER_FINE_H, OUTER_FINE_W, flatten_hex_rows
+    HEX_EDGE_INDEX_NP, OUTER_FINE_H, OUTER_FINE_W, flatten_hex_rows,
+    OUTER_SENSOR_TO_FINEGRID, OUTER_ALL_SENSOR_IDS, OUTER_SENSOR_ID_TO_IDX,
+    CENTRAL_COARSE_IDS
 )
 from .geom_utils import gather_face, build_outer_fine_grid_tensor, gather_hex_nodes
 
@@ -222,6 +224,188 @@ class HexInpaintingHead(nn.Module):
         return pred_masked, mask_indices, valid_mask
 
 
+class OuterSensorInpaintingHead(nn.Module):
+    """
+    Inpainting head for outer face that predicts at sensor level (not grid level).
+
+    Uses finegrid features for spatial context but outputs predictions indexed by
+    actual sensor IDs. This avoids the grid-index vs sensor-index collision problem.
+
+    Architecture:
+    1. Local CNN processes finegrid input with latent conditioning
+    2. For each sensor, learnable attention pools features from its finegrid region
+    3. MLP predicts (npho, time) for each sensor
+    """
+
+    def __init__(self, latent_dim=1024, hidden_dim=64, pool_kernel=None):
+        super().__init__()
+        self.pool_kernel = pool_kernel
+
+        # Compute actual finegrid size after pooling
+        if pool_kernel:
+            if isinstance(pool_kernel, int):
+                ph = pw = pool_kernel
+            else:
+                ph, pw = pool_kernel
+            self.grid_h = OUTER_FINE_H // ph
+            self.grid_w = OUTER_FINE_W // pw
+        else:
+            self.grid_h = OUTER_FINE_H
+            self.grid_w = OUTER_FINE_W
+
+        # Project latent token to conditioning vector
+        self.latent_proj = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim),
+            nn.GELU(),
+        )
+
+        # Local CNN for neighborhood context
+        self.local_encoder = nn.Sequential(
+            nn.Conv2d(2 + hidden_dim, hidden_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(8, hidden_dim),
+            nn.GELU(),
+            ConvNeXtV2Block(dim=hidden_dim, drop_path=0.0),
+            ConvNeXtV2Block(dim=hidden_dim, drop_path=0.0),
+        )
+
+        # Attention pooling for coarse regions (5×3 = 15 positions after pool adjustment)
+        # and center regions (3×2 = 6 positions after pool adjustment)
+        self.attn_weight = nn.Sequential(
+            nn.Linear(hidden_dim, 1),  # Produces attention logits per position
+        )
+
+        # Prediction head
+        self.pred_head = nn.Sequential(
+            nn.Linear(hidden_dim + hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 2),  # (npho, time)
+        )
+
+        # Build lookup tables for sensor regions
+        # Precompute region bounds adjusted for pooling
+        self._build_region_lookup()
+
+    def _build_region_lookup(self):
+        """Build precomputed lookup tables for sensor->finegrid region mapping."""
+        # Sort sensor IDs for consistent ordering
+        sensor_ids = OUTER_ALL_SENSOR_IDS.tolist()
+        n_sensors = len(sensor_ids)
+
+        # Store region bounds: (h_start, h_end, w_start, w_end) for each sensor
+        region_bounds = []
+        for sid in sensor_ids:
+            h0, h1, w0, w1 = OUTER_SENSOR_TO_FINEGRID[sid]
+            # Adjust for pooling if needed
+            if self.pool_kernel:
+                if isinstance(self.pool_kernel, int):
+                    ph = pw = self.pool_kernel
+                else:
+                    ph, pw = self.pool_kernel
+                h0, h1 = h0 // ph, h1 // ph
+                w0, w1 = w0 // pw, w1 // pw
+            region_bounds.append((h0, h1, w0, w1))
+
+        # Store as buffer for device transfer
+        self.register_buffer("sensor_ids", torch.tensor(sensor_ids, dtype=torch.long))
+        self.n_sensors = n_sensors
+
+        # Store region bounds
+        self.region_bounds = region_bounds
+
+    def forward(self, finegrid_tensor, latent_token, sensor_mask):
+        """
+        Args:
+            finegrid_tensor: (B, 2, H, W) finegrid values (from build_outer_fine_grid_tensor)
+            latent_token: (B, latent_dim) global context from encoder
+            sensor_mask: (B, 234) binary mask at sensor level (indexed by OUTER_ALL_SENSOR_IDS order)
+
+        Returns:
+            pred_masked: (B, max_masked, 2) predictions for masked sensors
+            sensor_ids_masked: (B, max_masked) flat sensor IDs
+            valid: (B, max_masked) boolean mask for valid positions
+        """
+        B, C, H, W = finegrid_tensor.shape
+        device = finegrid_tensor.device
+
+        # Project latent to spatial conditioning
+        latent_cond = self.latent_proj(latent_token)  # (B, hidden_dim)
+        latent_cond_spatial = latent_cond.view(B, -1, 1, 1).expand(-1, -1, H, W)
+
+        # Concatenate input with latent conditioning
+        x = torch.cat([finegrid_tensor, latent_cond_spatial], dim=1)  # (B, 2 + hidden_dim, H, W)
+
+        # Local encoding
+        features = self.local_encoder(x)  # (B, hidden_dim, H, W)
+        hidden_dim = features.shape[1]
+
+        # Predict for all sensors using attention pooling over their regions
+        # To avoid loops, we'll predict for all sensors then gather masked ones
+        all_sensor_features = []
+
+        for i, (h0, h1, w0, w1) in enumerate(self.region_bounds):
+            # Extract region features
+            region_h = h1 - h0
+            region_w = w1 - w0
+
+            if region_h <= 0 or region_w <= 0:
+                # Degenerate region (shouldn't happen, but handle gracefully)
+                all_sensor_features.append(torch.zeros(B, hidden_dim, device=device))
+                continue
+
+            region = features[:, :, h0:h1, w0:w1]  # (B, hidden_dim, region_h, region_w)
+
+            # Attention pooling
+            region_flat = region.permute(0, 2, 3, 1).reshape(B, -1, hidden_dim)  # (B, region_h*region_w, hidden_dim)
+            attn_logits = self.attn_weight(region_flat).squeeze(-1)  # (B, region_h*region_w)
+            attn_weights = F.softmax(attn_logits, dim=-1).unsqueeze(-1)  # (B, region_h*region_w, 1)
+            pooled = (region_flat * attn_weights).sum(dim=1)  # (B, hidden_dim)
+            all_sensor_features.append(pooled)
+
+        all_sensor_features = torch.stack(all_sensor_features, dim=1)  # (B, n_sensors, hidden_dim)
+
+        # Concatenate with latent and predict
+        latent_expanded = latent_cond.unsqueeze(1).expand(-1, self.n_sensors, -1)  # (B, n_sensors, hidden_dim)
+        combined = torch.cat([all_sensor_features, latent_expanded], dim=-1)  # (B, n_sensors, 2*hidden_dim)
+        all_preds = self.pred_head(combined)  # (B, n_sensors, 2)
+
+        # Extract only masked positions
+        num_masked_per_sample = sensor_mask.sum(dim=1).int()  # (B,)
+        max_masked = num_masked_per_sample.max().item()
+
+        if max_masked == 0:
+            return (
+                torch.zeros(B, 0, 2, device=device, dtype=finegrid_tensor.dtype),
+                torch.zeros(B, 0, dtype=torch.long, device=device),
+                torch.zeros(B, 0, dtype=torch.bool, device=device),
+            )
+
+        # Vectorized gather of predictions at masked positions
+        batch_idx, sensor_idx = sensor_mask.nonzero(as_tuple=True)
+
+        # Gather predictions
+        gathered_preds = all_preds[batch_idx, sensor_idx]  # (total_masked, 2)
+
+        # Get actual sensor IDs
+        gathered_sensor_ids = self.sensor_ids[sensor_idx]  # (total_masked,)
+
+        # Compute within-batch position indices for scattering
+        cumsum = torch.zeros(B + 1, device=device, dtype=torch.long)
+        cumsum[1:] = num_masked_per_sample.cumsum(0)
+        within_batch_idx = torch.arange(len(batch_idx), device=device) - cumsum[batch_idx]
+
+        # Scatter into output tensors
+        pred_masked = torch.zeros(B, max_masked, 2, device=device, dtype=all_preds.dtype)
+        pred_masked[batch_idx, within_batch_idx] = gathered_preds
+
+        sensor_ids_masked = torch.zeros(B, max_masked, dtype=torch.long, device=device)
+        sensor_ids_masked[batch_idx, within_batch_idx] = gathered_sensor_ids
+
+        valid_mask = torch.zeros(B, max_masked, dtype=torch.bool, device=device)
+        valid_mask[batch_idx, within_batch_idx] = True
+
+        return pred_masked, sensor_ids_masked, valid_mask
+
+
 class XEC_Inpainter(nn.Module):
     """
     Dead channel inpainting model.
@@ -247,20 +431,19 @@ class XEC_Inpainter(nn.Module):
         self.head_us = FaceInpaintingHead(24, 6, latent_dim=latent_dim)
         self.head_ds = FaceInpaintingHead(24, 6, latent_dim=latent_dim)
 
-        # Outer face dimensions depend on encoder config
+        # Outer face head - sensor-level for finegrid mode, grid-level otherwise
         if encoder.outer_fine:
-            if encoder.outer_fine_pool:
-                if isinstance(encoder.outer_fine_pool, int):
-                    ph = pw = encoder.outer_fine_pool
-                else:
-                    ph, pw = encoder.outer_fine_pool
-                out_h = OUTER_FINE_H // ph
-                out_w = OUTER_FINE_W // pw
-            else:
-                out_h, out_w = OUTER_FINE_H, OUTER_FINE_W
+            # Use sensor-level head for finegrid mode
+            self.head_outer_sensor = OuterSensorInpaintingHead(
+                latent_dim=latent_dim,
+                hidden_dim=64,
+                pool_kernel=encoder.outer_fine_pool
+            )
+            self.head_outer = None  # Not used in finegrid mode
         else:
-            out_h, out_w = 9, 24
-        self.head_outer = FaceInpaintingHead(out_h, out_w, latent_dim=latent_dim)
+            # Use grid-level head for split/coarse mode
+            self.head_outer = FaceInpaintingHead(9, 24, latent_dim=latent_dim)
+            self.head_outer_sensor = None
 
         # Hex face heads
         num_hex_top = len(flatten_hex_rows(TOP_HEX_ROWS))
@@ -371,9 +554,14 @@ class XEC_Inpainter(nn.Module):
             x_masked = x_flat.clone()
             x_masked[mask.bool().unsqueeze(-1).expand_as(x_flat)] = self.sentinel_value
 
-        # Get encoder features (with masked input)
+        # Get encoder features (with masked input and FCMAE-style masking)
+        # Include both randomly-masked AND already-invalid sensors in the encoder mask
+        # to prevent sentinel values from leaking into neighboring features
+        already_invalid = (x_flat[:, :, 1] == self.sentinel_value)  # (B, N)
+        encoder_mask = (mask.bool() | already_invalid).float()
+
         with torch.set_grad_enabled(not self.freeze_encoder):
-            latent_seq = self.encoder.forward_features(x_masked)  # (B, num_tokens, 1024)
+            latent_seq = self.encoder.forward_features(x_masked, mask=encoder_mask)  # (B, num_tokens, 1024)
 
         # Map token indices
         cnn_names = list(self.encoder.cnn_face_names)
@@ -415,42 +603,39 @@ class XEC_Inpainter(nn.Module):
         results["ds"] = {"pred": pred, "indices": idx, "valid": valid, "mask_2d": ds_mask_2d}
 
         # Outer face
-        # Get coarse mask first (always needed for sensor-level masking)
-        outer_mask_flat = mask[:, self.outer_coarse_idx.flatten()]  # (B, 9*24)
-        outer_mask_coarse = outer_mask_flat.view(B, 9, 24)
-
-        if self.encoder.outer_fine:
-            outer_tensor = build_outer_fine_grid_tensor(x_masked, pool_kernel=self.encoder.outer_fine_pool)
-            # Upsample coarse mask to fine grid, then pool if needed
-            from .geom_defs import OUTER_FINE_COARSE_SCALE
-            cr, cc = OUTER_FINE_COARSE_SCALE
-            outer_mask_fine = F.interpolate(
-                outer_mask_coarse.unsqueeze(1).float(),
-                scale_factor=(float(cr), float(cc)),
-                mode='nearest'
-            ).squeeze(1)  # (B, 45, 72)
-            # Apply pooling if used
-            if self.encoder.outer_fine_pool:
-                if isinstance(self.encoder.outer_fine_pool, int):
-                    ph = pw = self.encoder.outer_fine_pool
-                else:
-                    ph, pw = self.encoder.outer_fine_pool
-                outer_mask_fine = F.avg_pool2d(
-                    outer_mask_fine.unsqueeze(1),
-                    kernel_size=(ph, pw),
-                    stride=(ph, pw)
-                ).squeeze(1)
-                # Convert avg back to binary (any masked → masked)
-                outer_mask_2d = (outer_mask_fine > 0).float()
-            else:
-                outer_mask_2d = outer_mask_fine
-        else:
-            outer_tensor = gather_face(x_masked, OUTER_COARSE_FULL_INDEX_MAP)
-            outer_mask_2d = outer_mask_coarse
-
         outer_latent = latent_seq[:, outer_idx]
-        pred, idx, valid = self.head_outer(outer_tensor, outer_latent, outer_mask_2d)
-        results["outer"] = {"pred": pred, "indices": idx, "valid": valid, "mask_2d": outer_mask_2d}
+
+        if self.encoder.outer_fine and self.head_outer_sensor is not None:
+            # Sensor-level prediction for finegrid mode
+            # Build outer finegrid tensor (without pooling - the head handles that)
+            outer_tensor = build_outer_fine_grid_tensor(x_masked, pool_kernel=self.encoder.outer_fine_pool)
+
+            # Build sensor-level mask (B, 234) indexed by OUTER_ALL_SENSOR_IDS order
+            outer_sensor_ids_tensor = torch.tensor(OUTER_ALL_SENSOR_IDS, device=device, dtype=torch.long)
+            outer_sensor_mask = mask[:, outer_sensor_ids_tensor]  # (B, 234)
+
+            pred, sensor_ids, valid = self.head_outer_sensor(outer_tensor, outer_latent, outer_sensor_mask)
+            results["outer"] = {
+                "pred": pred,
+                "sensor_ids": sensor_ids,  # Now stores actual sensor IDs
+                "valid": valid,
+                "sensor_mask": outer_sensor_mask,
+                "is_sensor_level": True,  # Flag to distinguish from grid-level
+            }
+        else:
+            # Grid-level prediction for split/coarse mode
+            outer_mask_flat = mask[:, self.outer_coarse_idx.flatten()]  # (B, 9*24)
+            outer_mask_2d = outer_mask_flat.view(B, 9, 24)
+            outer_tensor = gather_face(x_masked, OUTER_COARSE_FULL_INDEX_MAP)
+
+            pred, idx, valid = self.head_outer(outer_tensor, outer_latent, outer_mask_2d)
+            results["outer"] = {
+                "pred": pred,
+                "indices": idx,
+                "valid": valid,
+                "mask_2d": outer_mask_2d,
+                "is_sensor_level": False,
+            }
 
         # Top hex face
         top_nodes = gather_hex_nodes(x_masked, self.top_hex_indices)  # (B, num_top, 2)

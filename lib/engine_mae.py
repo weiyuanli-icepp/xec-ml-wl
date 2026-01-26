@@ -9,7 +9,8 @@ from .geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
     OUTER_COARSE_FULL_INDEX_MAP, OUTER_CENTER_INDEX_MAP,
     OUTER_FINE_COARSE_SCALE, OUTER_FINE_CENTER_SCALE, OUTER_FINE_CENTER_START,
-    TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows
+    TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows,
+    DEFAULT_NPHO_THRESHOLD
 )
 
 def run_epoch_mae(model, optimizer, device, root, tree,
@@ -24,12 +25,18 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                   auto_channel_weight=False,
                   grad_clip=1.0,
                   scaler=None,
-                  num_workers=8):
+                  num_workers=8,
+                  npho_threshold=None,
+                  use_nphe_time_weight=True):
     model.train()
     if scaler is None:
         scaler = torch.amp.GradScaler('cuda', enabled=amp)
     loss_func = get_pointwise_loss_fn(loss_fn)
     log_vars = getattr(model, "channel_log_vars", None) if auto_channel_weight else None
+
+    # Conditional time loss threshold
+    if npho_threshold is None:
+        npho_threshold = DEFAULT_NPHO_THRESHOLD
 
     # Per-face total losses
     face_loss_sums = {
@@ -63,7 +70,9 @@ def run_epoch_mae(model, optimizer, device, root, tree,
     # Track actual mask ratio (randomly-masked / valid sensors)
     total_randomly_masked = 0
     total_valid_sensors = 0
-   
+    # Track time-valid sensors (sensors with npho > threshold)
+    total_time_valid_masked = 0
+
     branches = [npho_branch, time_branch]
         
     top_indices = torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long()
@@ -232,23 +241,77 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                         mask_sum = mask_expanded.sum()
                         mask_sum_safe = mask_sum + 1e-8
                         npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum_safe
-                        time_loss = (loss_map_time * mask_expanded).sum() / mask_sum_safe
+
+                        # Conditional time loss: only compute where npho > threshold
+                        # Get raw npho values for this face to check threshold
+                        if isinstance(indices, torch.Tensor):
+                            raw_npho_face = raw_n[:, indices]  # (B, num_sensors)
+                        else:
+                            raw_npho_face = raw_n[:, indices.flatten()].view(raw_n.size(0), *indices.shape)
+
+                        # Create time_valid_mask at the same shape as mask_expanded
+                        if name in ["top", "bot"]:
+                            time_valid_base = (raw_npho_face > npho_threshold).unsqueeze(1).float()  # (B, 1, N)
+                        elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                            # For outer fine grid: use coarse-level threshold check, then upsample
+                            time_valid_coarse = (raw_npho_face > npho_threshold).float()  # (B, H_coarse, W_coarse)
+                            time_valid_coarse = time_valid_coarse.view(raw_n.size(0), 1, *indices.shape)
+                            time_valid_base = F.interpolate(time_valid_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
+                            if pool_kernel:
+                                # Pool and convert back to binary (any valid → valid, be permissive)
+                                time_valid_base = F.avg_pool2d(time_valid_base, kernel_size=(ph, pw), stride=(ph, pw))
+                                time_valid_base = (time_valid_base > 0).float()
+                        else:
+                            H, W = pred.shape[-2], pred.shape[-1]
+                            time_valid_base = (raw_npho_face > npho_threshold).view(raw_n.size(0), 1, H, W).float()
+
+                        # Combined mask for time: randomly masked AND time-valid (npho > threshold)
+                        time_mask_expanded = mask_expanded * time_valid_base
+
+                        # Nphe weighting for time loss (chi-square-like: weight ~ sqrt(npho))
+                        if use_nphe_time_weight and time_mask_expanded.sum() > 0:
+                            if name in ["top", "bot"]:
+                                nphe_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
+                            elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                                nphe_coarse = raw_npho_face.view(raw_n.size(0), 1, *indices.shape)
+                                nphe_fine = F.interpolate(nphe_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
+                                if pool_kernel:
+                                    nphe_fine = F.avg_pool2d(nphe_fine, kernel_size=(ph, pw), stride=(ph, pw))
+                                nphe_weight_map = torch.sqrt(nphe_fine.clamp(min=npho_threshold))
+                            else:
+                                H, W = pred.shape[-2], pred.shape[-1]
+                                nphe_weight_map = torch.sqrt(raw_npho_face.view(raw_n.size(0), 1, H, W).clamp(min=npho_threshold))
+                            # Normalize weight so mean is ~1 for stable training
+                            nphe_weight_map = nphe_weight_map / (nphe_weight_map[time_mask_expanded.bool()].mean() + 1e-8)
+                            weighted_time_loss = (loss_map_time * time_mask_expanded * nphe_weight_map).sum()
+                        else:
+                            weighted_time_loss = (loss_map_time * time_mask_expanded).sum()
+
+                        time_mask_sum = time_mask_expanded.sum()
+                        time_mask_sum_safe = time_mask_sum + 1e-8
+                        time_loss = weighted_time_loss / time_mask_sum_safe
+
+                        # Track time-valid masked count
+                        total_time_valid_masked += time_mask_sum.item()
 
                         diff_npho = pred[:, 0:1] - target[:, 0:1]
                         diff_time = pred[:, 1:2] - target[:, 1:2]
                         mask_sum_val = mask_sum.item()
+                        time_mask_sum_val = time_mask_sum.item()
                         if mask_sum_val > 0:
                             masked_abs_sum_npho += (diff_npho.abs() * mask_expanded).sum().item()
-                            masked_abs_sum_time += (diff_time.abs() * mask_expanded).sum().item()
                             masked_sq_sum_npho += (diff_npho.pow(2) * mask_expanded).sum().item()
-                            masked_sq_sum_time += (diff_time.pow(2) * mask_expanded).sum().item()
                             masked_count_npho += mask_sum_val
-                            masked_count_time += mask_sum_val
                             masked_abs_face_npho[name] += (diff_npho.abs() * mask_expanded).sum().item()
-                            masked_abs_face_time[name] += (diff_time.abs() * mask_expanded).sum().item()
                             masked_sq_face_npho[name] += (diff_npho.pow(2) * mask_expanded).sum().item()
-                            masked_sq_face_time[name] += (diff_time.pow(2) * mask_expanded).sum().item()
-                            masked_count_face[name] += mask_sum_val
+                        if time_mask_sum_val > 0:
+                            # Time metrics computed only on time-valid sensors
+                            masked_abs_sum_time += (diff_time.abs() * time_mask_expanded).sum().item()
+                            masked_sq_sum_time += (diff_time.pow(2) * time_mask_expanded).sum().item()
+                            masked_count_time += time_mask_sum_val
+                            masked_abs_face_time[name] += (diff_time.abs() * time_mask_expanded).sum().item()
+                            masked_sq_face_time[name] += (diff_time.pow(2) * time_mask_expanded).sum().item()
+                            masked_count_face[name] += time_mask_sum_val
 
                         if log_vars is not None and log_vars.numel() >= 2:
                             npho_loss = 0.5 * torch.exp(-log_vars[0]) * npho_loss + 0.5 * log_vars[0]
@@ -327,6 +390,12 @@ def run_epoch_mae(model, optimizer, device, root, tree,
     else:
         metrics["actual_mask_ratio"] = 0.0
 
+    # Time-valid ratio (masked sensors with npho > threshold / total masked sensors)
+    if total_randomly_masked > 0:
+        metrics["time_valid_ratio"] = total_time_valid_masked / total_randomly_masked
+    else:
+        metrics["time_valid_ratio"] = 0.0
+
     return metrics
 
 def run_eval_mae(model, device, root, tree,
@@ -339,7 +408,9 @@ def run_eval_mae(model, device, root, tree,
                  time_weight=1.0,
                  auto_channel_weight=False,
                  collect_predictions=False, max_events=1000,
-                 num_workers=8):
+                 num_workers=8,
+                 npho_threshold=None,
+                 use_nphe_time_weight=True):
     """
     Evaluate MAE model on validation data.
 
@@ -354,6 +425,10 @@ def run_eval_mae(model, device, root, tree,
     model.eval()
     loss_func = get_pointwise_loss_fn(loss_fn)
     log_vars = getattr(model, "channel_log_vars", None) if auto_channel_weight else None
+
+    # Conditional time loss threshold
+    if npho_threshold is None:
+        npho_threshold = DEFAULT_NPHO_THRESHOLD
 
     # Loss tracking
     face_loss_sums = {"inner": 0.0, "us": 0.0, "ds": 0.0, "outer": 0.0, "top": 0.0, "bot": 0.0}
@@ -384,6 +459,8 @@ def run_eval_mae(model, device, root, tree,
     # Track actual mask ratio (randomly-masked / valid sensors)
     total_randomly_masked = 0
     total_valid_sensors = 0
+    # Track time-valid sensors (sensors with npho > threshold)
+    total_time_valid_masked = 0
 
     branches = [npho_branch, time_branch]
 
@@ -576,23 +653,70 @@ def run_eval_mae(model, device, root, tree,
                             mask_sum = mask_expanded.sum()
                             mask_sum_safe = mask_sum + 1e-8
                             npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum_safe
-                            time_loss = (loss_map_time * mask_expanded).sum() / mask_sum_safe
+
+                            # Conditional time loss: only compute where npho > threshold
+                            if isinstance(indices, torch.Tensor):
+                                raw_npho_face = raw_n[:, indices]
+                            else:
+                                raw_npho_face = raw_n[:, indices.flatten()].view(raw_n.size(0), *indices.shape)
+
+                            # Create time_valid_mask at the same shape as mask_expanded
+                            if name in ["top", "bot"]:
+                                time_valid_base = (raw_npho_face > npho_threshold).unsqueeze(1).float()
+                            elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                                time_valid_coarse = (raw_npho_face > npho_threshold).float()
+                                time_valid_coarse = time_valid_coarse.view(raw_n.size(0), 1, *indices.shape)
+                                time_valid_base = F.interpolate(time_valid_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
+                                if pool_kernel:
+                                    time_valid_base = F.avg_pool2d(time_valid_base, kernel_size=(ph, pw), stride=(ph, pw))
+                                    time_valid_base = (time_valid_base > 0).float()
+                            else:
+                                H, W = pred.shape[-2], pred.shape[-1]
+                                time_valid_base = (raw_npho_face > npho_threshold).view(raw_n.size(0), 1, H, W).float()
+
+                            time_mask_expanded = mask_expanded * time_valid_base
+
+                            # Nphe weighting for time loss
+                            if use_nphe_time_weight and time_mask_expanded.sum() > 0:
+                                if name in ["top", "bot"]:
+                                    nphe_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
+                                elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                                    nphe_coarse = raw_npho_face.view(raw_n.size(0), 1, *indices.shape)
+                                    nphe_fine = F.interpolate(nphe_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
+                                    if pool_kernel:
+                                        nphe_fine = F.avg_pool2d(nphe_fine, kernel_size=(ph, pw), stride=(ph, pw))
+                                    nphe_weight_map = torch.sqrt(nphe_fine.clamp(min=npho_threshold))
+                                else:
+                                    H, W = pred.shape[-2], pred.shape[-1]
+                                    nphe_weight_map = torch.sqrt(raw_npho_face.view(raw_n.size(0), 1, H, W).clamp(min=npho_threshold))
+                                nphe_weight_map = nphe_weight_map / (nphe_weight_map[time_mask_expanded.bool()].mean() + 1e-8)
+                                weighted_time_loss = (loss_map_time * time_mask_expanded * nphe_weight_map).sum()
+                            else:
+                                weighted_time_loss = (loss_map_time * time_mask_expanded).sum()
+
+                            time_mask_sum = time_mask_expanded.sum()
+                            time_mask_sum_safe = time_mask_sum + 1e-8
+                            time_loss = weighted_time_loss / time_mask_sum_safe
+
+                            total_time_valid_masked += time_mask_sum.item()
 
                             diff_npho = pred[:, 0:1] - target[:, 0:1]
                             diff_time = pred[:, 1:2] - target[:, 1:2]
                             mask_sum_val = mask_sum.item()
+                            time_mask_sum_val = time_mask_sum.item()
                             if mask_sum_val > 0:
                                 masked_abs_sum_npho += (diff_npho.abs() * mask_expanded).sum().item()
-                                masked_abs_sum_time += (diff_time.abs() * mask_expanded).sum().item()
                                 masked_sq_sum_npho += (diff_npho.pow(2) * mask_expanded).sum().item()
-                                masked_sq_sum_time += (diff_time.pow(2) * mask_expanded).sum().item()
                                 masked_count_npho += mask_sum_val
-                                masked_count_time += mask_sum_val
                                 masked_abs_face_npho[name] += (diff_npho.abs() * mask_expanded).sum().item()
-                                masked_abs_face_time[name] += (diff_time.abs() * mask_expanded).sum().item()
                                 masked_sq_face_npho[name] += (diff_npho.pow(2) * mask_expanded).sum().item()
-                                masked_sq_face_time[name] += (diff_time.pow(2) * mask_expanded).sum().item()
-                                masked_count_face[name] += mask_sum_val
+                            if time_mask_sum_val > 0:
+                                masked_abs_sum_time += (diff_time.abs() * time_mask_expanded).sum().item()
+                                masked_sq_sum_time += (diff_time.pow(2) * time_mask_expanded).sum().item()
+                                masked_count_time += time_mask_sum_val
+                                masked_abs_face_time[name] += (diff_time.abs() * time_mask_expanded).sum().item()
+                                masked_sq_face_time[name] += (diff_time.pow(2) * time_mask_expanded).sum().item()
+                                masked_count_face[name] += time_mask_sum_val
                             if log_vars is not None and log_vars.numel() >= 2:
                                 npho_loss = 0.5 * torch.exp(-log_vars[0]) * npho_loss + 0.5 * log_vars[0]
                                 time_loss = 0.5 * torch.exp(-log_vars[1]) * time_loss + 0.5 * log_vars[1]
@@ -657,6 +781,12 @@ def run_eval_mae(model, device, root, tree,
         metrics["actual_mask_ratio"] = total_randomly_masked / total_valid_sensors
     else:
         metrics["actual_mask_ratio"] = 0.0
+
+    # Time-valid ratio (masked sensors with npho > threshold / total masked sensors)
+    if total_randomly_masked > 0:
+        metrics["time_valid_ratio"] = total_time_valid_masked / total_randomly_masked
+    else:
+        metrics["time_valid_ratio"] = 0.0
 
     if collect_predictions:
         # Concatenate collected predictions

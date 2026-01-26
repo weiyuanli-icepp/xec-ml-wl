@@ -30,6 +30,7 @@ This model respects the complex topology of the detector by combining:
    - [A. The Pipeline](#a-the-pipeline)
    - [B. Key Components](#b-key-components)
    - [C. Training Features](#c-training-features)
+   - [D. FCMAE-Style Masked Convolution](#d-fcmae-style-masked-convolution)
 5. [Detector Geometry & Sensor Mapping](#5-detector-geometry--sensor-mapping)
    - [A. Sensor Overview](#a-sensor-overview)
    - [B. Index Maps](#b-index-maps-libgeom_defspy)
@@ -972,10 +973,86 @@ graph TD
 * **EMA (Exponential Moving Average)**: Maintains a shadow model ($W_{\mathrm{ema}} = \beta W_{\mathrm{ema}} + (1-\beta)W_{\mathrm{live}}$) for stable validation.
 * **Positional Encoding**: Essential for the Transformer to understand the detector topology.
 
-### D. References
+### D. FCMAE-Style Masked Convolution
+
+For MAE pretraining and dead channel inpainting, we implement **FCMAE-style masked convolution** following the approach from [ConvNeXt V2](https://github.com/facebookresearch/ConvNeXt-V2).
+
+#### The Problem: Masking in CNNs
+
+Unlike Vision Transformers where masked patches can simply be removed from the sequence, CNNs require the 2D spatial structure to be preserved for convolution. Two approaches exist:
+
+| Approach | Method | Pros | Cons |
+|----------|--------|------|------|
+| **Sparse Convolution** | Use libraries like MinkowskiEngine/TorchSparse to skip masked regions | Lower FLOPs, memory efficient | Complex installation, library maintenance |
+| **Dense + Binary Masking** | Apply `x = x * (1 - mask)` after each spatial operation | Simple, compatible with accelerators | Theoretically more compute |
+
+#### Our Implementation: Dense Masking
+
+We use the **dense masking approach**, which is mathematically equivalent to sparse convolution:
+
+```python
+# In ConvNeXtV2Block
+def forward(self, x, mask_2d=None):
+    input = x
+    x = self.dwconv(x)
+
+    # FCMAE-style masking: zero out masked positions
+    if mask_2d is not None:
+        x = x * (1.0 - mask_2d)
+
+    # ... rest of block (norm, MLP, etc.)
+
+    # Also mask residual path
+    if mask_2d is not None:
+        return input * (1.0 - mask_2d) + self.drop_path(x)
+    return input + self.drop_path(x)
+```
+
+**Key features:**
+1. Mask applied after depthwise convolution (spatial operation)
+2. Residual path also masked to prevent feature leakage
+3. Mask resized after downsampling layers
+4. Same model works for both pretraining (with mask) and fine-tuning (without mask)
+
+#### Why Not Sparse Convolution?
+
+We evaluated [MinkowskiEngine](https://github.com/NVIDIA/MinkowskiEngine) and [TorchSparse++](https://github.com/mit-han-lab/torchsparse) for true sparse convolution:
+
+| Factor | Assessment |
+|--------|------------|
+| **MinkowskiEngine maintenance** | Last commit ~2 years ago, CUDA 12 requires manual patches |
+| **Installation complexity** | Requires patching std::to_address conflicts, NVTX3 header issues |
+| **PyTorch 2.x support** | Not officially tested, community workarounds available |
+| **Face dimensions** | Our faces are small (93×44, 24×6) - sparse overhead may exceed savings |
+| **Hex faces** | Graph convolution not compatible with MinkowskiEngine |
+
+**ConvNeXt V2 paper insight:**
+> "As an alternative, it is also possible to apply a binary masking operation before and after the dense convolution operation. This operation has **numerically the same effect as sparse convolutions**, is theoretically more computationally intensive, but can be **more friendly on AI accelerators like TPU**."
+
+#### Sparse → Dense Conversion for Downstream Tasks
+
+The key advantage of both approaches is that they're **interchangeable at inference time**:
+
+| Phase | Masking | Why |
+|-------|---------|-----|
+| **MAE Pretraining** | `mask_2d` provided (60% masked) | Learn robust features |
+| **Fine-tuning/Inference** | `mask_2d=None` | Standard dense convolution |
+
+The learned weights transfer directly because sparse convolution with 0% masking equals dense convolution.
+
+#### References for Sparse Convolution
+
+If you need true sparse convolution (e.g., for 3D point clouds or extremely high masking ratios):
+
+- **TorchSparse++** (recommended): [GitHub](https://github.com/mit-han-lab/torchsparse) - 4.6-4.8× faster than MinkowskiEngine
+- **MinkowskiEngine**: [GitHub](https://github.com/NVIDIA/MinkowskiEngine) - [CUDA 12 installation guide](https://github.com/NVIDIA/MinkowskiEngine/issues/621)
+- **SpConv v2**: [GitHub](https://github.com/traveller59/spconv)
+
+### E. References
 1. ConvNeXt V2: Woo, S., et al. "ConvNeXt V2: Co-designing and Scaling ConvNets with Masked Autoencoders." CVPR 2023.
 2. Graph Attention (GAT): Veličković, P., et al. "Graph Attention Networks." ICLR 2018.
 3. Transformer: Vaswani, A., et al. "Attention Is All You Need." NeurIPS 2017.
+4. TorchSparse++: Tang, H., et al. "TorchSparse++: Efficient Training and Inference Framework for Sparse Convolution on GPUs." MICRO 2023.
 
 ### Configuration Parameters
 

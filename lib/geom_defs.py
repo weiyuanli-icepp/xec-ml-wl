@@ -82,9 +82,84 @@ def build_hex_edge_index(row_lengths):
 
 HEX_EDGE_INDEX_NP, HEX_DEG_NP = build_hex_edge_index([len(r) for r in TOP_ROWS_LIST])
 
+# --- Outer Sensor to Finegrid Mapping ---
+# For sensor-level predictions, we need to map each outer sensor to its finegrid region
+
+def build_outer_sensor_to_finegrid_map():
+    """
+    Build mapping from each outer sensor ID to its finegrid region bounds.
+
+    Returns:
+        dict: sensor_id -> (h_start, h_end, w_start, w_end) in finegrid coordinates
+
+    Finegrid dimensions: 45 x 72 (9*5 x 24*3)
+    - Coarse sensors (non-central): each maps to 5×3 region
+    - Center sensors: each maps to 3×2 region (at finegrid position [15:30, 30:42])
+    """
+    mapping = {}
+
+    cr, cc = OUTER_FINE_COARSE_SCALE  # (5, 3)
+    sr, sc = OUTER_FINE_CENTER_SCALE  # (3, 2)
+    c_start_r, c_start_c = OUTER_FINE_CENTER_START  # (3, 10) in coarse coords
+
+    # Center region starts at finegrid position (15, 30)
+    center_fine_top = c_start_r * cr  # 15
+    center_fine_left = c_start_c * cc  # 30
+
+    # Set of central coarse IDs (these use center mapping, not coarse mapping)
+    central_set = set(CENTRAL_COARSE_IDS)
+
+    # Non-central coarse sensors: use full 5×3 coarse region
+    for h in range(9):
+        for w in range(24):
+            sensor_id = OUTER_COARSE_FULL_INDEX_MAP[h, w]
+            if sensor_id not in central_set:
+                mapping[int(sensor_id)] = (h * cr, (h + 1) * cr, w * cc, (w + 1) * cc)
+
+    # Center sensors (including 12 overlapping coarse sensors): use 3×2 center region
+    # OUTER_CENTER_INDEX_MAP has shape (5, 6) after transpose
+    H_center, W_center = OUTER_CENTER_INDEX_MAP.shape  # 5, 6
+    for h in range(H_center):
+        for w in range(W_center):
+            sensor_id = OUTER_CENTER_INDEX_MAP[h, w]
+            h_start = center_fine_top + h * sr
+            h_end = center_fine_top + (h + 1) * sr
+            w_start = center_fine_left + w * sc
+            w_end = center_fine_left + (w + 1) * sc
+            mapping[int(sensor_id)] = (h_start, h_end, w_start, w_end)
+
+    return mapping
+
+# Build the mapping once at import time
+OUTER_SENSOR_TO_FINEGRID = build_outer_sensor_to_finegrid_map()
+
+# All unique outer sensor IDs in sorted order (234 total)
+# 204 non-central coarse (from 4092-4307 minus 12 central) + 12 central coarse + 18 dense center
+_outer_center_set = set(OUTER_CENTER_INDEX_MAP.flatten())
+_outer_coarse_non_central = [
+    int(sid) for sid in OUTER_COARSE_FULL_INDEX_MAP.flatten()
+    if sid not in CENTRAL_COARSE_IDS
+]
+_outer_center_all = [int(sid) for sid in OUTER_CENTER_INDEX_MAP.flatten()]
+OUTER_ALL_SENSOR_IDS = np.array(
+    sorted(set(_outer_coarse_non_central + _outer_center_all)),
+    dtype=np.int32
+)
+
+# Create reverse mapping: flat sensor ID -> index in OUTER_ALL_SENSOR_IDS (0-233)
+OUTER_SENSOR_ID_TO_IDX = {int(sid): idx for idx, sid in enumerate(OUTER_ALL_SENSOR_IDS)}
+
+
 # Default Normalization Factors
 DEFAULT_NPHO_SCALE     =  0.58
 DEFAULT_NPHO_SCALE2    =  1.0
 DEFAULT_TIME_SCALE     =  6.5e-8  # Fixed: was 6.5e8 (16 orders of magnitude wrong)
 DEFAULT_TIME_SHIFT     =  0.5
 DEFAULT_SENTINEL_VALUE = -5.0
+
+# Conditional Time Loss Threshold
+# Time loss is only computed for sensors where npho > threshold (raw scale).
+# Based on conventional timing reconstruction (MEGTXECTimeFit.cpp), sensors with
+# nphe < threshold are rejected because timing uncertainty ~ 1/sqrt(nphe) diverges.
+# Default of 10 is a reasonable starting point; can be tuned via config.
+DEFAULT_NPHO_THRESHOLD = 10.0

@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Dict, Optional, Tuple, List, Callable
 from .dataset import XECStreamingDataset
+from .geom_defs import DEFAULT_NPHO_THRESHOLD
 
 
 def compute_inpainting_loss(
@@ -21,13 +22,17 @@ def compute_inpainting_loss(
     outer_fine_pool: Optional[Tuple[int, int]] = None,
     track_mae_rmse: bool = True,
     track_metrics: bool = True,
+    npho_threshold: float = None,
+    npho_scale: float = 0.58,
+    npho_scale2: float = 1.0,
+    use_nphe_time_weight: bool = True,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Compute inpainting loss for all faces.
 
     Args:
         results: dict from XEC_Inpainter.forward()
-        original_values: (B, 4760, 2) - ground truth sensor values
+        original_values: (B, 4760, 2) - ground truth sensor values (normalized)
         mask: (B, 4760) - binary mask (1 = masked)
         face_index_maps: dict mapping face names to their index tensors
         loss_fn: "smooth_l1", "mse", or "l1"
@@ -36,6 +41,10 @@ def compute_inpainting_loss(
         outer_fine: whether outer face uses fine grid
         outer_fine_pool: pooling kernel for outer fine grid
         track_mae_rmse: whether to compute MAE/RMSE metrics (adds extra reductions)
+        npho_threshold: raw npho threshold for conditional time loss (default: DEFAULT_NPHO_THRESHOLD)
+        npho_scale: normalization scale for npho (for de-normalizing)
+        npho_scale2: normalization scale2 for npho
+        use_nphe_time_weight: whether to weight time loss by sqrt(npho)
 
     Returns:
         total_loss: scalar loss for backprop
@@ -43,6 +52,12 @@ def compute_inpainting_loss(
     """
     device = original_values.device
     B = original_values.shape[0]
+
+    # Conditional time loss threshold (convert raw threshold to normalized space)
+    if npho_threshold is None:
+        npho_threshold = DEFAULT_NPHO_THRESHOLD
+    # Convert raw threshold to normalized space: npho_norm = log1p(raw_n / npho_scale) / npho_scale2
+    npho_threshold_norm = np.log1p(npho_threshold / npho_scale) / npho_scale2
 
     # Select loss function
     if loss_fn == "mse":
@@ -88,24 +103,10 @@ def compute_inpainting_loss(
 
         face_result = results[face_name]
         pred = face_result["pred"]  # (B, max_masked, 2)
-        indices = face_result["indices"]  # (B, max_masked, 2) - (h, w) pairs
         valid = face_result["valid"]  # (B, max_masked)
 
-        if not valid.any():
-            metrics[f"loss_{face_name}"] = 0.0
-            metrics[f"loss_{face_name}_npho"] = 0.0
-            metrics[f"loss_{face_name}_time"] = 0.0
-            if track_mae_rmse:
-                metrics[f"mae_{face_name}_npho"] = 0.0
-                metrics[f"mae_{face_name}_time"] = 0.0
-                metrics[f"rmse_{face_name}_npho"] = 0.0
-                metrics[f"rmse_{face_name}_time"] = 0.0
-            continue
-
-        # Get ground truth at masked positions
-        idx_map = None
-        if not (face_name == "outer" and outer_fine):
-            idx_map = face_index_maps[face_name]  # (H, W) with flat indices
+        # Check if this is sensor-level prediction (new outer face behavior)
+        is_sensor_level = face_result.get("is_sensor_level", False)
 
         if not valid.any():
             metrics[f"loss_{face_name}"] = 0.0
@@ -120,35 +121,77 @@ def compute_inpainting_loss(
 
         # Gather all valid positions across the batch
         batch_idx, pos_idx = valid.nonzero(as_tuple=True)
-        h_all = indices[batch_idx, pos_idx, 0]
-        w_all = indices[batch_idx, pos_idx, 1]
 
-        if face_name == "outer" and outer_fine:
-            gt_all = outer_target[batch_idx, :, h_all, w_all]  # (total, 2)
-        else:
-            flat_idx_all = idx_map[h_all, w_all]
+        if is_sensor_level:
+            # Sensor-level outer face: sensor_ids contains flat sensor indices
+            sensor_ids = face_result["sensor_ids"]  # (B, max_masked) - flat sensor IDs
+            flat_idx_all = sensor_ids[batch_idx, pos_idx]  # (total,)
             gt_all = original_values[batch_idx, flat_idx_all, :]  # (total, 2)
+        else:
+            # Grid-level faces: indices contains (h, w) pairs
+            indices = face_result["indices"]  # (B, max_masked, 2)
+            h_all = indices[batch_idx, pos_idx, 0]
+            w_all = indices[batch_idx, pos_idx, 1]
+
+            if face_name == "outer" and outer_fine:
+                # Legacy grid-level outer fine (shouldn't happen with new code, but keep for compatibility)
+                gt_all = outer_target[batch_idx, :, h_all, w_all]  # (total, 2)
+            else:
+                idx_map = face_index_maps[face_name]  # (H, W) with flat indices
+                flat_idx_all = idx_map[h_all, w_all]
+                gt_all = original_values[batch_idx, flat_idx_all, :]  # (total, 2)
+
         pr_all = pred[batch_idx, pos_idx, :]  # (total, 2)
 
         # Per-element losses
         loss_npho_elem = loss_func(pr_all[:, 0], gt_all[:, 0], reduction="none")
         loss_time_elem = loss_func(pr_all[:, 1], gt_all[:, 1], reduction="none")
 
+        # Conditional time loss: only compute where npho > threshold (in normalized space)
+        npho_gt_norm = gt_all[:, 0]  # (total,) - normalized npho values
+        time_valid = npho_gt_norm > npho_threshold_norm  # (total,) - sensors with valid time
+
+        # Apply nphe weighting to time loss if enabled
+        if use_nphe_time_weight and time_valid.any():
+            # De-normalize to get approximate raw npho for weighting
+            # raw_n = npho_scale * (exp(npho_norm * npho_scale2) - 1)
+            raw_npho_approx = npho_scale * (torch.exp(npho_gt_norm * npho_scale2) - 1)
+            nphe_weights = torch.sqrt(raw_npho_approx.clamp(min=npho_threshold))
+            # Normalize weights so mean is ~1 for valid sensors
+            nphe_weights = nphe_weights / (nphe_weights[time_valid].mean() + 1e-8)
+            loss_time_elem_weighted = loss_time_elem * nphe_weights
+        else:
+            loss_time_elem_weighted = loss_time_elem
+
+        # Zero out time loss for sensors with npho below threshold
+        loss_time_elem_valid = loss_time_elem_weighted.clone()
+        loss_time_elem_valid[~time_valid] = 0.0
+
         counts_per_batch = valid.sum(dim=1)  # (B,)
         nonzero_mask = counts_per_batch > 0
         safe_counts = counts_per_batch.clamp_min(1)
 
+        # Count time-valid sensors per batch
+        time_valid_per_elem = time_valid.float()
+        time_counts_per_batch = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, time_valid_per_elem)
+        time_safe_counts = time_counts_per_batch.clamp_min(1)
+
         # Sum losses per batch
         loss_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_npho_elem)
-        loss_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_time_elem)
+        loss_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_time_elem_valid)
 
-        # Mean per batch (matching prior mean-of-samples behavior) then average over batches with masks
+        # Mean per batch then average over batches with masks
         loss_npho_means = loss_npho_sum / safe_counts
-        loss_time_means = loss_time_sum / safe_counts
+        loss_time_means = loss_time_sum / time_safe_counts  # Use time-valid counts for time loss
 
         if nonzero_mask.any():
             avg_npho = loss_npho_means[nonzero_mask].mean()
-            avg_time = loss_time_means[nonzero_mask].mean()
+            # Only include batches that have time-valid sensors in time loss average
+            time_nonzero_mask = time_counts_per_batch > 0
+            if time_nonzero_mask.any():
+                avg_time = loss_time_means[time_nonzero_mask].mean()
+            else:
+                avg_time = torch.tensor(0.0, device=device)
             face_loss = npho_weight * avg_npho + time_weight * avg_time
             total_loss = total_loss + face_loss
 
@@ -178,10 +221,15 @@ def compute_inpainting_loss(
             diff_npho = diff[:, 0]
             diff_time = diff[:, 1]
 
+            # For npho: use all masked sensors
             abs_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_npho.abs())
-            abs_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time.abs())
             sq_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_npho ** 2)
-            sq_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time ** 2)
+
+            # For time: only use time-valid sensors
+            diff_time_valid = diff_time.clone()
+            diff_time_valid[~time_valid] = 0.0
+            abs_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time_valid.abs())
+            sq_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time_valid ** 2)
 
             face_abs_npho[face_name] = abs_npho_sum.sum().item()
             face_abs_time[face_name] = abs_time_sum.sum().item()
@@ -189,14 +237,18 @@ def compute_inpainting_loss(
             face_sq_time[face_name] = sq_time_sum.sum().item()
             face_count[face_name] = counts_per_batch.sum().item()
 
+            # Track time-valid count separately
+            time_valid_count = time_counts_per_batch.sum().item()
+
             # Metrics
             fc = max(face_count[face_name], 1)
+            tc = max(time_valid_count, 1)
             metrics[f"mae_{face_name}_npho"] = face_abs_npho[face_name] / fc
-            metrics[f"mae_{face_name}_time"] = face_abs_time[face_name] / fc
+            metrics[f"mae_{face_name}_time"] = face_abs_time[face_name] / tc
             metrics[f"rmse_{face_name}_npho"] = (face_sq_npho[face_name] / fc) ** 0.5
-            metrics[f"rmse_{face_name}_time"] = (face_sq_time[face_name] / fc) ** 0.5
+            metrics[f"rmse_{face_name}_time"] = (face_sq_time[face_name] / tc) ** 0.5
 
-            # Accumulate for global MAE/RMSE
+            # Accumulate for global MAE/RMSE (using time-valid count for time metrics)
             total_abs_npho += face_abs_npho[face_name]
             total_abs_time += face_abs_time[face_name]
             total_sq_npho += face_sq_npho[face_name]
@@ -236,19 +288,44 @@ def compute_inpainting_loss(
         loss_npho_elem = loss_func(pr_all[:, 0], gt_all[:, 0], reduction="none")
         loss_time_elem = loss_func(pr_all[:, 1], gt_all[:, 1], reduction="none")
 
+        # Conditional time loss: only compute where npho > threshold (in normalized space)
+        npho_gt_norm = gt_all[:, 0]  # (total,) - normalized npho values
+        time_valid = npho_gt_norm > npho_threshold_norm  # (total,) - sensors with valid time
+
+        # Apply nphe weighting to time loss if enabled
+        if use_nphe_time_weight and time_valid.any():
+            raw_npho_approx = npho_scale * (torch.exp(npho_gt_norm * npho_scale2) - 1)
+            nphe_weights = torch.sqrt(raw_npho_approx.clamp(min=npho_threshold))
+            nphe_weights = nphe_weights / (nphe_weights[time_valid].mean() + 1e-8)
+            loss_time_elem_weighted = loss_time_elem * nphe_weights
+        else:
+            loss_time_elem_weighted = loss_time_elem
+
+        loss_time_elem_valid = loss_time_elem_weighted.clone()
+        loss_time_elem_valid[~time_valid] = 0.0
+
         counts_per_batch = valid.sum(dim=1)
         nonzero_mask = counts_per_batch > 0
         safe_counts = counts_per_batch.clamp_min(1)
 
+        # Count time-valid sensors per batch
+        time_valid_per_elem = time_valid.float()
+        time_counts_per_batch = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, time_valid_per_elem)
+        time_safe_counts = time_counts_per_batch.clamp_min(1)
+
         loss_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_npho_elem)
-        loss_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_time_elem)
+        loss_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_time_elem_valid)
 
         loss_npho_means = loss_npho_sum / safe_counts
-        loss_time_means = loss_time_sum / safe_counts
+        loss_time_means = loss_time_sum / time_safe_counts
 
         if nonzero_mask.any():
             avg_npho = loss_npho_means[nonzero_mask].mean()
-            avg_time = loss_time_means[nonzero_mask].mean()
+            time_nonzero_mask = time_counts_per_batch > 0
+            if time_nonzero_mask.any():
+                avg_time = loss_time_means[time_nonzero_mask].mean()
+            else:
+                avg_time = torch.tensor(0.0, device=device)
             face_loss = npho_weight * avg_npho + time_weight * avg_time
             total_loss = total_loss + face_loss
 
@@ -266,26 +343,32 @@ def compute_inpainting_loss(
             diff_npho = diff[:, 0]
             diff_time = diff[:, 1]
 
+            # For time: only use time-valid sensors
+            diff_time_valid = diff_time.clone()
+            diff_time_valid[~time_valid] = 0.0
+
             abs_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_npho.abs())
-            abs_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time.abs())
+            abs_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time_valid.abs())
             sq_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_npho ** 2)
-            sq_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time ** 2)
+            sq_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time_valid ** 2)
 
             face_abs_npho[face_name] = abs_npho_sum.sum().item()
             face_abs_time[face_name] = abs_time_sum.sum().item()
             face_sq_npho[face_name] = sq_npho_sum.sum().item()
             face_sq_time[face_name] = sq_time_sum.sum().item()
             face_count[face_name] = counts_per_batch.sum().item()
+            time_valid_count = time_counts_per_batch.sum().item()
 
         # Compute MAE/RMSE for this face
         if track_mae_rmse and track_metrics:
             fc = max(face_count[face_name], 1)
+            tc = max(time_valid_count, 1)
             metrics[f"mae_{face_name}_npho"] = face_abs_npho[face_name] / fc
-            metrics[f"mae_{face_name}_time"] = face_abs_time[face_name] / fc
+            metrics[f"mae_{face_name}_time"] = face_abs_time[face_name] / tc
             metrics[f"rmse_{face_name}_npho"] = (face_sq_npho[face_name] / fc) ** 0.5
-            metrics[f"rmse_{face_name}_time"] = (face_sq_time[face_name] / fc) ** 0.5
+            metrics[f"rmse_{face_name}_time"] = (face_sq_time[face_name] / tc) ** 0.5
 
-            # Accumulate for global MAE/RMSE
+            # Accumulate for global MAE/RMSE (using time-valid count for time metrics)
             total_abs_npho += face_abs_npho[face_name]
             total_abs_time += face_abs_time[face_name]
             total_sq_npho += face_sq_npho[face_name]
@@ -340,6 +423,8 @@ def run_epoch_inpainter(
     dataset_workers: int = 8,
     grad_accum_steps: int = 1,
     track_metrics: bool = True,
+    npho_threshold: float = None,
+    use_nphe_time_weight: bool = True,
 ) -> Dict[str, float]:
     """
     Run one training epoch for inpainter.
@@ -433,6 +518,10 @@ def run_epoch_inpainter(
                     outer_fine_pool=outer_fine_pool,
                     track_mae_rmse=track_mae_rmse,
                     track_metrics=track_metrics,
+                    npho_threshold=npho_threshold,
+                    npho_scale=npho_scale,
+                    npho_scale2=npho_scale2,
+                    use_nphe_time_weight=use_nphe_time_weight,
                 )
 
             # Backward
@@ -522,6 +611,8 @@ def run_eval_inpainter(
     track_mae_rmse: bool = True,
     dataloader_workers: int = 0,
     dataset_workers: int = 8,
+    npho_threshold: float = None,
+    use_nphe_time_weight: bool = True,
 ) -> Dict[str, float]:
     """
     Run evaluation for inpainter.
@@ -641,6 +732,10 @@ def run_eval_inpainter(
                         outer_fine_pool=outer_fine_pool,
                         track_mae_rmse=track_mae_rmse,
                         track_metrics=True,
+                        npho_threshold=npho_threshold,
+                        npho_scale=npho_scale,
+                        npho_scale2=npho_scale2,
+                        use_nphe_time_weight=use_nphe_time_weight,
                     )
                     if not track_mae_rmse:
                         metrics = {k: v for k, v in metrics.items() if not (k.startswith("mae_") or k.startswith("rmse_"))}
@@ -656,7 +751,8 @@ def run_eval_inpainter(
                     original_np = original_values.cpu().numpy()
                     outer_target_np = None
                     outer_grid_w = None
-                    if outer_fine and "outer" in results:
+                    # Only build outer_target for legacy grid-level mode
+                    if outer_fine and "outer" in results and not results["outer"].get("is_sensor_level", False):
                         from .geom_utils import build_outer_fine_grid_tensor
                         outer_target = build_outer_fine_grid_tensor(
                             original_values, pool_kernel=outer_fine_pool
@@ -672,6 +768,9 @@ def run_eval_inpainter(
                         face_result = results[face_name]
                         pred = face_result["pred"].cpu().numpy()  # (B, max_masked, 2)
                         valid = face_result["valid"].cpu().numpy()  # (B, max_masked)
+
+                        # Check if this is sensor-level prediction (new outer face behavior)
+                        is_sensor_level = face_result.get("is_sensor_level", False)
 
                         if face_name in ["top", "bot"]:
                             indices = face_result["indices"].cpu().numpy()  # (B, max_masked)
@@ -699,7 +798,31 @@ def run_eval_inpainter(
                                         "pred_time": float(pred[b, i, 1]),
                                     }
                                     batch_predictions.append(pred_dict)
+                        elif is_sensor_level:
+                            # Sensor-level outer face: sensor_ids contains flat sensor indices
+                            sensor_ids = face_result["sensor_ids"].cpu().numpy()  # (B, max_masked)
+
+                            for b in range(B):
+                                n_valid = int(valid[b].sum())
+                                if n_valid == 0:
+                                    continue
+
+                                for i in range(n_valid):
+                                    sensor_id = int(sensor_ids[b, i])
+                                    pred_dict = {
+                                        "event_idx": event_base + b,
+                                        "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
+                                        "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
+                                        "sensor_id": sensor_id,
+                                        "face": face_name,
+                                        "truth_npho": float(original_np[b, sensor_id, 0]),
+                                        "truth_time": float(original_np[b, sensor_id, 1]),
+                                        "pred_npho": float(pred[b, i, 0]),
+                                        "pred_time": float(pred[b, i, 1]),
+                                    }
+                                    batch_predictions.append(pred_dict)
                         else:
+                            # Grid-level faces: indices contains (h, w) pairs
                             indices = face_result["indices"].cpu().numpy()  # (B, max_masked, 2)
                             if face_name == "outer" and outer_fine:
                                 if outer_target_np is None:
@@ -713,6 +836,7 @@ def run_eval_inpainter(
                                 h_idx = indices[b, :n_valid, 0]
                                 w_idx = indices[b, :n_valid, 1]
                                 if face_name == "outer" and outer_fine:
+                                    # Legacy grid-level outer fine
                                     truth_vals = outer_target_np[b, h_idx, w_idx]
                                     for i in range(n_valid):
                                         sensor_id = int(h_idx[i] * outer_grid_w + w_idx[i])

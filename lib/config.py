@@ -318,6 +318,9 @@ class MAETrainingConfig:
     grad_clip: float = 1.0
     ema_decay: Optional[float] = None  # None = disabled, 0.999 = typical value
     amp: bool = True
+    # Conditional time loss: only compute where npho > threshold
+    npho_threshold: Optional[float] = None  # None uses DEFAULT_NPHO_THRESHOLD (10.0)
+    use_nphe_time_weight: bool = True  # Weight time loss by sqrt(npho)
 
 
 @dataclass
@@ -449,6 +452,9 @@ class InpainterTrainingConfig:
     save_root_predictions: bool = True
     grad_accum_steps: int = 1
     track_train_metrics: bool = True
+    # Conditional time loss: only compute where npho > threshold
+    npho_threshold: Optional[float] = None  # None uses DEFAULT_NPHO_THRESHOLD (10.0)
+    use_nphe_time_weight: bool = True  # Weight time loss by sqrt(npho)
 
 
 @dataclass
