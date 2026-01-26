@@ -285,10 +285,13 @@ Examples:
     truth_from_original = x_truth[sensor_ids]
     npho_diff = np.abs(truth_from_original[:, 0] - truth_npho_pred).mean()
     time_diff = np.abs(truth_from_original[:, 1] - truth_time_pred).mean()
-    if npho_diff > 0.01 or time_diff > 0.01:
+    if npho_diff > 0.05 or time_diff > 0.05:
         print(f"  Warning: Normalization mismatch detected!")
         print(f"    npho diff: {npho_diff:.4f}, time diff: {time_diff:.4f}")
         print(f"    This may indicate different normalization parameters were used.")
+    elif npho_diff > 0.01 or time_diff > 0.01:
+        print(f"  Note: Small normalization difference (npho: {npho_diff:.4f}, time: {time_diff:.4f})")
+        print(f"    Consider regenerating predictions with: python macro/generate_test_predictions.py")
 
     # --- Reconstruct mask, x_masked, x_pred ---
     # mask: 1 where masked, 0 where visible
