@@ -183,6 +183,10 @@ Examples:
     parser.add_argument("--grad_clip", type=float, default=None)
     parser.add_argument("--disable_mae_rmse_metrics", action="store_true", help="Skip MAE/RMSE metric computation for speed")
     parser.add_argument("--grad_accum_steps", type=int, default=None, help="Number of gradient accumulation steps")
+    parser.add_argument("--time_mask_ratio_scale", type=float, default=None, help="Scale factor for masking valid-time sensors (1.0=uniform)")
+    parser.add_argument("--npho_threshold", type=float, default=None, help="Npho threshold for conditional time loss (raw scale)")
+    parser.add_argument("--use_nphe_time_weight", action="store_true", help="Weight time loss by sqrt(npho)")
+    parser.add_argument("--no_nphe_time_weight", action="store_true", help="Disable nphe time weighting")
 
     # MLflow
     parser.add_argument("--mlflow_experiment", type=str, default=None)
@@ -221,6 +225,7 @@ Examples:
         outer_mode = args.outer_mode or cfg.model.outer_mode
         outer_fine_pool = args.outer_fine_pool or cfg.model.outer_fine_pool
         mask_ratio = args.mask_ratio if args.mask_ratio is not None else cfg.model.mask_ratio
+        time_mask_ratio_scale = args.time_mask_ratio_scale if args.time_mask_ratio_scale is not None else getattr(cfg.model, "time_mask_ratio_scale", 1.0)
         freeze_encoder = cfg.model.freeze_encoder if not args.finetune_encoder else False
 
         lr = args.lr if args.lr is not None else cfg.training.lr
@@ -232,6 +237,8 @@ Examples:
         loss_fn = args.loss_fn or cfg.training.loss_fn
         npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight
         time_weight = args.time_weight if args.time_weight is not None else cfg.training.time_weight
+        npho_threshold = args.npho_threshold if args.npho_threshold is not None else getattr(cfg.training, "npho_threshold", None)
+        use_nphe_time_weight = not args.no_nphe_time_weight and getattr(cfg.training, "use_nphe_time_weight", True)
         grad_clip = args.grad_clip if args.grad_clip is not None else cfg.training.grad_clip
         track_mae_rmse = not bool(args.disable_mae_rmse_metrics) if args.disable_mae_rmse_metrics is not None else getattr(cfg.training, "track_mae_rmse", True)
         save_root_predictions = getattr(cfg.training, "save_root_predictions", True)
@@ -270,6 +277,7 @@ Examples:
         outer_mode = args.outer_mode or "finegrid"
         outer_fine_pool = args.outer_fine_pool or [3, 3]
         mask_ratio = args.mask_ratio or 0.05
+        time_mask_ratio_scale = args.time_mask_ratio_scale or 1.0
         freeze_encoder = not args.finetune_encoder  # Default: frozen
 
         lr = args.lr or 1e-4
@@ -281,6 +289,8 @@ Examples:
         loss_fn = args.loss_fn or "smooth_l1"
         npho_weight = args.npho_weight or 1.0
         time_weight = args.time_weight or 1.0
+        npho_threshold = args.npho_threshold  # None uses DEFAULT_NPHO_THRESHOLD
+        use_nphe_time_weight = not args.no_nphe_time_weight
         grad_clip = args.grad_clip or 1.0
         track_mae_rmse = not bool(args.disable_mae_rmse_metrics)
         save_root_predictions = True
@@ -340,7 +350,8 @@ Examples:
 
     # Create inpainter model
     model = XEC_Inpainter(
-        encoder, freeze_encoder=freeze_encoder, sentinel_value=sentinel_value
+        encoder, freeze_encoder=freeze_encoder, sentinel_value=sentinel_value,
+        time_mask_ratio_scale=time_mask_ratio_scale
     ).to(device)
 
     print(f"[INFO] Inpainter created:")
@@ -464,6 +475,8 @@ Examples:
                 dataset_workers=num_threads,
                 grad_accum_steps=grad_accum_steps,
                 track_metrics=track_train_metrics,
+                npho_threshold=npho_threshold,
+                use_nphe_time_weight=use_nphe_time_weight,
             )
 
             # Validation
@@ -488,6 +501,8 @@ Examples:
                     track_mae_rmse=track_mae_rmse,
                     dataloader_workers=num_workers,
                     dataset_workers=num_threads,
+                    npho_threshold=npho_threshold,
+                    use_nphe_time_weight=use_nphe_time_weight,
                 )
 
             dt = time.time() - t0
@@ -600,14 +615,16 @@ Examples:
                         time_shift=float(time_shift),
                         sentinel_value=float(sentinel_value),
                         loss_fn=loss_fn,
-                    npho_weight=npho_weight,
-                    time_weight=time_weight,
-                    collect_predictions=True,
-                    prediction_writer=writer.write,
-                    track_mae_rmse=track_mae_rmse,
-                    dataloader_workers=num_workers,
-                    dataset_workers=num_threads,
-                )
+                        npho_weight=npho_weight,
+                        time_weight=time_weight,
+                        collect_predictions=True,
+                        prediction_writer=writer.write,
+                        track_mae_rmse=track_mae_rmse,
+                        dataloader_workers=num_workers,
+                        dataset_workers=num_threads,
+                        npho_threshold=npho_threshold,
+                        use_nphe_time_weight=use_nphe_time_weight,
+                    )
                 root_path = writer.filepath if writer.count > 0 else None
                 if root_path:
                     print(f"  Saved predictions to {root_path}")

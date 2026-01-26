@@ -413,11 +413,13 @@ class XEC_Inpainter(nn.Module):
     Uses a frozen encoder from MAE pretraining and lightweight inpainting heads
     to predict sensor values at masked (dead) positions.
     """
-    def __init__(self, encoder: XECEncoder, freeze_encoder: bool = True, sentinel_value: float = -5.0):
+    def __init__(self, encoder: XECEncoder, freeze_encoder: bool = True, sentinel_value: float = -5.0,
+                 time_mask_ratio_scale: float = 1.0):
         super().__init__()
         self.encoder = encoder
         self.freeze_encoder = freeze_encoder
         self.sentinel_value = sentinel_value
+        self.time_mask_ratio_scale = time_mask_ratio_scale
 
         if freeze_encoder:
             for param in self.encoder.parameters():
@@ -468,7 +470,7 @@ class XEC_Inpainter(nn.Module):
             self.encoder.eval()
         return self
 
-    def random_masking(self, x_flat, mask_ratio=0.05, sentinel=None):
+    def random_masking(self, x_flat, mask_ratio=0.05, sentinel=None, npho_threshold_norm=None):
         """
         Randomly mask sensors for training, excluding already-invalid sensors.
 
@@ -476,6 +478,9 @@ class XEC_Inpainter(nn.Module):
             x_flat: (B, 4760, 2) - flat sensor values (npho, time)
             mask_ratio: fraction of valid sensors to mask
             sentinel: value used to mark invalid/masked sensors (defaults to self.sentinel_value)
+            npho_threshold_norm: threshold in normalized npho space for stratified masking.
+                                If provided and time_mask_ratio_scale != 1.0, valid-time sensors
+                                (npho > threshold) are more likely to be masked.
 
         Returns:
             x_masked: (B, 4760, 2) - input with masked positions set to sentinel
@@ -507,6 +512,16 @@ class XEC_Inpainter(nn.Module):
         noise = torch.rand(B, N, device=device)
         noise[already_invalid] = float('inf')
 
+        # Stratified masking: bias toward valid-time sensors
+        # When time_mask_ratio_scale > 1.0, valid-time sensors get lower noise values,
+        # making them more likely to be selected for masking
+        if (self.time_mask_ratio_scale != 1.0 and npho_threshold_norm is not None):
+            # Identify valid-time sensors (npho > threshold, not already-invalid)
+            valid_time = (x_flat[:, :, 0] > npho_threshold_norm) & (~already_invalid)
+            # Scale down noise for valid-time sensors (more likely to be masked)
+            # noise in [0, 1], divide by scale for valid-time sensors
+            noise[valid_time] = noise[valid_time] / self.time_mask_ratio_scale
+
         # Sort to get indices (invalid sensors will be at the end)
         ids_shuffle = torch.argsort(noise, dim=1)
 
@@ -526,7 +541,7 @@ class XEC_Inpainter(nn.Module):
 
         return x_masked, mask
 
-    def forward(self, x_batch, mask=None, mask_ratio=0.05):
+    def forward(self, x_batch, mask=None, mask_ratio=0.05, npho_threshold_norm=None):
         """
         Forward pass for inpainting.
 
@@ -535,6 +550,9 @@ class XEC_Inpainter(nn.Module):
             mask: (B, 4760) - optional pre-defined mask (1 = masked/dead)
                   If None, random masking is applied
             mask_ratio: fraction to mask if mask is None
+            npho_threshold_norm: threshold in normalized npho space for stratified masking.
+                                If provided and time_mask_ratio_scale != 1.0, valid-time sensors
+                                (npho > threshold) are more likely to be masked.
 
         Returns:
             results: dict with predictions and masks for each face
@@ -549,7 +567,7 @@ class XEC_Inpainter(nn.Module):
 
         # Apply masking
         if mask is None:
-            x_masked, mask = self.random_masking(x_flat, mask_ratio)
+            x_masked, mask = self.random_masking(x_flat, mask_ratio, npho_threshold_norm=npho_threshold_norm)
         else:
             x_masked = x_flat.clone()
             x_masked[mask.bool().unsqueeze(-1).expand_as(x_flat)] = self.sentinel_value

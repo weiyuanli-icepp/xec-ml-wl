@@ -451,6 +451,11 @@ def run_epoch_inpainter(
     outer_fine = getattr(model.encoder, "outer_fine", False)
     outer_fine_pool = getattr(model.encoder, "outer_fine_pool", None)
 
+    # Convert npho_threshold to normalized space for stratified masking
+    if npho_threshold is None:
+        npho_threshold = DEFAULT_NPHO_THRESHOLD
+    npho_threshold_norm = np.log1p(npho_threshold / npho_scale) / npho_scale2
+
     # Accumulate metrics
     metric_sums = {}
     num_batches = 0
@@ -496,9 +501,9 @@ def run_epoch_inpainter(
                 x_batch = batch[0]
             x_batch = x_batch.to(device, non_blocking=True)
 
-            # Forward with AMP
+            # Forward with AMP (pass npho_threshold_norm for stratified masking)
             with torch.amp.autocast('cuda', enabled=(scaler is not None)):
-                results, original_values, mask = model(x_batch, mask_ratio=mask_ratio)
+                results, original_values, mask = model(x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm)
 
                 # Track actual mask ratio
                 # Already-invalid sensors have time == sentinel_value and are NOT in mask
@@ -652,6 +657,11 @@ def run_eval_inpainter(
     outer_fine = getattr(model.encoder, "outer_fine", False)
     outer_fine_pool = getattr(model.encoder, "outer_fine_pool", None)
 
+    # Convert npho_threshold to normalized space for stratified masking
+    if npho_threshold is None:
+        npho_threshold = DEFAULT_NPHO_THRESHOLD
+    npho_threshold_norm = np.log1p(npho_threshold / npho_scale) / npho_scale2
+
     metric_sums = {}
     num_batches = 0
 
@@ -713,7 +723,7 @@ def run_eval_inpainter(
                 event_numbers_np = event_numbers.cpu().numpy() if event_numbers is not None else None
 
                 with torch.amp.autocast('cuda', enabled=True):
-                    results, original_values, mask = model(x_batch, mask_ratio=mask_ratio)
+                    results, original_values, mask = model(x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm)
 
                     # Track actual mask ratio
                     already_invalid = (original_values[:, :, 1] == sentinel_value)  # (B, N)

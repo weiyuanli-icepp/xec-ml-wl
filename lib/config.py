@@ -299,6 +299,7 @@ class MAEModelConfig:
     outer_mode: str = "finegrid"
     outer_fine_pool: Optional[List[int]] = None
     mask_ratio: float = 0.6
+    time_mask_ratio_scale: float = 1.0  # Scale factor for masking valid-time sensors (1.0 = uniform)
 
 
 @dataclass
@@ -430,6 +431,7 @@ class InpainterModelConfig:
     outer_mode: str = "finegrid"
     outer_fine_pool: Optional[List[int]] = None
     mask_ratio: float = 0.05  # Default 5% for realistic dead channel density
+    time_mask_ratio_scale: float = 1.0  # Scale factor for masking valid-time sensors (1.0 = uniform)
     freeze_encoder: bool = True  # Freeze encoder from MAE
 
 

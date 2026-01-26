@@ -28,6 +28,7 @@ model:
   outer_mode: "finegrid"            # "finegrid" or "split"
   outer_fine_pool: [3, 3]           # null or [h, w] for pooling
   mask_ratio: 0.65                  # Fraction of input to mask (0.5-0.75 typical)
+  time_mask_ratio_scale: 1.0        # Scale factor for masking valid-time sensors (>1.0 to prefer masking valid-time)
 
 # === Training Configuration ===
 training:
@@ -46,6 +47,8 @@ training:
   ema_decay: null                   # EMA decay rate (null to disable, 0.999 typical)
   amp: true                         # Automatic Mixed Precision
   compile: false                    # torch.compile (can cause LLVM errors with multiprocessing)
+  npho_threshold: null              # Npho threshold for conditional time loss (null uses default 10.0)
+  use_nphe_time_weight: true        # Weight time loss by sqrt(npho) for chi-square-like weighting
 
 # === Checkpointing ===
 checkpoint:

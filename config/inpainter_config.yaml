@@ -28,6 +28,7 @@ model:
   outer_mode: "finegrid"            # Must match MAE encoder config
   outer_fine_pool: [3, 3]           # Must match MAE encoder config
   mask_ratio: 0.05                  # Realistic dead channel density (1-10%)
+  time_mask_ratio_scale: 1.0        # Scale factor for masking valid-time sensors (>1.0 to prefer masking valid-time)
   freeze_encoder: false              # Freeze encoder, train only inpainting heads
 
 # === Training Configuration ===
@@ -49,6 +50,8 @@ training:
   save_root_predictions: true       # Write ROOT outputs during validation (set false to skip)
   grad_accum_steps: 2               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
   track_train_metrics: false         # Track per-face metrics during training (set false to log only total_loss)
+  npho_threshold: null              # Npho threshold for conditional time loss (null uses default 10.0)
+  use_nphe_time_weight: true        # Weight time loss by sqrt(npho) for chi-square-like weighting
 
 # === Checkpointing ===
 checkpoint:

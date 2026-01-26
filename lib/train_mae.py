@@ -152,6 +152,10 @@ Examples:
     parser.add_argument("--channel_dropout_rate", type=float, default=None)
     parser.add_argument("--grad_clip",            type=float, default=None)
     parser.add_argument("--ema_decay",            type=float, default=None, help="EMA decay (None to disable)")
+    parser.add_argument("--time_mask_ratio_scale", type=float, default=None, help="Scale factor for masking valid-time sensors (1.0=uniform)")
+    parser.add_argument("--npho_threshold", type=float, default=None, help="Npho threshold for conditional time loss (raw scale)")
+    parser.add_argument("--use_nphe_time_weight", action="store_true", help="Weight time loss by sqrt(npho)")
+    parser.add_argument("--no_nphe_time_weight", action="store_true", help="Disable nphe time weighting")
 
     parser.add_argument("--mlflow_experiment", type=str, default=None)
     parser.add_argument("--mlflow_run_name",   type=str, default=None)
@@ -184,6 +188,7 @@ Examples:
         outer_mode = args.outer_mode or cfg.model.outer_mode
         outer_fine_pool = args.outer_fine_pool or cfg.model.outer_fine_pool
         mask_ratio = args.mask_ratio if args.mask_ratio is not None else cfg.model.mask_ratio
+        time_mask_ratio_scale = args.time_mask_ratio_scale if args.time_mask_ratio_scale is not None else getattr(cfg.model, "time_mask_ratio_scale", 1.0)
         lr = args.lr if args.lr is not None else cfg.training.lr
         lr_scheduler = args.lr_scheduler or getattr(cfg.training, "lr_scheduler", None)
         lr_min = args.lr_min if args.lr_min is not None else getattr(cfg.training, "lr_min", 1e-6)
@@ -192,6 +197,8 @@ Examples:
         loss_fn = args.loss_fn or cfg.training.loss_fn
         npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight
         time_weight = args.time_weight if args.time_weight is not None else cfg.training.time_weight
+        npho_threshold = args.npho_threshold if args.npho_threshold is not None else getattr(cfg.training, "npho_threshold", None)
+        use_nphe_time_weight = not args.no_nphe_time_weight and getattr(cfg.training, "use_nphe_time_weight", True)
         auto_channel_weight = args.auto_channel_weight or cfg.training.auto_channel_weight
         channel_dropout_rate = args.channel_dropout_rate if args.channel_dropout_rate is not None else cfg.training.channel_dropout_rate
         grad_clip = args.grad_clip if args.grad_clip is not None else getattr(cfg.training, 'grad_clip', 1.0)
@@ -225,6 +232,7 @@ Examples:
         outer_mode = args.outer_mode or "finegrid"
         outer_fine_pool = args.outer_fine_pool
         mask_ratio = args.mask_ratio or 0.6
+        time_mask_ratio_scale = args.time_mask_ratio_scale or 1.0
         lr = args.lr or 1e-4
         lr_scheduler = args.lr_scheduler
         lr_min = args.lr_min if args.lr_min is not None else 1e-6
@@ -233,6 +241,8 @@ Examples:
         loss_fn = args.loss_fn or "smooth_l1"
         npho_weight = args.npho_weight or 1.0
         time_weight = args.time_weight or 1.0
+        npho_threshold = args.npho_threshold  # None uses DEFAULT_NPHO_THRESHOLD
+        use_nphe_time_weight = not args.no_nphe_time_weight
         auto_channel_weight = args.auto_channel_weight
         channel_dropout_rate = args.channel_dropout_rate or 0.1
         grad_clip = args.grad_clip or 1.0
@@ -284,7 +294,7 @@ Examples:
 
     model = XEC_MAE(
         encoder, mask_ratio=mask_ratio, learn_channel_logvars=auto_channel_weight,
-        sentinel_value=sentinel_value
+        sentinel_value=sentinel_value, time_mask_ratio_scale=time_mask_ratio_scale
     ).to(device)
     total_params, trainable_params = count_model_params(model)
     print("[INFO] MAE created:")
@@ -468,6 +478,8 @@ Examples:
                 grad_clip=grad_clip,
                 scaler=scaler,
                 num_workers=num_workers,
+                npho_threshold=npho_threshold,
+                use_nphe_time_weight=use_nphe_time_weight,
             )
 
             # Update EMA model
@@ -501,6 +513,8 @@ Examples:
                     collect_predictions=collect_preds,
                     max_events=1000,
                     num_workers=num_workers,
+                    npho_threshold=npho_threshold,
+                    use_nphe_time_weight=use_nphe_time_weight,
                 )
 
                 if collect_preds:

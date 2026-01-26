@@ -38,6 +38,9 @@ def run_epoch_mae(model, optimizer, device, root, tree,
     if npho_threshold is None:
         npho_threshold = DEFAULT_NPHO_THRESHOLD
 
+    # Convert to normalized space for stratified masking
+    npho_threshold_norm = np.log1p(npho_threshold / NphoScale) / NphoScale2
+
     # Per-face total losses
     face_loss_sums = {
         "inner": 0.0, "us": 0.0, "ds": 0.0,
@@ -142,8 +145,8 @@ def run_epoch_mae(model, optimizer, device, root, tree,
             optimizer.zero_grad()
             # with torch.amp.autocast('cuda', enabled=amp):
             with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
-                # 1. Forward Pass
-                recons, mask = model(x_in)
+                # 1. Forward Pass (pass npho_threshold_norm for stratified masking)
+                recons, mask = model(x_in, npho_threshold_norm=npho_threshold_norm)
 
                 # Track actual mask ratio
                 # Already-invalid sensors have time == sentinel_value and are NOT in mask
@@ -430,6 +433,9 @@ def run_eval_mae(model, device, root, tree,
     if npho_threshold is None:
         npho_threshold = DEFAULT_NPHO_THRESHOLD
 
+    # Convert to normalized space for stratified masking
+    npho_threshold_norm = np.log1p(npho_threshold / NphoScale) / NphoScale2
+
     # Loss tracking
     face_loss_sums = {"inner": 0.0, "us": 0.0, "ds": 0.0, "outer": 0.0, "top": 0.0, "bot": 0.0}
     face_npho_loss_sums = {"inner": 0.0, "us": 0.0, "ds": 0.0, "outer": 0.0, "top": 0.0, "bot": 0.0}
@@ -569,8 +575,8 @@ def run_eval_mae(model, device, root, tree,
             
             with torch.no_grad():
                 with torch.amp.autocast('cuda', enabled=amp):
-                    # Get masked input for visualization
-                    x_masked, mask = model.random_masking(x_in)
+                    # Get masked input for visualization (pass npho_threshold_norm for stratified masking)
+                    x_masked, mask = model.random_masking(x_in, npho_threshold_norm=npho_threshold_norm)
 
                     # Track actual mask ratio
                     already_invalid = (x_in[:, :, 1] == sentinel_value)  # (B, N)

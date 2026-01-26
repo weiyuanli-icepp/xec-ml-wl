@@ -77,12 +77,14 @@ class GraphFaceDecoder(nn.Module):
         return out.permute(0, 2, 1) # (B, N, 2) -> (B, 2, N)
     
 class XEC_MAE(nn.Module):
-    def __init__(self, encoder: XECEncoder, mask_ratio=0.6, learn_channel_logvars: bool = False, sentinel_value: float = -5.0):
+    def __init__(self, encoder: XECEncoder, mask_ratio=0.6, learn_channel_logvars: bool = False,
+                 sentinel_value: float = -5.0, time_mask_ratio_scale: float = 1.0):
         super().__init__()
         self.encoder = encoder
         self.mask_ratio = mask_ratio
         self.learn_channel_logvars = learn_channel_logvars
         self.sentinel_value = sentinel_value
+        self.time_mask_ratio_scale = time_mask_ratio_scale
         
         # -- RECTANGULAR FACES DECODERS --
         self.dec_inner = FaceDecoder(out_h=93, out_w=44)
@@ -116,13 +118,16 @@ class XEC_MAE(nn.Module):
         # Per-channel log(sigma^2) for homoscedastic weighting (npho, time)
         self.channel_log_vars = nn.Parameter(torch.zeros(2)) if learn_channel_logvars else None
         
-    def random_masking(self, x, sentinel=None):
+    def random_masking(self, x, sentinel=None, npho_threshold_norm=None):
         """
         Randomly masks sensors, excluding already-invalid sensors from the masking pool.
 
         Args:
             x: (B, 4760, 2) - sensor values (npho, time)
             sentinel: value used to mark invalid/masked sensors (defaults to self.sentinel_value)
+            npho_threshold_norm: threshold in normalized npho space for stratified masking.
+                                If provided and time_mask_ratio_scale != 1.0, valid-time sensors
+                                (npho > threshold) are more likely to be masked.
 
         Returns:
             x_masked: input with masked positions set to sentinel (includes already-invalid)
@@ -153,6 +158,16 @@ class XEC_MAE(nn.Module):
         noise = torch.rand(B, N, device=device)
         noise[already_invalid] = float('inf')
 
+        # Stratified masking: bias toward valid-time sensors
+        # When time_mask_ratio_scale > 1.0, valid-time sensors get lower noise values,
+        # making them more likely to be selected for masking
+        if (self.time_mask_ratio_scale != 1.0 and npho_threshold_norm is not None):
+            # Identify valid-time sensors (npho > threshold, not already-invalid)
+            valid_time = (x[:, :, 0] > npho_threshold_norm) & (~already_invalid)
+            # Scale down noise for valid-time sensors (more likely to be masked)
+            # noise in [0, 1], divide by scale for valid-time sensors
+            noise[valid_time] = noise[valid_time] / self.time_mask_ratio_scale
+
         # Sort to get indices (invalid sensors will be at the end)
         ids_shuffle = torch.argsort(noise, dim=1)
 
@@ -172,7 +187,7 @@ class XEC_MAE(nn.Module):
 
         return x_masked, mask
     
-    def forward(self, x_batch, use_fcmae_masking=True):
+    def forward(self, x_batch, use_fcmae_masking=True, npho_threshold_norm=None):
         """
         Forward pass for MAE.
 
@@ -181,8 +196,11 @@ class XEC_MAE(nn.Module):
             use_fcmae_masking: If True, pass mask through encoder for FCMAE-style
                                zeroing after spatial convolutions. If False, only
                                use mask for loss computation (legacy behavior).
+            npho_threshold_norm: threshold in normalized npho space for stratified masking.
+                                If provided and time_mask_ratio_scale != 1.0, valid-time sensors
+                                (npho > threshold) are more likely to be masked.
         """
-        x_masked, mask = self.random_masking(x_batch)
+        x_masked, mask = self.random_masking(x_batch, npho_threshold_norm=npho_threshold_norm)
 
         # FCMAE-style: pass mask through encoder to zero features at masked positions
         # Include both randomly-masked AND already-invalid sensors in the encoder mask
