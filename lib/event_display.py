@@ -424,9 +424,9 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         if xs_masked_valid:
             ax.scatter(xs_masked_valid, ys_masked_valid, s=280, c='black', marker='h', edgecolors='none')
         if xs_masked_invalid:
-            # Time-invalid masked sensors: show in different color (dimgray with edge)
-            ax.scatter(xs_masked_invalid, ys_masked_invalid, s=280, c='dimgray', marker='h',
-                      edgecolors='red', linewidths=1.5)
+            # Time-invalid masked sensors: gray with white edge (clearly "no data")
+            ax.scatter(xs_masked_invalid, ys_masked_invalid, s=280, c='#606060', marker='h',
+                      edgecolors='white', linewidths=2.0)
         ax.set_xlim(-55, 55)
         ax.set_ylim(-5, 45)
         ax.axis('off')
@@ -452,15 +452,18 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         masked_img = np.ma.array(to_np(faces_masked[face_key]), mask=mask_face)
         axes[1, col_idx].imshow(masked_img, aspect='auto',
                                  origin='upper', cmap=cmap_main_masked, norm=norm_main)
-        # Overlay time-invalid masked sensors in different color (red tint)
+        # Overlay time-invalid masked sensors with hatching pattern (gray with crosshatch)
         if faces_time_invalid is not None:
             time_inv_face = to_np(faces_time_invalid[face_key]) > 0.5
             combined_mask = mask_face & time_inv_face  # masked AND time-invalid
             if np.any(combined_mask):
-                # Create RGBA overlay for time-invalid masked pixels
+                # Create gray overlay with distinct pattern for time-invalid masked pixels
                 overlay = np.zeros((*mask_face.shape, 4))
-                overlay[combined_mask] = [0.8, 0.2, 0.2, 0.7]  # semi-transparent red
+                overlay[combined_mask] = [0.4, 0.4, 0.4, 0.8]  # semi-transparent gray
                 axes[1, col_idx].imshow(overlay, aspect='auto', origin='upper')
+                # Add hatching using contourf for visual distinction
+                axes[1, col_idx].contourf(combined_mask.astype(float), levels=[0.5, 1.5],
+                                          colors='none', hatches=['//'], alpha=0)
         axes[1, col_idx].set_title(f"{col_labels[col_idx]} - Masked")
         axes[1, col_idx].axis('off')
 
@@ -495,14 +498,16 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     outer_mask_face = to_np(outer_mask) > 0.5
     outer_mask_img = np.ma.array(to_np(outer_masked), mask=outer_mask_face)
     axes[1, 3].imshow(outer_mask_img, aspect='auto', origin='upper', cmap=cmap_main_masked, norm=norm_main)
-    # Overlay time-invalid masked sensors
+    # Overlay time-invalid masked sensors with gray + hatching
     if outer_time_invalid is not None:
         outer_time_inv = to_np(outer_time_invalid) > 0.5
         combined_mask = outer_mask_face & outer_time_inv
         if np.any(combined_mask):
             overlay = np.zeros((*outer_mask_face.shape, 4))
-            overlay[combined_mask] = [0.8, 0.2, 0.2, 0.7]
+            overlay[combined_mask] = [0.4, 0.4, 0.4, 0.8]  # gray instead of red
             axes[1, 3].imshow(overlay, aspect='auto', origin='upper')
+            axes[1, 3].contourf(combined_mask.astype(float), levels=[0.5, 1.5],
+                                colors='none', hatches=['//'], alpha=0)
     axes[1, 3].set_title("Outer - Masked")
     axes[1, 3].axis('off')
 
@@ -571,7 +576,7 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         n_masked = (mask > 0.5).sum()
         n_time_invalid = ((mask > 0.5) & (time_invalid_mask > 0.5)).sum()
         time_valid_pct = 100 * (1 - n_time_invalid / max(n_masked, 1))
-        stats_text += f" | Time-valid: {time_valid_pct:.1f}% (red=invalid)"
+        stats_text += f" | Time-valid: {time_valid_pct:.1f}% (gray+hatch=invalid)"
 
     fig.suptitle(f"{title}\n{stats_text}", fontsize=14)
     plt.tight_layout(rect=[0, 0, 0.9, 0.95])
