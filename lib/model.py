@@ -111,9 +111,15 @@ class FaceBackbone(nn.Module):
         """
         x = self.stem(x)
 
+        # Resize mask to match post-stem dimensions (stem reduces by 1 due to kernel_size=4, padding=1)
+        if mask_2d is not None:
+            mask_2d_s1 = F.interpolate(mask_2d.float(), size=x.shape[-2:], mode='nearest')
+        else:
+            mask_2d_s1 = None
+
         # Stage 1 with mask
         for block in self.stage1:
-            x = block(x, mask_2d)
+            x = block(x, mask_2d_s1)
 
         x = self.downsample(x)
 
