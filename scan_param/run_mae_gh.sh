@@ -36,17 +36,9 @@ export TRAIN_PATH="$HOME/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.r
 export VAL_PATH="$HOME/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root"
 export MLFLOW_EXPERIMENT="mae_pretraining"
 
-# --- Mask ratios to scan ---
-MASK_RATIOS=(0.60 0.65 0.70)
+# --- Single MAE run (0.65 is standard for MAE) ---
+export MASK_RATIO="0.65"
+export RUN_NAME="mae_mask0.65_gh"
 
-for MASK_RATIO in "${MASK_RATIOS[@]}"; do
-    export MASK_RATIO
-    export RUN_NAME="mae_mask${MASK_RATIO}_gh"
-
-    echo "Submitting: $RUN_NAME (mask_ratio=$MASK_RATIO)"
-    ./submit_mae.sh
-
-    sleep 2
-done
-
-echo "All MAE jobs submitted!"
+echo "Submitting: $RUN_NAME (mask_ratio=$MASK_RATIO)"
+./submit_mae.sh
