@@ -151,6 +151,7 @@ Examples:
 
     # --- Load original data ---
     print(f"Loading original data from: {args.original}")
+    print(f"  Using branches: npho='{args.npho_branch}', time='{args.time_branch}'")
     with uproot.open(args.original) as f:
         if args.tree not in f:
             print(f"Error: Tree '{args.tree}' not found. Available: {list(f.keys())}")
@@ -205,6 +206,10 @@ Examples:
     # x_truth: full normalized sensor values
     x_truth = np.stack([npho_norm, time_norm], axis=-1)  # (4760, 2)
     num_sensors = x_truth.shape[0]
+
+    # Debug: Show overall event data distribution
+    print(f"  Raw npho: non-zero={np.sum(raw_npho > 0)}/{len(raw_npho)}, min={raw_npho.min():.2f}, max={raw_npho.max():.2f}, mean={raw_npho.mean():.2f}")
+    print(f"  Normalized npho: min={npho_norm.min():.4f}, max={npho_norm.max():.4f}, mean={npho_norm.mean():.4f}")
 
     # --- Load inpainter predictions ---
     print(f"Loading predictions from: {args.predictions}")
