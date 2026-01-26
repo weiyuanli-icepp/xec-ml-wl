@@ -198,15 +198,35 @@ def generate_mae_predictions(input_file, output_file, tree_name="tree",
         mask_out.append(mask)
 
     # Write to ROOT file
+    # Use explicit type specification to avoid awkward import issues
+    truth_npho_arr = np.array(truth_npho_out, dtype=np.float32)
+    truth_time_arr = np.array(truth_time_out, dtype=np.float32)
+    masked_npho_arr = np.array(masked_npho_out, dtype=np.float32)
+    masked_time_arr = np.array(masked_time_out, dtype=np.float32)
+    pred_npho_arr = np.array(pred_npho_out, dtype=np.float32)
+    pred_time_arr = np.array(pred_time_out, dtype=np.float32)
+    mask_arr = np.array(mask_out, dtype=np.float32)
+
     with uproot.recreate(output_file) as f:
+        # Define tree with explicit numpy dtype specifications
         f.mktree("tree", {
-            "truth_npho": np.array(truth_npho_out),
-            "truth_time": np.array(truth_time_out),
-            "masked_npho": np.array(masked_npho_out),
-            "masked_time": np.array(masked_time_out),
-            "pred_npho": np.array(pred_npho_out),
-            "pred_time": np.array(pred_time_out),
-            "mask": np.array(mask_out),
+            "truth_npho": truth_npho_arr.dtype,
+            "truth_time": truth_time_arr.dtype,
+            "masked_npho": masked_npho_arr.dtype,
+            "masked_time": masked_time_arr.dtype,
+            "pred_npho": pred_npho_arr.dtype,
+            "pred_time": pred_time_arr.dtype,
+            "mask": mask_arr.dtype,
+        })
+        # Extend with actual data
+        f["tree"].extend({
+            "truth_npho": truth_npho_arr,
+            "truth_time": truth_time_arr,
+            "masked_npho": masked_npho_arr,
+            "masked_time": masked_time_arr,
+            "pred_npho": pred_npho_arr,
+            "pred_time": pred_time_arr,
+            "mask": mask_arr,
         })
 
     print(f"  Written {n_entries} events to {output_file}")
@@ -296,27 +316,63 @@ def generate_inpainter_predictions(input_file, output_file, tree_name="tree",
             event_number_out.append(int(event_all[i]))
 
     # Write to ROOT file
+    # Use explicit type specification to avoid awkward import issues
+    event_idx_arr = np.array(event_idx_out, dtype=np.int32)
+    sensor_id_arr = np.array(sensor_id_out, dtype=np.int32)
+    face_arr = np.array(face_out, dtype=np.int32)
+    pred_npho_arr = np.array(pred_npho_out, dtype=np.float32)
+    pred_time_arr = np.array(pred_time_out, dtype=np.float32)
+    truth_npho_arr = np.array(truth_npho_out, dtype=np.float32)
+    truth_time_arr = np.array(truth_time_out, dtype=np.float32)
+    run_number_arr = np.array(run_number_out, dtype=np.int32)
+    event_number_arr = np.array(event_number_out, dtype=np.int32)
+
+    # Metadata arrays
+    meta_npho_scale = np.array([npho_scale], dtype=np.float32)
+    meta_npho_scale2 = np.array([npho_scale2], dtype=np.float32)
+    meta_time_scale = np.array([time_scale], dtype=np.float32)
+    meta_time_shift = np.array([time_shift], dtype=np.float32)
+    meta_sentinel = np.array([sentinel_value], dtype=np.float32)
+
     with uproot.recreate(output_file) as f:
-        # Main predictions tree
+        # Main predictions tree - define with types, then extend
         f.mktree("tree", {
-            "event_idx": np.array(event_idx_out, dtype=np.int32),
-            "sensor_id": np.array(sensor_id_out, dtype=np.int32),
-            "face": np.array(face_out, dtype=np.int32),
-            "pred_npho": np.array(pred_npho_out, dtype=np.float32),
-            "pred_time": np.array(pred_time_out, dtype=np.float32),
-            "truth_npho": np.array(truth_npho_out, dtype=np.float32),
-            "truth_time": np.array(truth_time_out, dtype=np.float32),
-            "run_number": np.array(run_number_out, dtype=np.int32),
-            "event_number": np.array(event_number_out, dtype=np.int32),
+            "event_idx": np.int32,
+            "sensor_id": np.int32,
+            "face": np.int32,
+            "pred_npho": np.float32,
+            "pred_time": np.float32,
+            "truth_npho": np.float32,
+            "truth_time": np.float32,
+            "run_number": np.int32,
+            "event_number": np.int32,
+        })
+        f["tree"].extend({
+            "event_idx": event_idx_arr,
+            "sensor_id": sensor_id_arr,
+            "face": face_arr,
+            "pred_npho": pred_npho_arr,
+            "pred_time": pred_time_arr,
+            "truth_npho": truth_npho_arr,
+            "truth_time": truth_time_arr,
+            "run_number": run_number_arr,
+            "event_number": event_number_arr,
         })
 
-        # Metadata tree (normalization parameters)
+        # Metadata tree
         f.mktree("metadata", {
-            "npho_scale": np.array([npho_scale], dtype=np.float32),
-            "npho_scale2": np.array([npho_scale2], dtype=np.float32),
-            "time_scale": np.array([time_scale], dtype=np.float32),
-            "time_shift": np.array([time_shift], dtype=np.float32),
-            "sentinel_value": np.array([sentinel_value], dtype=np.float32),
+            "npho_scale": np.float32,
+            "npho_scale2": np.float32,
+            "time_scale": np.float32,
+            "time_shift": np.float32,
+            "sentinel_value": np.float32,
+        })
+        f["metadata"].extend({
+            "npho_scale": meta_npho_scale,
+            "npho_scale2": meta_npho_scale2,
+            "time_scale": meta_time_scale,
+            "time_shift": meta_time_shift,
+            "sentinel_value": meta_sentinel,
         })
 
     print(f"  Written {len(event_idx_out)} predictions ({n_entries} events) to {output_file}")
