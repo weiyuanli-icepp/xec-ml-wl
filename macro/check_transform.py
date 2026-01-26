@@ -19,23 +19,29 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 # TIME_SCALE = 1e-6
 # TIME_SHIFT = 0.
 # SENTINEL_VAL = -0.1
-# TIME_SCALE = 1e-7
+TIME_SCALE = 1.14e-7
 # TIME_SHIFT = 0.
-# SENTINEL_VAL = -1.0
-TIME_SCALE = 6.5e-8
-TIME_SHIFT = 0.5
-SENTINEL_VAL = -5.0
+SENTINEL_VAL = -1.0
+# TIME_SCALE = 6.5e-8
+TIME_SHIFT = -0.46
+# SENTINEL_VAL = -0.5
 
 # Npho Scaling
-NPHO_SCALE  = 0.58
+# NPHO_SCALE  = 0.58
 # NPHO_SCALE  = 1
-NPHO_SCALE2 = 1.0 # for relative_npho
+# NPHO_SCALE2 = 1.0 # for relative_npho
 # NPHO_SCALE2 = 11.54 # for npho
 
+NPHO_SCALE  = 1000
+NPHO_SCALE2 = 4.08 
+# NPHO_SCALE  = 100
+# NPHO_SCALE2 = 6.4
+
+
 # Branch Names
-BRANCH_NPHO = "relative_npho"
+# BRANCH_NPHO = "relative_npho"
 BRANCH_TIME = "relative_time"
-# BRANCH_NPHO = "npho"
+BRANCH_NPHO = "npho"
 
 # Npho threshold for meaningful time (raw scale)
 # Time is only physically meaningful when npho > threshold
