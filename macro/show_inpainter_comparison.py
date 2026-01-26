@@ -110,7 +110,7 @@ Examples:
     parser.add_argument("--sentinel_value", type=float, default=None)
 
     # Input branch names
-    parser.add_argument("--npho_branch", type=str, default="relative_npho")
+    parser.add_argument("--npho_branch", type=str, default="npho")
     parser.add_argument("--time_branch", type=str, default="relative_time")
 
     # Time-invalid threshold (for visualization)

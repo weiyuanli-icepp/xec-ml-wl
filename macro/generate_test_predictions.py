@@ -415,7 +415,7 @@ Examples:
     parser.add_argument("--inpainter_output", type=str, default="test_inpainter_predictions.root",
                         help="Inpainter output file (default: test_inpainter_predictions.root)")
     parser.add_argument("--tree", type=str, default="tree", help="Input tree name")
-    parser.add_argument("--npho_branch", type=str, default="relative_npho")
+    parser.add_argument("--npho_branch", type=str, default="npho")
     parser.add_argument("--time_branch", type=str, default="relative_time")
     parser.add_argument("--mask_ratio", type=float, default=0.6, help="Mask ratio (default: 0.6)")
     parser.add_argument("--error_scale", type=float, default=0.1,
