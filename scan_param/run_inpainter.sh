@@ -28,10 +28,10 @@ export NPHO_WEIGHT="1.0"
 export TIME_WEIGHT="1.0"
 
 # Learning rate
-export LR="2e-4"
+export LR="2.5e-4"
 export LR_SCHEDULER="cosine"
 export LR_MIN="1e-6"
-export WARMUP_EPOCHS="0"
+export WARMUP_EPOCHS="3"
 export WEIGHT_DECAY="1e-4"
 export GRAD_CLIP="1.0"
 
