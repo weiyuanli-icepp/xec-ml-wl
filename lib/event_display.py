@@ -357,13 +357,8 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     def to_np(t):
         return t.squeeze(0).squeeze(0).cpu().numpy()
 
-    # Compute percentage residual where masked: (pred - truth) / |truth| * 100
-    # Use small epsilon to avoid division by zero
-    residual_ch = np.where(
-        mask > 0.5,
-        (pred_ch - truth_ch) / (np.abs(truth_ch) + 1e-6) * 100.0,
-        0.0
-    )
+    # Compute residual where masked (raw difference)
+    residual_ch = np.where(mask > 0.5, pred_ch - truth_ch, 0.0)
     residual_t = to_tensor(residual_ch)
     faces_residual = build_face_tensors(residual_t)
     outer_residual = build_outer_fine_grid_tensor(residual_t, pool_kernel=None)
@@ -440,7 +435,7 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     ncols = 6 if include_top_bottom else 4
     fig_width = 22 if include_top_bottom else 16
     fig, axes = plt.subplots(5, ncols, figsize=(fig_width, 15))
-    row_labels = ["Truth", "Masked", "Pred", "Residual (%)", "Mask"]
+    row_labels = ["Truth", "Masked", "Pred", "Residual", "Mask"]
     col_labels = ["Inner", "Upstream", "Downstream", "Outer"]
 
     face_keys = ["inner", "us", "ds"]
@@ -481,7 +476,7 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         # Residual
         axes[3, col_idx].imshow(to_np(faces_residual[face_key]), aspect='auto',
                                  origin='upper', cmap=cmap_res, norm=norm_res)
-        axes[3, col_idx].set_title(f"{col_labels[col_idx]} - Residual (%)")
+        axes[3, col_idx].set_title(f"{col_labels[col_idx]} - Residual")
         axes[3, col_idx].axis('off')
 
         # Mask - show time-invalid as different shade
@@ -521,7 +516,7 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     axes[2, 3].axis('off')
 
     axes[3, 3].imshow(to_np(outer_residual), aspect='auto', origin='upper', cmap=cmap_res, norm=norm_res)
-    axes[3, 3].set_title("Outer - Residual (%)")
+    axes[3, 3].set_title("Outer - Residual")
     axes[3, 3].axis('off')
 
     # Mask - show time-invalid as different shade
@@ -564,15 +559,15 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     fig.colorbar(plt.cm.ScalarMappable(norm=norm_main, cmap=cmap_main), cax=cbar_ax1, label=ch_label)
 
     cbar_ax2 = fig.add_axes([0.92, 0.1, 0.015, 0.35])
-    fig.colorbar(plt.cm.ScalarMappable(norm=norm_res, cmap=cmap_res), cax=cbar_ax2, label="Residual (%)")
+    fig.colorbar(plt.cm.ScalarMappable(norm=norm_res, cmap=cmap_res), cax=cbar_ax2, label="Residual")
 
     # Summary stats
     mask_ratio = mask.mean() * 100
     masked_residuals = residual_ch[mask > 0.5]
     if len(masked_residuals) > 0:
-        mape = np.mean(np.abs(masked_residuals))  # Already percentage
-        rmspe = np.sqrt(np.mean(masked_residuals**2))  # Root mean squared percentage error
-        stats_text = f"Mask: {mask_ratio:.1f}% | MAPE: {mape:.1f}% | RMSPE: {rmspe:.1f}%"
+        mae = np.mean(np.abs(masked_residuals))
+        rmse = np.sqrt(np.mean(masked_residuals**2))
+        stats_text = f"Mask: {mask_ratio:.1f}% | MAE: {mae:.4f} | RMSE: {rmse:.4f}"
     else:
         stats_text = f"Mask: {mask_ratio:.1f}%"
 
