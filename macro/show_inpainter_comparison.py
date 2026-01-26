@@ -96,7 +96,7 @@ Examples:
     parser.add_argument("--original", type=str, required=True,
                         help="Path to original validation ROOT file")
     parser.add_argument("--tree", type=str, default="tree", help="TTree name in original file")
-    parser.add_argument("--channel", type=str, choices=["npho", "time"], default="npho")
+    parser.add_argument("--channel", type=str, choices=["npho", "time", "both"], default="npho")
     parser.add_argument("--include_top_bottom", action="store_true",
                         help="Include top/bottom hex faces in the comparison grid")
     parser.add_argument("--save", type=str, default=None, help="Save path (PDF recommended)")
@@ -358,20 +358,31 @@ Examples:
     raw_threshold = args.npho_threshold if args.npho_threshold is not None else DEFAULT_NPHO_THRESHOLD
     npho_threshold_norm = np.log1p(raw_threshold / npho_scale) / npho_scale2
 
-    plot_mae_comparison(
-        x_truth,
-        x_masked,
-        mask,
-        x_pred=x_pred,
-        channel=args.channel,
-        title=title,
-        savepath=savepath,
-        include_top_bottom=args.include_top_bottom,
-        npho_threshold=npho_threshold_norm,
-    )
+    # Determine which channels to plot
+    channels_to_plot = ["npho", "time"] if args.channel == "both" else [args.channel]
 
-    if savepath:
-        print(f"Saved to: {savepath}")
+    for ch in channels_to_plot:
+        # Handle save path for multiple channels
+        if savepath and args.channel == "both":
+            base, ext = os.path.splitext(savepath)
+            ch_savepath = f"{base}_{ch}{ext}"
+        else:
+            ch_savepath = savepath
+
+        plot_mae_comparison(
+            x_truth,
+            x_masked,
+            mask,
+            x_pred=x_pred,
+            channel=ch,
+            title=title,
+            savepath=ch_savepath,
+            include_top_bottom=args.include_top_bottom,
+            npho_threshold=npho_threshold_norm,
+        )
+
+        if ch_savepath:
+            print(f"Saved {ch} plot to: {ch_savepath}")
 
 
 if __name__ == "__main__":
