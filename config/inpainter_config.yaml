@@ -47,7 +47,6 @@ training:
   grad_clip: 1.0                    # Gradient clipping (0 to disable)
   amp: true                         # Automatic Mixed Precision
   track_mae_rmse: false              # Compute/log MAE/RMSE metrics (set false to skip)
-  save_root_predictions: true       # Write ROOT outputs during validation (set false to skip)
   grad_accum_steps: 2               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
   track_train_metrics: false         # Track per-face metrics during training (set false to log only total_loss)
   npho_threshold: null              # Npho threshold for conditional time loss (null uses default 10.0)
@@ -58,6 +57,7 @@ checkpoint:
   resume_from: null                 # Path to inpainter checkpoint to resume from
   save_dir: "artifacts/inpainter"   # Directory to save checkpoints
   save_interval: 10                 # Save checkpoint every N epochs
+  save_predictions: true            # Write ROOT outputs during validation
 
 # === MLflow ===
 mlflow:

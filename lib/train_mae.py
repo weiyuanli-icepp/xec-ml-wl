@@ -156,6 +156,10 @@ Examples:
     parser.add_argument("--npho_threshold", type=float, default=None, help="Npho threshold for conditional time loss (raw scale)")
     parser.add_argument("--use_npho_time_weight", action="store_true", help="Weight time loss by sqrt(npho)")
     parser.add_argument("--no_npho_time_weight", action="store_true", help="Disable npho time weighting")
+    parser.add_argument("--track_mae_rmse", action="store_true", help="Enable MAE/RMSE metric tracking (slower)")
+    parser.add_argument("--no_track_mae_rmse", action="store_true", help="Disable MAE/RMSE metric tracking (faster)")
+    parser.add_argument("--track_train_metrics", action="store_true", help="Enable per-face train metrics tracking")
+    parser.add_argument("--no_track_train_metrics", action="store_true", help="Disable per-face train metrics (faster)")
 
     parser.add_argument("--mlflow_experiment", type=str, default=None)
     parser.add_argument("--mlflow_run_name",   type=str, default=None)
@@ -199,6 +203,8 @@ Examples:
         time_weight = args.time_weight if args.time_weight is not None else cfg.training.time_weight
         npho_threshold = args.npho_threshold if args.npho_threshold is not None else getattr(cfg.training, "npho_threshold", None)
         use_npho_time_weight = not args.no_npho_time_weight and getattr(cfg.training, "use_npho_time_weight", True)
+        track_mae_rmse = not args.no_track_mae_rmse and getattr(cfg.training, "track_mae_rmse", False)
+        track_train_metrics = not args.no_track_train_metrics and getattr(cfg.training, "track_train_metrics", False)
         auto_channel_weight = args.auto_channel_weight or cfg.training.auto_channel_weight
         channel_dropout_rate = args.channel_dropout_rate if args.channel_dropout_rate is not None else cfg.training.channel_dropout_rate
         grad_clip = args.grad_clip if args.grad_clip is not None else getattr(cfg.training, 'grad_clip', 1.0)
@@ -243,6 +249,8 @@ Examples:
         time_weight = args.time_weight or 1.0
         npho_threshold = args.npho_threshold  # None uses DEFAULT_NPHO_THRESHOLD
         use_npho_time_weight = not args.no_npho_time_weight
+        track_mae_rmse = args.track_mae_rmse and not args.no_track_mae_rmse
+        track_train_metrics = args.track_train_metrics and not args.no_track_train_metrics
         auto_channel_weight = args.auto_channel_weight
         channel_dropout_rate = args.channel_dropout_rate or 0.1
         grad_clip = args.grad_clip or 1.0
@@ -480,6 +488,8 @@ Examples:
                 num_workers=num_workers,
                 npho_threshold=npho_threshold,
                 use_npho_time_weight=use_npho_time_weight,
+                track_mae_rmse=track_mae_rmse,
+                track_train_metrics=track_train_metrics,
             )
 
             # Update EMA model
@@ -515,6 +525,7 @@ Examples:
                     num_workers=num_workers,
                     npho_threshold=npho_threshold,
                     use_npho_time_weight=use_npho_time_weight,
+                    track_mae_rmse=track_mae_rmse,
                 )
 
                 if collect_preds:
