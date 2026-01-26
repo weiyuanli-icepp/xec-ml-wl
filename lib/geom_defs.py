@@ -150,14 +150,14 @@ OUTER_ALL_SENSOR_IDS = np.array(
 OUTER_SENSOR_ID_TO_IDX = {int(sid): idx for idx, sid in enumerate(OUTER_ALL_SENSOR_IDS)}
 
 
-# Default Normalization Factors (matching MAE/inpainter training defaults from engine_mae.py)
+# Default Normalization Factors
 # npho_norm = log1p(raw_npho / NPHO_SCALE) / NPHO_SCALE2
 # time_norm = (raw_time / TIME_SCALE) - TIME_SHIFT
-DEFAULT_NPHO_SCALE     =  1e5      # Was 0.58 (wrong, caused normalization mismatch)
-DEFAULT_NPHO_SCALE2    =  13.0     # Was 1.0
-DEFAULT_TIME_SCALE     =  2.32e6   # Was 6.5e-8
-DEFAULT_TIME_SHIFT     = -0.29     # Was 0.5
-DEFAULT_SENTINEL_VALUE = -5.0
+DEFAULT_NPHO_SCALE     =  1000.0
+DEFAULT_NPHO_SCALE2    =  4.08
+DEFAULT_TIME_SCALE     =  1.14e-7
+DEFAULT_TIME_SHIFT     = -0.46
+DEFAULT_SENTINEL_VALUE = -1.0
 
 # Conditional Time Loss Threshold
 # Time loss is only computed for sensors where npho > threshold (raw scale).
