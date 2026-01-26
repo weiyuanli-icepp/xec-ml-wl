@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import uproot
+import time
 from .geom_utils import gather_face, gather_hex_nodes
 from .geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP, 
@@ -133,5 +134,73 @@ def compute_face_saliency(model, x_batch, device):
             face_scores["hex_bottom"] = gather_hex_nodes(grads.unsqueeze(-1), bot_indices).mean()
             
             saliency_results[angle_name][ch_name] = {k: v.item() for k, v in face_scores.items()}
-        
+
     return saliency_results
+
+
+# ------------------------------------------------------------
+# Training Profiler
+# ------------------------------------------------------------
+class SimpleProfiler:
+    """Simple timer-based profiler for identifying training bottlenecks.
+
+    Usage:
+        profiler = SimpleProfiler(enabled=True)
+        profiler.start("forward")
+        # ... forward pass ...
+        profiler.stop()
+        profiler.start("backward")
+        # ... backward pass ...
+        profiler.stop()
+        print(profiler.report())
+    """
+
+    def __init__(self, enabled=False, sync_cuda=True):
+        self.enabled = enabled
+        self.sync_cuda = sync_cuda
+        self.timings = {}
+        self.counts = {}
+        self._start_time = None
+        self._current_name = None
+
+    def start(self, name):
+        if not self.enabled:
+            return
+        if self.sync_cuda and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self._current_name = name
+        self._start_time = time.perf_counter()
+
+    def stop(self):
+        if not self.enabled or self._start_time is None:
+            return
+        if self.sync_cuda and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        elapsed = time.perf_counter() - self._start_time
+        name = self._current_name
+        if name not in self.timings:
+            self.timings[name] = 0.0
+            self.counts[name] = 0
+        self.timings[name] += elapsed
+        self.counts[name] += 1
+        self._start_time = None
+        self._current_name = None
+
+    def report(self, title="Timing breakdown"):
+        if not self.enabled or not self.timings:
+            return ""
+        lines = [f"[Profiler] {title}:"]
+        total = sum(self.timings.values())
+        for name, t in sorted(self.timings.items(), key=lambda x: -x[1]):
+            pct = 100 * t / total if total > 0 else 0
+            avg = t / self.counts[name] if self.counts[name] > 0 else 0
+            lines.append(f"  {name}: {t:.2f}s ({pct:.1f}%) | {avg*1000:.2f}ms avg")
+        lines.append(f"  TOTAL: {total:.2f}s")
+        return "\n".join(lines)
+
+    def reset(self):
+        """Reset all timings for a new epoch."""
+        self.timings = {}
+        self.counts = {}
+        self._start_time = None
+        self._current_name = None
