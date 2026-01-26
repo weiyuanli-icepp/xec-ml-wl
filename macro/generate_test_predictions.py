@@ -207,16 +207,21 @@ def generate_mae_predictions(input_file, output_file, tree_name="tree",
     pred_time_arr = np.array(pred_time_out, dtype=np.float32)
     mask_arr = np.array(mask_out, dtype=np.float32)
 
+    def _dtype_with_shape(arr):
+        if arr.ndim == 1:
+            return arr.dtype
+        return np.dtype((arr.dtype, arr.shape[1:]))
+
     with uproot.recreate(output_file) as f:
-        # Define tree with explicit numpy dtype specifications
+        # Define tree with explicit numpy dtype specifications (including fixed shapes)
         f.mktree("tree", {
-            "truth_npho": truth_npho_arr.dtype,
-            "truth_time": truth_time_arr.dtype,
-            "masked_npho": masked_npho_arr.dtype,
-            "masked_time": masked_time_arr.dtype,
-            "pred_npho": pred_npho_arr.dtype,
-            "pred_time": pred_time_arr.dtype,
-            "mask": mask_arr.dtype,
+            "truth_npho": _dtype_with_shape(truth_npho_arr),
+            "truth_time": _dtype_with_shape(truth_time_arr),
+            "masked_npho": _dtype_with_shape(masked_npho_arr),
+            "masked_time": _dtype_with_shape(masked_time_arr),
+            "pred_npho": _dtype_with_shape(pred_npho_arr),
+            "pred_time": _dtype_with_shape(pred_time_arr),
+            "mask": _dtype_with_shape(mask_arr),
         })
         # Extend with actual data
         f["tree"].extend({
