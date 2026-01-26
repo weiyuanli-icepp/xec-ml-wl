@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import uproot
+import time
 from torch.utils.data import TensorDataset, DataLoader
 from .utils import iterate_chunks, get_pointwise_loss_fn
 from .geom_utils import build_outer_fine_grid_tensor, gather_face, gather_hex_nodes
@@ -12,6 +13,53 @@ from .geom_defs import (
     TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows,
     DEFAULT_NPHO_THRESHOLD
 )
+
+
+class SimpleProfiler:
+    """Simple timer-based profiler for identifying training bottlenecks."""
+
+    def __init__(self, enabled=False, sync_cuda=True):
+        self.enabled = enabled
+        self.sync_cuda = sync_cuda
+        self.timings = {}
+        self.counts = {}
+        self._start_time = None
+        self._current_name = None
+
+    def start(self, name):
+        if not self.enabled:
+            return
+        if self.sync_cuda and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self._current_name = name
+        self._start_time = time.perf_counter()
+
+    def stop(self):
+        if not self.enabled or self._start_time is None:
+            return
+        if self.sync_cuda and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        elapsed = time.perf_counter() - self._start_time
+        name = self._current_name
+        if name not in self.timings:
+            self.timings[name] = 0.0
+            self.counts[name] = 0
+        self.timings[name] += elapsed
+        self.counts[name] += 1
+        self._start_time = None
+        self._current_name = None
+
+    def report(self):
+        if not self.enabled or not self.timings:
+            return ""
+        lines = ["[Profiler] Timing breakdown:"]
+        total = sum(self.timings.values())
+        for name, t in sorted(self.timings.items(), key=lambda x: -x[1]):
+            pct = 100 * t / total if total > 0 else 0
+            avg = t / self.counts[name] if self.counts[name] > 0 else 0
+            lines.append(f"  {name}: {t:.2f}s ({pct:.1f}%) | {avg*1000:.2f}ms avg")
+        lines.append(f"  TOTAL: {total:.2f}s")
+        return "\n".join(lines)
 
 def run_epoch_mae(model, optimizer, device, root, tree,
                   batch_size=8192, step_size=4000,
@@ -29,7 +77,8 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                   npho_threshold=None,
                   use_npho_time_weight=True,
                   track_mae_rmse=True,
-                  track_train_metrics=True):
+                  track_train_metrics=True,
+                  profile=False):
     model.train()
     if scaler is None:
         scaler = torch.amp.GradScaler('cuda', enabled=amp)
@@ -73,18 +122,23 @@ def run_epoch_mae(model, optimizer, device, root, tree,
     n_batches = 0
 
     # Track actual mask ratio (randomly-masked / valid sensors)
-    total_randomly_masked = 0
-    total_valid_sensors = 0
+    # Use tensors to avoid GPU-CPU sync every batch (only .item() at epoch end)
+    total_randomly_masked = torch.tensor(0, dtype=torch.long, device=device)
+    total_valid_sensors = torch.tensor(0, dtype=torch.long, device=device)
     # Track time-valid sensors (sensors with npho > threshold)
-    total_time_valid_masked = 0
+    total_time_valid_masked = torch.tensor(0.0, dtype=torch.float32, device=device)
 
     branches = [npho_branch, time_branch]
-        
+
     top_indices = torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long()
     bot_indices = torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long()
-    
+
+    # Initialize profiler
+    profiler = SimpleProfiler(enabled=profile, sync_cuda=True)
+
     debug_printed = True
     for arr in iterate_chunks(root, tree, branches, step_size):
+        profiler.start("data_load_cpu")
 
         # --- Preprocessing (CPU) ---
         Npho = np.maximum(arr[npho_branch].astype("float32"), 0.0)
@@ -108,14 +162,18 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                 print("No valid Time entries found.")
                 
         X_raw = np.stack([Npho, Time], axis=-1).astype("float32")
-        loader = DataLoader(TensorDataset(torch.from_numpy(X_raw)), 
+        loader = DataLoader(TensorDataset(torch.from_numpy(X_raw)),
                             batch_size=batch_size, shuffle=True, drop_last=False,
-                            num_workers=num_workers, pin_memory=True, 
+                            num_workers=num_workers, pin_memory=True,
                             persistent_workers=True, prefetch_factor=2)
-        
+        profiler.stop()  # data_load_cpu
+
         for (X_b,) in loader:
+            profiler.start("gpu_transfer")
             X_b = X_b.to(device, non_blocking=True)
-            
+            profiler.stop()
+
+            profiler.start("preprocess")
             # --- Normalize (GPU) ---
             raw_n = X_b[:,:,0]
             raw_t = X_b[:,:,1]
@@ -144,20 +202,23 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                 if x_in.abs().max() < 1e-5:
                     print("[WARNING] INPUTS ARE ZERO! Check your scale factors.")
             
+            profiler.stop()  # preprocess
+
             optimizer.zero_grad()
             # with torch.amp.autocast('cuda', enabled=amp):
             with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
                 # 1. Forward Pass (pass npho_threshold_norm for stratified masking)
+                profiler.start("forward")
                 recons, mask = model(x_in, npho_threshold_norm=npho_threshold_norm)
+                profiler.stop()
 
-                # Track actual mask ratio
+                # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
                 # Already-invalid sensors have time == sentinel_value and are NOT in mask
                 already_invalid = (x_in[:, :, 1] == sentinel_value)  # (B, N)
-                n_valid = (~already_invalid).sum().item()
-                n_masked = mask.sum().item()
-                total_valid_sensors += n_valid
-                total_randomly_masked += n_masked
-                
+                total_valid_sensors += (~already_invalid).sum()
+                total_randomly_masked += mask.sum()
+
+                profiler.start("loss_compute")
                 # 2. Gather Truth Targets
                 if hasattr(model, "encoder") and getattr(model.encoder, "outer_fine", False):
                     outer_target = build_outer_fine_grid_tensor(
@@ -296,8 +357,8 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                         time_mask_sum_safe = time_mask_sum + 1e-8
                         time_loss = weighted_time_loss / time_mask_sum_safe
 
-                        # Track time-valid masked count
-                        total_time_valid_masked += time_mask_sum.item()
+                        # Track time-valid masked count (no .item() to avoid GPU-CPU sync)
+                        total_time_valid_masked += time_mask_sum
 
                         # MAE/RMSE tracking (expensive - skip if disabled)
                         if track_mae_rmse:
@@ -343,8 +404,13 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                     print("-"*40 + "\n")
                     debug_printed = True
 
-            scaler.scale(loss).backward()
+                profiler.stop()  # loss_compute
 
+            profiler.start("backward")
+            scaler.scale(loss).backward()
+            profiler.stop()
+
+            profiler.start("optimizer")
             # Gradient clipping
             if grad_clip > 0:
                 scaler.unscale_(optimizer)
@@ -352,9 +418,19 @@ def run_epoch_mae(model, optimizer, device, root, tree,
 
             scaler.step(optimizer)
             scaler.update()
+            profiler.stop()
 
             total_loss_sum += loss.item()
             n_batches += 1
+
+            profiler.start("data_load_cpu")  # For next iteration
+
+    # Stop any pending timer (last data_load_cpu started but not stopped)
+    profiler.stop()
+
+    # Print profiler report if enabled
+    if profile:
+        print(profiler.report())
 
     # Return averaged losses with detailed breakdown
     metrics = {}
@@ -392,14 +468,19 @@ def run_epoch_mae(model, optimizer, device, root, tree,
         metrics["channel_logvar_time"] = log_vars[1].item()
 
     # Actual mask ratio (randomly-masked / valid sensors)
-    if total_valid_sensors > 0:
-        metrics["actual_mask_ratio"] = total_randomly_masked / total_valid_sensors
+    # Convert tensor accumulators to Python scalars
+    total_valid_sensors_val = total_valid_sensors.item()
+    total_randomly_masked_val = total_randomly_masked.item()
+    total_time_valid_masked_val = total_time_valid_masked.item()
+
+    if total_valid_sensors_val > 0:
+        metrics["actual_mask_ratio"] = total_randomly_masked_val / total_valid_sensors_val
     else:
         metrics["actual_mask_ratio"] = 0.0
 
     # Time-valid ratio (masked sensors with npho > threshold / total masked sensors)
-    if total_randomly_masked > 0:
-        metrics["time_valid_ratio"] = total_time_valid_masked / total_randomly_masked
+    if total_randomly_masked_val > 0:
+        metrics["time_valid_ratio"] = total_time_valid_masked_val / total_randomly_masked_val
     else:
         metrics["time_valid_ratio"] = 0.0
 
@@ -468,10 +549,11 @@ def run_eval_mae(model, device, root, tree,
     n_collected = 0
 
     # Track actual mask ratio (randomly-masked / valid sensors)
-    total_randomly_masked = 0
-    total_valid_sensors = 0
+    # Use tensors to avoid GPU-CPU sync every batch (only .item() at epoch end)
+    total_randomly_masked = torch.tensor(0, dtype=torch.long, device=device)
+    total_valid_sensors = torch.tensor(0, dtype=torch.long, device=device)
     # Track time-valid sensors (sensors with npho > threshold)
-    total_time_valid_masked = 0
+    total_time_valid_masked = torch.tensor(0.0, dtype=torch.float32, device=device)
 
     branches = [npho_branch, time_branch]
 
@@ -583,12 +665,10 @@ def run_eval_mae(model, device, root, tree,
                     # Get masked input for visualization (pass npho_threshold_norm for stratified masking)
                     x_masked, mask = model.random_masking(x_in, npho_threshold_norm=npho_threshold_norm)
 
-                    # Track actual mask ratio
+                    # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
                     already_invalid = (x_in[:, :, 1] == sentinel_value)  # (B, N)
-                    n_valid = (~already_invalid).sum().item()
-                    n_masked = mask.sum().item()
-                    total_valid_sensors += n_valid
-                    total_randomly_masked += n_masked
+                    total_valid_sensors += (~already_invalid).sum()
+                    total_randomly_masked += mask.sum()
 
                     latent_seq = model.encoder.forward_features(x_masked)
 
@@ -709,7 +789,8 @@ def run_eval_mae(model, device, root, tree,
                             time_mask_sum_safe = time_mask_sum + 1e-8
                             time_loss = weighted_time_loss / time_mask_sum_safe
 
-                            total_time_valid_masked += time_mask_sum.item()
+                            # Track time-valid masked count (no .item() to avoid GPU-CPU sync)
+                            total_time_valid_masked += time_mask_sum
 
                             # MAE/RMSE tracking (skip if disabled for speed)
                             if track_mae_rmse:
@@ -793,14 +874,19 @@ def run_eval_mae(model, device, root, tree,
         metrics["channel_logvar_time"] = log_vars[1].item()
 
     # Actual mask ratio (randomly-masked / valid sensors)
-    if total_valid_sensors > 0:
-        metrics["actual_mask_ratio"] = total_randomly_masked / total_valid_sensors
+    # Convert tensor accumulators to Python scalars
+    total_valid_sensors_val = total_valid_sensors.item()
+    total_randomly_masked_val = total_randomly_masked.item()
+    total_time_valid_masked_val = total_time_valid_masked.item()
+
+    if total_valid_sensors_val > 0:
+        metrics["actual_mask_ratio"] = total_randomly_masked_val / total_valid_sensors_val
     else:
         metrics["actual_mask_ratio"] = 0.0
 
     # Time-valid ratio (masked sensors with npho > threshold / total masked sensors)
-    if total_randomly_masked > 0:
-        metrics["time_valid_ratio"] = total_time_valid_masked / total_randomly_masked
+    if total_randomly_masked_val > 0:
+        metrics["time_valid_ratio"] = total_time_valid_masked_val / total_randomly_masked_val
     else:
         metrics["time_valid_ratio"] = 0.0
 
