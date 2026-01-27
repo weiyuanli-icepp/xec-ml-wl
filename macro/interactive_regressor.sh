@@ -66,7 +66,8 @@ export VAL_PATH="$HOME/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/large_val.roo
 export MLFLOW_EXPERIMENT="gamma_energy"
 
 # ONNX export (set to "null" to disable)
-export ONNX="XEC_Energy.onnx"
+# export ONNX="XEC_Energy.onnx"
+export ONNX="null"
 
 # Resume from checkpoint (leave empty for fresh start)
 export RESUME_FROM=""
