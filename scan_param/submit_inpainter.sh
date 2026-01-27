@@ -8,6 +8,7 @@ RUN_NAME="${RUN_NAME:-inpainter_default}"
 EPOCHS="${EPOCHS:-50}"
 BATCH="${BATCH:-1024}"
 CHUNK_SIZE="${CHUNK_SIZE:-256000}"
+GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-2}"
 MASK_RATIO="${MASK_RATIO:-0.07}"
 RESUME_FROM="${RESUME_FROM:-}"
 PARTITION="${PARTITION:-a100-daily}"
@@ -146,6 +147,7 @@ python -m lib.train_inpainter \\
     --epochs ${EPOCHS} \\
     --batch_size ${BATCH} \\
     --chunksize ${CHUNK_SIZE} \\
+    --grad_accum_steps ${GRAD_ACCUM_STEPS} \\
     --mask_ratio ${MASK_RATIO} \\
     --npho_scale ${NPHO_SCALE} \\
     --npho_scale2 ${NPHO_SCALE2} \\
