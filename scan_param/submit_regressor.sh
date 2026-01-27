@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Config-driven Regressor submission script
 # Usage: ./submit_regressor.sh
+#        DRY_RUN=1 ./submit_regressor.sh   # Show config without submitting
 #
 # Environment variables:
 #   CONFIG_PATH  - Path to YAML config file (default: config/train_config.yaml)
 #   RUN_NAME     - Run name (optional, defaults to config or auto-generated)
 #   PARTITION    - SLURM partition (default: a100-daily)
 #   TIME         - Job time limit (default: 12:00:00)
+#   DRY_RUN      - Set to 1 to show config without submitting
 #
 # Optional CLI overrides (empty = use config value):
 #   TRAIN_PATH, VAL_PATH, EPOCHS, LR, BATCH_SIZE, RESUME_FROM, etc.
@@ -20,6 +22,7 @@ CONFIG_PATH="${CONFIG_PATH:-config/train_config.yaml}"
 RUN_NAME="${RUN_NAME:-}"
 PARTITION="${PARTITION:-a100-daily}"
 TIME="${TIME:-12:00:00}"
+DRY_RUN="${DRY_RUN:-0}"
 
 # Optional overrides (empty string means no override)
 TRAIN_PATH="${TRAIN_PATH:-}"
@@ -59,9 +62,36 @@ yaml_get() {
 # Extract key values from config for display
 CFG_EPOCHS=$(yaml_get "epochs" "$CONFIG_PATH")
 CFG_BATCH=$(yaml_get "batch_size" "$CONFIG_PATH")
+CFG_CHUNKSIZE=$(yaml_get "chunksize" "$CONFIG_PATH")
+CFG_NUM_WORKERS=$(yaml_get "num_workers" "$CONFIG_PATH")
 CFG_LR=$(yaml_get "lr" "$CONFIG_PATH")
+CFG_SCHEDULER=$(yaml_get "scheduler" "$CONFIG_PATH")
+CFG_WARMUP=$(yaml_get "warmup_epochs" "$CONFIG_PATH")
+CFG_WEIGHT_DECAY=$(yaml_get "weight_decay" "$CONFIG_PATH")
+CFG_GRAD_CLIP=$(yaml_get "grad_clip" "$CONFIG_PATH")
+CFG_EMA=$(yaml_get "ema_decay" "$CONFIG_PATH")
+CFG_AMP=$(yaml_get "amp" "$CONFIG_PATH")
+CFG_COMPILE=$(yaml_get "compile" "$CONFIG_PATH")
+CFG_CHANNEL_DROPOUT=$(yaml_get "channel_dropout_rate" "$CONFIG_PATH")
+CFG_LOSS_BALANCE=$(yaml_get "loss_balance" "$CONFIG_PATH")
 CFG_EXPERIMENT=$(yaml_get "experiment" "$CONFIG_PATH")
 CFG_RUN_NAME=$(yaml_get "run_name" "$CONFIG_PATH")
+CFG_TRAIN_PATH=$(yaml_get "train_path" "$CONFIG_PATH")
+CFG_VAL_PATH=$(yaml_get "val_path" "$CONFIG_PATH")
+CFG_OUTER_MODE=$(yaml_get "outer_mode" "$CONFIG_PATH")
+CFG_HIDDEN_DIM=$(yaml_get "hidden_dim" "$CONFIG_PATH")
+CFG_DROP_PATH=$(yaml_get "drop_path_rate" "$CONFIG_PATH")
+CFG_ONNX=$(yaml_get "onnx" "$CONFIG_PATH")
+
+# Normalization
+CFG_NPHO_SCALE=$(yaml_get "npho_scale" "$CONFIG_PATH")
+CFG_NPHO_SCALE2=$(yaml_get "npho_scale2" "$CONFIG_PATH")
+CFG_TIME_SCALE=$(yaml_get "time_scale" "$CONFIG_PATH")
+CFG_TIME_SHIFT=$(yaml_get "time_shift" "$CONFIG_PATH")
+CFG_SENTINEL=$(yaml_get "sentinel_value" "$CONFIG_PATH")
+
+# Tasks (check which are enabled)
+CFG_ANGLE_ENABLED=$(yaml_get "enabled" "$CONFIG_PATH" | head -1)  # First 'enabled' is angle
 
 # Use RUN_NAME from env, or from config, or generate timestamp
 if [[ -z "$RUN_NAME" ]]; then
@@ -89,6 +119,87 @@ EFF_BATCH="${BATCH_SIZE:-${CFG_BATCH:-?}}"
 EFF_LR="${LR:-${CFG_LR:-?}}"
 EFF_EXPERIMENT="${MLFLOW_EXPERIMENT:-${CFG_EXPERIMENT:-gamma_angle}}"
 
+# Dry-run: show all config parameters
+if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
+    echo "============================================"
+    echo "[DRY-RUN] Regressor Training Configuration"
+    echo "============================================"
+    echo ""
+    echo "Config file: $CONFIG_PATH"
+    echo ""
+    echo "=== Job Settings ==="
+    echo "  Run name:      $RUN_NAME"
+    echo "  Partition:     $PARTITION"
+    echo "  Time limit:    $TIME"
+    echo "  Environment:   $ENV_NAME"
+    echo "  Log file:      $LOG_FILE"
+    [[ -n "$RESUME_FROM" ]] && echo "  Resume from:   $RESUME_FROM"
+    echo ""
+    echo "=== Data ==="
+    echo "  Train path:    ${CFG_TRAIN_PATH:-?}"
+    echo "  Val path:      ${CFG_VAL_PATH:-?}"
+    echo "  Batch size:    ${CFG_BATCH:-?}"
+    echo "  Chunk size:    ${CFG_CHUNKSIZE:-?}"
+    echo "  Num workers:   ${CFG_NUM_WORKERS:-?}"
+    echo ""
+    echo "=== Model ==="
+    echo "  Outer mode:    ${CFG_OUTER_MODE:-?}"
+    echo "  Hidden dim:    ${CFG_HIDDEN_DIM:-?}"
+    echo "  Drop path:     ${CFG_DROP_PATH:-?}"
+    echo ""
+    echo "=== Normalization ==="
+    echo "  npho_scale:    ${CFG_NPHO_SCALE:-?}"
+    echo "  npho_scale2:   ${CFG_NPHO_SCALE2:-?}"
+    echo "  time_scale:    ${CFG_TIME_SCALE:-?}"
+    echo "  time_shift:    ${CFG_TIME_SHIFT:-?}"
+    echo "  sentinel:      ${CFG_SENTINEL:-?}"
+    echo ""
+    echo "=== Training ==="
+    echo "  Epochs:        ${CFG_EPOCHS:-?}"
+    echo "  Learning rate: ${CFG_LR:-?}"
+    echo "  Scheduler:     ${CFG_SCHEDULER:-cosine}"
+    echo "  Warmup epochs: ${CFG_WARMUP:-0}"
+    echo "  Weight decay:  ${CFG_WEIGHT_DECAY:-?}"
+    echo "  Grad clip:     ${CFG_GRAD_CLIP:-?}"
+    echo "  EMA decay:     ${CFG_EMA:-?}"
+    echo "  AMP:           ${CFG_AMP:-?}"
+    echo "  Compile:       ${CFG_COMPILE:-false}"
+    echo "  Ch dropout:    ${CFG_CHANNEL_DROPOUT:-?}"
+    echo "  Loss balance:  ${CFG_LOSS_BALANCE:-manual}"
+    echo ""
+    echo "=== Export ==="
+    echo "  ONNX:          ${CFG_ONNX:-null}"
+    echo ""
+    echo "=== MLflow ==="
+    echo "  Experiment:    ${CFG_EXPERIMENT:-gamma_angle}"
+    echo ""
+
+    # Show CLI overrides if any
+    CLI_ARGS=""
+    [ -n "$TRAIN_PATH" ] && CLI_ARGS+=" --train_path"
+    [ -n "$VAL_PATH" ] && CLI_ARGS+=" --val_path"
+    [ -n "$EPOCHS" ] && CLI_ARGS+=" --epochs=$EPOCHS"
+    [ -n "$LR" ] && CLI_ARGS+=" --lr=$LR"
+    [ -n "$BATCH_SIZE" ] && CLI_ARGS+=" --batch_size=$BATCH_SIZE"
+    [ -n "$WEIGHT_DECAY" ] && CLI_ARGS+=" --weight_decay"
+    [ -n "$WARMUP_EPOCHS" ] && CLI_ARGS+=" --warmup_epochs"
+    [ -n "$EMA_DECAY" ] && CLI_ARGS+=" --ema_decay"
+    [ -n "$GRAD_CLIP" ] && CLI_ARGS+=" --grad_clip"
+    [ -n "$TASKS" ] && CLI_ARGS+=" --tasks"
+
+    if [ -n "$CLI_ARGS" ]; then
+        echo "=== CLI Overrides ==="
+        echo "  $CLI_ARGS"
+        echo ""
+    fi
+
+    echo "============================================"
+    echo "[DRY-RUN] No job submitted. Remove DRY_RUN=1 to submit."
+    echo "============================================"
+    exit 0
+fi
+
+# Normal submission
 echo "[SUBMIT] Regressor Training"
 echo "  Config:     $CONFIG_PATH"
 echo "  Run:        $RUN_NAME"

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Config-driven MAE submission script
 # Usage: ./submit_mae.sh
+#        DRY_RUN=1 ./submit_mae.sh   # Show config without submitting
+#
 # Environment variables:
-#   CONFIG_PATH  - Path to config YAML (required, default: config/mae_config.yaml)
+#   CONFIG_PATH  - Path to config YAML (default: config/mae_config.yaml)
 #   RUN_NAME     - Run name (optional, defaults to config or auto-generated)
 #   PARTITION    - SLURM partition (default: a100-daily)
 #   TIME         - Job time limit (default: 23:00:00)
 #   RESUME_FROM  - Checkpoint to resume from (optional)
+#   DRY_RUN      - Set to 1 to show config without submitting
 
 set -euo pipefail
 
@@ -15,6 +18,7 @@ PARTITION="${PARTITION:-a100-daily}"
 TIME="${TIME:-23:00:00}"
 RESUME_FROM="${RESUME_FROM:-}"
 RUN_NAME="${RUN_NAME:-}"
+DRY_RUN="${DRY_RUN:-0}"
 
 # Validate config file exists
 if [[ ! -f "$CONFIG_PATH" ]]; then
@@ -32,10 +36,32 @@ yaml_get() {
 # Extract key values from config for display
 CFG_EPOCHS=$(yaml_get "epochs" "$CONFIG_PATH")
 CFG_BATCH=$(yaml_get "batch_size" "$CONFIG_PATH")
+CFG_CHUNKSIZE=$(yaml_get "chunksize" "$CONFIG_PATH")
+CFG_NUM_WORKERS=$(yaml_get "num_workers" "$CONFIG_PATH")
 CFG_MASK_RATIO=$(yaml_get "mask_ratio" "$CONFIG_PATH")
 CFG_LR=$(yaml_get "lr" "$CONFIG_PATH")
+CFG_LR_SCHEDULER=$(yaml_get "lr_scheduler" "$CONFIG_PATH")
+CFG_WARMUP=$(yaml_get "warmup_epochs" "$CONFIG_PATH")
+CFG_WEIGHT_DECAY=$(yaml_get "weight_decay" "$CONFIG_PATH")
+CFG_GRAD_CLIP=$(yaml_get "grad_clip" "$CONFIG_PATH")
+CFG_GRAD_ACCUM=$(yaml_get "grad_accum_steps" "$CONFIG_PATH")
+CFG_LOSS_FN=$(yaml_get "loss_fn" "$CONFIG_PATH")
+CFG_NPHO_WEIGHT=$(yaml_get "npho_weight" "$CONFIG_PATH")
+CFG_TIME_WEIGHT=$(yaml_get "time_weight" "$CONFIG_PATH")
+CFG_AMP=$(yaml_get "amp" "$CONFIG_PATH")
+CFG_COMPILE=$(yaml_get "compile" "$CONFIG_PATH")
+CFG_EMA=$(yaml_get "ema_decay" "$CONFIG_PATH")
 CFG_EXPERIMENT=$(yaml_get "experiment" "$CONFIG_PATH")
 CFG_RUN_NAME=$(yaml_get "run_name" "$CONFIG_PATH")
+CFG_TRAIN_PATH=$(yaml_get "train_path" "$CONFIG_PATH")
+CFG_VAL_PATH=$(yaml_get "val_path" "$CONFIG_PATH")
+
+# Normalization
+CFG_NPHO_SCALE=$(yaml_get "npho_scale" "$CONFIG_PATH")
+CFG_NPHO_SCALE2=$(yaml_get "npho_scale2" "$CONFIG_PATH")
+CFG_TIME_SCALE=$(yaml_get "time_scale" "$CONFIG_PATH")
+CFG_TIME_SHIFT=$(yaml_get "time_shift" "$CONFIG_PATH")
+CFG_SENTINEL=$(yaml_get "sentinel_value" "$CONFIG_PATH")
 
 # Use RUN_NAME from env, or from config, or generate timestamp
 if [[ -z "$RUN_NAME" ]]; then
@@ -53,6 +79,66 @@ LOG_DIR="slurm_logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/${RUN_NAME}_%j.out"
 
+# Dry-run: show all config parameters
+if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
+    echo "============================================"
+    echo "[DRY-RUN] MAE Pre-training Configuration"
+    echo "============================================"
+    echo ""
+    echo "Config file: $CONFIG_PATH"
+    echo ""
+    echo "=== Job Settings ==="
+    echo "  Run name:      $RUN_NAME"
+    echo "  Partition:     $PARTITION"
+    echo "  Time limit:    $TIME"
+    echo "  Environment:   $ENV_NAME"
+    echo "  Log file:      $LOG_FILE"
+    [[ -n "$RESUME_FROM" ]] && echo "  Resume from:   $RESUME_FROM"
+    echo ""
+    echo "=== Data ==="
+    echo "  Train path:    ${CFG_TRAIN_PATH:-?}"
+    echo "  Val path:      ${CFG_VAL_PATH:-?}"
+    echo "  Batch size:    ${CFG_BATCH:-?}"
+    echo "  Chunk size:    ${CFG_CHUNKSIZE:-?}"
+    echo "  Num workers:   ${CFG_NUM_WORKERS:-?}"
+    echo ""
+    echo "=== Model ==="
+    echo "  Mask ratio:    ${CFG_MASK_RATIO:-?}"
+    echo ""
+    echo "=== Normalization ==="
+    echo "  npho_scale:    ${CFG_NPHO_SCALE:-?}"
+    echo "  npho_scale2:   ${CFG_NPHO_SCALE2:-?}"
+    echo "  time_scale:    ${CFG_TIME_SCALE:-?}"
+    echo "  time_shift:    ${CFG_TIME_SHIFT:-?}"
+    echo "  sentinel:      ${CFG_SENTINEL:-?}"
+    echo ""
+    echo "=== Training ==="
+    echo "  Epochs:        ${CFG_EPOCHS:-?}"
+    echo "  Learning rate: ${CFG_LR:-?}"
+    echo "  LR scheduler:  ${CFG_LR_SCHEDULER:-null}"
+    echo "  Warmup epochs: ${CFG_WARMUP:-0}"
+    echo "  Weight decay:  ${CFG_WEIGHT_DECAY:-?}"
+    echo "  Grad clip:     ${CFG_GRAD_CLIP:-?}"
+    echo "  Grad accum:    ${CFG_GRAD_ACCUM:-1}"
+    echo "  AMP:           ${CFG_AMP:-?}"
+    echo "  Compile:       ${CFG_COMPILE:-false}"
+    echo "  EMA decay:     ${CFG_EMA:-null}"
+    echo ""
+    echo "=== Loss ==="
+    echo "  Loss fn:       ${CFG_LOSS_FN:-?}"
+    echo "  Npho weight:   ${CFG_NPHO_WEIGHT:-?}"
+    echo "  Time weight:   ${CFG_TIME_WEIGHT:-?}"
+    echo ""
+    echo "=== MLflow ==="
+    echo "  Experiment:    ${CFG_EXPERIMENT:-mae_pretraining}"
+    echo ""
+    echo "============================================"
+    echo "[DRY-RUN] No job submitted. Remove DRY_RUN=1 to submit."
+    echo "============================================"
+    exit 0
+fi
+
+# Normal submission
 echo "[SUBMIT] MAE Pre-training"
 echo "  Config:     $CONFIG_PATH"
 echo "  Run:        $RUN_NAME"
