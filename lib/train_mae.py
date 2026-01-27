@@ -154,6 +154,7 @@ Examples:
     parser.add_argument("--auto_channel_weight",  action="store_true", help="Enable homoscedastic channel weighting")
     parser.add_argument("--channel_dropout_rate", type=float, default=None)
     parser.add_argument("--grad_clip",            type=float, default=None)
+    parser.add_argument("--grad_accum_steps",     type=int, default=None, help="Gradient accumulation steps")
     parser.add_argument("--ema_decay",            type=float, default=None, help="EMA decay (None to disable)")
     parser.add_argument("--time_mask_ratio_scale", type=float, default=None, help="Scale factor for masking valid-time sensors (1.0=uniform)")
     parser.add_argument("--npho_threshold", type=float, default=None, help="Npho threshold for conditional time loss (raw scale)")
@@ -213,6 +214,7 @@ Examples:
         auto_channel_weight = args.auto_channel_weight or cfg.training.auto_channel_weight
         channel_dropout_rate = args.channel_dropout_rate if args.channel_dropout_rate is not None else cfg.training.channel_dropout_rate
         grad_clip = args.grad_clip if args.grad_clip is not None else getattr(cfg.training, 'grad_clip', 1.0)
+        grad_accum_steps = args.grad_accum_steps if args.grad_accum_steps is not None else getattr(cfg.training, 'grad_accum_steps', 1)
         ema_decay = args.ema_decay if args.ema_decay is not None else getattr(cfg.training, 'ema_decay', None)
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
@@ -260,6 +262,7 @@ Examples:
         auto_channel_weight = args.auto_channel_weight
         channel_dropout_rate = args.channel_dropout_rate or 0.1
         grad_clip = args.grad_clip or 1.0
+        grad_accum_steps = args.grad_accum_steps or 1
         ema_decay = args.ema_decay  # None by default
         mlflow_experiment = args.mlflow_experiment or "mae_pretraining"
         mlflow_run_name = args.mlflow_run_name
@@ -490,6 +493,7 @@ Examples:
                 auto_channel_weight=auto_channel_weight,
                 channel_dropout_rate=channel_dropout_rate,
                 grad_clip=grad_clip,
+                grad_accum_steps=grad_accum_steps,
                 scaler=scaler,
                 num_workers=num_workers,
                 npho_threshold=npho_threshold,

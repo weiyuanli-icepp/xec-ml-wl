@@ -317,6 +317,7 @@ class MAETrainingConfig:
     auto_channel_weight: bool = False
     channel_dropout_rate: float = 0.1
     grad_clip: float = 1.0
+    grad_accum_steps: int = 1  # Gradient accumulation steps
     ema_decay: Optional[float] = None  # None = disabled, 0.999 = typical value
     amp: bool = True
     # Conditional time loss: only compute where npho > threshold

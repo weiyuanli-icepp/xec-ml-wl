@@ -25,6 +25,7 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                   time_weight=1.0,
                   auto_channel_weight=False,
                   grad_clip=1.0,
+                  grad_accum_steps=1,
                   scaler=None,
                   num_workers=8,
                   npho_threshold=None,
@@ -73,6 +74,11 @@ def run_epoch_mae(model, optimizer, device, root, tree,
     masked_count_time = 0.0
     total_loss_sum = 0.0
     n_batches = 0
+
+    # Gradient accumulation
+    grad_accum_steps = max(int(grad_accum_steps), 1)
+    accum_step = 0
+    optimizer.zero_grad(set_to_none=True)
 
     # Track actual mask ratio (randomly-masked / valid sensors)
     # Use tensors to avoid GPU-CPU sync every batch (only .item() at epoch end)
@@ -157,7 +163,6 @@ def run_epoch_mae(model, optimizer, device, root, tree,
             
             profiler.stop()  # preprocess
 
-            optimizer.zero_grad()
             # with torch.amp.autocast('cuda', enabled=amp):
             with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
                 # 1. Forward Pass (pass npho_threshold_norm for stratified masking)
@@ -359,27 +364,43 @@ def run_epoch_mae(model, optimizer, device, root, tree,
 
                 profiler.stop()  # loss_compute
 
+            # Backward with gradient accumulation
+            total_loss_sum += loss.item()
+            n_batches += 1
+
             profiler.start("backward")
+            loss = loss / grad_accum_steps
             scaler.scale(loss).backward()
             profiler.stop()
 
-            profiler.start("optimizer")
-            # Gradient clipping
-            if grad_clip > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            accum_step += 1
 
-            scaler.step(optimizer)
-            scaler.update()
-            profiler.stop()
+            # Optimizer step every grad_accum_steps
+            if accum_step % grad_accum_steps == 0:
+                profiler.start("optimizer")
+                # Gradient clipping
+                if grad_clip > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
 
-            total_loss_sum += loss.item()
-            n_batches += 1
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+                profiler.stop()
 
             profiler.start("data_load_cpu")  # For next iteration
 
     # Stop any pending timer (last data_load_cpu started but not stopped)
     profiler.stop()
+
+    # Final optimizer step if gradients remain from incomplete accumulation
+    if accum_step % grad_accum_steps != 0:
+        if grad_clip > 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad(set_to_none=True)
 
     # Print profiler report if enabled
     if profile:
