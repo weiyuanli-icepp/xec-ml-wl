@@ -126,7 +126,11 @@ if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
     echo "  Grad clip:     ${CFG_GRAD_CLIP:-?}"
     echo "  Grad accum:    ${CFG_GRAD_ACCUM:-1}"
     echo "  AMP:           ${CFG_AMP:-?}"
-    echo "  Compile:       ${CFG_COMPILE:-false}"
+    if [[ "$PARTITION" == gh* && "${CFG_COMPILE:-false}" != "false" && "${CFG_COMPILE:-false}" != "none" ]]; then
+        echo "  Compile:       ${CFG_COMPILE:-false} (will be auto-disabled on ARM/GH nodes)"
+    else
+        echo "  Compile:       ${CFG_COMPILE:-false}"
+    fi
     echo "  EMA decay:     ${CFG_EMA:-null}"
     echo ""
     echo "=== Loss ==="
