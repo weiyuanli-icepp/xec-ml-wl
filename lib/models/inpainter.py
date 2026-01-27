@@ -11,9 +11,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .model_regressor import XECEncoder
-from .model_blocks import ConvNeXtV2Block, HexNeXtBlock
-from .geom_defs import (
+from .regressor import XECEncoder
+from .blocks import ConvNeXtV2Block, HexNeXtBlock
+from ..geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
     OUTER_COARSE_FULL_INDEX_MAP, OUTER_CENTER_INDEX_MAP,
     TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
@@ -21,7 +21,7 @@ from .geom_defs import (
     OUTER_SENSOR_TO_FINEGRID, OUTER_ALL_SENSOR_IDS, OUTER_SENSOR_ID_TO_IDX,
     CENTRAL_COARSE_IDS
 )
-from .geom_utils import gather_face, build_outer_fine_grid_tensor, gather_hex_nodes
+from ..geom_utils import gather_face, build_outer_fine_grid_tensor, gather_hex_nodes
 
 
 class FaceInpaintingHead(nn.Module):

@@ -1071,7 +1071,7 @@ Input: (B, 2, H, W)  # 2 channels: npho, time
 Output: (B, 1024)  # Flattened: 64 × 4 × 4 = 1024
 ```
 
-**ConvNeXtV2 Block** (`lib/model_blocks.py:76`):
+**ConvNeXtV2 Block** (`lib/models/blocks.py:76`):
 ```
 Input x ─────────────────────────────────┐
     │                                    │ (residual)
@@ -1139,7 +1139,7 @@ Unlike standard Graph Attention Networks (GAT) which learn attention weights dyn
         └───┘
 ```
 
-**How it works** (`lib/model_blocks.py:172`):
+**How it works** (`lib/models/blocks.py:172`):
 
 ```python
 class HexDepthwiseConv(nn.Module):
@@ -1214,7 +1214,7 @@ Input x ────────────────────────
 Output
 ```
 
-**Complete DeepHexEncoder** (`lib/model_regressor.py:19`):
+**Complete DeepHexEncoder** (`lib/models/regressor.py:19`):
 ```
 Input: (B, 334, 2)  # 334 PMT nodes, 2 channels
     │
@@ -1255,7 +1255,7 @@ where:
   γ, β = learnable parameters
 ```
 
-**Implementation** (`lib/model_blocks.py:43`):
+**Implementation** (`lib/models/blocks.py:43`):
 - For **4D tensors** (B, H, W, C): L2 norm over spatial dims (H, W)
 - For **3D tensors** (B, N, C): L2 norm over node dim (N)
 - Same mathematical operation, different tensor shapes
@@ -1910,23 +1910,25 @@ graph TD
     %% -- Library Core (Blue) --
     subgraph "Core Library (lib/)"
         %% Main Components
-        Engine(engine_regressor.py):::lib
-        Model(model_regressor.py):::lib
+        subgraph "models/"
+            Model(regressor.py):::lib
+            ModelMae(mae.py):::lib
+            ModelInpainter(inpainter.py):::lib
+            Blocks(blocks.py):::lib
+        end
+        subgraph "engines/"
+            Engine(regressor.py):::lib
+            EngineMae(mae.py):::lib
+            EngineInpainter(inpainter.py):::lib
+        end
         Tasks(tasks/):::lib
-        Blocks(model_blocks.py):::lib
 
         %% Config & Data
         Config(config.py):::lib
         Dataset(dataset.py):::lib
-
-        %% MAE Components
-        EngineMae(engine_mae.py):::lib
-        ModelMae(model_mae.py):::lib
         TrainMae(train_mae.py):::lib
 
-        %% Inpainter Components
-        EngineInpaint(engine_inpainter.py):::inpaint
-        ModelInpaint(model_inpainter.py):::inpaint
+        %% Inpainter Components (now in engines/ and models/)
         TrainInpaint(train_inpainter.py):::inpaint
 
         %% Utilities
@@ -2032,13 +2034,16 @@ graph TD
 
 | File | Purpose |
 |------|---------|
-| `lib/model_regressor.py` | XECEncoder, XECMultiHeadModel - core model architectures |
-| `lib/model_mae.py` | XEC_MAE - Masked Autoencoder for self-supervised pretraining |
-| `lib/model_inpainter.py` | XEC_Inpainter - Dead channel recovery model |
-| `lib/engine_regressor.py` | Training/validation loop for regression |
+| `lib/models/` | Model architectures directory |
+| `lib/models/regressor.py` | XECEncoder, XECMultiHeadModel - core model architectures |
+| `lib/models/mae.py` | XEC_MAE - Masked Autoencoder for self-supervised pretraining |
+| `lib/models/inpainter.py` | XEC_Inpainter - Dead channel recovery model |
+| `lib/models/blocks.py` | Shared model blocks (ConvNeXtV2Block, HexNeXtBlock) |
+| `lib/engines/` | Training/validation engines directory |
+| `lib/engines/regressor.py` | Training/validation loop for regression |
+| `lib/engines/mae.py` | Training/validation loop for MAE |
+| `lib/engines/inpainter.py` | Training/validation loop for inpainter |
 | `lib/tasks/` | Task-specific handlers (angle, energy, timing, position) |
-| `lib/engine_mae.py` | Training/validation loop for MAE |
-| `lib/engine_inpainter.py` | Training/validation loop for inpainter |
 | `lib/geom_defs.py` | Detector geometry constants and index maps |
 | `lib/geom_utils.py` | Geometry utility functions (gather_face, etc.) |
 | `lib/config.py` | Configuration loading and dataclasses |

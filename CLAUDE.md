@@ -81,9 +81,15 @@ Multi-branch design processing 6 detector faces:
 3. **Fusion (Transformer):** 6 face tokens → 2-layer Transformer Encoder (8 heads) → 6144-dim → Task heads
 
 ### Key Components
-- `lib/model_regressor.py`: XECEncoder, XECMultiHeadModel, FaceBackbone, DeepHexEncoder
-- `lib/model_blocks.py`: ConvNeXtV2Block, HexNeXtBlock, GRN, DropPath
-- `lib/engine_regressor.py`: Training loop (run_epoch_stream), multi-task loss computation
+- `lib/models/`: Model architectures
+  - `regressor.py`: XECEncoder, XECMultiHeadModel, FaceBackbone, DeepHexEncoder
+  - `mae.py`: XEC_MAE for masked autoencoder pretraining
+  - `inpainter.py`: XEC_Inpainter for dead channel recovery
+  - `blocks.py`: ConvNeXtV2Block, HexNeXtBlock, GRN, DropPath
+- `lib/engines/`: Training/validation loops
+  - `regressor.py`: run_epoch_stream for multi-task regression
+  - `mae.py`: run_epoch_mae, run_eval_mae
+  - `inpainter.py`: run_epoch_inpainter, run_eval_inpainter
 - `lib/tasks/`: Task-specific handlers (angle, energy, timing, position)
 - `lib/dataset.py`: XECStreamingDataset (ROOT file streaming, chunked loading)
 - `lib/config.py`: Configuration dataclasses, YAML loading

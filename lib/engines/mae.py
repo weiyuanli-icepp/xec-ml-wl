@@ -3,9 +3,9 @@ import torch.nn.functional as F
 import numpy as np
 import uproot
 from torch.utils.data import TensorDataset, DataLoader
-from .utils import iterate_chunks, get_pointwise_loss_fn, SimpleProfiler
-from .geom_utils import build_outer_fine_grid_tensor, gather_face, gather_hex_nodes
-from .geom_defs import (
+from ..utils import iterate_chunks, get_pointwise_loss_fn, SimpleProfiler
+from ..geom_utils import build_outer_fine_grid_tensor, gather_face, gather_hex_nodes
+from ..geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
     OUTER_COARSE_FULL_INDEX_MAP, OUTER_CENTER_INDEX_MAP,
     OUTER_FINE_COARSE_SCALE, OUTER_FINE_CENTER_SCALE, OUTER_FINE_CENTER_START,

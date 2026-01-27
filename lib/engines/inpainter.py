@@ -6,9 +6,9 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from typing import Dict, Optional, Tuple, List, Callable
-from .dataset import XECStreamingDataset
-from .geom_defs import DEFAULT_NPHO_THRESHOLD
-from .utils import SimpleProfiler
+from ..dataset import XECStreamingDataset
+from ..geom_defs import DEFAULT_NPHO_THRESHOLD
+from ..utils import SimpleProfiler
 
 
 def compute_inpainting_loss(

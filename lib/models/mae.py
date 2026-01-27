@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .model_regressor import XECEncoder
-from .model_blocks import HexNeXtBlock
-from .geom_defs import (
+from .regressor import XECEncoder
+from .blocks import HexNeXtBlock
+from ..geom_defs import (
     TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
     HEX_EDGE_INDEX_NP, OUTER_FINE_H, OUTER_FINE_W, flatten_hex_rows
 )

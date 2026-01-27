@@ -16,11 +16,11 @@ from torch.utils.data import TensorDataset, DataLoader
 import time
 import warnings
 
-from .utils import iterate_chunks, angles_deg_to_unit_vec, get_pointwise_loss_fn, SimpleProfiler
-from .metrics import eval_stats, eval_resolution
-from .tasks import get_task_handlers
-from .tasks.angle import AngleTaskHandler
-from .tasks.position import PositionTaskHandler
+from ..utils import iterate_chunks, angles_deg_to_unit_vec, get_pointwise_loss_fn, SimpleProfiler
+from ..metrics import eval_stats, eval_resolution
+from ..tasks import get_task_handlers
+from ..tasks.angle import AngleTaskHandler
+from ..tasks.position import PositionTaskHandler
 
 
 def run_epoch_stream(
