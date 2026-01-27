@@ -36,7 +36,7 @@ training:
   lr: 2.5e-4
   lr_scheduler: null           # "cosine" or null
   lr_min: 1.0e-8
-  warmup_epochs: 0
+  warmup_epochs: 3
   weight_decay: 5.0e-5
   loss_fn: "smooth_l1"            # Options: smooth_l1, mse, l1, huber
   npho_weight: 1.0                # Per-channel manual weighting
@@ -47,7 +47,7 @@ training:
   ema_decay: null                   # EMA decay rate (null to disable, 0.999 typical)
   amp: true                         # Automatic Mixed Precision
   compile: false                    # torch.compile (can cause LLVM errors with multiprocessing)
-  npho_threshold: null              # Npho threshold for conditional time loss (null uses default 10.0)
+  npho_threshold: 100              # Npho threshold for conditional time loss (null uses default 10.0)
   use_npho_time_weight: true        # Weight time loss by sqrt(npho) for chi-square-like weighting
   track_mae_rmse: false             # Compute/log MAE/RMSE metrics (slower, set true for detailed analysis)
   track_train_metrics: false        # Track per-face loss during training (slower, set true for debugging)

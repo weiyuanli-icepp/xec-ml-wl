@@ -10,7 +10,7 @@ MASK_RATIOS=(0.05 0.10 0.15)
 
 # --- Common Configuration ---
 export EPOCHS=50
-export BATCH=1024
+export BATCH=512
 export CHUNK_SIZE=256000
 export RESUME_FROM=""
 export PARTITION="a100-daily"

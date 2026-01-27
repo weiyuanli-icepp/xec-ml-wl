@@ -39,7 +39,7 @@ training:
   lr: 1.0e-4
   lr_scheduler: "cosine"            # "cosine" or null
   lr_min: 1.0e-6
-  warmup_epochs: 0
+  warmup_epochs: 3
   weight_decay: 1.0e-4
   loss_fn: "smooth_l1"              # Options: smooth_l1, mse, l1, huber
   npho_weight: 1.0                  # Weight for npho channel loss
@@ -47,9 +47,9 @@ training:
   grad_clip: 1.0                    # Gradient clipping (0 to disable)
   amp: true                         # Automatic Mixed Precision
   track_mae_rmse: false              # Compute/log MAE/RMSE metrics (set false to skip)
-  grad_accum_steps: 2               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
+  grad_accum_steps: 4               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
   track_train_metrics: false         # Track per-face metrics during training (set false to log only total_loss)
-  npho_threshold: null              # Npho threshold for conditional time loss (null uses default 10.0)
+  npho_threshold: 100              # Npho threshold for conditional time loss (null uses default 10.0)
   use_npho_time_weight: true        # Weight time loss by sqrt(npho) for chi-square-like weighting
 
 # === Checkpointing ===

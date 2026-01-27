@@ -37,11 +37,12 @@ export VAL_PATH="$HOME/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root"
 export MLFLOW_EXPERIMENT="mae_pretraining"
 
 # --- Mask ratios to scan ---
-MASK_RATIOS=(0.60 0.65 0.70)
+MASK_RATIOS=(0.60 0.65 0.70 0.75)
+# MASK_RATIOS=(0.75)
 
 for MASK_RATIO in "${MASK_RATIOS[@]}"; do
     export MASK_RATIO
-    export RUN_NAME="mae_mask${MASK_RATIO}_gh"
+    export RUN_NAME="mae_mask${MASK_RATIO}_warmup3_gh"
 
     echo "Submitting: $RUN_NAME (mask_ratio=$MASK_RATIO)"
     ./submit_mae.sh
