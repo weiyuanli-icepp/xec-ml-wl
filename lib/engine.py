@@ -60,10 +60,18 @@ def run_epoch_stream(
     # Collections for the Final ROOT file
     val_root_data = {
         "run_id": [],        "event_id": [],
+        # Angle task
         "pred_theta": [],    "pred_phi": [],
         "true_theta": [],    "true_phi": [],
-        "opening_angle": [], "energy_truth": [],
-        
+        "opening_angle": [],
+        # Energy task
+        "pred_energy": [],   "true_energy": [],
+        # Timing task
+        "pred_timing": [],   "true_timing": [],
+        # Position task (uvwFI)
+        "pred_u": [],        "pred_v": [],        "pred_w": [],
+        "true_u": [],        "true_v": [],        "true_w": [],
+        # Legacy position fields
         "x_truth": [], "y_truth": [], "z_truth": [],
         "x_vtx": [],   "y_vtx": [],   "z_vtx": []
     }
@@ -270,6 +278,14 @@ def run_epoch_stream(
                     batch_total_loss += l_pos_smooth.mean()
                     sample_total_loss += l_pos_smooth  # Accumulate per-sample loss
 
+                    # Collect predictions for artifacts
+                    val_root_data["pred_u"].append(p_uvw[:, 0].cpu().numpy())
+                    val_root_data["pred_v"].append(p_uvw[:, 1].cpu().numpy())
+                    val_root_data["pred_w"].append(p_uvw[:, 2].cpu().numpy())
+                    val_root_data["true_u"].append(t_uvw[:, 0].cpu().numpy())
+                    val_root_data["true_v"].append(t_uvw[:, 1].cpu().numpy())
+                    val_root_data["true_w"].append(t_uvw[:, 2].cpu().numpy())
+
                     # Per-axis resolution
                     residual = p_uvw - t_uvw
                     if "uvw_u_res" not in loss_sums:
@@ -300,6 +316,10 @@ def run_epoch_stream(
                     batch_total_loss += l_e_smooth.mean()
                     sample_total_loss += l_e_smooth  # Accumulate per-sample loss
 
+                    # Collect predictions for artifacts
+                    val_root_data["pred_energy"].append(p_energy.squeeze(-1).cpu().numpy())
+                    val_root_data["true_energy"].append(t_energy.squeeze(-1).cpu().numpy())
+
                 # === TIMING TASK ===
                 if "timing" in preds and "timing" in target_dict:
                     p_timing = preds["timing"]
@@ -317,6 +337,10 @@ def run_epoch_stream(
                     batch_total_loss += l_t_smooth.mean()
                     sample_total_loss += l_t_smooth  # Accumulate per-sample loss
 
+                    # Collect predictions for artifacts
+                    val_root_data["pred_timing"].append(p_timing.squeeze(-1).cpu().numpy())
+                    val_root_data["true_timing"].append(t_timing.squeeze(-1).cpu().numpy())
+
                 # === Common data collection ===
                 # Check for required keys and warn if missing
                 required_keys = ["run", "event", "energy", "uvwFI", "xyzVTX"]
@@ -332,8 +356,6 @@ def run_epoch_stream(
                     val_root_data["run_id"].append(target_dict["run"].cpu().numpy())
                 if "event" in target_dict:
                     val_root_data["event_id"].append(target_dict["event"].cpu().numpy())
-                if "energy" in target_dict:
-                    val_root_data["energy_truth"].append(target_dict["energy"].cpu().numpy())
 
                 v_uvw = None
                 if "uvwFI" in target_dict:
@@ -473,28 +495,39 @@ def run_epoch_stream(
             w_res = np.concatenate(loss_sums["uvw_w_res"])
             dist = np.concatenate(loss_sums["uvw_dist"])
 
-            val_stats["uvw_u_res_std"] = np.std(u_res)
-            val_stats["uvw_v_res_std"] = np.std(v_res)
-            val_stats["uvw_w_res_std"] = np.std(w_res)
-            val_stats["uvw_dist_mean"] = np.mean(dist)
+            val_stats["uvw_u_res_68pct"] = np.percentile(np.abs(u_res), 68)
+            val_stats["uvw_v_res_68pct"] = np.percentile(np.abs(v_res), 68)
+            val_stats["uvw_w_res_68pct"] = np.percentile(np.abs(w_res), 68)
             val_stats["uvw_dist_68pct"] = np.percentile(dist, 68)
 
         # === Angle task metrics ===
-        pred_np = None
-        true_np = None
+        angle_pred_np = None
+        angle_true_np = None
         if val_root_data["pred_theta"].size > 0 and val_root_data["pred_phi"].size > 0:
-            pred_np = np.stack([val_root_data["pred_theta"], val_root_data["pred_phi"]], axis=1)
-            true_np = np.stack([val_root_data["true_theta"], val_root_data["true_phi"]], axis=1)
+            angle_pred_np = np.stack([val_root_data["pred_theta"], val_root_data["pred_phi"]], axis=1)
+            angle_true_np = np.stack([val_root_data["true_theta"], val_root_data["true_phi"]], axis=1)
 
-            angle_stats = eval_stats(pred_np, true_np, print_out=False)
+            angle_stats = eval_stats(angle_pred_np, angle_true_np, print_out=False)
             val_stats.update(angle_stats)
 
-            res_68, psi_deg = eval_resolution(pred_np, true_np)
-            val_stats["val_resolution_deg"] = res_68
+            res_68, psi_deg = eval_resolution(angle_pred_np, angle_true_np)
+            val_stats["angle_resolution_68pct"] = res_68
+
+        # === Energy task metrics ===
+        if val_root_data["pred_energy"].size > 0 and val_root_data["true_energy"].size > 0:
+            energy_res = val_root_data["pred_energy"] - val_root_data["true_energy"]
+            val_stats["energy_bias"] = np.mean(energy_res)
+            val_stats["energy_res_68pct"] = np.percentile(np.abs(energy_res), 68)
+
+        # === Timing task metrics ===
+        if val_root_data["pred_timing"].size > 0 and val_root_data["true_timing"].size > 0:
+            timing_res = val_root_data["pred_timing"] - val_root_data["true_timing"]
+            val_stats["timing_bias"] = np.mean(timing_res)
+            val_stats["timing_res_68pct"] = np.percentile(np.abs(timing_res), 68)
 
         extra_info["worst_events"] = worst_events_buffer
         extra_info["root_data"] = val_root_data
 
-        return metrics, pred_np, true_np, extra_info, val_stats
+        return metrics, angle_pred_np, angle_true_np, extra_info, val_stats
 
     return metrics, None, None, None, {}

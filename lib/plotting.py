@@ -243,6 +243,199 @@ def plot_saliency_profile(saliency_data, outfile=None):
     else:
         plt.show()
         
+def plot_energy_resolution_profile(pred, true, bins=20, outfile=None):
+    """
+    Plots energy resolution profile:
+    - Residual distribution histogram
+    - Resolution (68% |residual|) vs true energy
+    - Pred vs True scatter plot
+    """
+    residual = pred - true
+    abs_residual = np.abs(residual)
+
+    # Helper for binning
+    def get_binned_stat(x, y, stat_func, nbins):
+        if len(x) == 0:
+            return np.array([]), np.array([])
+        bin_edges = np.linspace(x.min(), x.max(), nbins + 1)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        bin_idx = np.digitize(x, bin_edges) - 1
+
+        y_vals = []
+        for i in range(nbins):
+            mask = bin_idx == i
+            if np.any(mask):
+                y_vals.append(stat_func(y[mask]))
+            else:
+                y_vals.append(np.nan)
+        return bin_centers, np.array(y_vals)
+
+    percentile_68 = lambda x: np.percentile(x, 68)
+
+    fig, axs = plt.subplots(1, 3, figsize=(15, 4))
+    fig.suptitle("Energy Resolution Profile", fontsize=14)
+
+    # 1. Residual histogram
+    axs[0].hist(residual, bins=100, alpha=0.7, color='tab:blue')
+    axs[0].axvline(0, color='red', linestyle='--', linewidth=1)
+    axs[0].set_xlabel("Residual (Pred - True)")
+    axs[0].set_ylabel("Count")
+    axs[0].set_title(f"Residual Distribution\nBias={np.mean(residual):.4f}, 68%={np.percentile(abs_residual, 68):.4f}")
+
+    # 2. Resolution vs True Energy
+    x, y = get_binned_stat(true, abs_residual, percentile_68, bins)
+    axs[1].plot(x, y, 'o-', color='tab:orange')
+    axs[1].set_xlabel("True Energy")
+    axs[1].set_ylabel("68% |Residual|")
+    axs[1].set_title("Resolution vs True Energy")
+    axs[1].grid(True, alpha=0.3)
+
+    # 3. Pred vs True scatter
+    from matplotlib.colors import LogNorm
+    vmin = min(true.min(), pred.min())
+    vmax = max(true.max(), pred.max())
+    axs[2].hist2d(true, pred, bins=50, range=[[vmin, vmax], [vmin, vmax]],
+                  cmap='viridis', norm=LogNorm())
+    axs[2].plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=1, label='y=x')
+    axs[2].set_xlabel("True Energy")
+    axs[2].set_ylabel("Pred Energy")
+    axs[2].set_title("Pred vs True")
+    axs[2].legend()
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    if outfile:
+        plt.savefig(outfile, dpi=120)
+        plt.close()
+    else:
+        plt.show()
+
+
+def plot_timing_resolution_profile(pred, true, bins=20, outfile=None):
+    """
+    Plots timing resolution profile:
+    - Residual distribution histogram
+    - Resolution (68% |residual|) vs true timing
+    - Pred vs True scatter plot
+    """
+    residual = pred - true
+    abs_residual = np.abs(residual)
+
+    # Helper for binning
+    def get_binned_stat(x, y, stat_func, nbins):
+        if len(x) == 0:
+            return np.array([]), np.array([])
+        bin_edges = np.linspace(x.min(), x.max(), nbins + 1)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        bin_idx = np.digitize(x, bin_edges) - 1
+
+        y_vals = []
+        for i in range(nbins):
+            mask = bin_idx == i
+            if np.any(mask):
+                y_vals.append(stat_func(y[mask]))
+            else:
+                y_vals.append(np.nan)
+        return bin_centers, np.array(y_vals)
+
+    percentile_68 = lambda x: np.percentile(x, 68)
+
+    fig, axs = plt.subplots(1, 3, figsize=(15, 4))
+    fig.suptitle("Timing Resolution Profile", fontsize=14)
+
+    # 1. Residual histogram
+    axs[0].hist(residual, bins=100, alpha=0.7, color='tab:blue')
+    axs[0].axvline(0, color='red', linestyle='--', linewidth=1)
+    axs[0].set_xlabel("Residual (Pred - True)")
+    axs[0].set_ylabel("Count")
+    axs[0].set_title(f"Residual Distribution\nBias={np.mean(residual):.4f}, 68%={np.percentile(abs_residual, 68):.4f}")
+
+    # 2. Resolution vs True Timing
+    x, y = get_binned_stat(true, abs_residual, percentile_68, bins)
+    axs[1].plot(x, y, 'o-', color='tab:orange')
+    axs[1].set_xlabel("True Timing")
+    axs[1].set_ylabel("68% |Residual|")
+    axs[1].set_title("Resolution vs True Timing")
+    axs[1].grid(True, alpha=0.3)
+
+    # 3. Pred vs True scatter
+    from matplotlib.colors import LogNorm
+    vmin = min(true.min(), pred.min())
+    vmax = max(true.max(), pred.max())
+    axs[2].hist2d(true, pred, bins=50, range=[[vmin, vmax], [vmin, vmax]],
+                  cmap='viridis', norm=LogNorm())
+    axs[2].plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=1, label='y=x')
+    axs[2].set_xlabel("True Timing")
+    axs[2].set_ylabel("Pred Timing")
+    axs[2].set_title("Pred vs True")
+    axs[2].legend()
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    if outfile:
+        plt.savefig(outfile, dpi=120)
+        plt.close()
+    else:
+        plt.show()
+
+
+def plot_position_resolution_profile(pred_uvw, true_uvw, bins=20, outfile=None):
+    """
+    Plots position (uvwFI) resolution profile:
+    - Row 1: U, V, W residual histograms
+    - Row 2: U, V, W resolution vs true value
+    """
+    labels = ['U', 'V', 'W']
+    colors = ['tab:blue', 'tab:orange', 'tab:green']
+
+    # Helper for binning
+    def get_binned_stat(x, y, stat_func, nbins):
+        if len(x) == 0:
+            return np.array([]), np.array([])
+        bin_edges = np.linspace(x.min(), x.max(), nbins + 1)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        bin_idx = np.digitize(x, bin_edges) - 1
+
+        y_vals = []
+        for i in range(nbins):
+            mask = bin_idx == i
+            if np.any(mask):
+                y_vals.append(stat_func(y[mask]))
+            else:
+                y_vals.append(np.nan)
+        return bin_centers, np.array(y_vals)
+
+    percentile_68 = lambda x: np.percentile(x, 68)
+
+    fig, axs = plt.subplots(2, 3, figsize=(15, 8))
+    fig.suptitle("Position (uvwFI) Resolution Profile", fontsize=14)
+
+    for i in range(3):
+        residual = pred_uvw[:, i] - true_uvw[:, i]
+        abs_residual = np.abs(residual)
+        true_val = true_uvw[:, i]
+
+        # Row 1: Residual histograms
+        axs[0, i].hist(residual, bins=100, alpha=0.7, color=colors[i])
+        axs[0, i].axvline(0, color='red', linestyle='--', linewidth=1)
+        axs[0, i].set_xlabel(f"{labels[i]} Residual")
+        axs[0, i].set_ylabel("Count")
+        axs[0, i].set_title(f"{labels[i]}: Bias={np.mean(residual):.3f}, 68%={np.percentile(abs_residual, 68):.3f}")
+
+        # Row 2: Resolution vs True
+        x, y = get_binned_stat(true_val, abs_residual, percentile_68, bins)
+        axs[1, i].plot(x, y, 'o-', color=colors[i])
+        axs[1, i].set_xlabel(f"True {labels[i]}")
+        axs[1, i].set_ylabel("68% |Residual|")
+        axs[1, i].set_title(f"{labels[i]} Resolution vs True")
+        axs[1, i].grid(True, alpha=0.3)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    if outfile:
+        plt.savefig(outfile, dpi=120)
+        plt.close()
+    else:
+        plt.show()
+
+
 def plot_mae_reconstruction(truth, masked_input, recon, title="MAE Reconstruction", savepath=None):
     """
     Plots Truth vs Masked Input vs Reconstruction for Npho distribution.
