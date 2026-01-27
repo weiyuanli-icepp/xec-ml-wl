@@ -2,6 +2,8 @@ import torch
 import numpy as np
 import uproot
 import time
+import os
+import psutil
 from .geom_utils import gather_face, gather_hex_nodes
 from .geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP, 
@@ -204,3 +206,89 @@ class SimpleProfiler:
         self.counts = {}
         self._start_time = None
         self._current_name = None
+
+
+# ------------------------------------------------------------
+# MLflow System Metrics Logging
+# ------------------------------------------------------------
+def get_system_metrics(device=None):
+    """
+    Collect standardized system metrics for MLflow logging.
+
+    Returns:
+        dict: Metrics dictionary with standardized names:
+            - system/vram_allocated_GB: GPU memory allocated
+            - system/vram_reserved_GB: GPU memory reserved
+            - system/vram_peak_GB: GPU peak memory
+            - system/vram_utilization: GPU memory utilization (0-1)
+            - system/ram_used_GB: System RAM used
+            - system/ram_percent: System RAM percentage
+            - system/process_rss_GB: Process resident memory
+    """
+    metrics = {}
+
+    # GPU metrics
+    if torch.cuda.is_available():
+        if device is None:
+            device = torch.device("cuda")
+        torch.cuda.synchronize(device)
+
+        allocated = torch.cuda.memory_allocated(device)
+        reserved = torch.cuda.memory_reserved(device)
+        peak = torch.cuda.max_memory_allocated(device)
+
+        metrics["system/vram_allocated_GB"] = allocated / 1e9
+        metrics["system/vram_reserved_GB"] = reserved / 1e9
+        metrics["system/vram_peak_GB"] = peak / 1e9
+
+        # Utilization: allocated / reserved (how efficiently we use reserved memory)
+        if reserved > 0:
+            metrics["system/vram_utilization"] = allocated / reserved
+
+    # RAM metrics
+    try:
+        ram = psutil.virtual_memory()
+        process = psutil.Process(os.getpid())
+        mem_info = process.memory_info()
+
+        metrics["system/ram_used_GB"] = ram.used / 1e9
+        metrics["system/ram_percent"] = ram.percent
+        metrics["system/process_rss_GB"] = mem_info.rss / 1e9
+    except Exception:
+        pass
+
+    return metrics
+
+
+def log_system_metrics_to_mlflow(step, device=None, epoch_time_sec=None,
+                                  throughput_events_per_sec=None,
+                                  lr=None):
+    """
+    Log standardized system metrics to MLflow.
+
+    Args:
+        step: MLflow step (usually epoch number)
+        device: torch device for GPU metrics
+        epoch_time_sec: Time taken for this epoch
+        throughput_events_per_sec: Training throughput
+        lr: Current learning rate
+    """
+    try:
+        import mlflow
+    except ImportError:
+        return
+
+    metrics = get_system_metrics(device)
+
+    # Add optional metrics
+    if epoch_time_sec is not None:
+        metrics["system/epoch_time_sec"] = epoch_time_sec
+
+    if throughput_events_per_sec is not None:
+        metrics["system/throughput_events_per_sec"] = throughput_events_per_sec
+
+    if lr is not None:
+        metrics["lr"] = lr
+
+    if metrics:
+        mlflow.log_metrics(metrics, step=step)

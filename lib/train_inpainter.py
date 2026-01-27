@@ -27,8 +27,6 @@ import torch
 import argparse
 import time
 import glob
-import platform
-import psutil
 import mlflow
 import numpy as np
 
@@ -42,7 +40,7 @@ from .engine_inpainter import (
     save_predictions_to_root,
     RootPredictionWriter,
 )
-from .utils import get_gpu_memory_stats
+from .utils import log_system_metrics_to_mlflow
 from .geom_defs import (
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
     DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
@@ -538,29 +536,14 @@ Examples:
                 current_lr = scheduler.get_last_lr()[0]
             else:
                 current_lr = optimizer.param_groups[0]["lr"]
-            mlflow.log_metric("lr", current_lr, step=epoch)
 
-            # System metrics
-            if device.type == "cuda":
-                gpu_stats = get_gpu_memory_stats(device)
-                if gpu_stats:
-                    mlflow.log_metrics({
-                        "system/gpu_allocated_GB": gpu_stats["allocated"] / 1e9,
-                        "system/gpu_reserved_GB": gpu_stats["reserved"] / 1e9,
-                        "system/gpu_peak_GB": gpu_stats["peak"] / 1e9,
-                    }, step=epoch)
-
-            try:
-                ram = psutil.virtual_memory()
-                process = psutil.Process(os.getpid())
-                mem_info = process.memory_info()
-                mlflow.log_metrics({
-                    "system/ram_used_GB": ram.used / 1e9,
-                    "system/ram_percent": ram.percent,
-                    "system/process_rss_GB": mem_info.rss / 1e9,
-                }, step=epoch)
-            except Exception as e:
-                print(f"[WARN] Could not log RAM stats: {e}")
+            # System metrics (standardized)
+            log_system_metrics_to_mlflow(
+                step=epoch,
+                device=device,
+                epoch_time_sec=dt,
+                lr=current_lr,
+            )
 
             # Check best model
             is_best = val_loss < best_val_loss if val_metrics else False

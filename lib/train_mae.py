@@ -22,8 +22,6 @@ import torch
 import argparse
 import time
 import glob
-import platform
-import psutil
 import mlflow
 import uproot
 import numpy as np
@@ -34,7 +32,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from .model import XECEncoder
 from .model_mae import XEC_MAE
 from .engine_mae import run_epoch_mae, run_eval_mae
-from .utils import get_gpu_memory_stats, count_model_params
+from .utils import count_model_params, log_system_metrics_to_mlflow
 from .geom_defs import DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
 from .config import load_mae_config
 
@@ -570,41 +568,20 @@ Examples:
                     "channel/time_weight": (0.5 * torch.exp(-log_vars[1])).item(),
                 }, step=epoch)
 
-            mlflow.log_metric("epoch_time_sec", dt, step=epoch)
-
-            # GPU stats
-            if device.type == "cuda":
-                stats = get_gpu_memory_stats(device)
-                if stats:
-                    total_mem = torch.cuda.get_device_properties(device).total_memory
-                    vram_util = stats['allocated'] / total_mem
-                    mlflow.log_metrics({
-                        "system/memory_allocated_GB": stats['allocated'] / 1e9,
-                        "system/memory_reserved_GB": stats['reserved'] / 1e9,
-                        "system/vram_utilization": vram_util,
-                    }, step=epoch)
-
-            # CPU RAM Stats
-            try:
-                ram = psutil.virtual_memory()
-                process = psutil.Process()
-                mem_info = process.memory_info()
-                mlflow.log_metrics({
-                    "system/ram_total_GB": ram.total / 1e9,
-                    "system/ram_used_GB": ram.used / 1e9,
-                    "system/ram_percent": ram.percent,
-                    "system/process_rss_GB": mem_info.rss / 1e9,
-                    "system/process_vms_GB": mem_info.vms / 1e9,
-                }, step=epoch)
-            except Exception as e:
-                print(f"[WARNING] Could not log CPU RAM stats: {e}")
-
+            # Learning rate
             if scheduler is not None:
                 scheduler.step()
                 current_lr = scheduler.get_last_lr()[0]
             else:
                 current_lr = optimizer.param_groups[0]["lr"]
-            mlflow.log_metric("lr", current_lr, step=epoch)
+
+            # System metrics (standardized)
+            log_system_metrics_to_mlflow(
+                step=epoch,
+                device=device,
+                epoch_time_sec=dt,
+                lr=current_lr,
+            )
 
             # Save predictions
             if predictions is not None:

@@ -8,7 +8,6 @@ import mlflow
 import mlflow.pytorch
 warnings.filterwarnings("ignore", category=FutureWarning, module="mlflow.tracking._tracking_service.utils")
 import uproot
-import psutil
 import glob
 import random
 import torch
@@ -26,10 +25,10 @@ from .angle_reweighting    import scan_angle_hist_1d, scan_angle_hist_2d  # Lega
 from .reweighting          import SampleReweighter, create_reweighter_from_config
 from .config               import load_config, get_active_tasks, get_task_weights, XECConfig
 from .utils                import (
-    get_gpu_memory_stats,
     count_model_params,
     iterate_chunks,
-    compute_face_saliency
+    compute_face_saliency,
+    log_system_metrics_to_mlflow
 )
 from .plotting             import (
     plot_resolution_profile,
@@ -338,36 +337,17 @@ def main_xec_regressor_with_args(
             print(f"[{ep:03d}] tr_loss {tr_loss:.5f} val_loss {val_loss:.5f} lr {current_lr:.2e} time {sec:.1f}s")
             
             # --- LOGGING ---
-            # 1. System Metrics (GPU & RAM)
-            if device.type == "cuda":
-                stats = get_gpu_memory_stats(device)
-                if stats:
-                    total_mem = torch.cuda.get_device_properties(device).total_memory
-                    vram_util = stats["allocated"] / total_mem                    
-                    frag = (stats["reserved"] - stats["allocated"]) / max(1, stats["reserved"])
-                    mlflow.log_metrics({
-                        "system/memory_allocated_GB": stats["allocated"] / 1e9,
-                        "system/memory_reserved_GB": stats["reserved"] / 1e9,
-                        "system/memory_peak_GB": stats["peak"] / 1e9,
-                        "system/gpu_utilization_pct": vram_util,
-                        "system/memory_fragmentation": frag,
-                    }, step=ep)
-            
-            # 2. System RAM (CPU)
-            process = psutil.Process()
-            mem_info = process.memory_info()
-            ram_gb = mem_info.rss / 1e9
-            ram = psutil.virtual_memory()
-            mlflow.log_metrics({
-                "system/ram_used_gb": ram.used / 1e9,
-                "system/ram_percent": ram.percent,
-                "system/process_ram_gb": ram_gb
-            }, step=ep)
-            
-            # 3. Throughput (Speed)
-            mlflow.log_metric("system/epoch_duration_sec", sec, step=ep)
-            
-            # Main Metrics
+            # 1. System Metrics (standardized: GPU, RAM, epoch time, lr)
+            throughput = tr_metrics.get("system/throughput_events_per_sec")
+            log_system_metrics_to_mlflow(
+                step=ep,
+                device=device,
+                epoch_time_sec=sec,
+                throughput_events_per_sec=throughput,
+                lr=current_lr,
+            )
+
+            # 2. Main Metrics
             log_dict = {
                 "train_loss": tr_loss,
                 "val_loss": val_loss,
@@ -375,20 +355,19 @@ def main_xec_regressor_with_args(
                 "val_l1": val_metrics["l1"],
                 "val_mse": val_metrics["mse"],
                 "val_cos_res": val_metrics["cos"],
-                "lr": current_lr,
                 **val_stats
             }
-            
+
+            # Add additional throughput metrics from training
             perf_keys = [
-                "system/throughput_events_per_sec", 
-                "system/avg_data_load_sec", 
-                "system/avg_batch_process_sec", 
+                "system/avg_data_load_sec",
+                "system/avg_batch_process_sec",
                 "system/compute_efficiency"
             ]
             for k in perf_keys:
                 if k in tr_metrics:
                     log_dict[k] = tr_metrics[k]
-            
+
             mlflow.log_metrics(log_dict, step=ep)
 
             # Log learned task weights (homoscedastic uncertainty)
@@ -870,10 +849,18 @@ def train_with_config(config_path: str, profile: bool = False):
             print(f"[{ep:03d}] tr_loss {tr_loss:.5f} val_loss {val_loss:.5f} lr {current_lr:.2e} time {sec:.1f}s")
 
             # --- Logging ---
+            # System metrics (standardized)
+            log_system_metrics_to_mlflow(
+                step=ep,
+                device=device,
+                epoch_time_sec=sec,
+                lr=current_lr,
+            )
+
+            # Main metrics
             log_dict = {
                 "train_loss": tr_loss,
                 "val_loss": val_loss,
-                "lr": current_lr,
             }
 
             # Add task-specific metrics
@@ -885,7 +872,6 @@ def train_with_config(config_path: str, profile: bool = False):
                 log_dict.update(val_stats)
 
             mlflow.log_metrics(log_dict, step=ep)
-            mlflow.log_metric("system/epoch_duration_sec", sec, step=ep)
 
             # Log learned task weights (homoscedastic uncertainty)
             if loss_scaler is not None:
