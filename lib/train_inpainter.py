@@ -239,7 +239,8 @@ Examples:
         npho_threshold = args.npho_threshold if args.npho_threshold is not None else getattr(cfg.training, "npho_threshold", None)
         use_npho_time_weight = not args.no_npho_time_weight and getattr(cfg.training, "use_npho_time_weight", True)
         grad_clip = args.grad_clip if args.grad_clip is not None else cfg.training.grad_clip
-        track_mae_rmse = not bool(args.disable_mae_rmse_metrics) if args.disable_mae_rmse_metrics is not None else getattr(cfg.training, "track_mae_rmse", True)
+        # If --disable_mae_rmse_metrics flag is passed, disable; otherwise use config value
+        track_mae_rmse = False if args.disable_mae_rmse_metrics else getattr(cfg.training, "track_mae_rmse", True)
         # Read save_predictions from checkpoint (new location) or training (old location) for backward compat
         save_root_predictions = getattr(cfg.checkpoint, "save_predictions", None)
         if save_root_predictions is None:
