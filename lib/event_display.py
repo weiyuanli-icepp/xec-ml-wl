@@ -588,3 +588,360 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         plt.show()
 
     return fig
+
+
+# =========================================================
+# Worst Case Event Display
+# =========================================================
+
+def plot_worst_case_event(event_data, rank=1, savepath=None):
+    """
+    Creates a comprehensive display for a worst-case event showing
+    both npho and time distributions with prediction/truth info.
+
+    Args:
+        event_data: dict with keys from worst_events_buffer:
+            - total_loss: float
+            - input_npho: (4760,) array
+            - input_time: (4760,) array
+            - run, event: metadata (optional)
+            - pred_angle, true_angle: (2,) arrays (optional)
+            - pred_energy, pred_timing, pred_uvwFI: predictions (optional)
+            - true_uvwFI: (3,) array (optional)
+        rank: 1-indexed rank of this event (1 = worst)
+        savepath: path to save figure (None to display)
+    """
+    npho = event_data.get("input_npho")
+    time = event_data.get("input_time")
+    total_loss = event_data.get("total_loss", 0.0)
+
+    if npho is None:
+        print(f"[WARN] No input_npho in worst event data")
+        return
+
+    # Build title with metadata
+    run_id = event_data.get("run", "?")
+    evt_id = event_data.get("event", "?")
+    title_base = f"Worst Case #{rank} | Run {run_id} Event {evt_id} | Loss: {total_loss:.4f}"
+
+    # Build prediction/truth summary
+    info_lines = []
+
+    if "pred_angle" in event_data and "true_angle" in event_data:
+        pred_ang = event_data["pred_angle"]
+        true_ang = event_data["true_angle"]
+        info_lines.append(
+            f"Angle: pred=({pred_ang[0]:.2f}°, {pred_ang[1]:.2f}°) "
+            f"true=({true_ang[0]:.2f}°, {true_ang[1]:.2f}°)"
+        )
+
+    if "pred_energy" in event_data:
+        pred_e = event_data["pred_energy"]
+        pred_val = pred_e[0] if hasattr(pred_e, '__len__') and len(pred_e) > 0 else pred_e
+        info_lines.append(f"Energy: pred={float(pred_val):.4f}")
+
+    if "pred_timing" in event_data:
+        pred_t = event_data["pred_timing"]
+        pred_val = pred_t[0] if hasattr(pred_t, '__len__') and len(pred_t) > 0 else pred_t
+        info_lines.append(f"Timing: pred={float(pred_val):.4f}")
+
+    if "pred_uvwFI" in event_data and "true_uvwFI" in event_data:
+        pred_pos = event_data["pred_uvwFI"]
+        true_pos = event_data["true_uvwFI"]
+        info_lines.append(
+            f"Position: pred=({pred_pos[0]:.2f}, {pred_pos[1]:.2f}, {pred_pos[2]:.2f}) "
+            f"true=({true_pos[0]:.2f}, {true_pos[1]:.2f}, {true_pos[2]:.2f})"
+        )
+
+    info_text = " | ".join(info_lines) if info_lines else ""
+
+    # Create figure with two rows: npho and time
+    fig = plt.figure(figsize=(22, 20))
+
+    # Add main title
+    fig.suptitle(f"{title_base}\n{info_text}", fontsize=14, fontweight='bold')
+
+    # Top half: Npho display
+    ax_npho = fig.add_axes([0.02, 0.52, 0.96, 0.44])
+    ax_npho.axis('off')
+
+    # Bottom half: Time display
+    ax_time = fig.add_axes([0.02, 0.02, 0.96, 0.44])
+    ax_time.axis('off')
+
+    # We'll use subplots within each region
+    # For simplicity, save two separate plots and combine, or use the existing functions
+
+    # Actually, let's create a cleaner layout using the existing functions
+    plt.close(fig)
+
+    # Create a combined figure
+    fig = plt.figure(figsize=(20, 24))
+    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1], hspace=0.15)
+
+    # --- Top: Npho Display ---
+    gs_npho = gridspec.GridSpecFromSubplotSpec(3, 4, subplot_spec=gs[0],
+                                                width_ratios=[45, 88, 45, 100],
+                                                height_ratios=[100, 183, 100],
+                                                wspace=0.1, hspace=0.1)
+
+    _plot_event_faces_on_axes(fig, gs_npho, npho, "Photon Counts (Npho)")
+
+    # --- Bottom: Time Display ---
+    if time is not None:
+        gs_time = gridspec.GridSpecFromSubplotSpec(3, 4, subplot_spec=gs[1],
+                                                    width_ratios=[45, 100, 45, 100],
+                                                    height_ratios=[45, 160, 45],
+                                                    wspace=0.1, hspace=0.1)
+
+        _plot_event_time_on_axes(fig, gs_time, npho, time, "Timing")
+
+    # Main title
+    fig.suptitle(f"{title_base}\n{info_text}", fontsize=14, fontweight='bold', y=0.98)
+
+    if savepath:
+        plt.savefig(savepath, bbox_inches='tight', dpi=100)
+        plt.close()
+    else:
+        plt.show()
+
+    return fig
+
+
+def _plot_event_faces_on_axes(fig, gs, npho_event, subtitle="Npho"):
+    """Helper to plot npho faces on a given gridspec."""
+    if isinstance(npho_event, torch.Tensor):
+        npho_event = npho_event.cpu().numpy()
+
+    npho_np = npho_event.reshape(-1)
+    x = torch.from_numpy(npho_np.reshape(1, -1, 1).astype("float32"))
+
+    faces = build_face_tensors(x)
+    outer_fine_fused = build_outer_fine_grid_tensor(x, pool_kernel=None)
+
+    def to_np(t):
+        return t.squeeze(0).squeeze(0).cpu().numpy()
+
+    valid_all = npho_np[npho_np > 0]
+    if valid_all.size > 0:
+        is_relative = (valid_all.max() <= 1.0001)
+        floor = 0.001 if is_relative else 0.1
+        vmin = max(valid_all.min(), floor)
+        vmax = valid_all.max()
+        if vmax <= vmin:
+            vmax = vmin + (0.1 if is_relative else 1.0)
+            vmin = vmin * 0.99
+    else:
+        vmin, vmax = 0.001, 1.0
+
+    norm = LogNorm(vmin=vmin, vmax=vmax)
+
+    def plot_rect_face(ax, data, title, flip_lr=False):
+        if flip_lr:
+            data = np.fliplr(data)
+        im = ax.imshow(data, aspect='auto', origin='upper', cmap="viridis", norm=norm)
+        ax.set_title(title, fontsize=10, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    def plot_hex_face(ax, row_list, full_npho, title, mode):
+        xs, ys, vals = [], [], []
+        pitch_y, pitch_x = 7.5, 7.1
+
+        for r_idx, ids in enumerate(row_list):
+            n_items = len(ids)
+            x_start = -(n_items - 1) * pitch_x / 2.0
+            y_pos = r_idx * pitch_y if mode == 'top' else (5 - r_idx) * pitch_y
+
+            for c_idx, pmt_id in enumerate(ids):
+                x = -(x_start + c_idx * pitch_x)
+                y = y_pos
+                val = full_npho[pmt_id]
+                xs.append(x)
+                ys.append(y)
+                vals.append(val)
+
+        xs, ys, vals = np.array(xs), np.array(ys), np.array(vals)
+        ax.scatter(xs, ys, s=200, c='lightgray', marker='h', alpha=0.3)
+
+        mask = vals > 0
+        if np.any(mask):
+            ax.scatter(xs[mask], ys[mask], c=vals[mask], s=200, cmap="viridis", norm=norm, marker='h', edgecolors='none')
+
+        ax.set_title(title, fontsize=10, fontweight='bold')
+        ax.set_xlim(-55, 55)
+        ax.set_ylim(-5, 45)
+        ax.axis('off')
+
+    # Plot faces
+    ax_top = fig.add_subplot(gs[0, 1])
+    plot_hex_face(ax_top, TOP_HEX_ROWS, npho_np, f"Top ({subtitle})", mode='top')
+
+    ax_ds = fig.add_subplot(gs[1, 0])
+    plot_rect_face(ax_ds, to_np(faces["ds"]), f"Downstream", flip_lr=True)
+
+    ax_inner = fig.add_subplot(gs[1, 1])
+    im_main = plot_rect_face(ax_inner, to_np(faces["inner"]), f"Inner ({subtitle})", flip_lr=True)
+
+    ax_us = fig.add_subplot(gs[1, 2])
+    plot_rect_face(ax_us, to_np(faces["us"]), f"Upstream", flip_lr=False)
+
+    ax_outer = fig.add_subplot(gs[1, 3])
+    plot_rect_face(ax_outer, to_np(outer_fine_fused), f"Outer", flip_lr=True)
+    rect = patches.Rectangle((29.5, 14.5), 12, 15, linewidth=1.5, edgecolor='white', facecolor='none', linestyle=':')
+    ax_outer.add_patch(rect)
+
+    ax_bot = fig.add_subplot(gs[2, 1])
+    plot_hex_face(ax_bot, BOTTOM_HEX_ROWS, npho_np, f"Bottom", mode='bottom')
+
+    # Colorbar
+    cbar_ax = fig.add_axes([0.92, 0.55, 0.015, 0.35])
+    fig.colorbar(im_main, cax=cbar_ax, label="Npho")
+
+
+def _plot_event_time_on_axes(fig, gs, npho_data, time_data, subtitle="Time"):
+    """Helper to plot time faces on a given gridspec."""
+    if isinstance(npho_data, torch.Tensor):
+        npho_data = npho_data.cpu().numpy()
+    if isinstance(time_data, torch.Tensor):
+        time_data = time_data.cpu().numpy()
+
+    npho_data = npho_data.reshape(-1)
+    time_data = time_data.reshape(-1)
+
+    t_clean = time_data.copy()
+    mask_garbage = np.abs(t_clean) > 1.0
+    mask_valid = (npho_data > 0) & (~mask_garbage)
+    t_clean[~mask_valid] = 0.0
+
+    valid_vals = t_clean[mask_valid]
+    if valid_vals.size > 0:
+        vmin, vmax = np.percentile(valid_vals, [0, 100])
+        if vmin == vmax:
+            vmin -= 1e-9
+            vmax += 1e-9
+    else:
+        vmin, vmax = -1.0, 1.0
+
+    norm = Normalize(vmin=vmin, vmax=vmax)
+    cmap = "coolwarm"
+
+    x_npho = torch.from_numpy(npho_data.reshape(1, -1, 1).astype("float32"))
+    x_time = torch.from_numpy(t_clean.reshape(1, -1, 1).astype("float32"))
+
+    faces_npho = build_face_tensors(x_npho)
+    faces_time = build_face_tensors(x_time)
+
+    outer_time_fused = build_outer_fine_grid_tensor(x_time, pool_kernel=None)
+    outer_npho_fused = build_outer_fine_grid_tensor(x_npho, pool_kernel=None)
+
+    def to_np(t):
+        return t.squeeze(0).squeeze(0).cpu().numpy()
+
+    def plot_face(ax, t_tensor, n_tensor, title, flip_lr=False):
+        t_img = to_np(t_tensor)
+        n_img = to_np(n_tensor)
+        if flip_lr:
+            t_img = np.fliplr(t_img)
+            n_img = np.fliplr(n_img)
+
+        masked_t = np.ma.masked_where(n_img <= 0, t_img)
+        im = ax.imshow(masked_t, aspect='auto', origin='upper', cmap=cmap, norm=norm)
+        ax.set_facecolor('lightgray')
+        ax.set_title(title, fontsize=10, fontweight='bold')
+        ax.axis('off')
+        return im
+
+    def plot_hex_time(ax, row_list, full_t, full_n, title, mode):
+        pitch_y, pitch_x = 7.5, 7.1
+        xs, ys, vals = [], [], []
+
+        for r_idx, ids in enumerate(row_list):
+            n_items = len(ids)
+            x_start = -(n_items - 1) * pitch_x / 2.0
+            y_pos = r_idx * pitch_y if mode == 'top' else (5 - r_idx) * pitch_y
+
+            for c_idx, pmt_id in enumerate(ids):
+                if not mask_valid[pmt_id]:
+                    continue
+                x = -(x_start + c_idx * pitch_x)
+                y = y_pos
+                xs.append(x)
+                ys.append(y)
+                vals.append(full_t[pmt_id])
+
+        # Background dots
+        all_xs, all_ys = [], []
+        for r_idx, ids in enumerate(row_list):
+            n_items = len(ids)
+            x_start = -(n_items - 1) * pitch_x / 2.0
+            y_pos = r_idx * pitch_y if mode == 'top' else (5 - r_idx) * pitch_y
+            for c_idx, _ in enumerate(ids):
+                all_xs.append(-(x_start + c_idx * pitch_x))
+                all_ys.append(y_pos)
+
+        ax.scatter(all_xs, all_ys, s=200, c='lightgray', marker='h', alpha=0.3)
+        if vals:
+            ax.scatter(xs, ys, c=vals, s=200, cmap=cmap, norm=norm, marker='h', edgecolors='none')
+
+        ax.set_xlim(-55, 55)
+        ax.set_ylim(-5, 45)
+        ax.axis('off')
+        ax.set_title(title, fontsize=10, fontweight='bold')
+
+    # Plot faces
+    ax_top = fig.add_subplot(gs[0, 1])
+    plot_hex_time(ax_top, TOP_HEX_ROWS, t_clean, npho_data, f"Top ({subtitle})", mode='top')
+
+    ax_ds = fig.add_subplot(gs[1, 0])
+    plot_face(ax_ds, faces_time["ds"], faces_npho["ds"], "Downstream", flip_lr=True)
+
+    ax_inner = fig.add_subplot(gs[1, 1])
+    im_main = plot_face(ax_inner, faces_time["inner"], faces_npho["inner"], f"Inner ({subtitle})", flip_lr=True)
+
+    ax_us = fig.add_subplot(gs[1, 2])
+    plot_face(ax_us, faces_time["us"], faces_npho["us"], "Upstream", flip_lr=False)
+
+    ax_outer = fig.add_subplot(gs[1, 3])
+    plot_face(ax_outer, outer_time_fused, outer_npho_fused, "Outer", flip_lr=True)
+    rect = patches.Rectangle((29.5, 14.5), 12, 15, linewidth=1.5, edgecolor='black', facecolor='none', linestyle=':')
+    ax_outer.add_patch(rect)
+
+    ax_bot = fig.add_subplot(gs[2, 1])
+    plot_hex_time(ax_bot, BOTTOM_HEX_ROWS, t_clean, npho_data, "Bottom", mode='bottom')
+
+    # Colorbar
+    cbar_ax = fig.add_axes([0.92, 0.08, 0.015, 0.35])
+    fig.colorbar(im_main, cax=cbar_ax, label="Time")
+
+
+def save_worst_case_events(worst_events, artifact_dir, run_name, epoch=None, max_events=5):
+    """
+    Save event displays for the worst case events.
+
+    Args:
+        worst_events: list of event dicts from worst_events_buffer
+        artifact_dir: directory to save plots
+        run_name: run name for file naming
+        epoch: optional epoch number for suffix
+        max_events: maximum number of events to save (default 5)
+    """
+    import os
+
+    if not worst_events:
+        return
+
+    suffix = f"_ep{epoch}" if epoch is not None else ""
+    worst_dir = os.path.join(artifact_dir, f"worst_events{suffix}")
+    os.makedirs(worst_dir, exist_ok=True)
+
+    n_events = min(len(worst_events), max_events)
+    print(f"[INFO] Saving {n_events} worst case event displays...")
+
+    for i, event_data in enumerate(worst_events[:n_events]):
+        rank = i + 1
+        savepath = os.path.join(worst_dir, f"worst_{rank:02d}_{run_name}.pdf")
+        try:
+            plot_worst_case_event(event_data, rank=rank, savepath=savepath)
+        except Exception as e:
+            print(f"[WARN] Failed to save worst event #{rank}: {e}")

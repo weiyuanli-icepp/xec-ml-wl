@@ -43,6 +43,7 @@ from .plotting import (
     plot_scalar_scatter,
     plot_pred_truth_scatter,
 )
+from .event_display import save_worst_case_events
 
 # ------------------------------------------------------------
 # Enable TensorFloat32
@@ -60,6 +61,7 @@ def save_validation_artifacts(
     artifact_dir,
     run_name,
     epoch=None,
+    worst_events=None,
 ):
     """
     Save validation artifacts (plots and CSVs) for all active tasks.
@@ -73,6 +75,7 @@ def save_validation_artifacts(
         artifact_dir: Directory to save artifacts
         run_name: Run name for file naming
         epoch: Optional epoch number (for intermediate saves)
+        worst_events: List of worst case event dicts (optional)
     """
     suffix = f"_ep{epoch}" if epoch is not None else ""
 
@@ -169,6 +172,14 @@ def save_validation_artifacts(
             res_pdf = os.path.join(artifact_dir, f"resolution_uvwFI_{run_name}{suffix}.pdf")
             plot_position_resolution_profile(pred_uvw, true_uvw, outfile=res_pdf)
             mlflow.log_artifact(res_pdf)
+
+    # --- Worst Case Events ---
+    if worst_events:
+        try:
+            save_worst_case_events(worst_events, artifact_dir, run_name, epoch=epoch, max_events=5)
+        except Exception as e:
+            print(f"[WARN] Could not save worst case events: {e}")
+
 
 # Disable Debugging/Profiling overhead
 torch.autograd.set_detect_anomaly(False)
@@ -568,6 +579,7 @@ def train_with_config(config_path: str, profile: bool = None):
                 print(f"   [info] New best val_loss: {best_val:.6f}")
 
                 # Save validation artifacts (plots and CSVs) for best checkpoint
+                worst_events = extra_info.get("worst_events", []) if extra_info else []
                 save_validation_artifacts(
                     model=val_model,
                     angle_pred=pred_val,
@@ -577,6 +589,7 @@ def train_with_config(config_path: str, profile: bool = None):
                     artifact_dir=artifact_dir,
                     run_name=run_name,
                     epoch=ep,
+                    worst_events=worst_events,
                 )
 
             # Save last checkpoint
@@ -622,6 +635,7 @@ def train_with_config(config_path: str, profile: bool = None):
 
         # Save final validation artifacts (without epoch suffix)
         print("[INFO] Saving final validation artifacts...")
+        worst_events = extra_info.get("worst_events", []) if extra_info else []
         save_validation_artifacts(
             model=final_model,
             angle_pred=angle_pred,
@@ -631,6 +645,7 @@ def train_with_config(config_path: str, profile: bool = None):
             artifact_dir=artifact_dir,
             run_name=run_name,
             epoch=None,  # No epoch suffix for final artifacts
+            worst_events=worst_events,
         )
 
         # ONNX export
