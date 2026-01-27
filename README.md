@@ -1494,6 +1494,29 @@ training:
 ```
 Automatically reduces LR when validation loss stops improving. Good when optimal schedule is unknown.
 
+##### Alternative: Adaptive Optimizers (Future Reference)
+
+These optimizers automatically determine the learning rate, eliminating manual tuning:
+
+**D-Adaptation (2023)** - Automatically estimates optimal LR during training:
+```python
+# pip install dadaptation
+from dadaptation import DAdaptAdam
+optimizer = DAdaptAdam(model.parameters(), lr=1.0)  # lr=1.0 is just a scaling factor
+```
+Paper: "Learning-Rate-Free Learning by D-Adaptation" (Defazio & Mishchenko, 2023)
+
+**Schedule-Free (2024, Meta)** - Eliminates need for scheduler entirely:
+```python
+# pip install schedulefree
+import schedulefree
+optimizer = schedulefree.AdamWScheduleFree(model.parameters(), lr=0.001)
+# Note: Call optimizer.train() before training, optimizer.eval() before validation
+```
+Paper: "The Road Less Scheduled" (Defazio et al., 2024)
+
+These are not currently implemented in the codebase but are promising alternatives for future experimentation.
+
 #### 4. Automatic Mixed Precision (AMP)
 Uses `torch.cuda.amp` for faster training with FP16 forward pass while maintaining FP32 gradients.
 
