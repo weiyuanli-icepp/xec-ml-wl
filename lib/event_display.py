@@ -267,7 +267,8 @@ def plot_event_time(npho_data, time_data, title="Event Time", savepath=None):
 def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
                         channel="npho", title="MAE Reconstruction", savepath=None,
                         include_top_bottom=False,
-                        time_invalid_mask=None, npho_threshold=None):
+                        time_invalid_mask=None, npho_threshold=None,
+                        relative_residual=False):
     """
     Side-by-side comparison of truth, masked input, and MAE prediction.
 
@@ -285,6 +286,7 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
                           If None and channel=="time" and npho_threshold is set, computed automatically
         npho_threshold: threshold for time validity (in normalized npho space)
                        If None, uses DEFAULT_NPHO_THRESHOLD converted to normalized space
+        relative_residual: if True, compute (pred - truth) / |truth| instead of (pred - truth)
     """
     # Handle batched input
     if x_truth.ndim == 3:
@@ -357,8 +359,17 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     def to_np(t):
         return t.squeeze(0).squeeze(0).cpu().numpy()
 
-    # Compute residual where masked (raw difference)
-    residual_ch = np.where(mask > 0.5, pred_ch - truth_ch, 0.0)
+    # Compute residual where masked
+    if relative_residual:
+        # Relative residual: (pred - truth) / |truth|, avoiding division by zero
+        abs_truth = np.abs(truth_ch)
+        safe_truth = np.where(abs_truth > 1e-6, abs_truth, 1e-6)  # Avoid div by zero
+        residual_ch = np.where(mask > 0.5, (pred_ch - truth_ch) / safe_truth, 0.0)
+        residual_label = "Relative Residual"
+    else:
+        # Raw difference: pred - truth
+        residual_ch = np.where(mask > 0.5, pred_ch - truth_ch, 0.0)
+        residual_label = "Residual"
     residual_t = to_tensor(residual_ch)
     faces_residual = build_face_tensors(residual_t)
     outer_residual = build_outer_fine_grid_tensor(residual_t, pool_kernel=None)
@@ -559,7 +570,7 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     fig.colorbar(plt.cm.ScalarMappable(norm=norm_main, cmap=cmap_main), cax=cbar_ax1, label=ch_label)
 
     cbar_ax2 = fig.add_axes([0.92, 0.1, 0.015, 0.35])
-    fig.colorbar(plt.cm.ScalarMappable(norm=norm_res, cmap=cmap_res), cax=cbar_ax2, label="Residual")
+    fig.colorbar(plt.cm.ScalarMappable(norm=norm_res, cmap=cmap_res), cax=cbar_ax2, label=residual_label)
 
     # Summary stats
     mask_ratio = mask.mean() * 100
@@ -567,7 +578,11 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     if len(masked_residuals) > 0:
         mae = np.mean(np.abs(masked_residuals))
         rmse = np.sqrt(np.mean(masked_residuals**2))
-        stats_text = f"Mask: {mask_ratio:.1f}% | MAE: {mae:.4f} | RMSE: {rmse:.4f}"
+        if relative_residual:
+            # For relative residual, show as percentage
+            stats_text = f"Mask: {mask_ratio:.1f}% | MARE: {mae*100:.2f}% | RMSRE: {rmse*100:.2f}%"
+        else:
+            stats_text = f"Mask: {mask_ratio:.1f}% | MAE: {mae:.4f} | RMSE: {rmse:.4f}"
     else:
         stats_text = f"Mask: {mask_ratio:.1f}%"
 

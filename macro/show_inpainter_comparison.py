@@ -117,6 +117,10 @@ Examples:
     parser.add_argument("--npho_threshold", type=float, default=None,
                         help=f"Npho threshold for time validity (raw scale, default: {DEFAULT_NPHO_THRESHOLD})")
 
+    # Residual mode
+    parser.add_argument("--relative_residual", action="store_true",
+                        help="Show relative residual (pred-truth)/|truth| instead of absolute (pred-truth)")
+
     args = parser.parse_args()
 
     # Validate files exist
@@ -356,6 +360,7 @@ Examples:
             savepath=ch_savepath,
             include_top_bottom=args.include_top_bottom,
             npho_threshold=npho_threshold_norm,
+            relative_residual=args.relative_residual,
         )
 
         if ch_savepath:
