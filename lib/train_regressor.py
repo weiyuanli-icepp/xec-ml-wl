@@ -869,9 +869,36 @@ def apply_cli_overrides(cfg, args):
 # ------------------------------------------------------------
 #  CLI Entry Point
 # ------------------------------------------------------------
+def collect_cli_overrides(args):
+    """Collect non-None CLI arguments as overrides dict for display."""
+    overrides = {}
+    # Map of arg names to display names
+    override_args = [
+        "train_path", "val_path", "tree", "batch_size", "chunksize",
+        "num_workers", "num_threads", "npho_scale", "npho_scale2",
+        "time_scale", "time_shift", "sentinel_value", "outer_mode",
+        "outer_fine_pool", "hidden_dim", "drop_path_rate", "epochs",
+        "lr", "weight_decay", "warmup_epochs", "ema_decay",
+        "channel_dropout_rate", "grad_clip", "grad_accum_steps", "compile",
+        "tasks", "loss_balance", "resume_from", "save_dir",
+        "mlflow_experiment", "run_name", "onnx", "profile"
+    ]
+    for arg_name in override_args:
+        val = getattr(args, arg_name, None)
+        if val is not None:
+            overrides[arg_name] = val
+    return overrides
+
+
 if __name__ == "__main__":
     parser = get_parser()
     args = parser.parse_args()
+
+    # Show config file and collect CLI overrides
+    print(f"[INFO] Config file: {os.path.abspath(args.config)}")
+    cli_overrides = collect_cli_overrides(args)
+    if cli_overrides:
+        print(f"[INFO] CLI overrides: {cli_overrides}")
 
     # Load config and apply CLI overrides
     cfg = load_config(args.config)
@@ -903,7 +930,8 @@ if __name__ == "__main__":
         temp_config_path = f.name
 
     try:
-        train_with_config(temp_config_path, profile=args.profile)
+        # Only pass profile if explicitly set via CLI (--profile), otherwise let config decide
+        train_with_config(temp_config_path, profile=True if args.profile else None)
     finally:
         if os.path.exists(temp_config_path):
             os.unlink(temp_config_path)
