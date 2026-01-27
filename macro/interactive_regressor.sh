@@ -24,101 +24,10 @@ if [ -n "$CONDA_PREFIX" ]; then
     export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 fi
 
-# Use SQLite backend (recommended over deprecated file-based backend)
-export MLFLOW_TRACKING_URI="sqlite:///mlruns.db"
-
-# --- Configuration (Run-specific overrides) ---
-export RUN_NAME="regressor_interactive_test"
-export EPOCHS=1
-export BATCH_SIZE=4096
-export CHUNK_SIZE=256000
-export GRAD_ACCUM_STEPS=1
-export LR="3e-4"
-# export SCHEDULER="cosine"
-# export LR_MIN="1e-6"
-
-# Tasks (space-separated: angle energy timing uvwFI)
-export TASKS="energy"
-
-# Model architecture
-export OUTER_MODE="finegrid"
-export OUTER_FINE_POOL="3 3"
-export HIDDEN_DIM=256
-
-# Training settings
-export WARMUP_EPOCHS=0
-export EMA_DECAY=0
-export CHANNEL_DROPOUT_RATE=0.1
-export GRAD_CLIP=1.0
-
-# Normalization (legacy scheme for regressor)
-export NPHO_SCALE="1000"
-export NPHO_SCALE2="4.08"
-export TIME_SCALE="1.14e-7"
-export TIME_SHIFT="-0.46"
-export SENTINEL_VALUE="-1.0"
-
-# Paths (Point to your data files)
-export TRAIN_PATH="$HOME/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/large_train.root"
-export VAL_PATH="$HOME/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/large_val.root"
-
-# MLflow
-export MLFLOW_EXPERIMENT="gamma_energy"
-
-# ONNX export (set to "null" to disable)
-# export ONNX="XEC_Energy.onnx"
-export ONNX="null"
-
-# Resume from checkpoint (leave empty for fresh start)
-export RESUME_FROM=""
-# export RESUME_FROM="artifacts/mae/mae_checkpoint_best.pth"  # Fine-tune from MAE
-
-# --- Execution ---
-echo "Starting Regressor Training..."
-echo "Config File: config/train_config.yaml"
-echo "Train Data: $TRAIN_PATH"
-echo "Val Data:   $VAL_PATH"
-echo "Tasks:      $TASKS"
-if [ -z "$RESUME_FROM" ]; then
-    echo "Resume:     None (training from scratch)"
-else
-    echo "Resume:     $RESUME_FROM"
-fi
+export CONFIG_PATH="config/ene_reg_test.yaml"
 
 cd $HOME/meghome/xec-ml-wl
 echo "Moved to directory $(pwd)"
 
 # Build command
-CMD="python -m lib.train_regressor \
-    --config config/train_config.yaml \
-    --run_name ${RUN_NAME} \
-    --train_path ${TRAIN_PATH} \
-    --val_path ${VAL_PATH} \
-    --epochs ${EPOCHS} \
-    --batch_size ${BATCH_SIZE} \
-    --chunksize ${CHUNK_SIZE} \
-    --grad_accum_steps ${GRAD_ACCUM_STEPS} \
-    --lr ${LR} \
-    --tasks ${TASKS} \
-    --outer_mode ${OUTER_MODE} \
-    --outer_fine_pool ${OUTER_FINE_POOL} \
-    --hidden_dim ${HIDDEN_DIM} \
-    --warmup_epochs ${WARMUP_EPOCHS} \
-    --ema_decay ${EMA_DECAY} \
-    --channel_dropout_rate ${CHANNEL_DROPOUT_RATE} \
-    --grad_clip ${GRAD_CLIP} \
-    --npho_scale ${NPHO_SCALE} \
-    --npho_scale2 ${NPHO_SCALE2} \
-    --time_scale ${TIME_SCALE} \
-    --time_shift ${TIME_SHIFT} \
-    --sentinel_value ${SENTINEL_VALUE} \
-    --mlflow_experiment ${MLFLOW_EXPERIMENT} \
-    --onnx ${ONNX}"
-
-# Add resume checkpoint if specified
-if [ -n "$RESUME_FROM" ]; then
-    CMD="$CMD --resume_from ${RESUME_FROM}"
-fi
-
-# Execute
-eval $CMD
+python -m lib.train_regressor --config ${CONFIG_PATH}
