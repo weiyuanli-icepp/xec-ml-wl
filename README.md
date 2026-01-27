@@ -11,6 +11,32 @@ This model respects the complex topology of the detector by combining:
 
 ---
 
+## Quick Reference
+
+| Task | Command | Config |
+|------|---------|--------|
+| **Train Regressor** | `./scan_param/submit_job.sh run_name ../config/train_config.yaml a100-daily 12:00:00` | `config/train_config.yaml` |
+| **MAE Pretraining** | `python -m lib.train_mae --config config/mae_config.yaml` | `config/mae_config.yaml` |
+| **Inpainter Training** | `python -m lib.train_inpainter --config config/inpainter_config.yaml` | `config/inpainter_config.yaml` |
+| **ONNX Export** | `python macro/export_onnx.py checkpoint.pth --output model.onnx` | - |
+| **MLflow UI** | `mlflow ui --backend-store-uri sqlite:///mlruns.db --port 5000` | - |
+
+**Common Config Overrides:**
+```bash
+# Reduce batch size (OOM fix)
+BATCH=512 ./submit_job.sh run_name config.yaml
+
+# Enable multiple tasks
+TASKS="angle energy" ./submit_job.sh run_name config.yaml
+
+# Use MAE weights for fine-tuning
+RESUME_FROM="mae_checkpoint.pth" ./submit_job.sh run_name config.yaml
+```
+
+**Important:** There are two [normalization schemes](#i-input-normalization). Use **legacy** for existing regressor models, **new** for MAE/inpainter experiments.
+
+---
+
 ## Table of Contents
 
 1. [Environment Setup](#1-environment-setup)
@@ -21,25 +47,34 @@ This model respects the complex topology of the detector by combining:
    - [B. Interactive Jupyter Session](#b-interactive-jupyter-session)
    - [C. MAE Pre-training](#c-masked-autoencoder-mae-pre-training)
    - [D. Dead Channel Inpainting](#d-dead-channel-inpainting)
-   - [E. Multi-Task Learning](#f-multi-task-learning)
-   - [F. Sample Reweighting](#g-sample-reweighting)
-   - [G. Data Format](#h-data-format)
-   - [H. Input Normalization](#i-input-normalization)
+   - [F. Multi-Task Learning](#f-multi-task-learning)
+   - [G. Sample Reweighting](#g-sample-reweighting)
+   - [H. Data Format](#h-data-format)
+   - [I. Input Normalization](#i-input-normalization) ⚠️ **Two schemes available**
 3. [Output & Artifacts](#3-output--artifacts)
 4. [Model Architecture](#4-model-architecture)
    - [A. The Pipeline](#a-the-pipeline)
    - [B. Key Components](#b-key-components)
-   - [C. Training Features](#c-training-features)
+   - [C. Training Features](#c-training-features) (EMA, Gradient Accumulation, Cosine LR, AMP)
    - [D. FCMAE-Style Masked Convolution](#d-fcmae-style-masked-convolution)
+   - [E. References](#e-references) (Paper summaries)
 5. [Detector Geometry & Sensor Mapping](#5-detector-geometry--sensor-mapping)
    - [A. Sensor Overview](#a-sensor-overview)
    - [B. Index Maps](#b-index-maps-libgeom_defspy)
    - [C. Outer Face Fine Grid](#c-outer-face-fine-grid-construction)
    - [D. Hexagonal PMT Layout](#d-hexagonal-pmt-layout)
+   - [F. Normalization Constants](#f-normalization-constants)
 6. [Resuming Training](#6-resuming-training)
 7. [Real Data Validation](#7-real-data-validation)
 8. [File Dependency](#8-file-dependency)
-9. [Troubleshooting](#9-troubleshooting)
+9. [Troubleshooting](#9-troubleshooting) (OOM, NaN, Slow Loading)
+10. [Prospects & Future Work](#10-prospects--future-work)
+    - [A. Architecture Improvements](#a-architecture-improvements) (Positional Encoding, Transformer Variants)
+    - [B. Training Improvements](#b-training-improvements) (Augmentation, Loss Functions)
+    - [C. Model Scaling](#c-model-scaling)
+    - [D. Inpainter Improvements](#d-inpainter-improvements)
+    - [E. Evaluation & Analysis](#e-evaluation--analysis)
+    - [F. Infrastructure](#f-infrastructure)
 
 ---
 
@@ -381,14 +416,22 @@ Key parameters in `config/mae_config.yaml`:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `mask_ratio` | 0.6 | Fraction of valid sensors to mask |
+| `mask_ratio` | 0.65 | Fraction of valid sensors to mask |
+| `time_mask_ratio_scale` | 1.0 | Bias masking toward valid-time sensors (>1.0 prefers valid-time) |
 | `outer_mode` | "finegrid" | Outer face mode (`finegrid` or `split`) |
 | `outer_fine_pool` | [3, 3] | Pooling kernel for finegrid outer |
-| `loss_fn` | "mse" | Loss function (mse, l1, smooth_l1) |
+| `loss_fn` | "smooth_l1" | Loss function (smooth_l1, mse, l1, huber) |
 | `npho_weight` | 1.0 | Weight for npho channel loss |
 | `time_weight` | 1.0 | Weight for time channel loss |
 | `auto_channel_weight` | false | Learn channel weights automatically |
-| `sentinel_value` | -5.0 | Value marking invalid/masked sensors |
+| `npho_threshold` | 100 | Min npho for time loss (skip low-signal sensors) |
+| `use_npho_time_weight` | true | Weight time loss by sqrt(npho) |
+| `track_mae_rmse` | false | Compute MAE/RMSE metrics (slower) |
+| `track_train_metrics` | false | Per-face training metrics |
+| `grad_accum_steps` | 1 | Gradient accumulation steps |
+| `ema_decay` | null | EMA decay rate (null=disabled, 0.999 typical) |
+
+**Note:** Use the **new normalization scheme** (npho_scale=1000, sentinel_value=-1.0) for MAE pretraining. See [Input Normalization](#i-input-normalization) for details.
 
 ### D. Dead Channel Inpainting
 
@@ -603,9 +646,30 @@ ROOT files with TTree structure. Default tree name: `tree`.
 
 ### I. Input Normalization
 
-All training paths (Regressor, MAE, Inpainter) use the same normalization pipeline to ensure consistency. Understanding this is critical for inference and debugging.
+All training paths (Regressor, MAE, Inpainter) use the same normalization pipeline. **Critical:** The encoder learns features based on the input distribution, so models trained with different normalization schemes are **not compatible**.
 
-#### 1. Normalization Formulas
+#### 1. Normalization Schemes
+
+There are currently **two normalization schemes** in use:
+
+| Scheme | Use Case | When to Use |
+|--------|----------|-------------|
+| **Legacy** | Regressor training, existing models | Backward compatibility with older checkpoints |
+| **New** | MAE/Inpainter, new experiments | Better numerical stability, recommended for new work |
+
+**Parameter Comparison:**
+
+| Parameter | Legacy Scheme | New Scheme | Notes |
+|-----------|---------------|------------|-------|
+| `npho_scale` | 0.58 | 1000 | First log1p scale factor |
+| `npho_scale2` | 1.0 | 4.08 | Second scale factor |
+| `time_scale` | 6.5e-8 | 1.14e-7 | Time normalization (seconds) |
+| `time_shift` | 0.5 | -0.46 | Time offset after scaling |
+| `sentinel_value` | -5.0 | -1.0 | Invalid sensor marker |
+
+**Important:** When using MAE pretraining for fine-tuning, ensure all downstream models use the **same** normalization scheme as the MAE.
+
+#### 2. Normalization Formulas
 
 **Photon Count (Npho) - Extensive Quantity:**
 ```python
@@ -616,8 +680,8 @@ npho_norm = log1p(raw_npho / npho_scale) / npho_scale2
 $$N_{\text{norm}} = \frac{\ln(1 + N_{\text{raw}} / s_1)}{s_2}$$
 
 Where:
-- $s_1$ = `npho_scale` (default: 0.58)
-- $s_2$ = `npho_scale2` (default: 1.0)
+- $s_1$ = `npho_scale`
+- $s_2$ = `npho_scale2`
 
 **Timing - Intensive Quantity:**
 ```python
@@ -628,10 +692,10 @@ time_norm = (raw_time / time_scale) - time_shift
 $$t_{\text{norm}} = \frac{t_{\text{raw}}}{s_t} - \delta_t$$
 
 Where:
-- $s_t$ = `time_scale` (default: 6.5e-8 seconds, i.e., 65 ns)
-- $\delta_t$ = `time_shift` (default: 0.5)
+- $s_t$ = `time_scale`
+- $\delta_t$ = `time_shift`
 
-#### 2. Invalid Sensor Detection
+#### 3. Invalid Sensor Detection
 
 Sensors are marked as **invalid** based on these conditions:
 
@@ -647,15 +711,15 @@ mask_time_bad = mask_npho_bad | (abs(raw_time) > 9e9) | isnan(raw_time)
 | Channel | Invalid Value | Reason |
 |---------|---------------|--------|
 | Npho | `0.0` | Zero photons is physically valid, acts as "no signal" |
-| Time | `sentinel_value` (-5.0) | Distinctive value far from valid range (~0 after normalization) |
+| Time | `sentinel_value` | Distinctive value far from valid range (~0 after normalization) |
 
-#### 3. Sentinel Value System
+#### 4. Sentinel Value System
 
-The **sentinel value** (`-5.0` by default) marks sensors where timing information is unavailable:
+The **sentinel value** marks sensors where timing information is unavailable:
 
-**Why -5.0?**
+**Why use a sentinel value far from valid range?**
 - Valid normalized time is typically in range [-1, 1] after shifting
-- -5.0 is far outside this range, making invalid sensors easily identifiable
+- A value like -5.0 (legacy) or -1.0 (new) is far outside this range
 - Convolution operations will "see" this as a strong negative signal
 
 **Detection in Models:**
@@ -669,9 +733,9 @@ already_invalid = (x[:, :, 1] == sentinel_value)  # Check time channel
 - Loss is computed only on randomly-masked positions (where ground truth exists)
 - See `actual_mask_ratio` metric for effective masking after exclusions
 
-#### 4. Typical Value Ranges
+#### 5. Typical Value Ranges
 
-After normalization, typical value ranges are:
+After normalization with the **legacy scheme** (npho_scale=0.58):
 
 | Channel | Valid Range | Mean | Std |
 |---------|-------------|------|-----|
@@ -679,19 +743,27 @@ After normalization, typical value ranges are:
 | Time (normalized) | [-1, 1] | ~0 | ~0.3 |
 | Time (invalid) | -5.0 | - | - |
 
-#### 5. Configuration Parameters
+After normalization with the **new scheme** (npho_scale=1000):
 
-| Parameter | Config Key | Default | Description |
-|-----------|------------|---------|-------------|
-| `npho_scale` | `normalization.npho_scale` | 0.58 | Npho log transform scale |
-| `npho_scale2` | `normalization.npho_scale2` | 1.0 | Npho secondary scale |
-| `time_scale` | `normalization.time_scale` | 6.5e-8 | Time scale (seconds) |
-| `time_shift` | `normalization.time_shift` | 0.5 | Time offset after scaling |
-| `sentinel_value` | `normalization.sentinel_value` | -5.0 | Invalid sensor marker |
+| Channel | Valid Range | Mean | Std |
+|---------|-------------|------|-----|
+| Npho (normalized) | [0, ~2.5] | ~1.0 | ~0.7 |
+| Time (normalized) | [-1.5, 1.5] | ~0 | ~0.4 |
+| Time (invalid) | -1.0 | - | - |
+
+#### 6. Configuration Parameters
+
+| Parameter | Config Key | Legacy | New | Description |
+|-----------|------------|--------|-----|-------------|
+| `npho_scale` | `normalization.npho_scale` | 0.58 | 1000 | Npho log transform scale |
+| `npho_scale2` | `normalization.npho_scale2` | 1.0 | 4.08 | Secondary npho scale |
+| `time_scale` | `normalization.time_scale` | 6.5e-8 | 1.14e-7 | Time scale (seconds) |
+| `time_shift` | `normalization.time_shift` | 0.5 | -0.46 | Time offset after scaling |
+| `sentinel_value` | `normalization.sentinel_value` | -5.0 | -1.0 | Invalid sensor marker |
 
 **Important:** All training paths (Regressor, MAE, Inpainter) must use the **same normalization parameters** for the encoder to work correctly. The inpainter must match the MAE's normalization.
 
-#### 6. Inverse Transform (for Inference)
+#### 7. Inverse Transform (for Inference)
 
 To convert predictions back to physical units:
 
@@ -970,8 +1042,129 @@ graph TD
 * **Self-Attention**: A 2-layer Transformer Encoder allows every face to "talk" to every other face globally before the final prediction.
 
 ### C. Training Features
-* **EMA (Exponential Moving Average)**: Maintains a shadow model ($W_{\mathrm{ema}} = \beta W_{\mathrm{ema}} + (1-\beta)W_{\mathrm{live}}$) for stable validation.
-* **Positional Encoding**: Essential for the Transformer to understand the detector topology.
+
+#### 1. EMA (Exponential Moving Average)
+Maintains a shadow model ($W_{\mathrm{ema}} = \beta W_{\mathrm{ema}} + (1-\beta)W_{\mathrm{live}}$) for stable validation. Default decay: 0.999.
+
+#### 2. Gradient Accumulation
+Simulates larger batch sizes when GPU memory is limited:
+```yaml
+training:
+  batch_size: 512
+  grad_accum_steps: 4  # Effective batch = 512 × 4 = 2048
+```
+
+**How it works:**
+1. Loss is divided by `grad_accum_steps` before backward
+2. Gradients accumulate over N forward/backward passes
+3. Optimizer steps every N batches
+4. Leftover gradients at epoch end are properly handled
+
+**When to use:** When batch_size is limited by GPU memory but larger effective batches improve convergence.
+
+#### 3. Cosine Learning Rate Schedule
+```
+LR = LR_min + 0.5 × (LR_max - LR_min) × (1 + cos(π × (epoch - warmup) / (total - warmup)))
+```
+With optional warmup epochs for gradual LR increase at start.
+
+#### 4. Automatic Mixed Precision (AMP)
+Uses `torch.cuda.amp` for faster training with FP16 forward pass while maintaining FP32 gradients.
+
+#### 5. Positional Encoding
+
+Positional embeddings are essential for the Transformer to understand detector topology. Without them, attention is permutation-invariant and cannot distinguish which face is which.
+
+##### Current Implementation: Learnable Embeddings
+
+```python
+# In XECEncoder.__init__
+self.pos_embed = nn.Parameter(torch.zeros(1, 6, 1024))  # (1, num_faces, embed_dim)
+nn.init.trunc_normal_(self.pos_embed, std=0.02)
+
+# In forward()
+tokens = torch.stack([inner, us, ds, outer, top, bottom], dim=1)  # (B, 6, 1024)
+tokens = tokens + self.pos_embed  # Add positional information
+```
+
+**How it works:**
+1. Each face gets a unique 1024-dimensional learnable vector
+2. Initialized from truncated normal distribution (std=0.02)
+3. Added to face tokens before Transformer layers
+4. Learned end-to-end during training
+
+**Why it works for our use case:**
+- We have only 6 tokens (faces), so the position space is small and discrete
+- The detector geometry is fixed - face positions never change between events
+- Learnable embeddings can capture arbitrary relationships between faces
+- Simple and effective for small token counts
+
+##### Alternative Approaches
+
+| Method | Description | Pros | Cons | When to Use |
+|--------|-------------|------|------|-------------|
+| **Learnable** (current) | Learned vectors per position | Simple, flexible, captures arbitrary patterns | Doesn't generalize to unseen positions | Fixed, small token count (our case) |
+| **Sinusoidal** | Fixed sin/cos at different frequencies | No learnable params, generalizes to longer sequences | May not capture task-specific patterns | Variable-length sequences, generalization needed |
+| **Rotary (RoPE)** | Rotation matrices encoding relative position | Efficient for relative positions, good for long sequences | More complex implementation | Language models, long sequences |
+| **ALiBi** | Learned attention bias based on distance | No explicit embeddings, efficient | Requires attention modification | Large language models |
+
+##### Sinusoidal Positional Encoding (Alternative)
+
+The original Transformer paper uses fixed sinusoidal embeddings:
+
+$$PE_{(pos, 2i)} = \sin\left(\frac{pos}{10000^{2i/d}}\right)$$
+$$PE_{(pos, 2i+1)} = \cos\left(\frac{pos}{10000^{2i/d}}\right)$$
+
+Where $pos$ is position, $i$ is dimension index, $d$ is embedding dimension.
+
+**Implementation example:**
+```python
+def sinusoidal_pos_embed(num_positions, embed_dim):
+    """Generate fixed sinusoidal positional embeddings."""
+    position = torch.arange(num_positions).unsqueeze(1)
+    div_term = torch.exp(torch.arange(0, embed_dim, 2) * (-np.log(10000.0) / embed_dim))
+
+    pe = torch.zeros(num_positions, embed_dim)
+    pe[:, 0::2] = torch.sin(position * div_term)
+    pe[:, 1::2] = torch.cos(position * div_term)
+    return pe.unsqueeze(0)  # (1, num_positions, embed_dim)
+```
+
+**Why we chose learnable over sinusoidal:**
+1. Only 6 positions - sinusoidal's generalization benefit is unnecessary
+2. Learnable can capture physics-specific patterns (e.g., inner face is more important)
+3. Face "distance" in detector space doesn't map to token sequence distance
+4. Empirically, learnable often matches or outperforms sinusoidal for small fixed vocabularies
+
+##### Geometric Positional Encoding (Future Work)
+
+For detector data, encoding actual 3D geometry might be beneficial:
+
+```python
+# Example: Encode face center positions in detector coordinates
+FACE_CENTERS = {
+    "inner": (0.0, 0.0, 0.0),      # Cylindrical center
+    "outer": (0.0, 0.0, 0.0),      # Outer cylinder
+    "us": (0.0, 0.0, -0.5),        # Upstream endcap
+    "ds": (0.0, 0.0, 0.5),         # Downstream endcap
+    "top": (0.0, 0.5, 0.0),        # Top PMT array
+    "bottom": (0.0, -0.5, 0.0),    # Bottom PMT array
+}
+
+def geometric_pos_embed(face_centers, embed_dim):
+    """Encode 3D positions using sinusoidal functions."""
+    coords = torch.tensor(list(face_centers.values()))  # (6, 3)
+    # Apply sinusoidal encoding to each coordinate...
+```
+
+This approach could help the model understand spatial relationships based on actual detector geometry rather than arbitrary token ordering.
+
+##### References
+
+- **Original Transformer:** Vaswani et al., "Attention Is All You Need" (2017) - Introduced sinusoidal positional encoding
+- **ViT:** Dosovitskiy et al., "An Image is Worth 16x16 Words" (2020) - Uses learnable 2D positional embeddings for image patches
+- **RoPE:** Su et al., "RoFormer: Enhanced Transformer with Rotary Position Embedding" (2021) - Rotary position encoding
+- **ALiBi:** Press et al., "Train Short, Test Long" (2021) - Attention with Linear Biases
 
 ### D. FCMAE-Style Masked Convolution
 
@@ -1049,14 +1242,44 @@ If you need true sparse convolution (e.g., for 3D point clouds or extremely high
 - **SpConv v2**: [GitHub](https://github.com/traveller59/spconv)
 
 ### E. References
-1. ConvNeXt V2: Woo, S., et al. "ConvNeXt V2: Co-designing and Scaling ConvNets with Masked Autoencoders." CVPR 2023.
-2. Graph Attention (GAT): Veličković, P., et al. "Graph Attention Networks." ICLR 2018.
-3. Transformer: Vaswani, A., et al. "Attention Is All You Need." NeurIPS 2017.
-4. TorchSparse++: Tang, H., et al. "TorchSparse++: Efficient Training and Inference Framework for Sparse Convolution on GPUs." MICRO 2023.
+
+#### Core Architecture Papers
+
+1. **ConvNeXt V2** - Woo, S., et al. "ConvNeXt V2: Co-designing and Scaling ConvNets with Masked Autoencoders." CVPR 2023. [arXiv:2301.00808](https://arxiv.org/abs/2301.00808)
+   - *Summary:* Introduces Global Response Normalization (GRN) to prevent feature collapse in sparse/masked data. Proposes FCMAE-style masked convolution using dense ops with binary masking, achieving equivalent results to sparse convolution with better hardware compatibility.
+
+2. **Masked Autoencoders (MAE)** - He, K., et al. "Masked Autoencoders Are Scalable Vision Learners." CVPR 2022. [arXiv:2111.06377](https://arxiv.org/abs/2111.06377)
+   - *Summary:* Self-supervised pretraining by masking random patches and reconstructing them. High mask ratios (75%) force learning of meaningful representations. We adapt this for sensor data with invalid-aware masking.
+
+3. **Graph Attention Networks (GAT)** - Veličković, P., et al. "Graph Attention Networks." ICLR 2018. [arXiv:1710.10903](https://arxiv.org/abs/1710.10903)
+   - *Summary:* Introduces attention mechanisms to graph neural networks, enabling anisotropic (direction-aware) message passing. We use this for hexagonal PMT arrays where standard isotropic GCN cannot detect directionality.
+
+4. **Transformer** - Vaswani, A., et al. "Attention Is All You Need." NeurIPS 2017. [arXiv:1706.03762](https://arxiv.org/abs/1706.03762)
+   - *Summary:* The foundational self-attention architecture. We use a 2-layer Transformer encoder to fuse face tokens, enabling cross-face correlation for boundary-crossing events.
+
+#### Sparse Convolution Libraries
+
+5. **TorchSparse++** - Tang, H., et al. "TorchSparse++: Efficient Training and Inference Framework for Sparse Convolution on GPUs." MICRO 2023. [GitHub](https://github.com/mit-han-lab/torchsparse)
+   - *Summary:* 4.6-4.8× faster than MinkowskiEngine for true sparse convolution. Recommended if sparse ops are needed for 3D point clouds.
+
+6. **MinkowskiEngine** - Choy, C., et al. "4D Spatio-Temporal ConvNets: Minkowski Convolutional Neural Networks." CVPR 2019. [GitHub](https://github.com/NVIDIA/MinkowskiEngine)
+   - *Summary:* Pioneering sparse convolution library. Maintenance issues with CUDA 12+.
+
+#### Training Techniques
+
+7. **EMA (Exponential Moving Average)** - Polyak, B.T., Juditsky, A.B. "Acceleration of Stochastic Approximation by Averaging." SIAM J. Control Optim. 1992.
+   - *Summary:* Maintains a shadow model with exponentially decayed weights for stable validation. We use decay=0.999.
+
+8. **Cosine Annealing** - Loshchilov, I., Hutter, F. "SGDR: Stochastic Gradient Descent with Warm Restarts." ICLR 2017. [arXiv:1608.03983](https://arxiv.org/abs/1608.03983)
+   - *Summary:* Learning rate schedule following cosine decay with optional warm restarts. We use single-cycle cosine with warmup.
+
+9. **Gradient Accumulation** - Standard technique for simulating larger batch sizes when GPU memory is limited. Effective batch size = `batch_size × grad_accum_steps`.
 
 ### Configuration Parameters
 
 Training is now **config-based** using `config/train_config.yaml`. CLI arguments can override config values.
+
+#### Core Training Parameters
 
 | Parameter | Config Path | Default | Description |
 |-----------|-------------|---------|-------------|
@@ -1070,14 +1293,32 @@ Training is now **config-based** using `config/train_config.yaml`. CLI arguments
 | `--warmup_epochs` | `training.warmup_epochs` | `2` | Warmup epochs |
 | `--ema_decay` | `training.ema_decay` | `0.999` | EMA decay rate |
 | `--grad_clip` | `training.grad_clip` | `1.0` | Gradient clipping |
-| `--npho_scale` | `normalization.npho_scale` | `0.58` | Photon count normalization |
-| `--npho_scale2` | `normalization.npho_scale2` | `1.0` | Secondary npho normalization |
-| `--time_scale` | `normalization.time_scale` | `6.5e-8` | Time normalization |
-| `--time_shift` | `normalization.time_shift` | `0.5` | Time offset shift |
-| `--sentinel_value` | `normalization.sentinel_value` | `-5.0` | Bad channel marker |
+| `--grad_accum_steps` | `training.grad_accum_steps` | `1` | Gradient accumulation steps |
 | `--outer_mode` | `model.outer_mode` | `finegrid` | Outer face mode (`finegrid` or `split`) |
 | `--tasks` | `tasks.*` | angle only | Enable specific tasks (angle, energy, timing, uvwFI) |
 | `--resume_from` | `checkpoint.resume_from` | `null` | Path to checkpoint to resume |
+
+#### Normalization Parameters
+
+| Parameter | Config Path | Legacy | New | Description |
+|-----------|-------------|--------|-----|-------------|
+| `--npho_scale` | `normalization.npho_scale` | 0.58 | 1000 | Npho log transform scale |
+| `--npho_scale2` | `normalization.npho_scale2` | 1.0 | 4.08 | Secondary npho scale |
+| `--time_scale` | `normalization.time_scale` | 6.5e-8 | 1.14e-7 | Time normalization |
+| `--time_shift` | `normalization.time_shift` | 0.5 | -0.46 | Time offset shift |
+| `--sentinel_value` | `normalization.sentinel_value` | -5.0 | -1.0 | Bad channel marker |
+
+#### MAE/Inpainter-Specific Parameters
+
+| Parameter | Config Path | Default | Description |
+|-----------|-------------|---------|-------------|
+| `mask_ratio` | `model.mask_ratio` | 0.6/0.05 | Fraction of valid sensors to mask |
+| `time_mask_ratio_scale` | `model.time_mask_ratio_scale` | 1.0 | Bias masking toward valid-time sensors |
+| `npho_threshold` | `training.npho_threshold` | 100 | Min npho for time loss computation |
+| `use_npho_time_weight` | `training.use_npho_time_weight` | true | Chi-square-like time weighting |
+| `track_mae_rmse` | `training.track_mae_rmse` | false | Compute MAE/RMSE metrics (slower) |
+| `track_train_metrics` | `training.track_train_metrics` | false | Per-face training metrics |
+| `freeze_encoder` | `model.freeze_encoder` | false | Freeze encoder during inpainter training |
 
 ---
 
@@ -1212,30 +1453,42 @@ The edge index tensor has shape `(3, num_edges)` with:
 | `build_outer_fine_grid_tensor(x_batch, pool)` | (B, 4760, 2), kernel | (B, 2, H, W) | Build outer fine grid with optional pooling |
 | `flatten_hex_rows(rows)` | list of arrays | (N,) | Flatten hex row arrays to single index array |
 
-### F. Default Normalization Constants
+### F. Normalization Constants
 
-Defined in `lib/geom_defs.py`:
+There are **two normalization schemes** currently in use. See [Input Normalization](#i-input-normalization) for detailed explanation.
 
+**Legacy Scheme** (in `lib/geom_defs.py` and `config/train_config.yaml`):
 ```python
-DEFAULT_NPHO_SCALE     = 0.58      # Npho normalization
+DEFAULT_NPHO_SCALE     = 0.58      # Npho log transform scale
 DEFAULT_NPHO_SCALE2    = 1.0       # Secondary npho scale
-DEFAULT_TIME_SCALE     = 6.5e-8   # Time normalization (seconds)
-DEFAULT_TIME_SHIFT     = 0.5      # Time offset after scaling
-DEFAULT_SENTINEL_VALUE = -5.0     # Marker for invalid/masked sensors
+DEFAULT_TIME_SCALE     = 6.5e-8    # Time normalization (seconds)
+DEFAULT_TIME_SHIFT     = 0.5       # Time offset after scaling
+DEFAULT_SENTINEL_VALUE = -5.0      # Marker for invalid/masked sensors
 ```
+
+**New Scheme** (in `config/mae_config.yaml` and `config/inpainter_config.yaml`):
+```python
+npho_scale     = 1000       # Npho log transform scale
+npho_scale2    = 4.08       # Secondary npho scale
+time_scale     = 1.14e-7    # Time normalization (seconds)
+time_shift     = -0.46      # Time offset after scaling
+sentinel_value = -1.0       # Marker for invalid/masked sensors
+```
+
+**Important:** Models trained with different normalization schemes are **not compatible**. MAE pretraining and downstream fine-tuning must use the same scheme.
 
 **Normalization Formulas:**
 ```python
-# Npho (photon count)
-npho_norm = npho_raw * npho_scale * npho_scale2
+# Npho (photon count) - log transform for wide dynamic range
+npho_norm = log1p(npho_raw / npho_scale) / npho_scale2
 
-# Time
-time_norm = (time_raw * time_scale) + time_shift
+# Time - linear transform
+time_norm = (time_raw / time_scale) - time_shift
 
 # Invalid sensors
 if invalid:
     npho_norm = 0.0
-    time_norm = sentinel_value  # -5.0
+    time_norm = sentinel_value
 ```
 
 ---
@@ -1482,7 +1735,7 @@ graph TD
 
 ### Common Issues
 
-#### 1. CUDA Out of Memory (OOM)
+#### 1. CUDA Out of Memory (GPU OOM)
 
 **Symptom:** `RuntimeError: CUDA out of memory`
 
@@ -1493,6 +1746,12 @@ BATCH=512 ./submit_job.sh my_run config.yaml
 
 # For MAE (decoder uses more memory)
 BATCH=1024 python -m lib.train_mae --config config/mae_config.yaml
+
+# Use gradient accumulation for effective larger batch
+# effective_batch = batch_size × grad_accum_steps
+training:
+  batch_size: 512
+  grad_accum_steps: 4  # Effective batch = 2048
 ```
 
 **Recommended batch sizes:**
@@ -1502,7 +1761,37 @@ BATCH=1024 python -m lib.train_mae --config config/mae_config.yaml
 | MAE | 1024-2048 | 2048-4096 |
 | Inpainter | 1024-2048 | 2048-4096 |
 
-#### 2. MLflow Database Locked
+#### 2. CPU/System Memory OOM (Large Datasets)
+
+**Symptom:** Process killed, `MemoryError`, or system becomes unresponsive when training with large ROOT files (>1M events)
+
+**Root Cause:** The inpainter/MAE with `save_predictions: true` (or `save_root_predictions: true`) collects ALL predictions in memory during validation before writing to ROOT. With 1M events × 5% mask × 238 sensors = 12M prediction dicts.
+
+**Memory estimation:**
+```
+Per prediction: ~200 bytes (dict with 8 floats + metadata)
+1M events × 5% mask × 238 sensors ≈ 12M predictions ≈ 2.4 GB
+1M events × 10% mask × 238 sensors ≈ 24M predictions ≈ 4.8 GB
+```
+
+**Solutions:**
+```yaml
+# Option 1: Disable prediction saving
+checkpoint:
+  save_predictions: false  # or save_root_predictions: false
+
+# Option 2: Reduce validation frequency
+checkpoint:
+  save_interval: 50  # Save only every 50 epochs
+
+# Option 3: Use smaller validation set
+data:
+  val_path: "small_val.root"  # Use subset for validation
+```
+
+**Best Practice:** For large-scale training, disable `save_predictions` during initial experiments. Enable only for final evaluation runs with smaller validation sets.
+
+#### 3. MLflow Database Locked
 
 **Symptom:** `sqlite3.OperationalError: database is locked`
 
@@ -1516,7 +1805,7 @@ rm mlruns.db
 export MLFLOW_TRACKING_URI="sqlite:///mlruns.db"
 ```
 
-#### 3. torch.compile Errors (LLVM/Triton)
+#### 4. torch.compile Errors (LLVM/Triton)
 
 **Symptom:** `RuntimeError: Cannot find a working triton installation`
 
@@ -1531,7 +1820,7 @@ Or via environment:
 export TORCH_COMPILE=0
 ```
 
-#### 4. NaN Loss During Training
+#### 5. NaN Loss During Training
 
 **Symptom:** Loss becomes NaN after a few epochs
 
@@ -1553,7 +1842,7 @@ print(f'Inf count: {np.isinf(npho).sum()}')
 "
 ```
 
-#### 5. Slow Data Loading (CPU Bottleneck)
+#### 6. Slow Data Loading (CPU Bottleneck)
 
 **Symptom:** GPU utilization < 50%, `avg_data_load_sec` is high
 
@@ -1567,7 +1856,7 @@ data:
   num_threads: 8
 ```
 
-#### 6. Checkpoint Resume Fails
+#### 7. Checkpoint Resume Fails
 
 **Symptom:** `KeyError` or shape mismatch when resuming
 
@@ -1588,7 +1877,7 @@ if 'config' in ckpt:
 "
 ```
 
-#### 7. Inconsistent Results Between Runs
+#### 8. Inconsistent Results Between Runs
 
 **Symptom:** Different results with same configuration
 
@@ -1619,7 +1908,7 @@ A: Compare validation metrics:
 3. Compare `val_resolution_deg` after same number of epochs
 
 **Q: What mask_ratio should I use for MAE?**
-A: Typical values: 0.5-0.75. Higher masking forces the model to learn better representati but may hurt reconstruction quality. Start with 0.6.
+A: Typical values: 0.5-0.75. Higher masking forces the model to learn better representations but may hurt reconstruction quality. Start with 0.6 (65%).
 
 **Q: How do I export for C++ inference?**
 A: Use the ONNX export script:
@@ -1636,13 +1925,19 @@ print('Outputs:', [o.name for o in sess.get_outputs()])
 ```
 
 **Q: Why is `actual_mask_ratio` different from `mask_ratio`?**
-A: `actual_mask_ratio` accounts for already-invalid sensors in the data. If 10% of sensorre already invalid (time == sentinel), and you set `mask_ratio=0.6`, then:
+A: `actual_mask_ratio` accounts for already-invalid sensors in the data. If 10% of sensors are already invalid (time == sentinel), and you set `mask_ratio=0.6`, then:
 - Valid sensors: 90% × 4760 = 4284
 - Randomly masked: 60% × 4284 = 2570
 - `actual_mask_ratio` = 2570 / 4284 ≈ 0.60
 
 **Q: Can I use different normalization for MAE and regression?**
-A: **No.** The encoder learns features based on the input distribution. If you change norization, the learned features won't transfer correctly. Always use the same `npho_scale`,ime_scale`, etc.
+A: **No.** The encoder learns features based on the input distribution. If you change normalization, the learned features won't transfer correctly. Always use the same `npho_scale`, `time_scale`, etc. See [Input Normalization](#i-input-normalization) for the two available schemes.
+
+**Q: What is gradient accumulation and when should I use it?**
+A: Gradient accumulation simulates larger batch sizes when GPU memory is limited. Set `grad_accum_steps: 4` with `batch_size: 512` to get an effective batch of 2048. Use when you want larger batches for better convergence but can't fit them in GPU memory.
+
+**Q: Why does inpainter training use so much CPU memory with large datasets?**
+A: When `save_predictions: true`, the inpainter collects ALL validation predictions in memory before writing to ROOT. With 1M events × 5% mask × 238 sensors, this can use 2-5 GB of RAM. Disable `save_predictions` for large-scale training, or use a smaller validation set.
 
 **Q: How do I visualize what the model learned?**
 A: Several options:
@@ -1650,3 +1945,182 @@ A: Several options:
 2. **MAE reconstructions:** Check `mae_predictions_epoch_*.root`
 3. **Worst events:** Check `worst_event_*.pdf` for failure modes
 4. **TensorBoard:** `tensorboard --logdir runs`
+
+---
+
+## 10. Prospects & Future Work
+
+This section documents potential improvements and experimental ideas for future development.
+
+### A. Architecture Improvements
+
+#### 1. Positional Encoding Alternatives
+
+**Current:** Learnable embeddings (6 × 1024 parameters)
+
+| Idea | Description | Expected Benefit | Effort |
+|------|-------------|------------------|--------|
+| **Sinusoidal PE** | Fixed sin/cos encoding | No learnable params, baseline comparison | Low |
+| **Geometric PE** | Encode actual 3D face positions | Physics-informed, may improve cross-face reasoning | Medium |
+| **Rotary (RoPE)** | Relative position in attention | Better for variable-length sequences | Medium |
+| **Face-type embedding** | Separate learnable embedding per face type | May capture SiPM vs PMT differences | Low |
+
+**Geometric PE concept:**
+```python
+# Encode face center positions using detector coordinates
+FACE_POSITIONS = {
+    "inner": {"r": 0.0, "z": 0.0, "type": "sipm"},
+    "outer": {"r": 1.0, "z": 0.0, "type": "sipm"},
+    "us": {"r": 0.5, "z": -1.0, "type": "sipm"},
+    "ds": {"r": 0.5, "z": 1.0, "type": "sipm"},
+    "top": {"r": 0.5, "z": 0.0, "type": "pmt"},
+    "bottom": {"r": 0.5, "z": 0.0, "type": "pmt"},
+}
+```
+
+#### 2. Transformer Variants
+
+| Variant | Description | Reference |
+|---------|-------------|-----------|
+| **Flash Attention** | Memory-efficient attention | [GitHub](https://github.com/Dao-AILab/flash-attention) |
+| **Linear Attention** | O(N) complexity | Katharopoulos et al., 2020 |
+| **Sparse Attention** | Attend only to relevant faces | Child et al., 2019 |
+
+**Note:** With only 6 tokens, attention is already O(36) - these optimizations are for future scaling.
+
+#### 3. Multi-Scale Features
+
+Currently, each face backbone outputs a single 1024-dim token. Multi-scale alternatives:
+
+- **Feature Pyramid:** Extract features at multiple resolutions
+- **Hierarchical Tokens:** Multiple tokens per face at different scales
+- **Cross-scale Attention:** Attend across resolution levels
+
+### B. Training Improvements
+
+#### 1. Data Augmentation
+
+| Augmentation | Description | Status |
+|--------------|-------------|--------|
+| **Channel dropout** | Randomly mask sensors during training | ✅ Implemented |
+| **Noise injection** | Add Gaussian noise to npho/time | 🔲 Not implemented |
+| **Time jitter** | Random shift in timing | 🔲 Not implemented |
+| **Energy scaling** | Scale npho to simulate different energies | 🔲 Not implemented |
+
+#### 2. Loss Functions
+
+| Loss | Description | Use Case |
+|------|-------------|----------|
+| **Smooth L1** | Current default, robust to outliers | General regression |
+| **Huber** | Configurable delta for outlier handling | Noisy data |
+| **Quantile** | Predict confidence intervals | Uncertainty estimation |
+| **Angular loss** | Direct optimization of opening angle | Angle regression |
+
+**Angular loss concept:**
+```python
+def angular_loss(pred_vec, true_vec):
+    """Direct loss on 3D opening angle."""
+    cos_angle = F.cosine_similarity(pred_vec, true_vec, dim=-1)
+    return (1 - cos_angle).mean()  # Minimizes angle directly
+```
+
+#### 3. Curriculum Learning
+
+Train on progressively harder examples:
+1. Start with high-energy, central events (easier)
+2. Gradually add low-energy, edge events (harder)
+3. May improve convergence and final performance
+
+### C. Model Scaling
+
+| Direction | Current | Proposed | Expected Impact |
+|-----------|---------|----------|-----------------|
+| **Backbone depth** | 5 ConvNeXt blocks | 8-12 blocks | +Capacity, +Compute |
+| **Embedding dim** | 1024 | 2048 | +Capacity, +Memory |
+| **Transformer layers** | 2 | 4-6 | +Cross-face reasoning |
+| **Attention heads** | 8 | 16 | +Multi-pattern attention |
+
+### D. Inpainter Improvements
+
+#### 1. Sensor-Level Outer Face Prediction
+
+**Problem:** Current finegrid mode predicts at grid positions (45×72), not at actual sensor positions (234 sensors).
+
+**Solution:** Add `OuterSensorInpaintingHead` that:
+1. Takes finegrid features from encoder
+2. For each masked sensor, gathers features from its region using learnable attention
+3. Predicts (npho, time) at actual sensor positions
+
+**Status:** Planned (see plan file)
+
+#### 2. FCMAE-Style Masking
+
+**Current:** Masking only at input level (sentinel values)
+
+**Proposed:** Apply `x = x * (1 - mask)` after spatial operations in encoder
+
+**Benefit:** Prevents feature leakage through masked positions
+
+**Status:** Planned (see plan file)
+
+### E. Evaluation & Analysis
+
+#### 1. Uncertainty Estimation
+
+- **MC Dropout:** Run inference multiple times with dropout enabled
+- **Ensemble:** Train multiple models, use variance as uncertainty
+- **Deep Ensembles:** Proper uncertainty with multiple initializations
+
+#### 2. Physics Validation
+
+| Validation | Description | Status |
+|------------|-------------|--------|
+| **Energy dependence** | Resolution vs energy | 🔲 Not systematic |
+| **Position dependence** | Resolution vs (x, y, z) | 🔲 Not systematic |
+| **Angle dependence** | Resolution vs (θ, φ) | ✅ Implemented |
+| **Pile-up robustness** | Performance with overlapping events | 🔲 Not tested |
+
+### F. Infrastructure
+
+#### 1. Streaming Predictions
+
+**Problem:** Current prediction saving collects all in memory → OOM with large datasets
+
+**Solution:** Stream predictions directly to ROOT file during validation
+
+**Implementation:**
+```python
+# Instead of collecting in list:
+with uproot.recreate("predictions.root") as f:
+    for batch in val_loader:
+        preds = model(batch)
+        f["tree"].extend({"pred": preds, "truth": truth})
+```
+
+#### 2. Distributed Training
+
+- **DataParallel:** Simple multi-GPU (current partial support)
+- **DistributedDataParallel:** Efficient multi-GPU
+- **FSDP:** Memory-efficient for large models
+
+#### 3. Mixed Precision Training Improvements
+
+- **BF16:** Better dynamic range than FP16
+- **FP8:** Emerging support in newer GPUs
+
+---
+
+### Implementation Priority
+
+| Priority | Item | Impact | Effort |
+|----------|------|--------|--------|
+| **High** | Streaming predictions | Fixes OOM | Medium |
+| **High** | Sensor-level outer prediction | Correct inpainter output | High |
+| **Medium** | Geometric positional encoding | Physics-informed | Low |
+| **Medium** | Angular loss for angle task | Direct optimization | Low |
+| **Low** | Multi-scale features | Potential improvement | High |
+| **Low** | Transformer scaling | Capacity increase | Medium |
+
+---
+
+*Last updated: January 2026*
