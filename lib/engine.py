@@ -32,6 +32,7 @@ def run_epoch_stream(
     scheduler=None,
     ema_model=None,
     grad_clip=1.0,
+    grad_accum_steps=1,
     profile=False,
 ):
     # Warn about deprecated legacy reweighting API
@@ -72,6 +73,12 @@ def run_epoch_stream(
     # Initialize profiler
     profiler = SimpleProfiler(enabled=profile, sync_cuda=True)
 
+    # Gradient accumulation
+    grad_accum_steps = max(int(grad_accum_steps), 1)
+    accum_step = 0
+    if train:
+        optimizer.zero_grad(set_to_none=True)
+
     # ========================== START OF BATCH LOOP ==========================
     for i_batch, (X_batch, target_dict) in enumerate(loader):
         t_data      = time.time() - t_end
@@ -109,7 +116,6 @@ def run_epoch_stream(
                 w = torch.from_numpy(w_np).to(device)
         
         if train:
-            optimizer.zero_grad(set_to_none=True)
             profiler.start("forward")
             with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
 
@@ -165,31 +171,39 @@ def run_epoch_stream(
 
             profiler.stop()  # forward
 
+            # Backward with gradient accumulation
+            loss_sums["total_opt"] += loss.item() * X_batch.size(0)
+            nobs += X_batch.size(0)
+
             profiler.start("backward")
+            loss = loss / grad_accum_steps
             if scaler is not None:
                 scaler.scale(loss).backward()
             else:
                 loss.backward()
             profiler.stop()
 
-            profiler.start("optimizer")
-            if scaler is not None:
-                if grad_clip > 0:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                if grad_clip > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                optimizer.step()
+            accum_step += 1
 
-            if ema_model is not None:
-                ema_model.update_parameters(model)
-            profiler.stop()
+            # Optimizer step every grad_accum_steps
+            if accum_step % grad_accum_steps == 0:
+                profiler.start("optimizer")
+                if scaler is not None:
+                    if grad_clip > 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    if grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                    optimizer.step()
 
-            loss_sums["total_opt"] += loss.item() * X_batch.size(0)
-            nobs += X_batch.size(0)
+                if ema_model is not None:
+                    ema_model.update_parameters(model)
+
+                optimizer.zero_grad(set_to_none=True)
+                profiler.stop()
 
         # --- VALIDATION ---
         else:
@@ -397,6 +411,24 @@ def run_epoch_stream(
     profiler.stop()
     if profile:
         print(profiler.report())
+
+    # Final optimizer step if gradients remain from incomplete accumulation
+    if train and accum_step % grad_accum_steps != 0:
+        if scaler is not None:
+            if grad_clip > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            if grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            optimizer.step()
+
+        if ema_model is not None:
+            ema_model.update_parameters(model)
+
+        optimizer.zero_grad(set_to_none=True)
 
     torch.cuda.empty_cache()
     # ========================== END OF CHUNK LOOP ==========================

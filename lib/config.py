@@ -63,6 +63,7 @@ class TrainingConfig:
     ema_decay: float = 0.999
     channel_dropout_rate: float = 0.1
     grad_clip: float = 1.0
+    grad_accum_steps: int = 1
 
 
 @dataclass

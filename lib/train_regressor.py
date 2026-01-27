@@ -823,6 +823,7 @@ def train_with_config(config_path: str, profile: bool = False):
                 scheduler=scheduler,
                 ema_model=ema_model,
                 grad_clip=cfg.training.grad_clip,
+                grad_accum_steps=getattr(cfg.training, 'grad_accum_steps', 1),
                 profile=profile,
             )
 
