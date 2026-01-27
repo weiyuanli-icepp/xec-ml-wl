@@ -413,8 +413,11 @@ Examples:
 
     # MLflow Setup
     mlflow.set_experiment(mlflow_experiment)
-    print(f"Starting MAE Pre-training in experiment: {mlflow_experiment}, run name: {mlflow_run_name}")
     os.makedirs(save_path, exist_ok=True)
+    print(f"[INFO] Starting MAE Pre-training")
+    print(f"  - Experiment: {mlflow_experiment}")
+    print(f"  - Run name: {mlflow_run_name}")
+    print(f"  - Mask ratio: {mask_ratio}")
 
     with mlflow.start_run(run_id=mlflow_run_id, run_name=mlflow_run_name if not mlflow_run_id else None) as run:
         mlflow_run_id = run.info.run_id
