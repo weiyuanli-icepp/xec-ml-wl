@@ -20,7 +20,10 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="mlflow.trackin
 import torch
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import (
+    CosineAnnealingLR, LinearLR, SequentialLR,
+    OneCycleLR, ReduceLROnPlateau
+)
 from torch.optim.swa_utils import AveragedModel
 
 from .models import XECEncoder, XECMultiHeadModel, AutomaticLossScaler
@@ -337,24 +340,73 @@ def train_with_config(config_path: str, profile: bool = None):
 
     # --- Scheduler ---
     scheduler = None
-    if cfg.training.use_scheduler:
+    scheduler_type = getattr(cfg.training, 'scheduler', 'cosine') if cfg.training.use_scheduler else 'none'
+
+    if scheduler_type == 'cosine':
         print(f"[INFO] Using Cosine Annealing with {cfg.training.warmup_epochs} warmup epochs.")
         main_scheduler = CosineAnnealingLR(
             optimizer,
             T_max=cfg.training.epochs - cfg.training.warmup_epochs,
-            eta_min=1e-6
+            eta_min=getattr(cfg.training, 'lr_min', 1e-6)
         )
-        warmup_scheduler = LinearLR(
+        if cfg.training.warmup_epochs > 0:
+            warmup_scheduler = LinearLR(
+                optimizer,
+                start_factor=0.01,
+                end_factor=1.0,
+                total_iters=cfg.training.warmup_epochs
+            )
+            scheduler = SequentialLR(
+                optimizer,
+                schedulers=[warmup_scheduler, main_scheduler],
+                milestones=[cfg.training.warmup_epochs]
+            )
+        else:
+            scheduler = main_scheduler
+
+    elif scheduler_type == 'onecycle':
+        # OneCycleLR: needs estimated steps per epoch
+        # For streaming datasets, estimate based on expected iterations
+        # User can specify max_lr, otherwise defaults to lr
+        max_lr = getattr(cfg.training, 'max_lr', None) or cfg.training.lr
+        pct_start = getattr(cfg.training, 'pct_start', 0.3)
+        # Estimate steps per epoch (will be updated after first epoch if needed)
+        # For now, use a placeholder - OneCycleLR will adjust
+        print(f"[INFO] Using OneCycleLR with max_lr={max_lr}, pct_start={pct_start}")
+        print(f"       Note: OneCycleLR requires knowing total steps. Using epoch-based stepping.")
+        # We'll step per epoch, so total_steps = epochs
+        scheduler = OneCycleLR(
             optimizer,
-            start_factor=0.01,
-            end_factor=1.0,
-            total_iters=cfg.training.warmup_epochs
+            max_lr=max_lr,
+            epochs=cfg.training.epochs,
+            steps_per_epoch=1,  # Step once per epoch
+            pct_start=pct_start,
+            anneal_strategy='cos',
+            div_factor=25.0,  # initial_lr = max_lr / div_factor
+            final_div_factor=1e4,  # final_lr = initial_lr / final_div_factor
         )
-        scheduler = SequentialLR(
+
+    elif scheduler_type == 'plateau':
+        patience = getattr(cfg.training, 'lr_patience', 5)
+        factor = getattr(cfg.training, 'lr_factor', 0.5)
+        min_lr = getattr(cfg.training, 'lr_min', 1e-7)
+        print(f"[INFO] Using ReduceLROnPlateau with patience={patience}, factor={factor}, min_lr={min_lr}")
+        scheduler = ReduceLROnPlateau(
             optimizer,
-            schedulers=[warmup_scheduler, main_scheduler],
-            milestones=[cfg.training.warmup_epochs]
+            mode='min',
+            factor=factor,
+            patience=patience,
+            min_lr=min_lr,
+            verbose=True
         )
+
+    elif scheduler_type in ('none', None):
+        print("[INFO] No learning rate scheduler enabled.")
+        scheduler = None
+
+    else:
+        print(f"[WARN] Unknown scheduler type '{scheduler_type}', using no scheduler.")
+        scheduler = None
 
     # --- Resume from checkpoint ---
     start_epoch = 1
@@ -510,6 +562,10 @@ def train_with_config(config_path: str, profile: bool = None):
             t0 = time.time()
 
             # === TRAIN ===
+            # For ReduceLROnPlateau, step after validation with val_loss, not during training
+            is_plateau_scheduler = isinstance(scheduler, ReduceLROnPlateau) if scheduler else False
+            epoch_scheduler = None if is_plateau_scheduler else scheduler
+
             tr_metrics, _, _, _, _ = run_epoch_stream(
                 model, optimizer, device, train_loader,
                 scaler=scaler,
@@ -519,7 +575,7 @@ def train_with_config(config_path: str, profile: bool = None):
                 loss_scaler=loss_scaler,
                 reweighter=reweighter,
                 channel_dropout_rate=cfg.training.channel_dropout_rate,
-                scheduler=scheduler,
+                scheduler=epoch_scheduler,
                 ema_model=ema_model,
                 grad_clip=cfg.training.grad_clip,
                 grad_accum_steps=getattr(cfg.training, 'grad_accum_steps', 1),
@@ -545,6 +601,10 @@ def train_with_config(config_path: str, profile: bool = None):
 
             tr_loss = tr_metrics["total_opt"]
             val_loss = val_metrics["total_opt"]
+
+            # Step ReduceLROnPlateau scheduler with validation loss
+            if is_plateau_scheduler:
+                scheduler.step(val_loss)
 
             print(f"[{ep:03d}] tr_loss {tr_loss:.5f} val_loss {val_loss:.5f} lr {current_lr:.2e} time {sec:.1f}s")
 

@@ -1451,11 +1451,48 @@ training:
 
 **When to use:** When batch_size is limited by GPU memory but larger effective batches improve convergence.
 
-#### 3. Cosine Learning Rate Schedule
+#### 3. Learning Rate Schedulers
+
+Multiple scheduler options are available:
+
+| Scheduler | Description | Best For |
+|-----------|-------------|----------|
+| `cosine` | Cosine annealing with optional warmup | Most cases (default) |
+| `onecycle` | Fast convergence with triangular LR | When total steps are known |
+| `plateau` | Reduces LR when loss plateaus | Unpredictable convergence |
+| `none` | Fixed learning rate | Debugging, short runs |
+
+##### Cosine Annealing (default)
+```yaml
+training:
+  scheduler: "cosine"
+  warmup_epochs: 2
+  lr: 3.0e-4
 ```
-LR = LR_min + 0.5 × (LR_max - LR_min) × (1 + cos(π × (epoch - warmup) / (total - warmup)))
-```
+$$LR = LR_{min} + 0.5 \times (LR_{max} - LR_{min}) \times (1 + \cos(\pi \times \frac{epoch - warmup}{total - warmup}))$$
+
 With optional warmup epochs for gradual LR increase at start.
+
+##### OneCycleLR
+```yaml
+training:
+  scheduler: "onecycle"
+  lr: 1.0e-4           # Starting LR
+  max_lr: 3.0e-4       # Peak LR (defaults to lr if not set)
+  pct_start: 0.3       # Fraction of training for LR increase
+```
+Implements the 1cycle policy: LR increases linearly, then decreases with cosine annealing. Often achieves faster convergence than cosine alone.
+
+##### ReduceLROnPlateau
+```yaml
+training:
+  scheduler: "plateau"
+  lr: 3.0e-4
+  lr_patience: 5       # Epochs to wait before reducing
+  lr_factor: 0.5       # Multiply LR by this factor
+  lr_min: 1.0e-7       # Minimum LR
+```
+Automatically reduces LR when validation loss stops improving. Good when optimal schedule is unknown.
 
 #### 4. Automatic Mixed Precision (AMP)
 Uses `torch.cuda.amp` for faster training with FP16 forward pass while maintaining FP32 gradients.

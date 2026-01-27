@@ -64,6 +64,15 @@ training:
   weight_decay: 1.0e-4
   warmup_epochs: 2
   use_scheduler: true
+  # Scheduler options: "cosine", "onecycle", "plateau", "none"
+  scheduler: "cosine"
+  # OneCycleLR specific (only used when scheduler: "onecycle")
+  # max_lr: 3.0e-4                  # Max LR (defaults to lr if not set)
+  # pct_start: 0.3                  # Fraction of training for LR increase phase
+  # ReduceLROnPlateau specific (only used when scheduler: "plateau")
+  # lr_patience: 5                  # Epochs to wait before reducing LR
+  # lr_factor: 0.5                  # Factor to reduce LR by
+  # lr_min: 1.0e-7                  # Minimum LR
   amp: true
   ema_decay: 0.999
   channel_dropout_rate: 0.1

@@ -59,6 +59,15 @@ class TrainingConfig:
     weight_decay: float = 1e-4
     warmup_epochs: int = 2
     use_scheduler: bool = True
+    scheduler: str = "cosine"  # "cosine", "onecycle", "plateau", or "none"
+    # OneCycleLR specific
+    max_lr: Optional[float] = None  # Max LR for OneCycleLR (defaults to lr if not set)
+    pct_start: float = 0.3  # Fraction of training for LR increase phase
+    # ReduceLROnPlateau specific
+    lr_patience: int = 5  # Epochs to wait before reducing LR
+    lr_factor: float = 0.5  # Factor to reduce LR by
+    lr_min: float = 1e-7  # Minimum LR
+    # General
     amp: bool = True
     ema_decay: float = 0.999
     channel_dropout_rate: float = 0.1
