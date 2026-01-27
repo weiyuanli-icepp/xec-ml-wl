@@ -33,7 +33,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from .model import XECEncoder
 from .model_mae import XEC_MAE
 from .engine_mae import run_epoch_mae, run_eval_mae
-from .utils import count_model_params, log_system_metrics_to_mlflow
+from .utils import count_model_params, log_system_metrics_to_mlflow, validate_data_paths, check_artifact_directory
 from .geom_defs import DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
 from .config import load_mae_config
 
@@ -290,6 +290,12 @@ Examples:
     if val_root:
         val_files = expand_path(val_root)
         print(f"[INFO] Validation Data: {len(val_files)} files")
+
+    # Validate data paths exist
+    validate_data_paths(train_root, val_root, expand_func=expand_path)
+
+    # Check artifact directory for existing files
+    check_artifact_directory(save_path)
 
     if torch.cuda.is_available():
         try:

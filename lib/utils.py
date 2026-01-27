@@ -38,6 +38,140 @@ def count_model_params(model):
     return total, trainable
 
 # ------------------------------------------------------------
+#  Pre-training validation utilities
+# ------------------------------------------------------------
+import glob as glob_module
+
+def validate_data_paths(train_path, val_path=None, expand_func=None):
+    """
+    Validate that training and validation data files exist.
+
+    Args:
+        train_path: Path to training data (file, directory, or glob pattern)
+        val_path: Path to validation data (optional)
+        expand_func: Function to expand path to file list (optional)
+
+    Returns:
+        tuple: (train_files, val_files) lists of resolved file paths
+
+    Raises:
+        FileNotFoundError: If training or validation files don't exist
+    """
+    def default_expand(p):
+        """Default path expansion: handle ~, globs, and directories."""
+        if p is None:
+            return []
+        path = os.path.expanduser(p)
+
+        # Check if it's a glob pattern
+        if '*' in path or '?' in path:
+            files = sorted(glob_module.glob(path))
+            return files
+
+        # Check if it's a directory
+        if os.path.isdir(path):
+            files = sorted(glob_module.glob(os.path.join(path, "*.root")))
+            return files
+
+        # Single file
+        return [path] if os.path.exists(path) else []
+
+    expand = expand_func or default_expand
+
+    # Validate training path
+    train_files = expand(train_path)
+    if not train_files:
+        raise FileNotFoundError(
+            f"[ERROR] Training data not found: {train_path}\n"
+            f"  Please check that the path exists and contains ROOT files."
+        )
+
+    # Check each training file exists
+    missing_train = [f for f in train_files if not os.path.exists(f)]
+    if missing_train:
+        raise FileNotFoundError(
+            f"[ERROR] Training files not found:\n" +
+            "\n".join(f"  - {f}" for f in missing_train[:5]) +
+            (f"\n  ... and {len(missing_train) - 5} more" if len(missing_train) > 5 else "")
+        )
+
+    # Validate validation path (if provided)
+    val_files = []
+    if val_path:
+        val_files = expand(val_path)
+        if not val_files:
+            raise FileNotFoundError(
+                f"[ERROR] Validation data not found: {val_path}\n"
+                f"  Please check that the path exists and contains ROOT files."
+            )
+
+        missing_val = [f for f in val_files if not os.path.exists(f)]
+        if missing_val:
+            raise FileNotFoundError(
+                f"[ERROR] Validation files not found:\n" +
+                "\n".join(f"  - {f}" for f in missing_val[:5]) +
+                (f"\n  ... and {len(missing_val) - 5} more" if len(missing_val) > 5 else "")
+            )
+
+    return train_files, val_files
+
+
+def check_artifact_directory(save_path, checkpoint_patterns=None):
+    """
+    Check if artifact directory would overwrite existing checkpoints.
+    Prints a warning if existing files are found.
+
+    Args:
+        save_path: Directory where artifacts will be saved
+        checkpoint_patterns: List of checkpoint filename patterns to check
+                           Default: ["checkpoint_best.pth", "checkpoint_last.pth",
+                                    "mae_checkpoint_best.pth", "mae_checkpoint_last.pth",
+                                    "inpainter_checkpoint_best.pth", "inpainter_checkpoint_last.pth"]
+
+    Returns:
+        list: List of existing files that would be overwritten
+    """
+    if checkpoint_patterns is None:
+        checkpoint_patterns = [
+            "checkpoint_best.pth", "checkpoint_last.pth",
+            "mae_checkpoint_best.pth", "mae_checkpoint_last.pth",
+            "inpainter_checkpoint_best.pth", "inpainter_checkpoint_last.pth",
+        ]
+
+    save_path = os.path.expanduser(save_path)
+
+    if not os.path.exists(save_path):
+        return []
+
+    existing_files = []
+    for pattern in checkpoint_patterns:
+        full_path = os.path.join(save_path, pattern)
+        if os.path.exists(full_path):
+            existing_files.append(full_path)
+
+    # Also check for any .pth files
+    pth_files = glob_module.glob(os.path.join(save_path, "*.pth"))
+    for f in pth_files:
+        if f not in existing_files:
+            existing_files.append(f)
+
+    if existing_files:
+        print("\n" + "=" * 60)
+        print("[WARNING] Existing checkpoint files found in artifact directory!")
+        print(f"  Directory: {save_path}")
+        print("  Files that may be overwritten:")
+        for f in existing_files[:10]:
+            mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(f)))
+            size_mb = os.path.getsize(f) / (1024 * 1024)
+            print(f"    - {os.path.basename(f)} ({size_mb:.1f} MB, modified: {mtime})")
+        if len(existing_files) > 10:
+            print(f"    ... and {len(existing_files) - 10} more files")
+        print("=" * 60 + "\n")
+
+    return existing_files
+
+
+# ------------------------------------------------------------
 #  Utilities: streaming ROOT reading
 # ------------------------------------------------------------
 def iterate_chunks(files, tree, branches, step_size=4000):

@@ -40,7 +40,7 @@ from .engine_inpainter import (
     save_predictions_to_root,
     RootPredictionWriter,
 )
-from .utils import log_system_metrics_to_mlflow
+from .utils import log_system_metrics_to_mlflow, validate_data_paths, check_artifact_directory
 from .geom_defs import (
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
     DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
@@ -329,6 +329,12 @@ Examples:
 
     print(f"[INFO] Training files: {len(train_files)}")
     print(f"[INFO] Validation files: {len(val_files)}")
+
+    # Validate data paths exist
+    validate_data_paths(train_root, val_root, expand_func=expand_path)
+
+    # Check artifact directory for existing files
+    check_artifact_directory(save_path)
 
     # Device setup
     if torch.cuda.is_available():

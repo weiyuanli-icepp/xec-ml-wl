@@ -28,7 +28,9 @@ from .utils                import (
     count_model_params,
     iterate_chunks,
     compute_face_saliency,
-    log_system_metrics_to_mlflow
+    log_system_metrics_to_mlflow,
+    validate_data_paths,
+    check_artifact_directory
 )
 from .plotting             import (
     plot_resolution_profile,
@@ -91,6 +93,9 @@ def main_xec_regressor_with_args(
     train_files = expand_path(train_path)
     val_files = expand_path(val_path)
     print(f"[INFO] Training files: {len(train_files)}, Validation files: {len(val_files)}")
+
+    # Validate data paths exist
+    validate_data_paths(train_path, val_path, expand_func=expand_path)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -227,8 +232,12 @@ def main_xec_regressor_with_args(
     mlflow.set_experiment(mlflow_experiment)
     if run_name is None:
         run_name = time.strftime("run_cv2_%Y%m%d_%H%M%S")
+
+    # Check if artifact directory would overwrite existing files
+    artifact_dir = os.path.abspath(os.path.join("artifacts", run_name))
+    check_artifact_directory(artifact_dir)
     # --------------------
-    
+
     # --- Training Loop ---
     with mlflow.start_run(run_id=run_id, run_name=run_name if not run_id else None) as run:
         run_id = run.info.run_id 
@@ -623,6 +632,14 @@ def train_with_config(config_path: str, profile: bool = False):
     # Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Using device: {device}")
+
+    # Validate data paths before creating data loaders
+    validate_data_paths(cfg.data.train_path, cfg.data.val_path)
+
+    # Check artifact directory for existing files
+    run_name = cfg.mlflow.run_name or time.strftime("run_cv2_%Y%m%d_%H%M%S")
+    artifact_dir = os.path.abspath(os.path.join(cfg.checkpoint.save_dir, run_name))
+    check_artifact_directory(artifact_dir)
 
     # --- Data Loaders ---
     norm_kwargs = {
