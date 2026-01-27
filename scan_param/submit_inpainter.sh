@@ -32,7 +32,8 @@ fi
 yaml_get() {
     local key="$1"
     local file="$2"
-    grep -E "^\s*${key}:" "$file" 2>/dev/null | head -1 | sed 's/.*:\s*//' | sed 's/\s*#.*//' | tr -d '"' | tr -d "'"
+    # Match line, extract value after first colon, strip comments and quotes
+    grep -E "^\s*${key}:" "$file" 2>/dev/null | head -1 | sed 's/^[^:]*:[[:space:]]*//' | sed 's/[[:space:]]*#.*//' | tr -d '"' | tr -d "'"
 }
 
 # Extract key values from config for display
