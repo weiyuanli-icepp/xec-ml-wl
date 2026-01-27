@@ -148,6 +148,7 @@ if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
     echo ""
     echo "=== MLflow ==="
     echo "  Experiment:    ${CFG_EXPERIMENT:-inpainting}"
+    echo "  Run name:      $RUN_NAME"
     echo ""
     echo "============================================"
     echo "[DRY-RUN] No job submitted. Remove DRY_RUN=1 to submit."

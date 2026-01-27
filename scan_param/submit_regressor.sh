@@ -198,6 +198,7 @@ if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
     echo ""
     echo "=== MLflow ==="
     echo "  Experiment:    ${CFG_EXPERIMENT:-gamma_angle}"
+    echo "  Run name:      $RUN_NAME"
     echo ""
 
     # Show CLI overrides if any
