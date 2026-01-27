@@ -40,7 +40,7 @@ export GRAD_CLIP="1.0"
 
 # Model configuration
 export FREEZE_ENCODER="false"
-export MAE_CHECKPOINT="artifacts/mae_mask0.70_gh/mae_checkpoint_best.pth"  # Path to MAE checkpoint (optional)
+export MAE_CHECKPOINT="artifacts/mae_mask0.65_gh/mae_checkpoint_best.pth"  # Path to MAE checkpoint (optional)
 
 # Paths (Point to your data files)
 export TRAIN_PATH="$HOME/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root"
@@ -51,7 +51,7 @@ export MLFLOW_EXPERIMENT="inpainting"
 for MASK in "${MASK_RATIOS[@]}"; do
     # Format mask ratio for run name (e.g., 0.05 -> mask0.05)
     MASK_STR=$(printf "%.2f" $MASK)
-    export RUN_NAME="inpainter_pretrained0.70best_mask${MASK_STR}"
+    export RUN_NAME="inpainter_pretrained0.65best_mask${MASK_STR}"
     export MASK_RATIO="$MASK"
 
     echo "Submitting: $RUN_NAME (mask_ratio=$MASK_RATIO)"
