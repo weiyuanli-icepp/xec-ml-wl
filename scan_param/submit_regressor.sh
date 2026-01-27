@@ -68,6 +68,11 @@ CFG_NUM_WORKERS=$(yaml_get "num_workers" "$CONFIG_PATH")
 CFG_LR=$(yaml_get "lr" "$CONFIG_PATH")
 CFG_SCHEDULER=$(yaml_get "scheduler" "$CONFIG_PATH")
 CFG_WARMUP=$(yaml_get "warmup_epochs" "$CONFIG_PATH")
+CFG_MAX_LR=$(yaml_get "max_lr" "$CONFIG_PATH")
+CFG_PCT_START=$(yaml_get "pct_start" "$CONFIG_PATH")
+CFG_LR_PATIENCE=$(yaml_get "lr_patience" "$CONFIG_PATH")
+CFG_LR_FACTOR=$(yaml_get "lr_factor" "$CONFIG_PATH")
+CFG_LR_MIN=$(yaml_get "lr_min" "$CONFIG_PATH")
 CFG_WEIGHT_DECAY=$(yaml_get "weight_decay" "$CONFIG_PATH")
 CFG_GRAD_CLIP=$(yaml_get "grad_clip" "$CONFIG_PATH")
 CFG_EMA=$(yaml_get "ema_decay" "$CONFIG_PATH")
@@ -159,7 +164,23 @@ if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
     echo "  Epochs:        ${CFG_EPOCHS:-?}"
     echo "  Learning rate: ${CFG_LR:-?}"
     echo "  Scheduler:     ${CFG_SCHEDULER:-cosine}"
-    echo "  Warmup epochs: ${CFG_WARMUP:-0}"
+    # Show scheduler-specific parameters
+    case "${CFG_SCHEDULER:-cosine}" in
+        cosine)
+            echo "  Warmup epochs: ${CFG_WARMUP:-0}"
+            echo "  LR min:        ${CFG_LR_MIN:-1e-7}"
+            ;;
+        onecycle)
+            echo "  Max LR:        ${CFG_MAX_LR:-${CFG_LR}}"
+            echo "  Pct start:     ${CFG_PCT_START:-0.3}"
+            ;;
+        plateau)
+            echo "  LR patience:   ${CFG_LR_PATIENCE:-5}"
+            echo "  LR factor:     ${CFG_LR_FACTOR:-0.5}"
+            echo "  LR min:        ${CFG_LR_MIN:-1e-7}"
+            ;;
+        # none: no scheduler-specific params
+    esac
     echo "  Weight decay:  ${CFG_WEIGHT_DECAY:-?}"
     echo "  Grad clip:     ${CFG_GRAD_CLIP:-?}"
     echo "  EMA decay:     ${CFG_EMA:-?}"
