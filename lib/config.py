@@ -65,6 +65,7 @@ class TrainingConfig:
     grad_clip: float = 1.0
     grad_accum_steps: int = 1
     profile: bool = False  # Enable training profiler to identify bottlenecks
+    compile: str = "max-autotune"  # torch.compile mode: "max-autotune", "reduce-overhead", "default", or "false"/"none" to disable
 
 
 @dataclass

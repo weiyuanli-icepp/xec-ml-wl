@@ -277,7 +277,14 @@ def train_with_config(config_path: str, profile: bool = None):
     print("[INFO] Regressor created:")
     print(f"  - Total params: {total_params:,}")
     print(f"  - Trainable params: {trainable_params:,}")
-    model = torch.compile(model, mode="max-autotune", fullgraph=True, dynamic=False)
+
+    # Optionally compile model (can be disabled or use different modes to reduce memory)
+    compile_mode = getattr(cfg.training, 'compile', 'max-autotune')
+    if compile_mode and compile_mode != 'false' and compile_mode != 'none':
+        print(f"[INFO] Compiling model with mode='{compile_mode}'")
+        model = torch.compile(model, mode=compile_mode, fullgraph=True, dynamic=False)
+    else:
+        print("[INFO] Model compilation disabled (eager mode)")
 
     # --- Optimizer ---
     decay, no_decay = [], []
@@ -735,6 +742,9 @@ Examples:
     parser.add_argument("--channel_dropout_rate", type=float, default=None)
     parser.add_argument("--grad_clip", type=float, default=None)
     parser.add_argument("--grad_accum_steps", type=int, default=None)
+    parser.add_argument("--compile", type=str, default=None,
+                        choices=["max-autotune", "reduce-overhead", "default", "false", "none"],
+                        help="torch.compile mode (default: max-autotune, use 'false' to disable)")
 
     # Tasks (override config)
     parser.add_argument("--tasks", type=str, nargs="+", default=None,
@@ -816,6 +826,8 @@ def apply_cli_overrides(cfg, args):
         cfg.training.grad_clip = args.grad_clip
     if args.grad_accum_steps is not None:
         cfg.training.grad_accum_steps = args.grad_accum_steps
+    if args.compile is not None:
+        cfg.training.compile = args.compile
 
     # Tasks
     if args.tasks is not None:
