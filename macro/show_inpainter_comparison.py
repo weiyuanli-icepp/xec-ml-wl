@@ -5,7 +5,7 @@
 #     --channel npho --save outputs/inpainter_event_0.pdf
 #
 # Note: event_idx in predictions file corresponds to entry index in original file
-# Note: Outer face predictions are excluded when using finegrid mode (sensor_id is grid index, not flat index)
+# Note: Outer face predictions are included when using sensor-level mode (valid sensor IDs 4092-4759)
 # Note: Normalization factors are read from predictions file metadata (if available)
 
 import sys
@@ -20,7 +20,7 @@ try:
     from lib.geom_defs import (
         DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
         DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE,
-        DEFAULT_NPHO_THRESHOLD
+        DEFAULT_NPHO_THRESHOLD, OUTER_ALL_SENSOR_IDS
     )
 except ImportError as e:
     print(f"Error: Could not import required modules: {e}")
@@ -251,19 +251,39 @@ Examples:
                 print(f"  Found run={run_number}, event={event_number}")
 
         # Face map: 0=inner, 1=us, 2=ds, 3=outer, 4=top, 5=bot
-        # For outer face in finegrid mode, sensor_id is a grid index (h*W + w), NOT a flat sensor index
-        # This causes collision with actual sensor indices from other faces (e.g., inner starts at 0)
-        # We must exclude face=3 (outer) predictions to avoid corrupting the visualization
         face_ids = all_arrays["face"][event_mask]
+        sensor_ids_all = all_arrays["sensor_id"][event_mask]
 
-        # Check if outer face predictions exist (face=3)
-        n_outer = (face_ids == 3).sum()
+        # Handle outer face (face=3) predictions:
+        # - Sensor-level mode: sensor_id contains actual flat sensor IDs (4092-4759)
+        # - Legacy grid-level mode: sensor_id is grid index (h*W + w), which collides with other faces
+        # We check if outer face sensor IDs are in the valid outer sensor range
+        outer_mask = face_ids == 3
+        n_outer = outer_mask.sum()
+
         if n_outer > 0:
-            print(f"  Note: Excluding {n_outer} outer face predictions (finegrid mode uses grid indices)")
+            outer_sensor_ids = sensor_ids_all[outer_mask]
+            outer_min_valid = OUTER_ALL_SENSOR_IDS.min()
+            outer_max_valid = OUTER_ALL_SENSOR_IDS.max()
 
-        # Filter to only include faces with valid flat sensor indices (exclude outer=3)
-        valid_face_mask = face_ids != 3
-        sensor_ids = all_arrays["sensor_id"][event_mask][valid_face_mask]
+            # Check if outer sensor IDs are in valid range
+            outer_valid = (outer_sensor_ids >= outer_min_valid) & (outer_sensor_ids <= outer_max_valid)
+            n_outer_valid = outer_valid.sum()
+
+            if n_outer_valid == n_outer:
+                print(f"  Found {n_outer} outer face predictions (sensor-level mode, IDs in {outer_min_valid}-{outer_max_valid})")
+                valid_face_mask = np.ones(len(face_ids), dtype=bool)  # Include all faces
+            elif n_outer_valid > 0:
+                print(f"  Warning: Mixed outer face modes detected ({n_outer_valid}/{n_outer} valid)")
+                # Include non-outer faces + valid outer predictions
+                valid_face_mask = ~outer_mask | (outer_mask & np.isin(sensor_ids_all, OUTER_ALL_SENSOR_IDS))
+            else:
+                print(f"  Note: Excluding {n_outer} outer face predictions (legacy grid-level mode)")
+                valid_face_mask = ~outer_mask
+        else:
+            valid_face_mask = np.ones(len(face_ids), dtype=bool)
+
+        sensor_ids = sensor_ids_all[valid_face_mask]
         pred_npho = all_arrays["pred_npho"][event_mask][valid_face_mask]
         pred_time = all_arrays["pred_time"][event_mask][valid_face_mask]
         truth_npho_pred = all_arrays["truth_npho"][event_mask][valid_face_mask]
