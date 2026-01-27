@@ -1,45 +1,39 @@
 #!/usr/bin/env python3
+"""
+XEC Regressor Training Script
 
-import os, time
+Config-based training for XEC multi-task regression model.
+Usage:
+    python -m lib.train_regressor --config config/train_config.yaml
+"""
+
+import os
+import time
 import numpy as np
 import pandas as pd
 import warnings
 import mlflow
 import mlflow.pytorch
 warnings.filterwarnings("ignore", category=FutureWarning, module="mlflow.tracking._tracking_service.utils")
-import uproot
-import glob
-import random
 import torch
-import torch.nn as nn
 import torch.optim as optim
-from torch.utils.tensorboard  import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
-from torch.optim.swa_utils    import AveragedModel, get_ema_multi_avg_fn
+from torch.optim.swa_utils import AveragedModel
 
-from .model                import XECEncoder, XECMultiHeadModel, AutomaticLossScaler
-from .engine               import run_epoch_stream
-from .dataset              import get_dataloader, expand_path
-from .event_display        import plot_event_faces, plot_event_time
-from .angle_reweighting    import scan_angle_hist_1d, scan_angle_hist_2d  # Legacy
-from .reweighting          import SampleReweighter, create_reweighter_from_config
-from .config               import load_config, get_active_tasks, get_task_weights, XECConfig
-from .utils                import (
+from .model import XECEncoder, XECMultiHeadModel, AutomaticLossScaler
+from .engine import run_epoch_stream
+from .dataset import get_dataloader, expand_path
+from .reweighting import create_reweighter_from_config
+from .config import load_config, get_active_tasks, get_task_weights
+from .utils import (
     count_model_params,
-    iterate_chunks,
-    compute_face_saliency,
     log_system_metrics_to_mlflow,
     validate_data_paths,
     check_artifact_directory
 )
-from .plotting             import (
-    plot_resolution_profile,
-    plot_face_weights,
-    plot_profile,
-    plot_cos_residuals,
-    plot_pred_truth_scatter,
-    plot_saliency_profile
-)
+from .plotting import plot_resolution_profile
+
 # ------------------------------------------------------------
 # Enable TensorFloat32
 torch.set_float32_matmul_precision('high')
@@ -48,638 +42,9 @@ torch.set_float32_matmul_precision('high')
 torch.autograd.set_detect_anomaly(False)
 torch.autograd.profiler.emit_nvtx(False)
 
-# ------------------------------------------------------------
-#  Main training entry
-# ------------------------------------------------------------
-def main_xec_regressor_with_args(
-    train_path,
-    val_path,
-    tree="tree",
-    epochs=20,
-    batch=256,
-    chunksize=4000,
-    lr=3e-4,
-    weight_decay=1e-4,
-    drop_path_rate=0.0,
-    time_shift=0.5,           # Updated to match config default
-    time_scale=6.5e-8,        # Updated to match config default
-    sentinel_value=-5.0,
-    use_scheduler=-1,
-    warmup_epochs=2,
-    amp=True,
-    max_chunks=None,
-    npho_branch="relative_npho",
-    time_branch="relative_time",
-    NphoScale=0.58,           # Updated to match config default (npho_scale)
-    NphoScale2=1.0,           # Updated to match config default (npho_scale2)
-    onnx="meg2ang_convnextv2.onnx",
-    mlflow_experiment="gamma_angle",
-    run_name=None,
-    outer_mode="finegrid",
-    outer_fine_pool=(3,3),
-    reweight_mode="none",
-    nbins_theta=50,
-    nbins_phi=50,
-    loss_type="smooth_l1",
-    loss_beta=1.0,
-    resume_from=None,
-    ema_decay=0.999,
-    channel_dropout_rate=0.1,
-    tasks="angle",
-    loss_balance="manual",
-    **kwargs
-):
-    # Expand train and val paths to file lists (using shared function from lib/dataset.py)
-    train_files = expand_path(train_path)
-    val_files = expand_path(val_path)
-    print(f"[INFO] Training files: {len(train_files)}, Validation files: {len(val_files)}")
-
-    # Validate data paths exist
-    validate_data_paths(train_path, val_path, expand_func=expand_path)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    norm_kwargs = {
-        "npho_scale": NphoScale,
-        "npho_scale2": NphoScale2,
-        "time_scale": time_scale,
-        "time_shift": time_shift,
-        "sentinel_value": sentinel_value,
-        "step_size": chunksize,
-        "npho_branch": npho_branch,
-        "time_branch": time_branch,
-    }
-
-    train_loader = get_dataloader(train_path, batch_size=batch, num_workers=8, num_threads=4, **norm_kwargs)
-    val_loader   = get_dataloader(val_path, batch_size=batch, num_workers=8, num_threads=4, **norm_kwargs)
-    
-    # --- Define model ---
-    active_tasks = tasks.split(",")
-    base_regressor = XECEncoder(outer_mode=outer_mode,
-                         outer_fine_pool=outer_fine_pool,
-                         drop_path_rate=drop_path_rate)
-    model = XECMultiHeadModel(base_regressor, active_tasks=active_tasks).to(device)
-    total_params, trainable_params = count_model_params(model)
-    print("[INFO] Regressor created:")
-    print(f"  - Total params: {total_params:,}")
-    print(f"  - Trainable params: {trainable_params:,}")
-    model = torch.compile(model, mode="max-autotune", fullgraph=True, dynamic=False)
-    # --------------------
-
-    # --- Optimizer ---
-    decay, no_decay = [], []
-    for n, p in model.named_parameters():
-        if not p.requires_grad:
-            continue
-        (no_decay if n.endswith(".bias") or "bn" in n.lower() or "norm" in n.lower() else decay).append(p)
-    optimizer = optim.AdamW(
-        [{"params": decay, "weight_decay": weight_decay},
-         {"params": no_decay, "weight_decay": 0.0}],
-        lr=lr,
-        fused=True
-    )
-    ema_model = None
-    if ema_decay > 0.0:
-        print(f"[INFO] Using EMA with decay={ema_decay}")
-        
-        def robust_ema_avg(averaged_model_parameter, model_parameter, num_averaged):
-            decay = ema_decay
-            return decay * averaged_model_parameter + (1.0 - decay) * model_parameter        
-
-        ema_model  = AveragedModel(model, avg_fn=robust_ema_avg, use_buffers=True)
-        ema_model.to(device)
-    else:
-        print(f"[INFO] EMA is DISABLED.")
-        
-    loss_scaler = None
-    if loss_balance == "auto":
-        print(f"[INFO] Using Automatic Loss Balancing.")
-        loss_scaler = AutomaticLossScaler(active_tasks).to(device)
-        optimizer.add_param_group({"params": loss_scaler.parameters()})
-    # ------------------
-    
-    # --- Initialize Scaler ---
-    scaler = torch.amp.GradScaler("cuda", enabled=(amp and torch.cuda.is_available()))
-    # -------------------------
-
-    # --- Scheduler setup ---
-    scheduler = None
-    if use_scheduler == -1:
-        print(f"[INFO] Using Cosine Annealing with {warmup_epochs} warmup epochs.")
-        main_scheduler = CosineAnnealingLR(optimizer, T_max=epochs - warmup_epochs, eta_min=1e-6)
-        warmup_scheduler = LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs)
-        
-        scheduler = SequentialLR(
-            optimizer, 
-            schedulers=[warmup_scheduler, main_scheduler], 
-            milestones=[warmup_epochs]
-        )
-    else:
-        print("[INFO] Using Constant LR (no scheduler).")
-    # ------------------------
-
-    # --- Resume from checkpoint ---
-    start_epoch = 1
-    best_val = float("inf")
-    run_id = None
-
-    if resume_from and os.path.exists(resume_from):
-        print(f"[INFO] Loading checkpoint: {resume_from}")
-        checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
-
-        # Determine checkpoint type
-        is_full_regressor_checkpoint = False
-        is_mae_checkpoint = False
-        is_raw_encoder_checkpoint = False
-
-        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-            state_dict = checkpoint["model_state_dict"]
-            # Check if it's a regressor checkpoint (has "heads." keys) or MAE checkpoint (has "encoder." keys)
-            has_heads = any(k.startswith("heads.") for k in state_dict.keys())
-            has_encoder_prefix = any(k.startswith("encoder.") for k in state_dict.keys())
-
-            if has_heads:
-                is_full_regressor_checkpoint = True
-            elif has_encoder_prefix:
-                is_mae_checkpoint = True
-            else:
-                # Might be a legacy checkpoint, try to detect
-                is_full_regressor_checkpoint = "optimizer_state_dict" in checkpoint
-        else:
-            # Raw state dict (encoder-only checkpoint like mae_encoder_epoch_X.pth)
-            is_raw_encoder_checkpoint = True
-
-        if is_full_regressor_checkpoint:
-            # Resume full regressor training
-            print(f"[INFO] Detected full regressor checkpoint. Resuming training state.")
-            model.load_state_dict(checkpoint["model_state_dict"])
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-
-            start_epoch = checkpoint["epoch"] + 1
-            best_val = checkpoint.get("best_val", float("inf"))
-            run_id = checkpoint.get("mlflow_run_id", None)
-            if ema_model is not None:
-                if "ema_state_dict" in checkpoint and checkpoint["ema_state_dict"] is not None:
-                    print(f"[INFO] Loading EMA state from checkpoint.")
-                    ema_model.load_state_dict(checkpoint["ema_state_dict"])
-                else:
-                    print(f"[INFO] No EMA state in checkpoint. Re-syncing EMA.")
-                    ema_model.module.load_state_dict(model.state_dict())
-                    if hasattr(ema_model, 'n_averaged'):
-                        ema_model.n_averaged.zero_()
-
-        elif is_mae_checkpoint:
-            # Load encoder weights from full MAE checkpoint
-            print(f"[INFO] Detected MAE checkpoint. Loading encoder for fine-tuning.")
-            mae_state = checkpoint["model_state_dict"]
-
-            # Also try EMA state if available (often better quality)
-            if "ema_state_dict" in checkpoint and checkpoint["ema_state_dict"] is not None:
-                print(f"[INFO] Using EMA weights from MAE checkpoint.")
-                mae_state = checkpoint["ema_state_dict"]
-                # Remove "module." prefix if present (from EMA wrapper)
-                mae_state = {k.replace("module.", ""): v for k, v in mae_state.items()}
-
-            # Extract encoder weights and add "backbone." prefix for XECMultiHeadModel
-            encoder_state = {}
-            for key, value in mae_state.items():
-                if key.startswith("encoder."):
-                    # "encoder.backbone.inner_backbone..." -> "backbone.backbone.inner_backbone..."
-                    new_key = "backbone." + key[8:]  # Remove "encoder." and add "backbone."
-                    encoder_state[new_key] = value
-
-            if encoder_state:
-                missing, unexpected = model.load_state_dict(encoder_state, strict=False)
-                print(f"[INFO] Loaded {len(encoder_state)} encoder weights from MAE.")
-                print(f"[INFO] Missing keys (expected for heads): {len(missing)}")
-                if unexpected:
-                    print(f"[WARN] Unexpected keys: {len(unexpected)}")
-            else:
-                print(f"[WARN] No encoder weights found in MAE checkpoint!")
-
-            # Reset training state for fine-tuning
-            start_epoch = 1
-            best_val = float("inf")
-            run_id = None
-
-            if ema_model is not None:
-                print(f"[INFO] Initializing EMA from loaded encoder weights.")
-                ema_model.module.load_state_dict(model.state_dict())
-                if hasattr(ema_model, 'n_averaged'):
-                    ema_model.n_averaged.zero_()
-
-        elif is_raw_encoder_checkpoint:
-            # Load raw encoder weights (from mae_encoder_epoch_X.pth)
-            print(f"[INFO] Detected raw encoder checkpoint. Loading for fine-tuning.")
-
-            # Add "backbone." prefix for XECMultiHeadModel
-            encoder_state = {}
-            raw_state = checkpoint if not isinstance(checkpoint, dict) else checkpoint
-            for key, value in raw_state.items():
-                # "backbone.inner_backbone..." -> "backbone.backbone.inner_backbone..."
-                new_key = "backbone." + key
-                encoder_state[new_key] = value
-
-            missing, unexpected = model.load_state_dict(encoder_state, strict=False)
-            print(f"[INFO] Loaded {len(encoder_state)} encoder weights.")
-            print(f"[INFO] Missing keys (expected for heads): {len(missing)}")
-            if unexpected:
-                print(f"[WARN] Unexpected keys: {len(unexpected)}")
-
-            # Reset training state for fine-tuning
-            start_epoch = 1
-            best_val = float("inf")
-            run_id = None
-
-            if ema_model is not None:
-                print(f"[INFO] Initializing EMA from loaded encoder weights.")
-                ema_model.module.load_state_dict(model.state_dict())
-                if hasattr(ema_model, 'n_averaged'):
-                    ema_model.n_averaged.zero_()
-
-        if ema_model is None:
-            print(f"[INFO] EMA is disabled.")
-    # ------------------------------
-        
-    # --- MLflow Setup ---
-    mlflow.set_experiment(mlflow_experiment)
-    if run_name is None:
-        run_name = time.strftime("run_cv2_%Y%m%d_%H%M%S")
-
-    # Check if artifact directory would overwrite existing files
-    artifact_dir = os.path.abspath(os.path.join("artifacts", run_name))
-    check_artifact_directory(artifact_dir)
-    # --------------------
-
-    # --- Training Loop ---
-    with mlflow.start_run(run_id=run_id, run_name=run_name if not run_id else None) as run:
-        run_id = run.info.run_id 
-        artifact_dir = os.path.abspath(os.path.join("artifacts", run_name))
-        os.makedirs(artifact_dir, exist_ok=True)
-        
-        writer = SummaryWriter(log_dir=os.path.join("runs", run_name))
-        
-        if start_epoch == 1:
-            mlflow.log_params({
-                "train_path": train_path,
-                "val_path": val_path,
-                "epochs": epochs,
-                "batch": batch,
-                "chunksize": chunksize,
-                "lr": lr,
-                "weight_decay": weight_decay,
-                "drop_path_rate": drop_path_rate,
-                "time_shift": time_shift,
-                "time_scale": time_scale,
-                "sentinel_value": sentinel_value,
-                "use_scheduler": use_scheduler,
-                "warmup_epochs": warmup_epochs,
-                "amp": amp,
-                "outer_mode": outer_mode,
-                "outer_fine_pool": str(outer_fine_pool),
-                "total_params": total_params,
-                "trainable_params": trainable_params,
-                "reweight_mode": reweight_mode,
-                "nbins_theta": nbins_theta,
-                "nbins_phi": nbins_phi,
-                "loss_type": loss_type,
-                "loss_beta": loss_beta,
-                "ema_decay": ema_decay,
-                "channel_dropout_rate": channel_dropout_rate,
-                "tasks": tasks,
-                "loss_balance": loss_balance,
-            })
-        
-        # Reweighting histograms
-        edges_theta = weights_theta = None
-        edges_phi = weights_phi = None
-        edges2_theta = edges2_phi = weights_2d = None
-
-        if reweight_mode == "theta":
-            edges_theta, weights_theta = scan_angle_hist_1d(train_files, tree=tree, comp=0, nbins=nbins_theta, step_size=chunksize)
-        elif reweight_mode == "phi":
-            edges_phi, weights_phi = scan_angle_hist_1d(train_files, tree=tree, comp=1, nbins=nbins_phi, step_size=chunksize)
-        elif reweight_mode == "theta_phi":
-            edges2_theta, edges2_phi, weights_2d = scan_angle_hist_2d(train_files, tree=tree, nbins_theta=nbins_theta, nbins_phi=nbins_phi, step_size=chunksize)
-        
-        best_state = None
-
-        for ep in range(start_epoch, epochs+1):
-            t0 = time.time()
-            
-            # TRAIN
-            tr_metrics, _, _, _, _ = run_epoch_stream(
-                model, optimizer, device, train_loader,
-                scaler=scaler,
-                train=True, 
-                amp=amp,
-                reweight_mode=reweight_mode,
-                edges_theta=edges_theta, 
-                weights_theta=weights_theta,
-                edges_phi=edges_phi,   
-                weights_phi=weights_phi,
-                edges2_theta=edges2_theta, 
-                edges2_phi=edges2_phi, 
-                weights_2d=weights_2d,
-                loss_type=loss_type,
-                loss_beta=loss_beta,
-                scheduler=scheduler,
-                ema_model=ema_model,
-                channel_dropout_rate=channel_dropout_rate,
-            )
-
-            # VAL
-            val_model_to_use = ema_model if ema_model is not None else model
-            val_model_to_use.eval()  # Explicitly set eval mode for validation
-            val_metrics, pred_val, true_val, _, val_stats = run_epoch_stream(
-                val_model_to_use, optimizer, device, val_loader,
-                scaler=None,
-                train=False, 
-                amp=False,
-                reweight_mode=reweight_mode,
-                edges_theta=edges_theta, 
-                weights_theta=weights_theta,
-                edges_phi=edges_phi, 
-                weights_phi=weights_phi,
-                edges2_theta=edges2_theta, 
-                edges2_phi=edges2_phi, 
-                weights_2d=weights_2d,
-                loss_type=loss_type,
-                loss_beta=loss_beta,
-                channel_dropout_rate=0.0,
-            )
-
-            sec = time.time() - t0
-            current_lr = optimizer.param_groups[0]['lr']
-            
-            # Primary loss for early stopping
-            tr_loss = tr_metrics["total_opt"]
-            val_loss = val_metrics["total_opt"]
-
-            print(f"[{ep:03d}] tr_loss {tr_loss:.5f} val_loss {val_loss:.5f} lr {current_lr:.2e} time {sec:.1f}s")
-            
-            # --- LOGGING ---
-            # 1. System Metrics (standardized: GPU, RAM, epoch time, lr)
-            throughput = tr_metrics.get("system/throughput_events_per_sec")
-            log_system_metrics_to_mlflow(
-                step=ep,
-                device=device,
-                epoch_time_sec=sec,
-                throughput_events_per_sec=throughput,
-                lr=current_lr,
-            )
-
-            # 2. Main Metrics
-            log_dict = {
-                "train_loss": tr_loss,
-                "val_loss": val_loss,
-                "val_smooth_l1": val_metrics["smooth_l1"],
-                "val_l1": val_metrics["l1"],
-                "val_mse": val_metrics["mse"],
-                "val_cos_res": val_metrics["cos"],
-                **val_stats
-            }
-
-            # Add additional throughput metrics from training
-            perf_keys = [
-                "system/avg_data_load_sec",
-                "system/avg_batch_process_sec",
-                "system/compute_efficiency"
-            ]
-            for k in perf_keys:
-                if k in tr_metrics:
-                    log_dict[k] = tr_metrics[k]
-
-            mlflow.log_metrics(log_dict, step=ep)
-
-            # Log learned task weights (homoscedastic uncertainty)
-            if loss_scaler is not None:
-                for task, log_var in loss_scaler.log_vars.items():
-                    weight = (0.5 * torch.exp(-log_var)).item()
-                    mlflow.log_metrics({
-                        f"task/{task}_log_var": log_var.item(),
-                        f"task/{task}_weight": weight,
-                    }, step=ep)
-
-            writer.add_scalar("loss/train", tr_loss, ep)
-            writer.add_scalar("loss/val", val_loss, ep)
-            writer.add_scalar("lr", current_lr, ep)
-
-            # Save Checkpoint for best result
-            if val_loss < best_val:
-                best_val = val_loss
-                # Clone state to CPU: .cpu() both copies and moves to CPU, freeing GPU memory
-                best_state = {k: v.detach().clone().cpu() for k, v in model.state_dict().items()}
-                torch.save({
-                    "epoch": ep, 
-                    "model_state_dict": model.state_dict(),
-                    "ema_state_dict": ema_model.state_dict() if ema_model else None,
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "best_val": best_val,
-                    "mlflow_run_id": run_id,
-                }, os.path.join(artifact_dir, "checkpoint_best.pth"))
-                print(f"   [info] New best val_loss: {best_val:.6f}")
-            
-            # Save Last Checkpoint
-            torch.save({
-                "epoch": ep,
-                "model_state_dict": model.state_dict(),
-                "ema_state_dict": ema_model.state_dict() if ema_model else None,
-                "optimizer_state_dict": optimizer.state_dict(),
-                "best_val": best_val,
-                "mlflow_run_id": run_id,
-            }, os.path.join(artifact_dir, "checkpoint_last.pth"))
-
-            # Step scheduler at end of epoch (epoch-based scheduling)
-            if scheduler is not None:
-                scheduler.step()
-
-        # --- ARTIFACTS ---
-        final_model = ema_model if ema_model is not None else model
-        if ema_model is None and best_state:
-            model.load_state_dict(best_state)
-            print("[INFO] Loaded best model state for final evaluation.")
-
-        _, pred_all, true_all, extra_info, _ = run_epoch_stream(
-            final_model, optimizer, device, val_loader,
-            scaler=None,
-            train=False, 
-            amp=False,
-            loss_type=loss_type,
-            loss_beta=loss_beta,
-            reweight_mode=reweight_mode,
-            edges_theta=edges_theta, 
-            weights_theta=weights_theta,
-            edges_phi=edges_phi,   
-            weights_phi=weights_phi,
-            edges2_theta=edges2_theta, 
-            edges2_phi=edges2_phi, 
-            weights_2d=weights_2d,
-            channel_dropout_rate=0.0,
-        )
-
-        if pred_all is not None:
-            # --- SAVE PREDICTIONS CSV ---
-            csv_path = os.path.join(artifact_dir, f"predictions_{run_name}.csv")
-            pd.DataFrame({
-                "true_theta": true_all[:,0], "true_phi": true_all[:,1],
-                "pred_theta": pred_all[:,0], "pred_phi": pred_all[:,1]
-            }).to_csv(csv_path, index=False)
-            mlflow.log_artifact(csv_path)
-
-            # --- WORST EVENTS ---
-            worst_events = extra_info.get("worst_events", [])
-            for i, event in enumerate(worst_events):
-                raw_n = event.get("input_npho")
-                raw_t = event.get("input_time")
-                if raw_n is None or raw_t is None:
-                    continue
-
-                run_id = event.get("run")
-                event_id = event.get("event")
-                energy = event.get("energy_truth")
-                uvw = event.get("uvw_truth")
-                vtx = event.get("vtx")
-                pred_angle = event.get("pred_angle")
-                true_angle = event.get("true_angle")
-                total_loss = event.get("total_loss")
-
-                base_title = f"Worst #{i+1}"
-                if run_id is not None and event_id is not None:
-                    base_title += f" | Run {run_id} Event {event_id}"
-                if total_loss is not None:
-                    base_title += f" | Loss={float(total_loss):.4f}"
-
-                if energy is not None:
-                    energy_mev = float(np.squeeze(energy)) * 1e3
-                    base_title += f" | Truth E={energy_mev:.2f} MeV"
-                if uvw is not None:
-                    base_title += f" | FI=({uvw[0]:.1f}, {uvw[1]:.1f}, {uvw[2]:.1f})"
-                if pred_angle is not None and true_angle is not None:
-                    base_title += (
-                        f"\nTruth: θ={true_angle[0]:.2f}, φ={true_angle[1]:.2f} | "
-                        f"Pred: θ={pred_angle[0]:.2f}, φ={pred_angle[1]:.2f}"
-                    )
-
-                # Reconstruct raw values from normalized inputs for visualization
-                recon_npho = np.expm1(raw_n * NphoScale2) * NphoScale
-                recon_time = (raw_t + time_shift) * time_scale
-
-                path_npho = os.path.join(artifact_dir, f"worst_event_{i}_{run_name}_npho.pdf")
-                plot_event_faces(
-                    recon_npho, 
-                    title=f"{base_title}\n(Photon Distribution)", 
-                    savepath=path_npho, 
-                    outer_mode=outer_mode
-                )
-                mlflow.log_artifact(path_npho)
-                
-                path_time = os.path.join(artifact_dir, f"worst_event_{i}_{run_name}_time.pdf")
-                plot_event_time(
-                    recon_npho,
-                    recon_time,
-                    title=f"{base_title}\n(Time Distribution [s, normalized inputs reconstructed])", 
-                    savepath=path_time
-                )
-                mlflow.log_artifact(path_time)
-
-            # --- Metric Plots ---
-            res_pdf = os.path.join(artifact_dir, f"resolution_profile_{run_name}.pdf")
-            plot_resolution_profile(pred_all, true_all, outfile=res_pdf)
-            mlflow.log_artifact(res_pdf)
-
-            # --- Face Weights Plot ---
-            weight_pdf = os.path.join(artifact_dir, f"face_weights_{run_name}.pdf")
-            model_to_plot_weights = final_model.module if hasattr(final_model, "module") else final_model
-            plot_face_weights(model_to_plot_weights, outfile=weight_pdf)
-            mlflow.log_artifact(weight_pdf)
-
-            plot_profile(pred_all[:,0], true_all[:,0], label="Theta", 
-                         outfile=os.path.join(artifact_dir, "profile_theta.pdf"))
-            mlflow.log_artifact(os.path.join(artifact_dir, "profile_theta.pdf"))
-            
-            plot_profile(pred_all[:,1], true_all[:,1], label="Phi", 
-                         outfile=os.path.join(artifact_dir, "profile_phi.pdf"))
-            mlflow.log_artifact(os.path.join(artifact_dir, "profile_phi.pdf"))
-            
-            plot_cos_residuals(pred_all, true_all, outfile=os.path.join(artifact_dir, "cos_res.pdf"))
-            mlflow.log_artifact(os.path.join(artifact_dir, "cos_res.pdf"))
-            
-            plot_pred_truth_scatter(pred_all, true_all, outfile=os.path.join(artifact_dir, "scatter.pdf"))
-            mlflow.log_artifact(os.path.join(artifact_dir, "scatter.pdf"))
-            
-            # --- Saliency Analysis for each face ---
-            try:
-                for arr in iterate_chunks(val_files, tree, [npho_branch, time_branch], step_size=256):
-                    Npho = arr[npho_branch].astype("float32")
-                    Time = arr[time_branch].astype("float32")
-                    Npho = np.maximum(Npho, 0.0)
-                    mask_garbage = (np.abs(Time) > 1.0) | np.isnan(Time)
-                    mask_invalid = (Npho <= 0.0) | mask_garbage
-                    Time[mask_invalid] = sentinel_value
-                    
-                    # Log/Scale
-                    Time_norm = (Time - time_shift) / time_scale
-                    Npho_log = np.log1p(Npho / NphoScale).astype("float32")
-                    X_np = np.stack([Npho_log, Time_norm], axis=-1)
-                    
-                    X_tensor = torch.from_numpy(X_np).to(device)
-                    break
-                
-                print("[INFO] Computing Physics Saliency...")
-                saliency = compute_face_saliency(final_model, X_tensor, device)
-                
-                # Plot
-                sal_pdf = os.path.join(artifact_dir, f"saliency_profile_{run_name}.pdf")
-                plot_saliency_profile(saliency, outfile=sal_pdf)
-                mlflow.log_artifact(sal_pdf)
-                
-            except Exception as e:
-                print(f"[WARN] Saliency calculation failed: {e}")
-            
-            # --- VALIDATION ROOT FILE ---
-            root_data = extra_info.get("root_data", None)
-            if root_data is not None:
-                val_root_path = os.path.join(artifact_dir, f"validation_results_{run_name}.root")
-                print(f"[INFO] Saving validation ROOT file to {val_root_path}...")
-                
-                with uproot.recreate(val_root_path) as f:
-                    branch_types = {k: v.dtype for k, v in root_data.items()}
-                    f.mktree("val_tree", branch_types)
-                    f["val_tree"].extend(root_data)
-                mlflow.log_artifact(val_root_path)
-
-        # --- EXPORT ONNX ---
-        if onnx:
-            onnx_path = os.path.join(artifact_dir, onnx)
-            print(f"[INFO] Exporting ONNX model to {onnx_path}...")
-            
-            final_model.eval()
-            dummy_input = torch.randn(1, 4760, 2, device=device)
-            try:
-                torch.onnx.export(
-                    final_model, 
-                    dummy_input,
-                    onnx_path,
-                    export_params=True,
-                    opset_version=20,
-                    do_constant_folding=True,
-                    input_names=['input'],
-                    output_names=['output'],
-                    dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
-                )
-                if os.path.exists(onnx_path):
-                    mlflow.log_artifact(onnx_path)
-                    print(f"[INFO] ONNX model exported and logged.")
-            except Exception as e:
-                 print(f"[WARN] Failed to export ONNX: {e}")
-
-        writer.close()
-    # ----------------------
-
 
 # ------------------------------------------------------------
-#  Config-based Training Entry
+#  Config-based Training Entry (Main)
 # ------------------------------------------------------------
 def train_with_config(config_path: str, profile: bool = False):
     """
@@ -706,8 +71,8 @@ def train_with_config(config_path: str, profile: bool = False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Using device: {device}")
 
-    # Validate data paths before creating data loaders
-    validate_data_paths(cfg.data.train_path, cfg.data.val_path)
+    # Validate data paths before creating data loaders (use expand_path for consistency)
+    validate_data_paths(cfg.data.train_path, cfg.data.val_path, expand_func=expand_path)
 
     # Check artifact directory for existing files
     run_name = cfg.mlflow.run_name or time.strftime("run_cv2_%Y%m%d_%H%M%S")
@@ -776,9 +141,9 @@ def train_with_config(config_path: str, profile: bool = False):
 
     # --- EMA ---
     ema_model = None
-    if cfg.training.ema_decay > 0.0:
-        print(f"[INFO] Using EMA with decay={cfg.training.ema_decay}")
-        ema_decay = cfg.training.ema_decay
+    ema_decay = cfg.training.ema_decay
+    if ema_decay > 0.0:
+        print(f"[INFO] Using EMA with decay={ema_decay}")
 
         def robust_ema_avg(averaged_model_parameter, model_parameter, num_averaged):
             return ema_decay * averaged_model_parameter + (1.0 - ema_decay) * model_parameter
@@ -820,6 +185,7 @@ def train_with_config(config_path: str, profile: bool = False):
     # --- Resume from checkpoint ---
     start_epoch = 1
     best_val = float("inf")
+    best_ema_state = None  # Track best EMA state for final evaluation
     mlflow_run_id = None
 
     if cfg.checkpoint.resume_from and os.path.exists(cfg.checkpoint.resume_from):
@@ -853,8 +219,17 @@ def train_with_config(config_path: str, profile: bool = False):
             best_val = checkpoint.get("best_val", float("inf"))
             mlflow_run_id = checkpoint.get("mlflow_run_id", None)
 
+            # Load scheduler state if available
+            if scheduler is not None and "scheduler_state_dict" in checkpoint:
+                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                print(f"[INFO] Restored scheduler state.")
+
             if ema_model is not None and "ema_state_dict" in checkpoint:
                 ema_model.load_state_dict(checkpoint["ema_state_dict"])
+
+            # Restore best EMA state if this was the best checkpoint
+            if "best_ema_state" in checkpoint:
+                best_ema_state = checkpoint["best_ema_state"]
 
         elif is_mae_checkpoint:
             print(f"[INFO] Detected MAE checkpoint. Loading encoder for fine-tuning.")
@@ -978,14 +353,14 @@ def train_with_config(config_path: str, profile: bool = False):
 
             # === VALIDATION ===
             val_model = ema_model if ema_model is not None else model
-            val_model.eval()  # Explicitly set eval mode for validation
+            val_model.eval()
             val_metrics, pred_val, true_val, extra_info, val_stats = run_epoch_stream(
                 val_model, optimizer, device, val_loader,
                 scaler=None,
                 train=False,
                 amp=False,
                 task_weights=task_weights,
-                reweighter=None,  # No reweighting for validation
+                reweighter=None,
                 channel_dropout_rate=0.0,
                 grad_clip=0.0,
             )
@@ -999,7 +374,6 @@ def train_with_config(config_path: str, profile: bool = False):
             print(f"[{ep:03d}] tr_loss {tr_loss:.5f} val_loss {val_loss:.5f} lr {current_lr:.2e} time {sec:.1f}s")
 
             # --- Logging ---
-            # System metrics (standardized)
             log_system_metrics_to_mlflow(
                 step=ep,
                 device=device,
@@ -1007,13 +381,11 @@ def train_with_config(config_path: str, profile: bool = False):
                 lr=current_lr,
             )
 
-            # Main metrics
             log_dict = {
                 "train_loss": tr_loss,
                 "val_loss": val_loss,
             }
 
-            # Add task-specific metrics
             for metric_key in ["smooth_l1", "l1", "mse", "cos"]:
                 if metric_key in val_metrics:
                     log_dict[f"val_{metric_key}"] = val_metrics[metric_key]
@@ -1023,7 +395,6 @@ def train_with_config(config_path: str, profile: bool = False):
 
             mlflow.log_metrics(log_dict, step=ep)
 
-            # Log learned task weights (homoscedastic uncertainty)
             if loss_scaler is not None:
                 for task, log_var in loss_scaler.log_vars.items():
                     weight = (0.5 * torch.exp(-log_var)).item()
@@ -1039,45 +410,73 @@ def train_with_config(config_path: str, profile: bool = False):
             # --- Checkpointing ---
             if val_loss < best_val:
                 best_val = val_loss
-                # Clone state to CPU: .cpu() both copies and moves to CPU, freeing GPU memory
                 best_state = {k: v.detach().clone().cpu() for k, v in model.state_dict().items()}
-                torch.save({
+                # Save best EMA state for final evaluation
+                if ema_model is not None:
+                    best_ema_state = {k: v.detach().clone().cpu() for k, v in ema_model.state_dict().items()}
+
+                checkpoint_data = {
                     "epoch": ep,
                     "model_state_dict": model.state_dict(),
                     "ema_state_dict": ema_model.state_dict() if ema_model else None,
                     "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
                     "best_val": best_val,
                     "mlflow_run_id": mlflow_run_id,
-                }, os.path.join(artifact_dir, "checkpoint_best.pth"))
+                }
+                torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_best.pth"))
                 print(f"   [info] New best val_loss: {best_val:.6f}")
 
             # Save last checkpoint
-            torch.save({
+            checkpoint_data = {
                 "epoch": ep,
                 "model_state_dict": model.state_dict(),
                 "ema_state_dict": ema_model.state_dict() if ema_model else None,
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
                 "best_val": best_val,
                 "mlflow_run_id": mlflow_run_id,
-            }, os.path.join(artifact_dir, "checkpoint_last.pth"))
+            }
+            torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_last.pth"))
 
         # --- Final Evaluation & Artifacts ---
-        final_model = ema_model if ema_model is not None else model
-        if ema_model is None and best_state:
+        # Use best model state for final evaluation and export
+        if ema_model is not None and best_ema_state is not None:
+            print("[INFO] Loading best EMA state for final evaluation.")
+            ema_model.load_state_dict(best_ema_state)
+            final_model = ema_model
+        elif best_state is not None:
+            print("[INFO] Loading best model state for final evaluation.")
             model.load_state_dict(best_state)
+            final_model = model
+        else:
+            final_model = ema_model if ema_model is not None else model
+
+        # Run final validation with best model
+        final_model.eval()
+        _, pred_final, true_final, _, _ = run_epoch_stream(
+            final_model, optimizer, device, val_loader,
+            scaler=None,
+            train=False,
+            amp=False,
+            task_weights=task_weights,
+            reweighter=None,
+            channel_dropout_rate=0.0,
+            grad_clip=0.0,
+        )
 
         # Save predictions
-        if pred_val is not None:
+        if pred_final is not None:
             csv_path = os.path.join(artifact_dir, f"predictions_{run_name}.csv")
             pd.DataFrame({
-                "true_theta": true_val[:, 0], "true_phi": true_val[:, 1],
-                "pred_theta": pred_val[:, 0], "pred_phi": pred_val[:, 1]
+                "true_theta": true_final[:, 0], "true_phi": true_final[:, 1],
+                "pred_theta": pred_final[:, 0], "pred_phi": pred_final[:, 1]
             }).to_csv(csv_path, index=False)
             mlflow.log_artifact(csv_path)
 
             # Resolution profile
             res_pdf = os.path.join(artifact_dir, f"resolution_profile_{run_name}.pdf")
-            plot_resolution_profile(pred_val, true_val, outfile=res_pdf)
+            plot_resolution_profile(pred_final, true_final, outfile=res_pdf)
             mlflow.log_artifact(res_pdf)
 
         # ONNX export
@@ -1112,7 +511,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Train XEC Regressor")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config file")
-    parser.add_argument("--profile", action="store_true", help="Enable training profiler to identify bottlenecks")
+    parser.add_argument("--profile", action="store_true", help="Enable training profiler")
     args = parser.parse_args()
 
     train_with_config(args.config, profile=args.profile)
