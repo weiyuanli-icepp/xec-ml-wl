@@ -15,7 +15,7 @@ from lib.plotting import (
     plot_profile,
     plot_face_weights
 )
-from lib.model import XECEncoder
+from lib.model_regressor import XECEncoder
 
 def main():
     parser = argparse.ArgumentParser(description="Generate Analysis Plots from Real Data Inference")

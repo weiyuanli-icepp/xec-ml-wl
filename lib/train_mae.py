@@ -30,7 +30,7 @@ import numpy as np
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
-from .model import XECEncoder
+from .model_regressor import XECEncoder
 from .model_mae import XEC_MAE
 from .engine_mae import run_epoch_mae, run_eval_mae
 from .utils import count_model_params, log_system_metrics_to_mlflow, validate_data_paths, check_artifact_directory

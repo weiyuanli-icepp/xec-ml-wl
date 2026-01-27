@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .model import XECEncoder
+from .model_regressor import XECEncoder
 from .model_blocks import HexNeXtBlock
 from .geom_defs import (
     TOP_HEX_ROWS, BOTTOM_HEX_ROWS,

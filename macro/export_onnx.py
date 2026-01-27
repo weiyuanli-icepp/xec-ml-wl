@@ -17,10 +17,10 @@ import sys
 
 try:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-    from lib.model import XECEncoder, XECMultiHeadModel
+    from lib.model_regressor import XECEncoder, XECMultiHeadModel
 except ImportError:
     print("Error: Could not import 'XECEncoder' or 'XECMultiHeadModel'.")
-    print("Please ensure 'model.py' is in the current directory or python path.")
+    print("Please ensure 'model_regressor.py' is in the current directory or python path.")
     sys.exit(1)
 
 def load_checkpoint_weights(checkpoint_path, prefer_ema=True):

@@ -1214,7 +1214,7 @@ Input x ────────────────────────
 Output
 ```
 
-**Complete DeepHexEncoder** (`lib/model.py:19`):
+**Complete DeepHexEncoder** (`lib/model_regressor.py:19`):
 ```
 Input: (B, 334, 2)  # 334 PMT nodes, 2 channels
     │
@@ -1910,8 +1910,9 @@ graph TD
     %% -- Library Core (Blue) --
     subgraph "Core Library (lib/)"
         %% Main Components
-        Engine(engine.py):::lib
-        Model(model.py):::lib
+        Engine(engine_regressor.py):::lib
+        Model(model_regressor.py):::lib
+        Tasks(tasks/):::lib
         Blocks(model_blocks.py):::lib
 
         %% Config & Data
@@ -2031,10 +2032,11 @@ graph TD
 
 | File | Purpose |
 |------|---------|
-| `lib/model.py` | XECEncoder, XECMultiHeadModel - core model architectures |
+| `lib/model_regressor.py` | XECEncoder, XECMultiHeadModel - core model architectures |
 | `lib/model_mae.py` | XEC_MAE - Masked Autoencoder for self-supervised pretraining |
 | `lib/model_inpainter.py` | XEC_Inpainter - Dead channel recovery model |
-| `lib/engine.py` | Training/validation loop for regression |
+| `lib/engine_regressor.py` | Training/validation loop for regression |
+| `lib/tasks/` | Task-specific handlers (angle, energy, timing, position) |
 | `lib/engine_mae.py` | Training/validation loop for MAE |
 | `lib/engine_inpainter.py` | Training/validation loop for inpainter |
 | `lib/geom_defs.py` | Detector geometry constants and index maps |

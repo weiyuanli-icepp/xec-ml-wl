@@ -222,7 +222,7 @@ def get_active_tasks(config: XECConfig) -> List[str]:
 
 def get_task_weights(config: XECConfig) -> Dict[str, Dict[str, Any]]:
     """
-    Convert task configs to task_weights dict for engine.py.
+    Convert task configs to task_weights dict for engine_regressor.py.
 
     Returns:
         Dict like: {"angle": {"loss_fn": "smooth_l1", "weight": 1.0}, ...}

@@ -1,3 +1,14 @@
+"""
+Training engine for the XEC regressor model.
+
+Provides the main training loop with support for:
+- Multi-task learning (angle, energy, timing, position)
+- Sample reweighting
+- EMA model updates
+- Gradient accumulation
+- AMP (automatic mixed precision)
+"""
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -7,6 +18,9 @@ import warnings
 
 from .utils import iterate_chunks, angles_deg_to_unit_vec, get_pointwise_loss_fn, SimpleProfiler
 from .metrics import eval_stats, eval_resolution
+from .tasks import get_task_handlers
+from .tasks.angle import AngleTaskHandler
+from .tasks.position import PositionTaskHandler
 
 
 def run_epoch_stream(
@@ -51,12 +65,12 @@ def run_epoch_stream(
 
     loss_sums = {"total_opt": 0.0, "smooth_l1": 0.0, "l1": 0.0, "mse": 0.0, "cos": 0.0}
     nobs = 0
-    
+
     epoch_throughput = []
     epoch_data_time  = []
     epoch_batch_time = []
     t_end = time.time()
-    
+
     # Collections for the Final ROOT file
     val_root_data = {
         "run_id": [],        "event_id": [],
@@ -87,6 +101,9 @@ def run_epoch_stream(
     if train:
         optimizer.zero_grad(set_to_none=True)
 
+    # Get task handlers for validation
+    task_handlers = get_task_handlers()  # Get all handlers, filter by active tasks later
+
     # ========================== START OF BATCH LOOP ==========================
     for i_batch, (X_batch, target_dict) in enumerate(loader):
         t_data      = time.time() - t_end
@@ -101,7 +118,7 @@ def run_epoch_stream(
         if train and channel_dropout_rate > 0.0:
             dropout_mask = (torch.rand(X_batch.shape[0], X_batch.shape[1], 1, device=device) < channel_dropout_rate)
             X_batch = X_batch * (~dropout_mask)
-        
+
         # Reweighting (new API with SampleReweighter)
         w = None
         if reweighter is not None:
@@ -122,7 +139,7 @@ def run_epoch_stream(
                 id_ph = np.clip(np.digitize(ph, edges2_phi)   - 1, 0, len(edges2_phi)   - 2)
                 w_np = weights_2d[id_th, id_ph].astype("float32")
                 w = torch.from_numpy(w_np).to(device)
-        
+
         if train:
             profiler.start("forward")
             with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
@@ -131,7 +148,7 @@ def run_epoch_stream(
                 preds = model(X_batch)
                 if not isinstance(preds, dict):
                     preds = {"angle": preds} # Compatibility for single-head models
-                    
+
                 # Multi-task loss computation
                 total_loss = 0.0
                 for task, pred in preds.items():
@@ -232,114 +249,41 @@ def run_epoch_stream(
                 batch_size = X_batch.size(0)
                 sample_total_loss = torch.zeros(batch_size, device=device)  # Per-sample loss for worst case tracking
 
-                # === ANGLE TASK ===
-                if "angle" in preds and "angle" in target_dict:
-                    p_angle = preds["angle"]
-                    t_angle = target_dict["angle"]
-                    t_vec = target_dict.get("emiVec")
+                # Process each task using handlers
+                for handler in task_handlers:
+                    if not handler.is_active(preds, target_dict):
+                        continue
 
-                    l_smooth = criterion_smooth(p_angle, t_angle).mean(dim=-1)
-                    l_l1 = criterion_l1(p_angle, t_angle).mean(dim=-1)
-                    l_mse = criterion_mse(p_angle, t_angle).mean(dim=-1)
+                    # Compute losses using handler
+                    losses = handler.compute_val_loss(
+                        preds, target_dict,
+                        criterion_smooth, criterion_l1, criterion_mse
+                    )
 
-                    loss_sums["smooth_l1"] += l_smooth.sum().item()
-                    loss_sums["l1"] += l_l1.sum().item()
-                    loss_sums["mse"] += l_mse.sum().item()
-                    batch_total_loss += l_smooth.mean()
-                    sample_total_loss += l_smooth  # Accumulate per-sample loss
+                    # Accumulate losses
+                    loss_sums["smooth_l1"] += losses["smooth_l1"].sum().item()
+                    loss_sums["l1"] += losses["l1"].sum().item()
+                    loss_sums["mse"] += losses["mse"].sum().item()
+                    batch_total_loss += losses["batch_loss"]
+                    sample_total_loss += losses["smooth_l1"]
 
-                    # Cosine similarity (angle-specific)
-                    if t_vec is not None:
-                        v_pred = angles_deg_to_unit_vec(p_angle)
-                        cos_sim = torch.sum(v_pred * t_vec, dim=1).clamp(-1.0, 1.0)
-                        l_cos = 1.0 - cos_sim
-                        opening_angle = torch.acos(cos_sim) * (180.0 / np.pi)
-                        loss_sums["cos"] += l_cos.sum().item()
+                    # Collect predictions using handler
+                    handler.collect_predictions(preds, target_dict, val_root_data)
 
-                        val_root_data["opening_angle"].append(opening_angle.cpu().numpy())
+                    # Task-specific additional processing
+                    if isinstance(handler, AngleTaskHandler):
+                        # Compute cosine loss for angle task
+                        cos_losses = handler.compute_cosine_loss(preds, target_dict)
+                        if "cos" in cos_losses:
+                            loss_sums["cos"] += cos_losses["cos"].sum().item()
+                        if "opening_angle" in cos_losses:
+                            val_root_data["opening_angle"].append(
+                                cos_losses["opening_angle"].cpu().numpy()
+                            )
 
-                    val_root_data["pred_theta"].append(p_angle[:, 0].cpu().numpy())
-                    val_root_data["pred_phi"].append(p_angle[:, 1].cpu().numpy())
-                    val_root_data["true_theta"].append(t_angle[:, 0].cpu().numpy())
-                    val_root_data["true_phi"].append(t_angle[:, 1].cpu().numpy())
-
-                # === POSITION TASK (uvwFI) ===
-                if "uvwFI" in preds and "uvwFI" in target_dict:
-                    p_uvw = preds["uvwFI"]
-                    t_uvw = target_dict["uvwFI"]
-
-                    l_pos_smooth = criterion_smooth(p_uvw, t_uvw).mean(dim=-1)
-                    l_pos_l1 = criterion_l1(p_uvw, t_uvw).mean(dim=-1)
-                    l_pos_mse = criterion_mse(p_uvw, t_uvw).mean(dim=-1)
-
-                    loss_sums["smooth_l1"] += l_pos_smooth.sum().item()
-                    loss_sums["l1"] += l_pos_l1.sum().item()
-                    loss_sums["mse"] += l_pos_mse.sum().item()
-                    batch_total_loss += l_pos_smooth.mean()
-                    sample_total_loss += l_pos_smooth  # Accumulate per-sample loss
-
-                    # Collect predictions for artifacts
-                    val_root_data["pred_u"].append(p_uvw[:, 0].cpu().numpy())
-                    val_root_data["pred_v"].append(p_uvw[:, 1].cpu().numpy())
-                    val_root_data["pred_w"].append(p_uvw[:, 2].cpu().numpy())
-                    val_root_data["true_u"].append(t_uvw[:, 0].cpu().numpy())
-                    val_root_data["true_v"].append(t_uvw[:, 1].cpu().numpy())
-                    val_root_data["true_w"].append(t_uvw[:, 2].cpu().numpy())
-
-                    # Per-axis resolution
-                    residual = p_uvw - t_uvw
-                    if "uvw_u_res" not in loss_sums:
-                        loss_sums["uvw_u_res"] = []
-                        loss_sums["uvw_v_res"] = []
-                        loss_sums["uvw_w_res"] = []
-                        loss_sums["uvw_dist"] = []
-                    loss_sums["uvw_u_res"].append(residual[:, 0].cpu().numpy())
-                    loss_sums["uvw_v_res"].append(residual[:, 1].cpu().numpy())
-                    loss_sums["uvw_w_res"].append(residual[:, 2].cpu().numpy())
-                    dist = torch.norm(residual, dim=1)
-                    loss_sums["uvw_dist"].append(dist.cpu().numpy())
-
-                # === ENERGY TASK ===
-                if "energy" in preds and "energy" in target_dict:
-                    p_energy = preds["energy"]
-                    t_energy = target_dict["energy"]
-                    if t_energy.ndim == 1:
-                        t_energy = t_energy.unsqueeze(-1)
-
-                    l_e_smooth = criterion_smooth(p_energy, t_energy).mean(dim=-1)
-                    l_e_l1 = criterion_l1(p_energy, t_energy).mean(dim=-1)
-                    l_e_mse = criterion_mse(p_energy, t_energy).mean(dim=-1)
-
-                    loss_sums["smooth_l1"] += l_e_smooth.sum().item()
-                    loss_sums["l1"] += l_e_l1.sum().item()
-                    loss_sums["mse"] += l_e_mse.sum().item()
-                    batch_total_loss += l_e_smooth.mean()
-                    sample_total_loss += l_e_smooth  # Accumulate per-sample loss
-
-                    # Collect predictions for artifacts
-                    val_root_data["pred_energy"].append(p_energy.squeeze(-1).cpu().numpy())
-                    val_root_data["true_energy"].append(t_energy.squeeze(-1).cpu().numpy())
-
-                # === TIMING TASK ===
-                if "timing" in preds and "timing" in target_dict:
-                    p_timing = preds["timing"]
-                    t_timing = target_dict["timing"]
-                    if t_timing.ndim == 1:
-                        t_timing = t_timing.unsqueeze(-1)
-
-                    l_t_smooth = criterion_smooth(p_timing, t_timing).mean(dim=-1)
-                    l_t_l1 = criterion_l1(p_timing, t_timing).mean(dim=-1)
-                    l_t_mse = criterion_mse(p_timing, t_timing).mean(dim=-1)
-
-                    loss_sums["smooth_l1"] += l_t_smooth.sum().item()
-                    loss_sums["l1"] += l_t_l1.sum().item()
-                    loss_sums["mse"] += l_t_mse.sum().item()
-                    batch_total_loss += l_t_smooth.mean()
-                    sample_total_loss += l_t_smooth  # Accumulate per-sample loss
-
-                    # Collect predictions for artifacts
-                    val_root_data["pred_timing"].append(p_timing.squeeze(-1).cpu().numpy())
-                    val_root_data["true_timing"].append(t_timing.squeeze(-1).cpu().numpy())
+                    if isinstance(handler, PositionTaskHandler):
+                        # Collect residuals for position resolution
+                        handler.collect_residuals(preds, target_dict, loss_sums)
 
                 # === Common data collection ===
                 # Check for required keys and warn if missing
@@ -488,42 +432,17 @@ def run_epoch_stream(
             else:
                 val_root_data[k] = np.array([])
 
-        # === Position task metrics ===
-        if "uvw_u_res" in loss_sums and loss_sums["uvw_u_res"]:
-            u_res = np.concatenate(loss_sums["uvw_u_res"])
-            v_res = np.concatenate(loss_sums["uvw_v_res"])
-            w_res = np.concatenate(loss_sums["uvw_w_res"])
-            dist = np.concatenate(loss_sums["uvw_dist"])
+        # Compute metrics using task handlers
+        for handler in task_handlers:
+            handler_metrics = handler.compute_metrics(val_root_data, loss_sums)
+            val_stats.update(handler_metrics)
 
-            val_stats["uvw_u_res_68pct"] = np.percentile(np.abs(u_res), 68)
-            val_stats["uvw_v_res_68pct"] = np.percentile(np.abs(v_res), 68)
-            val_stats["uvw_w_res_68pct"] = np.percentile(np.abs(w_res), 68)
-            val_stats["uvw_dist_68pct"] = np.percentile(dist, 68)
-
-        # === Angle task metrics ===
+        # Prepare angle predictions for return (for backward compatibility)
         angle_pred_np = None
         angle_true_np = None
         if val_root_data["pred_theta"].size > 0 and val_root_data["pred_phi"].size > 0:
             angle_pred_np = np.stack([val_root_data["pred_theta"], val_root_data["pred_phi"]], axis=1)
             angle_true_np = np.stack([val_root_data["true_theta"], val_root_data["true_phi"]], axis=1)
-
-            angle_stats = eval_stats(angle_pred_np, angle_true_np, print_out=False)
-            val_stats.update(angle_stats)
-
-            res_68, psi_deg = eval_resolution(angle_pred_np, angle_true_np)
-            val_stats["angle_resolution_68pct"] = res_68
-
-        # === Energy task metrics ===
-        if val_root_data["pred_energy"].size > 0 and val_root_data["true_energy"].size > 0:
-            energy_res = val_root_data["pred_energy"] - val_root_data["true_energy"]
-            val_stats["energy_bias"] = np.mean(energy_res)
-            val_stats["energy_res_68pct"] = np.percentile(np.abs(energy_res), 68)
-
-        # === Timing task metrics ===
-        if val_root_data["pred_timing"].size > 0 and val_root_data["true_timing"].size > 0:
-            timing_res = val_root_data["pred_timing"] - val_root_data["true_timing"]
-            val_stats["timing_bias"] = np.mean(timing_res)
-            val_stats["timing_res_68pct"] = np.percentile(np.abs(timing_res), 68)
 
         extra_info["worst_events"] = worst_events_buffer
         extra_info["root_data"] = val_root_data

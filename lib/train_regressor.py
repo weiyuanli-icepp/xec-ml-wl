@@ -23,8 +23,8 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.optim.swa_utils import AveragedModel
 
-from .model import XECEncoder, XECMultiHeadModel, AutomaticLossScaler
-from .engine import run_epoch_stream
+from .model_regressor import XECEncoder, XECMultiHeadModel, AutomaticLossScaler
+from .engine_regressor import run_epoch_stream
 from .dataset import get_dataloader, expand_path
 from .reweighting import create_reweighter_from_config
 from .config import load_config, get_active_tasks, get_task_weights

@@ -32,7 +32,7 @@ import numpy as np
 
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
-from .model import XECEncoder
+from .model_regressor import XECEncoder
 from .model_inpainter import XEC_Inpainter
 from .engine_inpainter import (
     run_epoch_inpainter,

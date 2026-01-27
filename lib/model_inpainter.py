@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .model import XECEncoder
+from .model_regressor import XECEncoder
 from .model_blocks import ConvNeXtV2Block, HexNeXtBlock
 from .geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
