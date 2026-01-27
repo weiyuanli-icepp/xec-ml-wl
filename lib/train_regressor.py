@@ -593,18 +593,19 @@ def train_with_config(config_path: str, profile: bool = None):
                 print(f"   [info] New best val_loss: {best_val:.6f}")
 
                 # Save validation artifacts (plots and CSVs) for best checkpoint
-                worst_events = extra_info.get("worst_events", []) if extra_info else []
-                save_validation_artifacts(
-                    model=val_model,
-                    angle_pred=pred_val,
-                    angle_true=true_val,
-                    root_data=root_data,
-                    active_tasks=active_tasks,
-                    artifact_dir=artifact_dir,
-                    run_name=run_name,
-                    epoch=ep,
-                    worst_events=worst_events,
-                )
+                if getattr(cfg.checkpoint, 'save_artifacts', True):
+                    worst_events = extra_info.get("worst_events", []) if extra_info else []
+                    save_validation_artifacts(
+                        model=val_model,
+                        angle_pred=pred_val,
+                        angle_true=true_val,
+                        root_data=root_data,
+                        active_tasks=active_tasks,
+                        artifact_dir=artifact_dir,
+                        run_name=run_name,
+                        epoch=ep,
+                        worst_events=worst_events,
+                    )
 
             # Save last checkpoint
             checkpoint_data = {
@@ -648,19 +649,22 @@ def train_with_config(config_path: str, profile: bool = None):
         root_data = extra_info.get("root_data", {}) if extra_info else {}
 
         # Save final validation artifacts (without epoch suffix)
-        print("[INFO] Saving final validation artifacts...")
-        worst_events = extra_info.get("worst_events", []) if extra_info else []
-        save_validation_artifacts(
-            model=final_model,
-            angle_pred=angle_pred,
-            angle_true=angle_true,
-            root_data=root_data,
-            active_tasks=active_tasks,
-            artifact_dir=artifact_dir,
-            run_name=run_name,
-            epoch=None,  # No epoch suffix for final artifacts
-            worst_events=worst_events,
-        )
+        if getattr(cfg.checkpoint, 'save_artifacts', True):
+            print("[INFO] Saving final validation artifacts...")
+            worst_events = extra_info.get("worst_events", []) if extra_info else []
+            save_validation_artifacts(
+                model=final_model,
+                angle_pred=angle_pred,
+                angle_true=angle_true,
+                root_data=root_data,
+                active_tasks=active_tasks,
+                artifact_dir=artifact_dir,
+                run_name=run_name,
+                epoch=None,  # No epoch suffix for final artifacts
+                worst_events=worst_events,
+            )
+        else:
+            print("[INFO] Skipping artifact saving (save_artifacts=false)")
 
         # ONNX export
         if cfg.export.onnx:

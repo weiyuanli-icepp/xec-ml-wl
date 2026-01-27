@@ -103,6 +103,7 @@ reweighting:
 checkpoint:
   resume_from: null                 # Path to checkpoint or null
   save_dir: "artifacts"
+  save_artifacts: true              # Save plots, CSVs, worst case displays (disable for quick testing)
 
 # === MLflow ===
 mlflow:

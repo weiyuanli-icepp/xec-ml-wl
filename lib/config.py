@@ -90,6 +90,7 @@ class CheckpointConfig:
     """Checkpoint and saving configuration."""
     resume_from: Optional[str] = None
     save_dir: str = "artifacts"
+    save_artifacts: bool = True  # Save plots, CSVs, worst case displays (disable for quick testing)
 
 
 @dataclass
