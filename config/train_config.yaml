@@ -69,6 +69,12 @@ training:
   channel_dropout_rate: 0.1
   grad_clip: 1.0
   profile: false                    # Enable training profiler to identify bottlenecks
+  # torch.compile mode options:
+  #   "max-autotune" - Maximum optimization, benchmarks many kernel configs (highest memory)
+  #   "reduce-overhead" - Lower compilation overhead and memory, good balance
+  #   "default" - Basic compilation with minimal overhead
+  #   "false" or "none" - Disable compilation, use eager mode (no extra memory)
+  compile: "reduce-overhead"
 
 # === Loss Balancing ===
 loss_balance: "manual"              # "manual" or "auto"

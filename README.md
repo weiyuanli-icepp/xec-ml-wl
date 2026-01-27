@@ -51,6 +51,7 @@ RESUME_FROM="mae_checkpoint.pth" ./scan_param/submit_regressor.sh
    - [G. Sample Reweighting](#g-sample-reweighting)
    - [H. Data Format](#h-data-format)
    - [I. Input Normalization](#i-input-normalization) ⚠️ **Two schemes available**
+   - [J. Data Loading Pipeline](#j-data-loading-pipeline)
 3. [Output & Artifacts](#3-output--artifacts)
 4. [Model Architecture](#4-model-architecture)
    - [A. The Pipeline](#a-the-pipeline)
@@ -781,6 +782,82 @@ raw_npho = npho_scale * (exp(npho_norm * npho_scale2) - 1)
 
 # Time: inverse of linear transform
 raw_time = (time_norm + time_shift) * time_scale
+```
+
+### J. Data Loading Pipeline
+
+The streaming data loader uses a multi-level parallelism strategy to efficiently load large ROOT files:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         ROOT File (millions of events)                   │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    chunksize (step_size) = 256000                        │
+│         Load 256k events at a time from disk into CPU memory             │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+          ┌─────────────────────────┼─────────────────────────┐
+          ▼                         ▼                         ▼
+┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
+│   Worker 0      │       │   Worker 1      │       │   Worker N      │
+│  (process)      │       │  (process)      │       │  (process)      │
+│                 │       │                 │       │                 │
+│  num_workers=8  │  ...  │  Each worker    │  ...  │  Loads chunks   │
+│                 │       │  is a separate  │       │  in parallel    │
+│                 │       │  Python process │       │                 │
+└────────┬────────┘       └────────┬────────┘       └────────┬────────┘
+         │                         │                         │
+         ▼                         ▼                         ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                   num_threads=4 (within each worker)                     │
+│        ThreadPool splits chunk into 4 parts for normalization            │
+│        (log transform, scaling, sentinel values, etc.)                   │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         batch_size = 4096                                │
+│              DataLoader collects samples into GPU batches                │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Parameter Reference
+
+| Parameter | Type | What it does | Memory impact |
+|-----------|------|--------------|---------------|
+| `chunksize` | Disk → CPU | Events loaded from ROOT file at once | **High** - each chunk held in memory |
+| `num_workers` | Processes | Parallel DataLoader workers, each loads its own chunks | **High** - N workers × chunk memory |
+| `num_threads` | Threads | Threads for CPU preprocessing within each worker | Low - shares memory |
+| `batch_size` | CPU → GPU | Samples sent to GPU per iteration | GPU memory |
+
+#### Memory Estimation
+
+```
+CPU Memory ≈ num_workers × chunksize × ~50 bytes/event × prefetch_factor(2)
+           ≈ 8 × 256000 × 50 × 2 ≈ 200 MB per worker ≈ 1.6 GB total
+```
+
+#### Recommended Settings
+
+**Batch jobs (full resources):**
+```yaml
+data:
+  chunksize: 256000
+  num_workers: 8
+  num_threads: 4
+  batch_size: 4096
+```
+
+**Interactive sessions (limited memory):**
+```yaml
+data:
+  chunksize: 64000     # 4x smaller chunks
+  num_workers: 2       # 4x fewer workers
+  num_threads: 4       # Keep same (threads share memory)
+  batch_size: 1024     # Smaller GPU batches
 ```
 
 ---
@@ -2125,20 +2202,50 @@ rm mlruns.db
 export MLFLOW_TRACKING_URI="sqlite:///mlruns.db"
 ```
 
-#### 4. torch.compile Errors (LLVM/Triton)
+#### 4. torch.compile Issues
+
+##### A. Triton Installation Error
 
 **Symptom:** `RuntimeError: Cannot find a working triton installation`
 
 **Solution:** Disable compilation in config:
 ```yaml
 training:
-  compile: false
+  compile: "none"  # or "false"
 ```
 
-Or via environment:
-```bash
-export TORCH_COMPILE=0
+##### B. CPU OOM During Compilation
+
+**Symptom:** SSH session closes, process killed, or system becomes unresponsive during the first epoch (before actual training starts).
+
+**Root Cause:** `torch.compile` with `max-autotune` mode benchmarks many Triton kernel configurations, consuming significant CPU memory during compilation.
+
+**Solution:** Use a less aggressive compile mode:
+```yaml
+training:
+  compile: "reduce-overhead"  # Recommended balance
+  # or
+  compile: "none"  # Disable completely
 ```
+
+##### C. torch.compile Mode Reference
+
+| Mode | Compilation Time | Memory Usage | Runtime Speed | Best For |
+|------|------------------|--------------|---------------|----------|
+| `max-autotune` | Slowest (5-15 min) | Highest | Fastest | Production with ample resources |
+| `reduce-overhead` | Medium (2-5 min) | Medium | Fast | **Recommended default** |
+| `default` | Fast (30-60 sec) | Low | Moderate | Quick iteration |
+| `false`/`none` | None | None | Baseline | Memory-constrained/debugging |
+
+**Mode Details:**
+
+- **`max-autotune`**: Benchmarks 10-50+ kernel variants per operation to find the optimal configuration. Produces verbose Triton autotuning output. Best final performance but highest compilation overhead.
+
+- **`reduce-overhead`**: Uses CUDA graphs to reduce Python overhead. Less aggressive kernel tuning than max-autotune. Good balance of compilation time and runtime speed (~85-90% of max-autotune performance).
+
+- **`default`**: Basic fusion and optimization passes. Fastest compilation with minimal memory overhead. Still provides meaningful speedup over eager mode.
+
+- **`false`/`none`**: Disables torch.compile entirely (eager execution). No compilation overhead. Useful for debugging or when compilation causes issues.
 
 #### 5. NaN Loss During Training
 
