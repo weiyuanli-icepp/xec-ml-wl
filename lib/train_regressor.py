@@ -9,9 +9,11 @@ Usage:
 
 import os
 import time
+import tempfile
 import numpy as np
 import pandas as pd
 import warnings
+import yaml
 import mlflow
 import mlflow.pytorch
 warnings.filterwarnings("ignore", category=FutureWarning, module="mlflow.tracking._tracking_service.utils")
@@ -504,14 +506,218 @@ def train_with_config(config_path: str, profile: bool = False):
 
 
 # ------------------------------------------------------------
+#  CLI Argument Parser
+# ------------------------------------------------------------
+def get_parser():
+    """Build argument parser with config file + CLI overrides."""
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Train XEC Multi-Task Regressor",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Use config file only
+  python -m lib.train_regressor --config config/train_config.yaml
+
+  # Override specific values
+  python -m lib.train_regressor --config config/train_config.yaml --lr 1e-4 --epochs 30
+
+  # Quick test
+  python -m lib.train_regressor --config config/train_config.yaml --train_path /path/train --val_path /path/val
+"""
+    )
+
+    # Config file (required)
+    parser.add_argument("--config", type=str, required=True, help="Path to YAML config file")
+
+    # Data paths (override config)
+    parser.add_argument("--train_path", type=str, default=None, help="Training data path")
+    parser.add_argument("--val_path", type=str, default=None, help="Validation data path")
+    parser.add_argument("--tree", type=str, default=None, help="ROOT tree name")
+    parser.add_argument("--batch_size", type=int, default=None, help="Batch size")
+    parser.add_argument("--chunksize", type=int, default=None, help="Chunk size for streaming")
+    parser.add_argument("--num_workers", type=int, default=None, help="DataLoader workers")
+    parser.add_argument("--num_threads", type=int, default=None, help="CPU preprocessing threads")
+
+    # Normalization (override config)
+    parser.add_argument("--npho_scale", type=float, default=None)
+    parser.add_argument("--npho_scale2", type=float, default=None)
+    parser.add_argument("--time_scale", type=float, default=None)
+    parser.add_argument("--time_shift", type=float, default=None)
+    parser.add_argument("--sentinel_value", type=float, default=None)
+
+    # Model (override config)
+    parser.add_argument("--outer_mode", type=str, default=None, choices=["finegrid", "split"])
+    parser.add_argument("--outer_fine_pool", type=int, nargs=2, default=None, help="Pooling kernel [h, w]")
+    parser.add_argument("--hidden_dim", type=int, default=None)
+    parser.add_argument("--drop_path_rate", type=float, default=None)
+
+    # Training (override config)
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--weight_decay", type=float, default=None)
+    parser.add_argument("--warmup_epochs", type=int, default=None)
+    parser.add_argument("--ema_decay", type=float, default=None)
+    parser.add_argument("--channel_dropout_rate", type=float, default=None)
+    parser.add_argument("--grad_clip", type=float, default=None)
+    parser.add_argument("--grad_accum_steps", type=int, default=None)
+
+    # Tasks (override config)
+    parser.add_argument("--tasks", type=str, nargs="+", default=None,
+                        choices=["angle", "energy", "timing", "uvwFI"],
+                        help="Enable specific tasks")
+    parser.add_argument("--loss_balance", type=str, default=None, choices=["manual", "auto"])
+
+    # Checkpoint (override config)
+    parser.add_argument("--resume_from", type=str, default=None, help="Checkpoint to resume from")
+    parser.add_argument("--save_dir", type=str, default=None, help="Directory to save artifacts")
+
+    # MLflow (override config)
+    parser.add_argument("--mlflow_experiment", type=str, default=None, help="MLflow experiment name")
+    parser.add_argument("--run_name", type=str, default=None, help="MLflow run name")
+
+    # Export (override config)
+    parser.add_argument("--onnx", type=str, default=None, help="ONNX filename (or 'null' to disable)")
+
+    # Runtime
+    parser.add_argument("--profile", action="store_true", help="Enable training profiler")
+
+    return parser
+
+
+def apply_cli_overrides(cfg, args):
+    """Apply CLI argument overrides to config object."""
+    # Data
+    if args.train_path is not None:
+        cfg.data.train_path = args.train_path
+    if args.val_path is not None:
+        cfg.data.val_path = args.val_path
+    if args.tree is not None:
+        cfg.data.tree_name = args.tree
+    if args.batch_size is not None:
+        cfg.data.batch_size = args.batch_size
+    if args.chunksize is not None:
+        cfg.data.chunksize = args.chunksize
+    if args.num_workers is not None:
+        cfg.data.num_workers = args.num_workers
+    if args.num_threads is not None:
+        cfg.data.num_threads = args.num_threads
+
+    # Normalization
+    if args.npho_scale is not None:
+        cfg.normalization.npho_scale = args.npho_scale
+    if args.npho_scale2 is not None:
+        cfg.normalization.npho_scale2 = args.npho_scale2
+    if args.time_scale is not None:
+        cfg.normalization.time_scale = args.time_scale
+    if args.time_shift is not None:
+        cfg.normalization.time_shift = args.time_shift
+    if args.sentinel_value is not None:
+        cfg.normalization.sentinel_value = args.sentinel_value
+
+    # Model
+    if args.outer_mode is not None:
+        cfg.model.outer_mode = args.outer_mode
+    if args.outer_fine_pool is not None:
+        cfg.model.outer_fine_pool = list(args.outer_fine_pool)
+    if args.hidden_dim is not None:
+        cfg.model.hidden_dim = args.hidden_dim
+    if args.drop_path_rate is not None:
+        cfg.model.drop_path_rate = args.drop_path_rate
+
+    # Training
+    if args.epochs is not None:
+        cfg.training.epochs = args.epochs
+    if args.lr is not None:
+        cfg.training.lr = args.lr
+    if args.weight_decay is not None:
+        cfg.training.weight_decay = args.weight_decay
+    if args.warmup_epochs is not None:
+        cfg.training.warmup_epochs = args.warmup_epochs
+    if args.ema_decay is not None:
+        cfg.training.ema_decay = args.ema_decay
+    if args.channel_dropout_rate is not None:
+        cfg.training.channel_dropout_rate = args.channel_dropout_rate
+    if args.grad_clip is not None:
+        cfg.training.grad_clip = args.grad_clip
+    if args.grad_accum_steps is not None:
+        cfg.training.grad_accum_steps = args.grad_accum_steps
+
+    # Tasks
+    if args.tasks is not None:
+        # Disable all tasks first, then enable specified ones
+        from .config import TaskConfig
+        for task_name in ["angle", "energy", "timing", "uvwFI"]:
+            if task_name not in cfg.tasks:
+                cfg.tasks[task_name] = TaskConfig(enabled=False)
+            else:
+                cfg.tasks[task_name].enabled = False
+        for task_name in args.tasks:
+            if task_name not in cfg.tasks:
+                cfg.tasks[task_name] = TaskConfig(enabled=True)
+            else:
+                cfg.tasks[task_name].enabled = True
+
+    if args.loss_balance is not None:
+        cfg.loss_balance = args.loss_balance
+
+    # Checkpoint
+    if args.resume_from is not None:
+        cfg.checkpoint.resume_from = args.resume_from
+    if args.save_dir is not None:
+        cfg.checkpoint.save_dir = args.save_dir
+
+    # MLflow
+    if args.mlflow_experiment is not None:
+        cfg.mlflow.experiment = args.mlflow_experiment
+    if args.run_name is not None:
+        cfg.mlflow.run_name = args.run_name
+
+    # Export
+    if args.onnx is not None:
+        cfg.export.onnx = None if args.onnx.lower() == "null" else args.onnx
+
+    return cfg
+
+
+# ------------------------------------------------------------
 #  CLI Entry Point
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Train XEC Regressor")
-    parser.add_argument("--config", type=str, required=True, help="Path to YAML config file")
-    parser.add_argument("--profile", action="store_true", help="Enable training profiler")
+    parser = get_parser()
     args = parser.parse_args()
 
-    train_with_config(args.config, profile=args.profile)
+    # Load config and apply CLI overrides
+    cfg = load_config(args.config)
+    cfg = apply_cli_overrides(cfg, args)
+
+    # Save merged config to temp file for train_with_config
+    def config_to_dict(cfg):
+        """Convert config dataclass to dict for YAML serialization."""
+        result = {}
+        for section in ["data", "normalization", "model", "training", "checkpoint", "mlflow", "export"]:
+            if hasattr(cfg, section):
+                obj = getattr(cfg, section)
+                result[section] = {k: v for k, v in obj.__dict__.items()}
+        result["loss_balance"] = cfg.loss_balance
+        # Tasks
+        result["tasks"] = {}
+        for task_name, task_cfg in cfg.tasks.items():
+            result["tasks"][task_name] = {k: v for k, v in task_cfg.__dict__.items()}
+        # Reweighting
+        if hasattr(cfg, "reweighting"):
+            result["reweighting"] = {}
+            for task_name in ["angle", "energy", "timing", "uvwFI"]:
+                task_rw = getattr(cfg.reweighting, task_name)
+                result["reweighting"][task_name] = {k: v for k, v in task_rw.__dict__.items()}
+        return result
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+        yaml.dump(config_to_dict(cfg), f, default_flow_style=False)
+        temp_config_path = f.name
+
+    try:
+        train_with_config(temp_config_path, profile=args.profile)
+    finally:
+        if os.path.exists(temp_config_path):
+            os.unlink(temp_config_path)

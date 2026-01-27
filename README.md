@@ -15,22 +15,22 @@ This model respects the complex topology of the detector by combining:
 
 | Task | Command | Config |
 |------|---------|--------|
-| **Train Regressor** | `./scan_param/submit_job.sh run_name ../config/train_config.yaml a100-daily 12:00:00` | `config/train_config.yaml` |
-| **MAE Pretraining** | `python -m lib.train_mae --config config/mae_config.yaml` | `config/mae_config.yaml` |
-| **Inpainter Training** | `python -m lib.train_inpainter --config config/inpainter_config.yaml` | `config/inpainter_config.yaml` |
+| **Train Regressor** | `./scan_param/run_regressor.sh` | `config/train_config.yaml` |
+| **MAE Pretraining** | `./scan_param/run_mae.sh` | `config/mae_config.yaml` |
+| **Inpainter Training** | `./scan_param/run_inpainter.sh` | `config/inpainter_config.yaml` |
 | **ONNX Export** | `python macro/export_onnx.py checkpoint.pth --output model.onnx` | - |
 | **MLflow UI** | `mlflow ui --backend-store-uri sqlite:///mlruns.db --port 5000` | - |
 
-**Common Config Overrides:**
+**Common Config Overrides (set env vars before running submit script):**
 ```bash
 # Reduce batch size (OOM fix)
-BATCH=512 ./submit_job.sh run_name config.yaml
+BATCH_SIZE=512 ./scan_param/submit_regressor.sh
 
 # Enable multiple tasks
-TASKS="angle energy" ./submit_job.sh run_name config.yaml
+TASKS="angle energy" ./scan_param/submit_regressor.sh
 
 # Use MAE weights for fine-tuning
-RESUME_FROM="mae_checkpoint.pth" ./submit_job.sh run_name config.yaml
+RESUME_FROM="mae_checkpoint.pth" ./scan_param/submit_regressor.sh
 ```
 
 **Important:** There are two [normalization schemes](#i-input-normalization). Use **legacy** for existing regressor models, **new** for MAE/inpainter experiments.
@@ -180,7 +180,7 @@ $ python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA:
 ### 3. Prepare Batch Job
 
 ```bash
-$ chmod +x start_jupyter_xec_gpu.sh submit_job.sh run_scan.sh
+$ chmod +x start_jupyter_xec_gpu.sh scan_param/*.sh
 ```
 
 ---
@@ -189,15 +189,23 @@ $ chmod +x start_jupyter_xec_gpu.sh submit_job.sh run_scan.sh
 
 ### A. Batch Training
 
-We use `submit_job.sh`, which automatically detects the CPU architecture of the allocated node and activates the correct environment (x86 or ARM). Training is now **config-based** using YAML files.
+All training scripts follow a consistent pattern:
+- `run_*.sh` - Set environment variables and call submit script
+- `submit_*.sh` - Creates and submits SLURM job
 
-#### 1. Quick Submission
+The submit scripts automatically detect CPU architecture and activate the correct conda environment (x86 or ARM).
+
+#### 1. Quick Submission (Regressor)
 
 ```bash
-# Usage:
-# ./submit_job.sh [RUN_NAME] [CONFIG_FILE] [PARTITION] [TIME]
 $ cd scan_param
-$ ./submit_job.sh test_run_01 ../config/train_config.yaml a100-daily 12:00:00
+
+# Edit run_regressor.sh to set your parameters, then:
+$ ./run_regressor.sh
+
+# Or set env vars directly:
+$ export RUN_NAME="my_run" CONFIG_PATH="config/train_config.yaml" PARTITION="a100-daily"
+$ ./submit_regressor.sh
 ```
 
 #### 2. Config + CLI Overrides
@@ -206,10 +214,10 @@ Override specific parameters via environment variables:
 
 ```bash
 # Override epochs and learning rate
-$ EPOCHS=100 LR=1e-4 ./submit_job.sh my_run ../config/train_config.yaml a100-daily 12:00:00
+$ EPOCHS=100 LR=1e-4 ./submit_regressor.sh
 
 # Enable multiple tasks
-$ TASKS="angle energy" ./submit_job.sh multi_task_run ../config/train_config.yaml a100-daily 12:00:00
+$ TASKS="angle energy" ./submit_regressor.sh
 ```
 
 #### 3. Direct Python Training
@@ -218,8 +226,8 @@ $ TASKS="angle energy" ./submit_job.sh multi_task_run ../config/train_config.yam
 # Config-based training
 $ python -m lib.train_regressor --config config/train_config.yaml
 
-# CLI with config file
-$ python scan_param/run_training_cli.py --config config/train_config.yaml --train_path /path/train --val_path /path/val
+# With CLI overrides
+$ python -m lib.train_regressor --config config/train_config.yaml --lr 1e-4 --epochs 30
 ```
 
 #### 4. Optimization Best Practices
@@ -1588,9 +1596,10 @@ graph TD
     %% -- Training & Scanning (Pink) --
     subgraph "HP-Scanning (scan_param/)"
         RunScan(run_scan.sh):::scan
-        Submit(submit_job.sh):::scan
-        CLI(run_training_cli.py):::scan
-        RunInpaint(run_inpainter.py):::scan
+        SubmitReg(submit_regressor.sh):::scan
+        RunReg(run_regressor.sh):::scan
+        SubmitMae(submit_mae.sh):::scan
+        SubmitInpaint(submit_inpainter.sh):::scan
         TrainScript(lib/train_regressor.py):::lib
     end
 
@@ -1647,16 +1656,16 @@ graph TD
     %% -- Dependencies --
 
     %% 0. Config Flow
-    TrainYaml --> CLI
+    TrainYaml --> TrainScript
     MaeYaml --> TrainMae
     InpaintYaml --> TrainInpaint
-    InpaintYaml --> RunInpaint
 
     %% 1. Scanning Flow
-    RunScan --> Submit
-    Submit --> CLI
-    CLI --> TrainScript
-    RunInpaint --> TrainInpaint
+    RunScan --> SubmitReg
+    RunReg --> SubmitReg
+    SubmitReg --> TrainScript
+    SubmitMae --> TrainMae
+    SubmitInpaint --> TrainInpaint
 
     %% 2. Main Script Orchestration (The Glue)
     TrainScript -->|Runs Loop| Engine
@@ -1742,10 +1751,10 @@ graph TD
 **Solutions:**
 ```bash
 # Reduce batch size
-BATCH=512 ./submit_job.sh my_run config.yaml
+BATCH_SIZE=512 ./scan_param/submit_regressor.sh
 
 # For MAE (decoder uses more memory)
-BATCH=1024 python -m lib.train_mae --config config/mae_config.yaml
+BATCH=1024 ./scan_param/submit_mae.sh
 
 # Use gradient accumulation for effective larger batch
 # effective_batch = batch_size × grad_accum_steps

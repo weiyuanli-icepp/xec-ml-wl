@@ -23,18 +23,18 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 ### Training
 ```bash
-# Config-based training
+# Config-based training (direct)
 python -m lib.train_regressor --config config/train_config.yaml
 
-# CLI with config file
-python scan_param/run_training_cli.py --config config/train_config.yaml --train_path /path/train --val_path /path/val
+# With CLI overrides
+python -m lib.train_regressor --config config/train_config.yaml --lr 1e-4 --epochs 30
 
-# SLURM batch submission
-./scan_param/submit_job.sh [RUN_NAME] [CONFIG_FILE] [PARTITION] [TIME]
-./scan_param/submit_job.sh my_run ../config/train_config.yaml a100-daily 12:00:00
+# SLURM batch submission (set env vars, then run submit script)
+export RUN_NAME="my_run" CONFIG_PATH="config/train_config.yaml" PARTITION="a100-daily"
+./scan_param/submit_regressor.sh
 
-# Override parameters via environment
-EPOCHS=100 LR=1e-4 ./scan_param/submit_job.sh my_run ../config/train_config.yaml
+# Or use the example run script
+./scan_param/run_regressor.sh
 ```
 
 ### MAE Pre-training

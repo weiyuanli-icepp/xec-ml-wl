@@ -26,7 +26,7 @@ export MLFLOW_EXPERIMENT="gamma_angle"
 export TASKS=""  # Empty = use config default (angle only)
 
 # RUN_NAME="runs100_GH_test_sched${SCHEDULER}"
-# ./submit_job.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LOSSTYPE" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
+# ./submit_regressor.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LOSSTYPE" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
 
 # Items to scan
 # use constant learning rate for the test phase
@@ -75,13 +75,13 @@ export TASKS=""  # Empty = use config default (angle only)
 #         echo "Submitting job for Loss Type: $LT"
 
 #         # Pass the new params as env vars
-#         # LOSS_BETA=$LB ./submit_job.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LT" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
+#         # LOSS_BETA=$LB ./submit_regressor.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LT" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
 #         export DROP_PATH=$DP
 #         export WEIGHT_DECAY=$WD
 #         export EMA_DECAY=$EMA
 
 #         # Submit the job
-#         ./submit_job.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LT" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
+#         ./submit_regressor.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LT" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
 
 #         sleep 1
 #     done
@@ -95,7 +95,7 @@ export TASKS=""  # Empty = use config default (angle only)
 # LB="0.1"
 # RUN_NAME="runs100_smoothl1_beta${LB}_test"
 # RESUME_FROM=""
-# LOSS_BETA=$LB ./submit_job.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LOSSTYPE" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
+# LOSS_BETA=$LB ./submit_regressor.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LOSSTYPE" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
 
 # Full Scan
 # LOSS_BETAS=("0.1" "0.5" "1.0" "2.0")
@@ -116,7 +116,7 @@ export TASKS=""  # Empty = use config default (angle only)
 #     echo "Submitting job for Loss Type: $LOSSTYPE with Beta: $LB"
     
 #     # Pass the new params as env vars
-#     LOSS_BETA=$LB ./submit_job.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LOSSTYPE" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
+#     LOSS_BETA=$LB ./submit_regressor.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LOSSTYPE" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
     
 #     sleep 1
 # done
@@ -180,7 +180,7 @@ for WD in "${WEIGHT_DECAYS[@]}"; do
             export LR=$LR
 
             # Submit the job using new config-based interface
-            ./submit_job.sh "$RUN_NAME" "$CONFIG_FILE" "$PARTITION" "$TIME"
+            ./submit_regressor.sh "$RUN_NAME" "$CONFIG_FILE" "$PARTITION" "$TIME"
 
             sleep 1
         done
@@ -206,7 +206,7 @@ done
 #         echo "Submitting job for Reweight Mode: $RM | Loss Type: $LT"
         
 #         # Pass the new params as env vars
-#         REWEIGHT_MODE=$RM LOSSTYPE=$LT ./submit_job.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LOSSTYPE" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
+#         REWEIGHT_MODE=$RM LOSSTYPE=$LT ./submit_regressor.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LOSSTYPE" "$LR" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
         
 #         sleep 1
 #     done
@@ -242,7 +242,7 @@ done
 #     echo "Submitting job for Learning Rate: $LEARNING_RATE"
     
 #     # Pass the new param as an env var
-#     ./submit_job.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LOSSTYPE" "$LEARNING_RATE" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
+#     ./submit_regressor.sh "$RUN_NAME" "$MODEL" "$EPOCHS" "$REWEIGHT_MODE" "$LOSSTYPE" "$LEARNING_RATE" "$BATCH" "$RESUME_FROM" "$PARTITION" "$TIME"
     
 #     sleep 1
 # done
