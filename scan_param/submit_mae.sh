@@ -1,31 +1,50 @@
 #!/usr/bin/env bash
-# Usage: ./submit_mae.sh [RUN_NAME] [EPOCHS] [BATCH] [MASK_RATIO] [RESUME_FROM] [PARTITION] [TIME]
+# Config-driven MAE submission script
+# Usage: ./submit_mae.sh
+# Environment variables:
+#   CONFIG_PATH  - Path to config YAML (required, default: config/mae_config.yaml)
+#   RUN_NAME     - Run name (optional, defaults to config or auto-generated)
+#   PARTITION    - SLURM partition (default: a100-daily)
+#   TIME         - Job time limit (default: 23:00:00)
+#   RESUME_FROM  - Checkpoint to resume from (optional)
 
 set -euo pipefail
 
-RUN_NAME="${RUN_NAME:-mae_default}"
-EPOCHS="${EPOCHS:-100}"
-BATCH="${BATCH:-1024}"
-CHUNK_SIZE="${CHUNK_SIZE:-256000}"
-MASK_RATIO="${MASK_RATIO:-0.65}"
-RESUME_FROM="${RESUME_FROM:-}"
+CONFIG_PATH="${CONFIG_PATH:-config/mae_config.yaml}"
 PARTITION="${PARTITION:-a100-daily}"
 TIME="${TIME:-23:00:00}"
-CONFIG_PATH="${CONFIG_PATH:-config/mae_config.yaml}"
-NPHO_SCALE="${NPHO_SCALE:-0.58}"
-NPHO_SCALE2="${NPHO_SCALE2:-1.0}"
-TIME_SCALE="${TIME_SCALE:-6.5e-8}"
-TIME_SHIFT="${TIME_SHIFT:-0.5}"
-SENTINEL_VALUE="${SENTINEL_VALUE:--5.0}"
-LOSS_FN="${LOSS_FN:-}"
-TIME_WEIGHT="${TIME_WEIGHT:-}"
-AUTO_WEIGHT="${AUTO_WEIGHT:-false}"
-LR="${LR:-}"
-LR_SCHEDULER="${LR_SCHEDULER:-}"
-LR_MIN="${LR_MIN:-}"
-TRAIN_PATH="${TRAIN_PATH:-~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root}"
-VAL_PATH="${VAL_PATH:-~/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root}"
-MLFLOW_EXPERIMENT="${MLFLOW_EXPERIMENT:-gamma_mae}"
+RESUME_FROM="${RESUME_FROM:-}"
+RUN_NAME="${RUN_NAME:-}"
+
+# Validate config file exists
+if [[ ! -f "$CONFIG_PATH" ]]; then
+    echo "[ERROR] Config file not found: $CONFIG_PATH"
+    exit 1
+fi
+
+# Helper function to extract value from YAML (simple grep-based, handles most cases)
+yaml_get() {
+    local key="$1"
+    local file="$2"
+    grep -E "^\s*${key}:" "$file" 2>/dev/null | head -1 | sed 's/.*:\s*//' | sed 's/\s*#.*//' | tr -d '"' | tr -d "'"
+}
+
+# Extract key values from config for display
+CFG_EPOCHS=$(yaml_get "epochs" "$CONFIG_PATH")
+CFG_BATCH=$(yaml_get "batch_size" "$CONFIG_PATH")
+CFG_MASK_RATIO=$(yaml_get "mask_ratio" "$CONFIG_PATH")
+CFG_LR=$(yaml_get "lr" "$CONFIG_PATH")
+CFG_EXPERIMENT=$(yaml_get "experiment" "$CONFIG_PATH")
+CFG_RUN_NAME=$(yaml_get "run_name" "$CONFIG_PATH")
+
+# Use RUN_NAME from env, or from config, or generate timestamp
+if [[ -z "$RUN_NAME" ]]; then
+    if [[ -n "$CFG_RUN_NAME" && "$CFG_RUN_NAME" != "null" ]]; then
+        RUN_NAME="$CFG_RUN_NAME"
+    else
+        RUN_NAME="mae_$(date +%Y%m%d_%H%M%S)"
+    fi
+fi
 
 ENV_NAME="xec-ml-wl"
 if [[ "$PARTITION" == gh* ]]; then ENV_NAME="xec-ml-wl-gh"; fi
@@ -34,25 +53,18 @@ LOG_DIR="slurm_logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/${RUN_NAME}_%j.out"
 
-AUTO_CHANNEL_FLAG=""
-case "${AUTO_WEIGHT}" in
-    true|True|TRUE|1|yes|YES)
-        AUTO_CHANNEL_FLAG="--auto_channel_weight"
-        ;;
-esac
+echo "[SUBMIT] MAE Pre-training"
+echo "  Config:     $CONFIG_PATH"
+echo "  Run:        $RUN_NAME"
+echo "  Experiment: ${CFG_EXPERIMENT:-mae_pretraining}"
+echo "  Epochs:     ${CFG_EPOCHS:-?} | Batch: ${CFG_BATCH:-?} | Mask: ${CFG_MASK_RATIO:-?} | LR: ${CFG_LR:-?}"
+echo "  Partition:  $PARTITION | Time: $TIME"
+[[ -n "$RESUME_FROM" ]] && echo "  Resume:     $RESUME_FROM"
 
-LOSS_FN_FLAG=""
-if [[ -n "${LOSS_FN}" ]]; then LOSS_FN_FLAG="--loss_fn ${LOSS_FN}"; fi
-TIME_WEIGHT_FLAG=""
-if [[ -n "${TIME_WEIGHT}" ]]; then TIME_WEIGHT_FLAG="--time_weight ${TIME_WEIGHT}"; fi
-LR_FLAG=""
-if [[ -n "${LR}" ]]; then LR_FLAG="--lr ${LR}"; fi
-LR_SCHEDULER_FLAG=""
-if [[ -n "${LR_SCHEDULER}" ]]; then LR_SCHEDULER_FLAG="--lr_scheduler ${LR_SCHEDULER}"; fi
-LR_MIN_FLAG=""
-if [[ -n "${LR_MIN}" ]]; then LR_MIN_FLAG="--lr_min ${LR_MIN}"; fi
-
-echo "[SUBMIT] MAE Run: $RUN_NAME | Exp: $MLFLOW_EXPERIMENT | Mask: $MASK_RATIO | Config: $CONFIG_PATH"
+RESUME_FLAG=""
+if [[ -n "${RESUME_FROM}" ]]; then
+    RESUME_FLAG="--resume_from ${RESUME_FROM}"
+fi
 
 sbatch <<EOF
 #!/bin/bash
@@ -97,6 +109,7 @@ fi
 
 cd \$HOME/meghome/xec-ml-wl
 echo "[JOB] Directory: \$(pwd)"
+echo "[JOB] Config: ${CONFIG_PATH}"
 
 # Use SQLite backend (recommended over deprecated file-based backend)
 export MLFLOW_TRACKING_URI="sqlite:///\$(pwd)/mlruns.db"
@@ -104,32 +117,12 @@ export MLFLOW_TRACKING_URI="sqlite:///\$(pwd)/mlruns.db"
 # Create artifacts dir
 mkdir -p artifacts/${RUN_NAME}
 
-echo "[JOB] Starting MAE Pre-training with Batch=${BATCH} Chunk=${CHUNK_SIZE}..."
+echo "[JOB] Starting MAE Pre-training..."
 python -m lib.train_mae \\
     --config "${CONFIG_PATH}" \\
-    --train_root "${TRAIN_PATH}" \\
-    --val_root "${VAL_PATH}" \\
     --save_path "artifacts/${RUN_NAME}" \\
-    --epochs ${EPOCHS} \\
-    --batch_size ${BATCH} \\
-    --chunksize ${CHUNK_SIZE} \\
-    --mask_ratio ${MASK_RATIO} \\
-    --npho_scale ${NPHO_SCALE} \\
-    --npho_scale2 ${NPHO_SCALE2} \\
-    --time_scale ${TIME_SCALE} \\
-    --time_shift ${TIME_SHIFT} \\
-    --sentinel_value ${SENTINEL_VALUE} \\
-    --outer_mode "finegrid" \\
-    --outer_fine_pool 3 3 \\
-    --mlflow_experiment "${MLFLOW_EXPERIMENT}" \\
     --mlflow_run_name "${RUN_NAME}" \\
-    ${LOSS_FN_FLAG} \\
-    ${TIME_WEIGHT_FLAG} \\
-    ${AUTO_CHANNEL_FLAG} \\
-    ${LR_FLAG} \\
-    ${LR_SCHEDULER_FLAG} \\
-    ${LR_MIN_FLAG} \\
-    $( [[ -n "${RESUME_FROM}" ]] && echo "--resume_from ${RESUME_FROM}" )
+    ${RESUME_FLAG}
 
 echo "[JOB] Finished."
 EOF

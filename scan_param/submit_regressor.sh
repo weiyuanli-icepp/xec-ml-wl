@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
+# Config-driven Regressor submission script
 # Usage: ./submit_regressor.sh
 #
-# Set parameters via environment variables before calling this script.
-# See run_regressor.sh for example usage.
+# Environment variables:
+#   CONFIG_PATH  - Path to YAML config file (default: config/train_config.yaml)
+#   RUN_NAME     - Run name (optional, defaults to config or auto-generated)
+#   PARTITION    - SLURM partition (default: a100-daily)
+#   TIME         - Job time limit (default: 12:00:00)
 #
-# Required:
-#   CONFIG_PATH - Path to YAML config file
-#
-# Optional overrides:
-#   RUN_NAME, TRAIN_PATH, VAL_PATH, EPOCHS, LR, BATCH_SIZE, etc.
+# Optional CLI overrides (empty = use config value):
+#   TRAIN_PATH, VAL_PATH, EPOCHS, LR, BATCH_SIZE, RESUME_FROM, etc.
 
 set -euo pipefail
 
@@ -16,7 +17,7 @@ set -euo pipefail
 CONFIG_PATH="${CONFIG_PATH:-config/train_config.yaml}"
 
 # Job settings
-RUN_NAME="${RUN_NAME:-regressor_run}"
+RUN_NAME="${RUN_NAME:-}"
 PARTITION="${PARTITION:-a100-daily}"
 TIME="${TIME:-12:00:00}"
 
@@ -42,6 +43,35 @@ OUTER_FINE_POOL="${OUTER_FINE_POOL:-}"
 HIDDEN_DIM="${HIDDEN_DIM:-}"
 DROP_PATH_RATE="${DROP_PATH_RATE:-}"
 
+# Validate config file exists
+if [[ ! -f "$CONFIG_PATH" ]]; then
+    echo "[ERROR] Config file not found: $CONFIG_PATH"
+    exit 1
+fi
+
+# Helper function to extract value from YAML (simple grep-based, handles most cases)
+yaml_get() {
+    local key="$1"
+    local file="$2"
+    grep -E "^\s*${key}:" "$file" 2>/dev/null | head -1 | sed 's/.*:\s*//' | sed 's/\s*#.*//' | tr -d '"' | tr -d "'"
+}
+
+# Extract key values from config for display
+CFG_EPOCHS=$(yaml_get "epochs" "$CONFIG_PATH")
+CFG_BATCH=$(yaml_get "batch_size" "$CONFIG_PATH")
+CFG_LR=$(yaml_get "lr" "$CONFIG_PATH")
+CFG_EXPERIMENT=$(yaml_get "experiment" "$CONFIG_PATH")
+CFG_RUN_NAME=$(yaml_get "run_name" "$CONFIG_PATH")
+
+# Use RUN_NAME from env, or from config, or generate timestamp
+if [[ -z "$RUN_NAME" ]]; then
+    if [[ -n "$CFG_RUN_NAME" && "$CFG_RUN_NAME" != "null" ]]; then
+        RUN_NAME="$CFG_RUN_NAME"
+    else
+        RUN_NAME="reg_$(date +%Y%m%d_%H%M%S)"
+    fi
+fi
+
 # Determine environment based on partition
 if [[ "$PARTITION" == gh* ]]; then
     ENV_NAME="xec-ml-wl-gh"
@@ -53,7 +83,18 @@ LOG_DIR="slurm_logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/${RUN_NAME}_%j.out"
 
-echo "[SUBMIT] Regressor Run: $RUN_NAME | Config: $CONFIG_PATH | Partition: $PARTITION"
+# Show effective values (override if set, otherwise config)
+EFF_EPOCHS="${EPOCHS:-${CFG_EPOCHS:-?}}"
+EFF_BATCH="${BATCH_SIZE:-${CFG_BATCH:-?}}"
+EFF_LR="${LR:-${CFG_LR:-?}}"
+EFF_EXPERIMENT="${MLFLOW_EXPERIMENT:-${CFG_EXPERIMENT:-gamma_angle}}"
+
+echo "[SUBMIT] Regressor Training"
+echo "  Config:     $CONFIG_PATH"
+echo "  Run:        $RUN_NAME"
+echo "  Experiment: $EFF_EXPERIMENT"
+echo "  Epochs:     $EFF_EPOCHS | Batch: $EFF_BATCH | LR: $EFF_LR"
+echo "  Partition:  $PARTITION | Time: $TIME"
 
 # Build CLI override arguments
 CLI_ARGS=""
@@ -78,7 +119,10 @@ CLI_ARGS=""
 [ -n "$HIDDEN_DIM" ] && CLI_ARGS+=" --hidden_dim $HIDDEN_DIM"
 [ -n "$DROP_PATH_RATE" ] && CLI_ARGS+=" --drop_path_rate $DROP_PATH_RATE"
 
-echo "[SUBMIT] CLI overrides:$CLI_ARGS"
+if [ -n "$CLI_ARGS" ]; then
+    echo "  Overrides: $CLI_ARGS"
+fi
+[[ -n "$RESUME_FROM" ]] && echo "  Resume:     $RESUME_FROM"
 
 sbatch <<EOF
 #!/bin/bash
@@ -125,6 +169,7 @@ fi
 
 cd \$HOME/meghome/xec-ml-wl
 echo "[JOB] Directory: \$(pwd)"
+echo "[JOB] Config: ${CONFIG_PATH}"
 
 # Use SQLite backend for MLflow
 export MLFLOW_TRACKING_URI="sqlite:///\$(pwd)/mlruns.db"
