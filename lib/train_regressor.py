@@ -46,6 +46,12 @@ from .plotting import (
 from .event_display import save_worst_case_events
 
 # ------------------------------------------------------------
+# Suppress torch.compile / Triton autotuning verbose output
+import logging
+logging.getLogger("torch._inductor").setLevel(logging.WARNING)
+logging.getLogger("torch._dynamo").setLevel(logging.WARNING)
+
+# ------------------------------------------------------------
 # Enable TensorFloat32
 torch.set_float32_matmul_precision('high')
 
