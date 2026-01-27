@@ -48,16 +48,21 @@ torch.autograd.profiler.emit_nvtx(False)
 # ------------------------------------------------------------
 #  Config-based Training Entry (Main)
 # ------------------------------------------------------------
-def train_with_config(config_path: str, profile: bool = False):
+def train_with_config(config_path: str, profile: bool = None):
     """
     Train XEC regressor using YAML config file.
 
     Args:
         config_path: Path to YAML configuration file.
-        profile: Enable training profiler to identify bottlenecks.
+        profile: Enable training profiler (overrides config if set).
     """
     # Load configuration
     cfg = load_config(config_path)
+
+    # Profile: CLI override takes precedence, otherwise use config
+    enable_profile = profile if profile is not None else getattr(cfg.training, 'profile', False)
+    if enable_profile:
+        print("[INFO] Training profiler enabled - timing breakdown will be shown per epoch.")
 
     # Get active tasks and their weights
     active_tasks = get_active_tasks(cfg)
@@ -350,7 +355,7 @@ def train_with_config(config_path: str, profile: bool = False):
                 ema_model=ema_model,
                 grad_clip=cfg.training.grad_clip,
                 grad_accum_steps=getattr(cfg.training, 'grad_accum_steps', 1),
-                profile=profile,
+                profile=enable_profile,
             )
 
             # === VALIDATION ===

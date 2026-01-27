@@ -64,6 +64,7 @@ class TrainingConfig:
     channel_dropout_rate: float = 0.1
     grad_clip: float = 1.0
     grad_accum_steps: int = 1
+    profile: bool = False  # Enable training profiler to identify bottlenecks
 
 
 @dataclass
