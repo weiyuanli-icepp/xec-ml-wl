@@ -435,9 +435,9 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         if xs_masked_valid:
             ax.scatter(xs_masked_valid, ys_masked_valid, s=280, c='black', marker='h', edgecolors='none')
         if xs_masked_invalid:
-            # Time-invalid masked sensors: gray with red edge (clearly "no data")
+            # Time-invalid masked sensors: gray with thick red edge (clearly "no data")
             ax.scatter(xs_masked_invalid, ys_masked_invalid, s=280, c='#606060', marker='h',
-                      edgecolors='red', linewidths=2.0)
+                      edgecolors='red', linewidths=4.0)
         ax.set_xlim(-55, 55)
         ax.set_ylim(-5, 45)
         ax.axis('off')
@@ -468,13 +468,13 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
             time_inv_face = to_np(faces_time_invalid[face_key]) > 0.5
             combined_mask = mask_face & time_inv_face  # masked AND time-invalid
             if np.any(combined_mask):
-                # Create gray overlay with distinct pattern for time-invalid masked pixels
+                # Create gray overlay for time-invalid masked pixels
                 overlay = np.zeros((*mask_face.shape, 4))
                 overlay[combined_mask] = [0.4, 0.4, 0.4, 0.8]  # semi-transparent gray
                 axes[1, col_idx].imshow(overlay, aspect='auto', origin='upper')
-                # Add hatching using contourf for visual distinction
-                axes[1, col_idx].contourf(combined_mask.astype(float), levels=[0.5, 1.5],
-                                          colors='none', hatches=['//'], alpha=0)
+                # Add red contour lines around time-invalid regions
+                axes[1, col_idx].contour(combined_mask.astype(float), levels=[0.5],
+                                         colors='red', linewidths=2.0)
         axes[1, col_idx].set_title(f"{col_labels[col_idx]} - Masked")
         axes[1, col_idx].axis('off')
 
@@ -515,10 +515,11 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         combined_mask = outer_mask_face & outer_time_inv
         if np.any(combined_mask):
             overlay = np.zeros((*outer_mask_face.shape, 4))
-            overlay[combined_mask] = [0.4, 0.4, 0.4, 0.8]  # gray instead of red
+            overlay[combined_mask] = [0.4, 0.4, 0.4, 0.8]  # semi-transparent gray
             axes[1, 3].imshow(overlay, aspect='auto', origin='upper')
-            axes[1, 3].contourf(combined_mask.astype(float), levels=[0.5, 1.5],
-                                colors='none', hatches=['//'], alpha=0)
+            # Add red contour lines around time-invalid regions
+            axes[1, 3].contour(combined_mask.astype(float), levels=[0.5],
+                               colors='red', linewidths=2.0)
     axes[1, 3].set_title("Outer - Masked")
     axes[1, 3].axis('off')
 

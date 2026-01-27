@@ -40,6 +40,8 @@ def main():
     parser.add_argument("--save", type=str, default=None, help="Save path (PDF recommended)")
     parser.add_argument("--npho_threshold", type=float, default=None,
                         help=f"Npho threshold for time validity (raw scale, default: {DEFAULT_NPHO_THRESHOLD})")
+    parser.add_argument("--relative_residual", action="store_true",
+                        help="Show relative residual (pred-truth)/|truth| instead of absolute (pred-truth)")
     args = parser.parse_args()
 
     if not os.path.exists(args.file):
@@ -61,9 +63,30 @@ def main():
         has_pred = "pred_npho" in tree.keys() and "pred_time" in tree.keys()
         if has_pred:
             branches += ["pred_npho", "pred_time"]
-        has_run_id = "run_id" in tree.keys()
+
+        # Check for metadata branches (similar to inpainter)
+        available_keys = tree.keys()
+        has_run_id = "run_id" in available_keys
+        has_run_number = "run_number" in available_keys
+        has_event_number = "event_number" in available_keys
+        has_energy = "energyTruth" in available_keys or "energy" in available_keys
+        has_position = "xyzVTX" in available_keys
+        has_angle = "emiAng" in available_keys
+
         if has_run_id:
             branches.append("run_id")
+        if has_run_number:
+            branches.append("run_number")
+        if has_event_number:
+            branches.append("event_number")
+        if "energyTruth" in available_keys:
+            branches.append("energyTruth")
+        elif "energy" in available_keys:
+            branches.append("energy")
+        if has_position:
+            branches.append("xyzVTX")
+        if has_angle:
+            branches.append("emiAng")
 
         arrays = tree.arrays(branches, library="np",
                              entry_start=args.event_id, entry_stop=args.event_id + 1)
@@ -84,10 +107,37 @@ def main():
         x_truth = np.stack([truth_npho, truth_time], axis=-1)
         x_masked = np.stack([masked_npho, masked_time], axis=-1)
 
-        title_parts = [f"Entry {args.event_id}"]
-        if has_run_id:
+        # Build title similar to inpainter comparison
+        # Try to get run/event numbers first
+        run_number = None
+        event_number = None
+        if has_run_number and has_event_number:
+            run_number = int(arrays["run_number"][0])
+            event_number = int(arrays["event_number"][0])
+            title_parts = [f"MAE - Run {run_number} Event {event_number} (idx={args.event_id})"]
+        elif has_run_id:
             run_id_val = _decode_run_id(arrays["run_id"][0])
-            title_parts.append(f"run_id {run_id_val}")
+            title_parts = [f"MAE - Entry {args.event_id} | run_id {run_id_val}"]
+        else:
+            title_parts = [f"MAE - Entry {args.event_id}"]
+
+        # Add energy info
+        if "energyTruth" in arrays:
+            energy_mev = float(arrays["energyTruth"][0]) * 1000  # GeV to MeV
+            title_parts.append(f"E={energy_mev:.1f} MeV")
+        elif "energy" in arrays:
+            energy_mev = float(arrays["energy"][0]) * 1000
+            title_parts.append(f"E={energy_mev:.1f} MeV")
+
+        # Add position info
+        if has_position:
+            xyz = arrays["xyzVTX"][0]
+            title_parts.append(f"VTX=({float(xyz[0]):.0f}, {float(xyz[1]):.0f}, {float(xyz[2]):.0f})")
+
+        # Add angle info
+        if has_angle:
+            ang = arrays["emiAng"][0]
+            title_parts.append(f"θ={float(ang[0]):.2f}, φ={float(ang[1]):.2f}")
         title = " | ".join(title_parts)
 
         savepath = args.save
@@ -108,6 +158,7 @@ def main():
             savepath=savepath,
             include_top_bottom=args.include_top_bottom,
             npho_threshold=npho_threshold_norm,
+            relative_residual=args.relative_residual,
         )
 
 
