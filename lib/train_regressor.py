@@ -284,7 +284,15 @@ def train_with_config(config_path: str, profile: bool = None):
     print(f"  - Trainable params: {trainable_params:,}")
 
     # Optionally compile model (can be disabled or use different modes to reduce memory)
+    # Auto-detect ARM architecture (GH nodes) and disable compile (Triton not supported)
+    import platform
+    is_arm = platform.machine() in ('aarch64', 'arm64')
     compile_mode = getattr(cfg.training, 'compile', 'max-autotune')
+
+    if is_arm and compile_mode and compile_mode not in ('false', 'none'):
+        print(f"[INFO] ARM architecture detected - disabling torch.compile (Triton not supported)")
+        compile_mode = 'none'
+
     if compile_mode and compile_mode != 'false' and compile_mode != 'none':
         print(f"[INFO] Compiling model with mode='{compile_mode}'")
         model = torch.compile(model, mode=compile_mode, fullgraph=True, dynamic=False)
