@@ -890,11 +890,17 @@ def collect_cli_overrides(args):
         "lr", "weight_decay", "warmup_epochs", "ema_decay",
         "channel_dropout_rate", "grad_clip", "grad_accum_steps", "compile",
         "tasks", "loss_balance", "resume_from", "save_dir",
-        "mlflow_experiment", "run_name", "onnx", "profile"
+        "mlflow_experiment", "run_name", "onnx"
     ]
+    # Boolean flags (action="store_true") - only include if True
+    bool_flags = ["profile"]
     for arg_name in override_args:
         val = getattr(args, arg_name, None)
         if val is not None:
+            overrides[arg_name] = val
+    for arg_name in bool_flags:
+        val = getattr(args, arg_name, False)
+        if val:  # Only include if explicitly set to True
             overrides[arg_name] = val
     return overrides
 
