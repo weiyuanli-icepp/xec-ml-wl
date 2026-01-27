@@ -91,7 +91,7 @@ def compute_inpainting_loss(
 
     outer_target = None
     if outer_fine and "outer" in results:
-        from .geom_utils import build_outer_fine_grid_tensor
+        from ..geom_utils import build_outer_fine_grid_tensor
         outer_target = build_outer_fine_grid_tensor(
             original_values, pool_kernel=outer_fine_pool
         )
@@ -437,8 +437,8 @@ def run_epoch_inpainter(
     model.train()
 
     # Build face index maps
-    from .geom_defs import INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP, OUTER_COARSE_FULL_INDEX_MAP
-    from .geom_defs import TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows
+    from ..geom_defs import INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP, OUTER_COARSE_FULL_INDEX_MAP
+    from ..geom_defs import TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows
 
     face_index_maps = {
         "inner": torch.from_numpy(INNER_INDEX_MAP).to(device),
@@ -667,8 +667,8 @@ def run_eval_inpainter(
     """
     model.eval()
 
-    from .geom_defs import INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP, OUTER_COARSE_FULL_INDEX_MAP
-    from .geom_defs import TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows
+    from ..geom_defs import INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP, OUTER_COARSE_FULL_INDEX_MAP
+    from ..geom_defs import TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows
 
     face_index_maps = {
         "inner": torch.from_numpy(INNER_INDEX_MAP).to(device),
@@ -810,7 +810,7 @@ def run_eval_inpainter(
                     outer_grid_w = None
                     # Only build outer_target for legacy grid-level mode
                     if outer_fine and "outer" in results and not results["outer"].get("is_sensor_level", False):
-                        from .geom_utils import build_outer_fine_grid_tensor
+                        from ..geom_utils import build_outer_fine_grid_tensor
                         outer_target = build_outer_fine_grid_tensor(
                             original_values, pool_kernel=outer_fine_pool
                         )
