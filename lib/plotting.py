@@ -6,6 +6,36 @@ from scipy.stats import binned_statistic
 from .utils import angles_deg_to_unit_vec
 from .metrics import get_opening_angle_deg
 
+
+def plot_scalar_scatter(pred, true, label="Value", outfile=None):
+    """
+    Plots pred vs true scatter for a scalar quantity (energy, timing, etc.)
+    """
+    from matplotlib.colors import LogNorm
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+
+    vmin = min(true.min(), pred.min())
+    vmax = max(true.max(), pred.max())
+
+    h = ax.hist2d(true, pred, bins=80, range=[[vmin, vmax], [vmin, vmax]],
+                  cmap='viridis', norm=LogNorm())
+    ax.plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=1.5, label='y=x')
+    plt.colorbar(h[3], ax=ax, label='Count')
+
+    ax.set_xlabel(f"True {label}")
+    ax.set_ylabel(f"Pred {label}")
+    ax.set_title(f"{label}: Pred vs True")
+    ax.legend()
+    ax.set_aspect('equal')
+
+    plt.tight_layout()
+    if outfile:
+        plt.savefig(outfile, dpi=120)
+        plt.close()
+    else:
+        plt.show()
+
 def plot_resolution_profile(pred, true, bins=20, outfile=None):
     """
     Plots resolution profiles for analysis:

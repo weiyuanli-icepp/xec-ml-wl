@@ -38,12 +38,137 @@ from .plotting import (
     plot_resolution_profile,
     plot_energy_resolution_profile,
     plot_timing_resolution_profile,
-    plot_position_resolution_profile
+    plot_position_resolution_profile,
+    plot_face_weights,
+    plot_scalar_scatter,
+    plot_pred_truth_scatter,
 )
 
 # ------------------------------------------------------------
 # Enable TensorFloat32
 torch.set_float32_matmul_precision('high')
+
+
+# ------------------------------------------------------------
+#  Artifact Saving Helper
+# ------------------------------------------------------------
+def save_validation_artifacts(
+    model,
+    angle_pred, angle_true,
+    root_data,
+    active_tasks,
+    artifact_dir,
+    run_name,
+    epoch=None,
+):
+    """
+    Save validation artifacts (plots and CSVs) for all active tasks.
+
+    Args:
+        model: The model (for face weights plot)
+        angle_pred: Angle predictions array (N, 2) or None
+        angle_true: Angle truth array (N, 2) or None
+        root_data: Dict with task predictions from validation
+        active_tasks: List of active task names
+        artifact_dir: Directory to save artifacts
+        run_name: Run name for file naming
+        epoch: Optional epoch number (for intermediate saves)
+    """
+    suffix = f"_ep{epoch}" if epoch is not None else ""
+
+    # --- Face Weights (model-level, not task-specific) ---
+    try:
+        face_pdf = os.path.join(artifact_dir, f"face_weights_{run_name}{suffix}.pdf")
+        # For multi-head model, get the backbone
+        if hasattr(model, 'module'):
+            backbone = model.module.backbone if hasattr(model.module, 'backbone') else model.module
+        elif hasattr(model, 'backbone'):
+            backbone = model.backbone
+        else:
+            backbone = model
+        plot_face_weights(backbone, outfile=face_pdf)
+        mlflow.log_artifact(face_pdf)
+    except Exception as e:
+        print(f"[WARN] Could not save face weights plot: {e}")
+
+    # --- Angle Task ---
+    if "angle" in active_tasks and angle_pred is not None and len(angle_pred) > 0:
+        csv_path = os.path.join(artifact_dir, f"predictions_angle_{run_name}{suffix}.csv")
+        pd.DataFrame({
+            "true_theta": angle_true[:, 0], "true_phi": angle_true[:, 1],
+            "pred_theta": angle_pred[:, 0], "pred_phi": angle_pred[:, 1]
+        }).to_csv(csv_path, index=False)
+        mlflow.log_artifact(csv_path)
+
+        res_pdf = os.path.join(artifact_dir, f"resolution_angle_{run_name}{suffix}.pdf")
+        plot_resolution_profile(angle_pred, angle_true, outfile=res_pdf)
+        mlflow.log_artifact(res_pdf)
+
+        scatter_pdf = os.path.join(artifact_dir, f"scatter_angle_{run_name}{suffix}.pdf")
+        plot_pred_truth_scatter(angle_pred, angle_true, outfile=scatter_pdf)
+        mlflow.log_artifact(scatter_pdf)
+
+    # --- Energy Task ---
+    if "energy" in active_tasks:
+        pred_energy = root_data.get("pred_energy", np.array([]))
+        true_energy = root_data.get("true_energy", np.array([]))
+        if pred_energy.size > 0 and true_energy.size > 0:
+            csv_path = os.path.join(artifact_dir, f"predictions_energy_{run_name}{suffix}.csv")
+            pd.DataFrame({
+                "true_energy": true_energy,
+                "pred_energy": pred_energy
+            }).to_csv(csv_path, index=False)
+            mlflow.log_artifact(csv_path)
+
+            res_pdf = os.path.join(artifact_dir, f"resolution_energy_{run_name}{suffix}.pdf")
+            plot_energy_resolution_profile(pred_energy, true_energy, outfile=res_pdf)
+            mlflow.log_artifact(res_pdf)
+
+            scatter_pdf = os.path.join(artifact_dir, f"scatter_energy_{run_name}{suffix}.pdf")
+            plot_scalar_scatter(pred_energy, true_energy, label="Energy", outfile=scatter_pdf)
+            mlflow.log_artifact(scatter_pdf)
+
+    # --- Timing Task ---
+    if "timing" in active_tasks:
+        pred_timing = root_data.get("pred_timing", np.array([]))
+        true_timing = root_data.get("true_timing", np.array([]))
+        if pred_timing.size > 0 and true_timing.size > 0:
+            csv_path = os.path.join(artifact_dir, f"predictions_timing_{run_name}{suffix}.csv")
+            pd.DataFrame({
+                "true_timing": true_timing,
+                "pred_timing": pred_timing
+            }).to_csv(csv_path, index=False)
+            mlflow.log_artifact(csv_path)
+
+            res_pdf = os.path.join(artifact_dir, f"resolution_timing_{run_name}{suffix}.pdf")
+            plot_timing_resolution_profile(pred_timing, true_timing, outfile=res_pdf)
+            mlflow.log_artifact(res_pdf)
+
+            scatter_pdf = os.path.join(artifact_dir, f"scatter_timing_{run_name}{suffix}.pdf")
+            plot_scalar_scatter(pred_timing, true_timing, label="Timing", outfile=scatter_pdf)
+            mlflow.log_artifact(scatter_pdf)
+
+    # --- Position Task (uvwFI) ---
+    if "uvwFI" in active_tasks:
+        pred_u = root_data.get("pred_u", np.array([]))
+        pred_v = root_data.get("pred_v", np.array([]))
+        pred_w = root_data.get("pred_w", np.array([]))
+        true_u = root_data.get("true_u", np.array([]))
+        true_v = root_data.get("true_v", np.array([]))
+        true_w = root_data.get("true_w", np.array([]))
+        if pred_u.size > 0 and true_u.size > 0:
+            csv_path = os.path.join(artifact_dir, f"predictions_uvwFI_{run_name}{suffix}.csv")
+            pd.DataFrame({
+                "true_u": true_u, "true_v": true_v, "true_w": true_w,
+                "pred_u": pred_u, "pred_v": pred_v, "pred_w": pred_w
+            }).to_csv(csv_path, index=False)
+            mlflow.log_artifact(csv_path)
+
+            pred_uvw = np.stack([pred_u, pred_v, pred_w], axis=1)
+            true_uvw = np.stack([true_u, true_v, true_w], axis=1)
+            res_pdf = os.path.join(artifact_dir, f"resolution_uvwFI_{run_name}{suffix}.pdf")
+            plot_position_resolution_profile(pred_uvw, true_uvw, outfile=res_pdf)
+            mlflow.log_artifact(res_pdf)
 
 # Disable Debugging/Profiling overhead
 torch.autograd.set_detect_anomaly(False)
@@ -420,6 +545,9 @@ def train_with_config(config_path: str, profile: bool = None):
             writer.add_scalar("lr", current_lr, ep)
 
             # --- Checkpointing ---
+            # Get validation data for artifact saving
+            root_data = extra_info.get("root_data", {}) if extra_info else {}
+
             if val_loss < best_val:
                 best_val = val_loss
                 best_state = {k: v.detach().clone().cpu() for k, v in model.state_dict().items()}
@@ -438,6 +566,18 @@ def train_with_config(config_path: str, profile: bool = None):
                 }
                 torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_best.pth"))
                 print(f"   [info] New best val_loss: {best_val:.6f}")
+
+                # Save validation artifacts (plots and CSVs) for best checkpoint
+                save_validation_artifacts(
+                    model=val_model,
+                    angle_pred=pred_val,
+                    angle_true=true_val,
+                    root_data=root_data,
+                    active_tasks=active_tasks,
+                    artifact_dir=artifact_dir,
+                    run_name=run_name,
+                    epoch=ep,
+                )
 
             # Save last checkpoint
             checkpoint_data = {
@@ -480,78 +620,18 @@ def train_with_config(config_path: str, profile: bool = None):
         # Get collected validation data
         root_data = extra_info.get("root_data", {}) if extra_info else {}
 
-        # === Save predictions and plots for each active task ===
-
-        # --- Angle Task ---
-        if "angle" in active_tasks and angle_pred is not None:
-            csv_path = os.path.join(artifact_dir, f"predictions_angle_{run_name}.csv")
-            pd.DataFrame({
-                "true_theta": angle_true[:, 0], "true_phi": angle_true[:, 1],
-                "pred_theta": angle_pred[:, 0], "pred_phi": angle_pred[:, 1]
-            }).to_csv(csv_path, index=False)
-            mlflow.log_artifact(csv_path)
-
-            res_pdf = os.path.join(artifact_dir, f"resolution_angle_{run_name}.pdf")
-            plot_resolution_profile(angle_pred, angle_true, outfile=res_pdf)
-            mlflow.log_artifact(res_pdf)
-            print(f"[INFO] Angle predictions saved to {csv_path}")
-
-        # --- Energy Task ---
-        if "energy" in active_tasks:
-            pred_energy = root_data.get("pred_energy", np.array([]))
-            true_energy = root_data.get("true_energy", np.array([]))
-            if pred_energy.size > 0 and true_energy.size > 0:
-                csv_path = os.path.join(artifact_dir, f"predictions_energy_{run_name}.csv")
-                pd.DataFrame({
-                    "true_energy": true_energy,
-                    "pred_energy": pred_energy
-                }).to_csv(csv_path, index=False)
-                mlflow.log_artifact(csv_path)
-
-                res_pdf = os.path.join(artifact_dir, f"resolution_energy_{run_name}.pdf")
-                plot_energy_resolution_profile(pred_energy, true_energy, outfile=res_pdf)
-                mlflow.log_artifact(res_pdf)
-                print(f"[INFO] Energy predictions saved to {csv_path}")
-
-        # --- Timing Task ---
-        if "timing" in active_tasks:
-            pred_timing = root_data.get("pred_timing", np.array([]))
-            true_timing = root_data.get("true_timing", np.array([]))
-            if pred_timing.size > 0 and true_timing.size > 0:
-                csv_path = os.path.join(artifact_dir, f"predictions_timing_{run_name}.csv")
-                pd.DataFrame({
-                    "true_timing": true_timing,
-                    "pred_timing": pred_timing
-                }).to_csv(csv_path, index=False)
-                mlflow.log_artifact(csv_path)
-
-                res_pdf = os.path.join(artifact_dir, f"resolution_timing_{run_name}.pdf")
-                plot_timing_resolution_profile(pred_timing, true_timing, outfile=res_pdf)
-                mlflow.log_artifact(res_pdf)
-                print(f"[INFO] Timing predictions saved to {csv_path}")
-
-        # --- Position Task (uvwFI) ---
-        if "uvwFI" in active_tasks:
-            pred_u = root_data.get("pred_u", np.array([]))
-            pred_v = root_data.get("pred_v", np.array([]))
-            pred_w = root_data.get("pred_w", np.array([]))
-            true_u = root_data.get("true_u", np.array([]))
-            true_v = root_data.get("true_v", np.array([]))
-            true_w = root_data.get("true_w", np.array([]))
-            if pred_u.size > 0 and true_u.size > 0:
-                csv_path = os.path.join(artifact_dir, f"predictions_uvwFI_{run_name}.csv")
-                pd.DataFrame({
-                    "true_u": true_u, "true_v": true_v, "true_w": true_w,
-                    "pred_u": pred_u, "pred_v": pred_v, "pred_w": pred_w
-                }).to_csv(csv_path, index=False)
-                mlflow.log_artifact(csv_path)
-
-                pred_uvw = np.stack([pred_u, pred_v, pred_w], axis=1)
-                true_uvw = np.stack([true_u, true_v, true_w], axis=1)
-                res_pdf = os.path.join(artifact_dir, f"resolution_uvwFI_{run_name}.pdf")
-                plot_position_resolution_profile(pred_uvw, true_uvw, outfile=res_pdf)
-                mlflow.log_artifact(res_pdf)
-                print(f"[INFO] Position predictions saved to {csv_path}")
+        # Save final validation artifacts (without epoch suffix)
+        print("[INFO] Saving final validation artifacts...")
+        save_validation_artifacts(
+            model=final_model,
+            angle_pred=angle_pred,
+            angle_true=angle_true,
+            root_data=root_data,
+            active_tasks=active_tasks,
+            artifact_dir=artifact_dir,
+            run_name=run_name,
+            epoch=None,  # No epoch suffix for final artifacts
+        )
 
         # ONNX export
         if cfg.export.onnx:
