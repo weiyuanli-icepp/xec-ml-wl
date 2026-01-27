@@ -506,12 +506,14 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     axes[0, 3].set_title("Outer - Truth")
     axes[0, 3].axis('off')
 
-    outer_mask_face = to_np(outer_mask) > 0.5
+    # Note: outer mask values are scaled down by interpolation factor (~15x) in build_outer_fine_grid_tensor
+    # Use lower threshold to detect any masked regions
+    outer_mask_face = to_np(outer_mask) > 0.01
     outer_mask_img = np.ma.array(to_np(outer_masked), mask=outer_mask_face)
     axes[1, 3].imshow(outer_mask_img, aspect='auto', origin='upper', cmap=cmap_main_masked, norm=norm_main)
     # Overlay time-invalid masked sensors with gray + hatching
     if outer_time_invalid is not None:
-        outer_time_inv = to_np(outer_time_invalid) > 0.5
+        outer_time_inv = to_np(outer_time_invalid) > 0.01  # Lower threshold due to scaling
         combined_mask = outer_mask_face & outer_time_inv
         if np.any(combined_mask):
             overlay = np.zeros((*outer_mask_face.shape, 4))
@@ -532,9 +534,10 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
     axes[3, 3].axis('off')
 
     # Mask - show time-invalid as different shade
-    outer_mask_display = to_np(outer_mask).copy()
+    # Normalize outer mask back to 0/1 range (was scaled down by interpolation factor)
+    outer_mask_display = (outer_mask_face).astype(float)
     if outer_time_invalid is not None:
-        outer_time_inv = to_np(outer_time_invalid) > 0.5
+        outer_time_inv = to_np(outer_time_invalid) > 0.01  # Lower threshold due to scaling
         outer_mask_display[outer_mask_face & outer_time_inv] = 0.5
     axes[4, 3].imshow(outer_mask_display, aspect='auto', origin='upper', cmap='gray', vmin=0, vmax=1)
     axes[4, 3].set_title("Outer - Mask")
