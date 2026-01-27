@@ -48,8 +48,13 @@ from .event_display import save_worst_case_events
 # ------------------------------------------------------------
 # Suppress torch.compile / Triton autotuning verbose output
 import logging
+import warnings
 logging.getLogger("torch._inductor").setLevel(logging.WARNING)
 logging.getLogger("torch._dynamo").setLevel(logging.WARNING)
+# Suppress torch.compile UserWarnings about tensor construction
+warnings.filterwarnings("ignore", message=".*To copy construct from a tensor.*", category=UserWarning)
+warnings.filterwarnings("ignore", module="torch._dynamo.*")
+warnings.filterwarnings("ignore", module="torch.fx.*")
 
 # ------------------------------------------------------------
 # Enable TensorFloat32
