@@ -182,50 +182,123 @@ def main_xec_regressor_with_args(
     start_epoch = 1
     best_val = float("inf")
     run_id = None
-    
+
     if resume_from and os.path.exists(resume_from):
-        print(f"[INFO] Resuming training from checkpoint: {resume_from}")
+        print(f"[INFO] Loading checkpoint: {resume_from}")
         checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
-        
-        # Resume training
-        if "model_state_dict" in checkpoint:
-            print(f"[INFO] Detected full checkpoint. Resuming training state.")
+
+        # Determine checkpoint type
+        is_full_regressor_checkpoint = False
+        is_mae_checkpoint = False
+        is_raw_encoder_checkpoint = False
+
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+            # Check if it's a regressor checkpoint (has "heads." keys) or MAE checkpoint (has "encoder." keys)
+            has_heads = any(k.startswith("heads.") for k in state_dict.keys())
+            has_encoder_prefix = any(k.startswith("encoder.") for k in state_dict.keys())
+
+            if has_heads:
+                is_full_regressor_checkpoint = True
+            elif has_encoder_prefix:
+                is_mae_checkpoint = True
+            else:
+                # Might be a legacy checkpoint, try to detect
+                is_full_regressor_checkpoint = "optimizer_state_dict" in checkpoint
+        else:
+            # Raw state dict (encoder-only checkpoint like mae_encoder_epoch_X.pth)
+            is_raw_encoder_checkpoint = True
+
+        if is_full_regressor_checkpoint:
+            # Resume full regressor training
+            print(f"[INFO] Detected full regressor checkpoint. Resuming training state.")
             model.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            
+
             start_epoch = checkpoint["epoch"] + 1
             best_val = checkpoint.get("best_val", float("inf"))
             run_id = checkpoint.get("mlflow_run_id", None)
             if ema_model is not None:
                 if "ema_state_dict" in checkpoint and checkpoint["ema_state_dict"] is not None:
-                    print(f"[INFO] Loading EMA state model from checkpoint.")
+                    print(f"[INFO] Loading EMA state from checkpoint.")
                     ema_model.load_state_dict(checkpoint["ema_state_dict"])
                 else:
                     print(f"[INFO] No EMA state in checkpoint. Re-syncing EMA.")
                     ema_model.module.load_state_dict(model.state_dict())
                     if hasattr(ema_model, 'n_averaged'):
                         ema_model.n_averaged.zero_()
+
+        elif is_mae_checkpoint:
+            # Load encoder weights from full MAE checkpoint
+            print(f"[INFO] Detected MAE checkpoint. Loading encoder for fine-tuning.")
+            mae_state = checkpoint["model_state_dict"]
+
+            # Also try EMA state if available (often better quality)
+            if "ema_state_dict" in checkpoint and checkpoint["ema_state_dict"] is not None:
+                print(f"[INFO] Using EMA weights from MAE checkpoint.")
+                mae_state = checkpoint["ema_state_dict"]
+                # Remove "module." prefix if present (from EMA wrapper)
+                mae_state = {k.replace("module.", ""): v for k, v in mae_state.items()}
+
+            # Extract encoder weights and add "backbone." prefix for XECMultiHeadModel
+            encoder_state = {}
+            for key, value in mae_state.items():
+                if key.startswith("encoder."):
+                    # "encoder.backbone.inner_backbone..." -> "backbone.backbone.inner_backbone..."
+                    new_key = "backbone." + key[8:]  # Remove "encoder." and add "backbone."
+                    encoder_state[new_key] = value
+
+            if encoder_state:
+                missing, unexpected = model.load_state_dict(encoder_state, strict=False)
+                print(f"[INFO] Loaded {len(encoder_state)} encoder weights from MAE.")
+                print(f"[INFO] Missing keys (expected for heads): {len(missing)}")
+                if unexpected:
+                    print(f"[WARN] Unexpected keys: {len(unexpected)}")
             else:
-                print(f"[INFO] EMA is disabled. Skipping EMA state loading.")
-            
-        # MAE Fine-tuning
-        else: 
-            print(f"[INFO] Detected raw weights (MAE). Loading encoder for fine-tuning.")
-            missing, unexpected = model.load_state_dict(checkpoint, strict=False)
-            print(f"[INFO] Missing keys (expected for head): {len(missing)}")
-            print(f"[INFO] Unexpected keys: {len(unexpected)}")
-            
+                print(f"[WARN] No encoder weights found in MAE checkpoint!")
+
+            # Reset training state for fine-tuning
             start_epoch = 1
             best_val = float("inf")
             run_id = None
-        
+
             if ema_model is not None:
-                print(f"[INFO] Initializing EMA from MAE weights.")
+                print(f"[INFO] Initializing EMA from loaded encoder weights.")
                 ema_model.module.load_state_dict(model.state_dict())
                 if hasattr(ema_model, 'n_averaged'):
                     ema_model.n_averaged.zero_()
-            else:
-                print(f"[INFO] EMA is disabled. Skipping EMA state loading.")
+
+        elif is_raw_encoder_checkpoint:
+            # Load raw encoder weights (from mae_encoder_epoch_X.pth)
+            print(f"[INFO] Detected raw encoder checkpoint. Loading for fine-tuning.")
+
+            # Add "backbone." prefix for XECMultiHeadModel
+            encoder_state = {}
+            raw_state = checkpoint if not isinstance(checkpoint, dict) else checkpoint
+            for key, value in raw_state.items():
+                # "backbone.inner_backbone..." -> "backbone.backbone.inner_backbone..."
+                new_key = "backbone." + key
+                encoder_state[new_key] = value
+
+            missing, unexpected = model.load_state_dict(encoder_state, strict=False)
+            print(f"[INFO] Loaded {len(encoder_state)} encoder weights.")
+            print(f"[INFO] Missing keys (expected for heads): {len(missing)}")
+            if unexpected:
+                print(f"[WARN] Unexpected keys: {len(unexpected)}")
+
+            # Reset training state for fine-tuning
+            start_epoch = 1
+            best_val = float("inf")
+            run_id = None
+
+            if ema_model is not None:
+                print(f"[INFO] Initializing EMA from loaded encoder weights.")
+                ema_model.module.load_state_dict(model.state_dict())
+                if hasattr(ema_model, 'n_averaged'):
+                    ema_model.n_averaged.zero_()
+
+        if ema_model is None:
+            print(f"[INFO] EMA is disabled.")
     # ------------------------------
         
     # --- MLflow Setup ---
@@ -750,10 +823,30 @@ def train_with_config(config_path: str, profile: bool = False):
     mlflow_run_id = None
 
     if cfg.checkpoint.resume_from and os.path.exists(cfg.checkpoint.resume_from):
-        print(f"[INFO] Resuming from checkpoint: {cfg.checkpoint.resume_from}")
+        print(f"[INFO] Loading checkpoint: {cfg.checkpoint.resume_from}")
         checkpoint = torch.load(cfg.checkpoint.resume_from, map_location=device, weights_only=False)
 
-        if "model_state_dict" in checkpoint:
+        # Determine checkpoint type
+        is_full_regressor_checkpoint = False
+        is_mae_checkpoint = False
+        is_raw_encoder_checkpoint = False
+
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+            has_heads = any(k.startswith("heads.") for k in state_dict.keys())
+            has_encoder_prefix = any(k.startswith("encoder.") for k in state_dict.keys())
+
+            if has_heads:
+                is_full_regressor_checkpoint = True
+            elif has_encoder_prefix:
+                is_mae_checkpoint = True
+            else:
+                is_full_regressor_checkpoint = "optimizer_state_dict" in checkpoint
+        else:
+            is_raw_encoder_checkpoint = True
+
+        if is_full_regressor_checkpoint:
+            print(f"[INFO] Detected full regressor checkpoint. Resuming training state.")
             model.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             start_epoch = checkpoint["epoch"] + 1
@@ -762,9 +855,48 @@ def train_with_config(config_path: str, profile: bool = False):
 
             if ema_model is not None and "ema_state_dict" in checkpoint:
                 ema_model.load_state_dict(checkpoint["ema_state_dict"])
-        else:
-            # MAE weights
-            model.load_state_dict(checkpoint, strict=False)
+
+        elif is_mae_checkpoint:
+            print(f"[INFO] Detected MAE checkpoint. Loading encoder for fine-tuning.")
+            mae_state = checkpoint["model_state_dict"]
+
+            if "ema_state_dict" in checkpoint and checkpoint["ema_state_dict"] is not None:
+                print(f"[INFO] Using EMA weights from MAE checkpoint.")
+                mae_state = checkpoint["ema_state_dict"]
+                mae_state = {k.replace("module.", ""): v for k, v in mae_state.items()}
+
+            encoder_state = {}
+            for key, value in mae_state.items():
+                if key.startswith("encoder."):
+                    new_key = "backbone." + key[8:]
+                    encoder_state[new_key] = value
+
+            if encoder_state:
+                missing, unexpected = model.load_state_dict(encoder_state, strict=False)
+                print(f"[INFO] Loaded {len(encoder_state)} encoder weights from MAE.")
+                print(f"[INFO] Missing keys (expected for heads): {len(missing)}")
+
+            if ema_model is not None:
+                ema_model.module.load_state_dict(model.state_dict())
+                if hasattr(ema_model, 'n_averaged'):
+                    ema_model.n_averaged.zero_()
+
+        elif is_raw_encoder_checkpoint:
+            print(f"[INFO] Detected raw encoder checkpoint. Loading for fine-tuning.")
+            encoder_state = {}
+            raw_state = checkpoint if not isinstance(checkpoint, dict) else checkpoint
+            for key, value in raw_state.items():
+                new_key = "backbone." + key
+                encoder_state[new_key] = value
+
+            missing, unexpected = model.load_state_dict(encoder_state, strict=False)
+            print(f"[INFO] Loaded {len(encoder_state)} encoder weights.")
+            print(f"[INFO] Missing keys (expected for heads): {len(missing)}")
+
+            if ema_model is not None:
+                ema_model.module.load_state_dict(model.state_dict())
+                if hasattr(ema_model, 'n_averaged'):
+                    ema_model.n_averaged.zero_()
 
     # --- MLflow Setup ---
     mlflow.set_experiment(cfg.mlflow.experiment)
