@@ -29,12 +29,16 @@ export MLFLOW_TRACKING_URI="sqlite:///mlruns.db"
 
 # --- Configuration (Run-specific overrides) ---
 export RUN_NAME="regressor_interactive_test"
-export EPOCHS=20
+export EPOCHS=1
 export BATCH_SIZE=4096
+export CHUNK_SIZE=256000
+export GRAD_ACCUM_STEPS=1
 export LR="3e-4"
+# export SCHEDULER="cosine"
+# export LR_MIN="1e-6"
 
 # Tasks (space-separated: angle energy timing uvwFI)
-export TASKS="angle"
+export TASKS="energy"
 
 # Model architecture
 export OUTER_MODE="finegrid"
@@ -42,27 +46,27 @@ export OUTER_FINE_POOL="3 3"
 export HIDDEN_DIM=256
 
 # Training settings
-export WARMUP_EPOCHS=2
-export EMA_DECAY=0.999
+export WARMUP_EPOCHS=0
+export EMA_DECAY=0
 export CHANNEL_DROPOUT_RATE=0.1
 export GRAD_CLIP=1.0
 
 # Normalization (legacy scheme for regressor)
-export NPHO_SCALE="0.58"
-export NPHO_SCALE2="1.0"
-export TIME_SCALE="6.5e-8"
-export TIME_SHIFT="0.5"
-export SENTINEL_VALUE="-5.0"
+export NPHO_SCALE="1000"
+export NPHO_SCALE2="4.08"
+export TIME_SCALE="1.14e-7"
+export TIME_SHIFT="-0.46"
+export SENTINEL_VALUE="-1.0"
 
 # Paths (Point to your data files)
-export TRAIN_PATH="$HOME/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_train.root"
-export VAL_PATH="$HOME/meghome/xec-ml-wl/data/E52.8_AngUni_PosSQ/large_val.root"
+export TRAIN_PATH="$HOME/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/large_train.root"
+export VAL_PATH="$HOME/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/large_val.root"
 
 # MLflow
-export MLFLOW_EXPERIMENT="gamma_angle"
+export MLFLOW_EXPERIMENT="gamma_energy"
 
 # ONNX export (set to "null" to disable)
-export ONNX="meg2ang_convnextv2.onnx"
+export ONNX="XEC_Energy.onnx"
 
 # Resume from checkpoint (leave empty for fresh start)
 export RESUME_FROM=""
@@ -91,6 +95,8 @@ CMD="python -m lib.train_regressor \
     --val_path ${VAL_PATH} \
     --epochs ${EPOCHS} \
     --batch_size ${BATCH_SIZE} \
+    --chunksize ${CHUNK_SIZE} \
+    --grad_accum_steps ${GRAD_ACCUM_STEPS} \
     --lr ${LR} \
     --tasks ${TASKS} \
     --outer_mode ${OUTER_MODE} \
