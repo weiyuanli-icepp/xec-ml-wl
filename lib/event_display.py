@@ -385,7 +385,7 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         vmin, vmax = -1, 1
 
     norm_main = Normalize(vmin=vmin, vmax=vmax)
-    cmap_main_name = "viridis" if channel == "npho" else "coolwarm"
+    cmap_main_name = "viridis"  # Use same colormap for both npho and time
     cmap_main = plt.get_cmap(cmap_main_name)
     cmap_main_masked = cmap_main.copy()
     cmap_main_masked.set_bad("black")
@@ -435,9 +435,9 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         if xs_masked_valid:
             ax.scatter(xs_masked_valid, ys_masked_valid, s=280, c='black', marker='h', edgecolors='none')
         if xs_masked_invalid:
-            # Time-invalid masked sensors: gray with white edge (clearly "no data")
+            # Time-invalid masked sensors: gray with red edge (clearly "no data")
             ax.scatter(xs_masked_invalid, ys_masked_invalid, s=280, c='#606060', marker='h',
-                      edgecolors='white', linewidths=2.0)
+                      edgecolors='red', linewidths=2.0)
         ax.set_xlim(-55, 55)
         ax.set_ylim(-5, 45)
         ax.axis('off')
@@ -591,7 +591,7 @@ def plot_mae_comparison(x_truth, x_masked, mask, x_pred=None, event_idx=0,
         n_masked = (mask > 0.5).sum()
         n_time_invalid = ((mask > 0.5) & (time_invalid_mask > 0.5)).sum()
         time_valid_pct = 100 * (1 - n_time_invalid / max(n_masked, 1))
-        stats_text += f" | Time-valid: {time_valid_pct:.1f}% (gray+hatch=invalid)"
+        stats_text += f" | Time-valid: {time_valid_pct:.1f}% (red edge=invalid)"
 
     fig.suptitle(f"{title}\n{stats_text}", fontsize=14)
     plt.tight_layout(rect=[0, 0, 0.9, 0.95])
