@@ -429,3 +429,123 @@ print_dead_channel_summary(run_number=430000)
   mysql_config_editor set --login-path=meg_ro --host=<host> --user=<user> --password
   ```
 - Access to MEG2 database from the machine running the script
+
+---
+
+## 10. MC Pseudo-Experiment
+
+Apply real data dead channel patterns to MC data for baseline comparison.
+
+### 10.1 Purpose
+
+Real data validation (Section 8) has a limitation: dead channels have no ground truth, so we can only evaluate on artificially masked healthy sensors. The MC pseudo-experiment addresses this by:
+
+1. Taking MC data (where all sensors have ground truth)
+2. Applying the same dead channel pattern from a real data run
+3. Running inpainter inference on the "dead" channels
+4. Comparing predictions with ground truth
+
+This provides a performance baseline for dead channel recovery.
+
+### 10.2 Usage
+
+```bash
+# Basic usage
+python macro/pseudo_experiment_mc.py \
+    --checkpoint artifacts/inpainter/checkpoint_best.pth \
+    --input mc_validation.root \
+    --run 430000 \
+    --output pseudo_experiment/
+
+# With dead channel file instead of database
+python macro/pseudo_experiment_mc.py \
+    --checkpoint checkpoint.pth \
+    --input mc_validation.root \
+    --dead-channel-file dead_channels_430000.txt \
+    --output pseudo_experiment/
+
+# Compare multiple runs
+for run in 430000 431000 432000; do
+    python macro/pseudo_experiment_mc.py \
+        --checkpoint checkpoint.pth \
+        --input mc_validation.root \
+        --run $run \
+        --output pseudo_experiment_run${run}/
+done
+```
+
+### 10.3 Output
+
+**ROOT file:** `pseudo_experiment_run{RUN}.root`
+| Branch | Type | Description |
+|--------|------|-------------|
+| `event_idx` | int32 | Event index |
+| `sensor_id` | int32 | Sensor ID (0-4759) |
+| `face` | int32 | Face index (0=inner, 1=us, 2=ds, 3=outer, 4=top, 5=bot) |
+| `truth_npho` | float32 | Ground truth npho (from MC) |
+| `truth_time` | float32 | Ground truth time (from MC) |
+| `pred_npho` | float32 | Predicted npho |
+| `pred_time` | float32 | Predicted time |
+| `error_npho` | float32 | Prediction error (pred - truth) |
+| `error_time` | float32 | Prediction error (pred - truth) |
+| `dead_pattern_run` | int32 | Run number of dead channel pattern |
+
+**Metrics CSV:** `metrics_run{RUN}.csv` - Summary metrics
+
+**Console output example:**
+```
+============================================================
+PSEUDO-EXPERIMENT RESULTS
+============================================================
+Dead channel pattern from run: 430000
+Number of dead channels: 45
+Events processed: 10,000
+Total predictions: 450,000
+Predictions with ground truth: 448,500
+
+Global Metrics (all dead channel predictions):
+  npho: MAE=0.0234, RMSE=0.0312, Bias=-0.0012, 68%=0.0287
+  time: MAE=0.0156, RMSE=0.0198, Bias=0.0003, 68%=0.0189
+
+Per-Face Metrics:
+   inner: n=200000, npho_MAE=0.0212, time_MAE=0.0145
+      us: n= 30000, npho_MAE=0.0256, time_MAE=0.0167
+      ds: n= 20000, npho_MAE=0.0267, time_MAE=0.0178
+   outer: n= 80000, npho_MAE=0.0245, time_MAE=0.0156
+     top: n= 70000, npho_MAE=0.0278, time_MAE=0.0189
+     bot: n= 50000, npho_MAE=0.0289, time_MAE=0.0198
+============================================================
+```
+
+### 10.4 Comparison Workflow
+
+To compare inpainter performance on real data vs MC:
+
+```bash
+# 1. Run real data validation
+python macro/validate_inpainter_real.py \
+    --checkpoint checkpoint.pth \
+    --input real_data.root --run 430000 \
+    --output validation_real/
+
+# 2. Run MC pseudo-experiment with same dead pattern
+python macro/pseudo_experiment_mc.py \
+    --checkpoint checkpoint.pth \
+    --input mc_validation.root --run 430000 \
+    --output validation_mc/
+
+# 3. Analyze both
+python macro/analyze_inpainter.py validation_real/real_data_predictions.root \
+    --output validation_real/analysis/
+python macro/analyze_inpainter.py validation_mc/pseudo_experiment_run430000.root \
+    --output validation_mc/analysis/
+
+# 4. Compare metrics (real vs MC)
+# - Real data: metrics only for artificial masks (Section 8)
+# - MC pseudo: metrics for all dead channels (full picture)
+```
+
+This comparison helps understand:
+- Whether the model generalizes from MC training to real data
+- Whether performance on artificially masked sensors (real data) is representative of dead channel recovery
+- Face-specific performance differences between real and MC
