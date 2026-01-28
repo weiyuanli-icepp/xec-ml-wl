@@ -445,7 +445,6 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
             face_result = results[face_name]
             pred = face_result['pred']  # (B, max_masked, 2)
             valid = face_result['valid']  # (B, max_masked)
-            indices = face_result['indices']  # (B, max_masked) or (B, max_masked, 2)
 
             B = pred.shape[0]
 
@@ -462,12 +461,18 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                     if not valid[b, i]:
                         continue
 
-                    # Get sensor ID
-                    if face_name in ['top', 'bot']:
-                        node_idx = int(indices[b, i])
+                    # Get sensor ID - different faces have different index formats
+                    if face_name == 'outer' and 'sensor_ids' in face_result:
+                        # Outer face with sensor-level prediction
+                        sensor_id = int(face_result['sensor_ids'][b, i])
+                    elif face_name in ['top', 'bot']:
+                        # Hex faces - indices are node indices
+                        node_idx = int(face_result['indices'][b, i])
                         hex_indices = FACE_INDEX_MAPS[face_name]
                         sensor_id = int(hex_indices[node_idx])
                     else:
+                        # Rectangular faces - indices are (h, w)
+                        indices = face_result['indices']
                         h_idx = int(indices[b, i, 0])
                         w_idx = int(indices[b, i, 1])
                         idx_map = FACE_INDEX_MAPS[face_name]
