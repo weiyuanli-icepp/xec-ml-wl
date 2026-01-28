@@ -27,7 +27,7 @@ from functools import lru_cache
 # Database connection settings (read-only access)
 DEFAULT_LOGIN_PATH = "meg_ro"
 DEFAULT_DATABASE = "MEG2"
-DEFAULT_HOST = os.environ.get("MYSQL_HOST", "meg.psi.ch")
+DEFAULT_HOST = os.environ.get("MYSQL_HOST", "meg.sql.psi.ch")
 DEFAULT_USER = os.environ.get("MYSQL_USER", "meg_ro")
 DEFAULT_PASSWORD = os.environ.get("MYSQL_PASSWORD", "readonly")
 
