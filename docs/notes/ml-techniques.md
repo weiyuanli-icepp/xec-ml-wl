@@ -250,6 +250,118 @@ This approach could help the model understand spatial relationships based on act
 
 ---
 
+## Heteroscedastic Regression (Faithful Loss)
+
+Heteroscedastic regression models both the **mean** and **variance** of a target variable as functions of the input. This is useful when prediction uncertainty varies across the input space (e.g., some detector regions may have inherently noisier measurements).
+
+### The Problem with Standard NLL Loss
+
+The standard approach trains a network to output both $\mu(x)$ and $\sigma^2(x)$, minimizing negative log-likelihood:
+
+$$\mathcal{L}_{\text{NLL}} = \frac{1}{2}\log\sigma^2(x) + \frac{(y - \mu(x))^2}{2\sigma^2(x)}$$
+
+**Problem:** This creates a "rich-get-richer" failure mode:
+1. Poor mean estimates lead to large residuals
+2. The network explains these with high variance predictions
+3. High variance downweights these points in the loss (the $1/\sigma^2$ term)
+4. The mean never improves because these points are ignored
+
+This causes heteroscedastic models to have **worse mean predictions** than simple MSE-trained models.
+
+### Faithfulness Criterion
+
+Stirn et al. (2023) propose a **faithfulness criterion**: a heteroscedastic model's MSE should be no worse than its mean-only (homoscedastic) baseline. If this holds, the model is "faithful."
+
+### The β-NLL Loss
+
+One solution is the β-NLL loss, which controls how variance affects the gradient:
+
+$$\mathcal{L}_{\beta\text{-NLL}} = \frac{1}{2}\left[\sigma^2(x)\right]^{\beta} \cdot \left(\log\sigma^2(x) + \frac{(y - \mu(x))^2}{\sigma^2(x)}\right)$$
+
+Where $[\cdot]$ denotes stop-gradient (the term is treated as a constant during backprop).
+
+| β value | Behavior |
+|---------|----------|
+| β = 0 | Standard NLL (variance can dominate) |
+| β = 0.5 | Balanced (recommended by Seitzer et al.) |
+| β = 1 | Mean gradients match MSE loss |
+
+### Faithful Heteroscedastic Regression
+
+Stirn et al. propose two modifications for **provably faithful** mean estimates:
+
+1. **Separate networks** for mean and variance (no shared parameters)
+2. **Stop-gradient on variance** when computing mean gradients
+
+```python
+def faithful_nll_loss(y_true, mu, log_var):
+    """
+    Faithful heteroscedastic loss with stop-gradient.
+
+    Args:
+        y_true: Ground truth targets
+        mu: Predicted mean
+        log_var: Predicted log-variance (more numerically stable than σ²)
+    """
+    var = torch.exp(log_var)
+
+    # Stop gradient on variance for mean update
+    var_stopped = var.detach()
+
+    # NLL with stopped variance (faithful to mean)
+    loss_mean = 0.5 * ((y_true - mu) ** 2) / var_stopped
+
+    # Variance loss (uses full gradient)
+    loss_var = 0.5 * (log_var + ((y_true - mu.detach()) ** 2) / var)
+
+    return (loss_mean + loss_var).mean()
+```
+
+### Alternative: β-NLL Implementation
+
+```python
+def beta_nll_loss(y_true, mu, log_var, beta=0.5):
+    """
+    β-NLL loss for heteroscedastic regression.
+
+    Args:
+        beta: Controls variance influence (0=NLL, 0.5=balanced, 1=MSE-like)
+    """
+    var = torch.exp(log_var)
+
+    # Compute NLL
+    nll = 0.5 * (log_var + ((y_true - mu) ** 2) / var)
+
+    # Weight by stopped variance^beta
+    weight = var.detach() ** beta
+
+    return (weight * nll).mean()
+```
+
+### When to Use
+
+| Scenario | Recommendation |
+|----------|----------------|
+| Uniform noise across inputs | Standard MSE loss |
+| Input-dependent noise (heteroscedastic) | β-NLL with β=0.5 |
+| Need calibrated uncertainty estimates | Faithful loss |
+| Mean accuracy is critical | Faithful loss or β=1 |
+
+### Relevance to Our Model
+
+For the XEC detector, heteroscedastic regression could be useful because:
+- **Position-dependent resolution**: Inner face sensors may have different noise characteristics than outer face
+- **Energy-dependent uncertainty**: Low-energy events have inherently higher relative uncertainty
+- **Calibrated confidence**: Downstream physics analysis benefits from knowing prediction uncertainty
+
+### References
+
+- Stirn, A., et al. "Faithful Heteroscedastic Regression with Neural Networks." AISTATS 2023. [Paper](https://proceedings.mlr.press/v206/stirn23a.html) | [Code](https://github.com/astirn/faithful-heteroscedasticity)
+- Seitzer, M., et al. "On the Pitfalls of Heteroscedastic Uncertainty Estimation with Probabilistic Neural Networks." ICLR 2022. (Introduces β-NLL)
+- Skafte, N., et al. "Reliable training and estimation of variance networks." NeurIPS 2019.
+
+---
+
 ## FCMAE-Style Masked Convolution
 
 For MAE pretraining and dead channel inpainting, we implement **FCMAE-style masked convolution** following the approach from [ConvNeXt V2](https://github.com/facebookresearch/ConvNeXt-V2).

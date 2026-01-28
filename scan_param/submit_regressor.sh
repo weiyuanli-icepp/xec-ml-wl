@@ -111,6 +111,7 @@ CFG_LOSS_BALANCE=$(yaml_get "loss_balance" "$CONFIG_PATH")
 # Checkpoint
 CFG_RESUME_FROM=$(yaml_get "resume_from" "$CONFIG_PATH")
 CFG_SAVE_DIR=$(yaml_get "save_dir" "$CONFIG_PATH")
+CFG_SAVE_INTERVAL=$(yaml_get "save_interval" "$CONFIG_PATH")
 CFG_SAVE_ARTIFACTS=$(yaml_get "save_artifacts" "$CONFIG_PATH")
 
 # MLflow
@@ -234,6 +235,7 @@ if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
     echo ""
     echo "=== Checkpoint ==="
     echo "  Save dir:      ${CFG_SAVE_DIR:-artifacts}"
+    echo "  Save interval: ${CFG_SAVE_INTERVAL:-10} epochs"
     echo "  Save artifacts: ${CFG_SAVE_ARTIFACTS:-true}"
     [[ -n "$RESUME_FROM" ]] && echo "  Resume from:   $RESUME_FROM"
     echo ""
