@@ -57,7 +57,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lib.models import XECEncoder, XEC_Inpainter
 from lib.geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
-    OUTER_COARSE_FULL_INDEX_MAP, TOP_HEX_FLAT_INDICES, BOT_HEX_FLAT_INDICES,
+    OUTER_COARSE_FULL_INDEX_MAP, TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
+    flatten_hex_rows,
     DEFAULT_NPHO_SCALE, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
 )
 
@@ -65,6 +66,10 @@ from lib.geom_defs import (
 N_CHANNELS = 4760
 REAL_DATA_SENTINEL = 1e10  # Sentinel value used in PrepareRealData.C
 MODEL_SENTINEL = DEFAULT_SENTINEL_VALUE  # Sentinel value expected by model (-5.0)
+
+# Flatten hex rows to get sensor indices
+TOP_HEX_FLAT_INDICES = flatten_hex_rows(TOP_HEX_ROWS)
+BOT_HEX_FLAT_INDICES = flatten_hex_rows(BOTTOM_HEX_ROWS)
 
 # Face index maps for masking
 FACE_INDEX_MAPS = {

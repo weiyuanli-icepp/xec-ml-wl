@@ -199,7 +199,8 @@ def get_dead_channel_info(run_number: int, login_path: str = DEFAULT_LOGIN_PATH,
     """
     from .geom_defs import (
         INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
-        OUTER_COARSE_FULL_INDEX_MAP, TOP_HEX_FLAT_INDICES, BOT_HEX_FLAT_INDICES
+        OUTER_COARSE_FULL_INDEX_MAP, TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
+        flatten_hex_rows
     )
 
     xec_pm_status_id = get_xec_pm_status_id(run_number, login_path, database)
@@ -215,13 +216,17 @@ def get_dead_channel_info(run_number: int, login_path: str = DEFAULT_LOGIN_PATH,
             valid_indices = np.array(index_map)
         return sum(1 for idx in valid_indices if idx in dead_set)
 
+    # Flatten hex rows to get sensor indices
+    top_hex_flat = flatten_hex_rows(TOP_HEX_ROWS)
+    bot_hex_flat = flatten_hex_rows(BOTTOM_HEX_ROWS)
+
     dead_by_face = {
         'inner': count_dead_in_face(INNER_INDEX_MAP),
         'us': count_dead_in_face(US_INDEX_MAP),
         'ds': count_dead_in_face(DS_INDEX_MAP),
         'outer': count_dead_in_face(OUTER_COARSE_FULL_INDEX_MAP),
-        'top': count_dead_in_face(TOP_HEX_FLAT_INDICES),
-        'bot': count_dead_in_face(BOT_HEX_FLAT_INDICES),
+        'top': count_dead_in_face(top_hex_flat),
+        'bot': count_dead_in_face(bot_hex_flat),
     }
 
     return {
