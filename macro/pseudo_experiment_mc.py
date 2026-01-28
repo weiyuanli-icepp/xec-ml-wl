@@ -239,7 +239,7 @@ def run_inference(model: XEC_Inpainter, x: np.ndarray,
             mask_batch = torch.tensor(mask[start_idx:end_idx], device=device)
 
             # Run model
-            results = model(x_batch, external_mask=mask_batch)
+            results = model(x_batch, mask=mask_batch)
 
             # Store results for this batch
             batch_preds = {
