@@ -1,0 +1,246 @@
+# Troubleshooting
+
+## Common Issues
+
+### 1. CUDA Out of Memory (GPU OOM)
+
+**Symptom:** `RuntimeError: CUDA out of memory`
+
+**Solutions:**
+```bash
+# Reduce batch size
+BATCH_SIZE=512 ./scan_param/submit_regressor.sh
+
+# For MAE (decoder uses more memory)
+BATCH=1024 ./scan_param/submit_mae.sh
+
+# Use gradient accumulation for effective larger batch
+# effective_batch = batch_size × grad_accum_steps
+training:
+  batch_size: 512
+  grad_accum_steps: 4  # Effective batch = 2048
+```
+
+**Recommended batch sizes:**
+| Model | A100 (40GB) | GH200 (96GB) |
+|-------|-------------|--------------|
+| Regressor | 8192-16384 | 16384-32768 |
+| MAE | 1024-2048 | 2048-4096 |
+| Inpainter | 1024-2048 | 2048-4096 |
+
+### 2. CPU/System Memory OOM (Large Datasets)
+
+**Symptom:** Process killed, `MemoryError`, or system becomes unresponsive when training with large ROOT files (>1M events)
+
+**Root Cause:** The inpainter/MAE with `save_predictions: true` (or `save_root_predictions: true`) collects ALL predictions in memory during validation before writing to ROOT. With 1M events × 5% mask × 238 sensors = 12M prediction dicts.
+
+**Memory estimation:**
+```
+Per prediction: ~200 bytes (dict with 8 floats + metadata)
+1M events × 5% mask × 238 sensors ≈ 12M predictions ≈ 2.4 GB
+1M events × 10% mask × 238 sensors ≈ 24M predictions ≈ 4.8 GB
+```
+
+**Solutions:**
+```yaml
+# Option 1: Disable prediction saving
+checkpoint:
+  save_predictions: false  # or save_root_predictions: false
+
+# Option 2: Reduce validation frequency
+checkpoint:
+  save_interval: 50  # Save only every 50 epochs
+
+# Option 3: Use smaller validation set
+data:
+  val_path: "small_val.root"  # Use subset for validation
+```
+
+**Best Practice:** For large-scale training, disable `save_predictions` during initial experiments. Enable only for final evaluation runs with smaller validation sets.
+
+### 3. MLflow Database Locked
+
+**Symptom:** `sqlite3.OperationalError: database is locked`
+
+**Solution:**
+```bash
+# Kill any hanging processes
+pkill -f mlflow
+
+# Or use a fresh database
+rm mlruns.db
+export MLFLOW_TRACKING_URI="sqlite:///mlruns.db"
+```
+
+### 4. torch.compile Issues
+
+#### A. Triton Installation Error
+
+**Symptom:** `RuntimeError: Cannot find a working triton installation`
+
+**Solution:** Disable compilation in config:
+```yaml
+training:
+  compile: "none"  # or "false"
+```
+
+#### B. CPU OOM During Compilation
+
+**Symptom:** SSH session closes, process killed, or system becomes unresponsive during the first epoch (before actual training starts).
+
+**Root Cause:** `torch.compile` with `max-autotune` mode benchmarks many Triton kernel configurations, consuming significant CPU memory during compilation.
+
+**Solution:** Use a less aggressive compile mode:
+```yaml
+training:
+  compile: "reduce-overhead"  # Recommended balance
+  # or
+  compile: "none"  # Disable completely
+```
+
+#### C. torch.compile Mode Reference
+
+| Mode | Compilation Time | Memory Usage | Runtime Speed | Best For |
+|------|------------------|--------------|---------------|----------|
+| `max-autotune` | Slowest (5-15 min) | Highest | Fastest | Production with ample resources |
+| `reduce-overhead` | Medium (2-5 min) | Medium | Fast | **Recommended default** |
+| `default` | Fast (30-60 sec) | Low | Moderate | Quick iteration |
+| `false`/`none` | None | None | Baseline | Memory-constrained/debugging |
+
+**Mode Details:**
+
+- **`max-autotune`**: Benchmarks 10-50+ kernel variants per operation to find the optimal configuration. Produces verbose Triton autotuning output. Best final performance but highest compilation overhead.
+
+- **`reduce-overhead`**: Uses CUDA graphs to reduce Python overhead. Less aggressive kernel tuning than max-autotune. Good balance of compilation time and runtime speed (~85-90% of max-autotune performance).
+
+- **`default`**: Basic fusion and optimization passes. Fastest compilation with minimal memory overhead. Still provides meaningful speedup over eager mode.
+
+- **`false`/`none`**: Disables torch.compile entirely (eager execution). No compilation overhead. Useful for debugging or when compilation causes issues.
+
+### 5. NaN Loss During Training
+
+**Symptom:** Loss becomes NaN after a few epochs
+
+**Possible causes and solutions:**
+1. **Learning rate too high:** Reduce `lr` by 10x
+2. **Gradient explosion:** Enable gradient clipping (`grad_clip: 1.0`)
+3. **Bad normalization:** Check `npho_scale`, `time_scale` match your data
+4. **Data issue:** Check for NaN/Inf in input ROOT files
+
+```bash
+# Debug data
+python -c "
+import uproot
+f = uproot.open('your_data.root')
+t = f['tree']
+npho = t['relative_npho'].array()
+print(f'NaN count: {np.isnan(npho).sum()}')
+print(f'Inf count: {np.isinf(npho).sum()}')
+"
+```
+
+### 6. Slow Data Loading (CPU Bottleneck)
+
+**Symptom:** GPU utilization < 50%, `avg_data_load_sec` is high
+
+**Solutions:**
+```yaml
+# Increase chunk size (loads more data per ROOT read)
+data:
+  chunksize: 524288  # 512K events
+
+# Increase preprocessing threads
+  num_threads: 8
+```
+
+### 7. Checkpoint Resume Fails
+
+**Symptom:** `KeyError` or shape mismatch when resuming
+
+**Possible causes:**
+1. **Model architecture changed:** Ensure `outer_mode`, `outer_fine_pool` match
+2. **MAE vs Full checkpoint confusion:** MAE checkpoints don't have optimizer state
+3. **Task configuration changed:** Multi-task model expects same enabled tasks
+
+**Solution:** Start fresh or ensure config matches checkpoint:
+```bash
+# Check what's in the checkpoint
+python -c "
+import torch
+ckpt = torch.load('checkpoint.pth', map_location='cpu', weights_only=False)
+print('Keys:', ckpt.keys())
+if 'config' in ckpt:
+    print('Config:', ckpt['config'])
+"
+```
+
+### 8. Inconsistent Results Between Runs
+
+**Symptom:** Different results with same configuration
+
+**Solution:** Set random seeds:
+```python
+import torch
+import numpy as np
+import random
+
+torch.manual_seed(42)
+np.random.seed(42)
+random.seed(42)
+torch.backends.cudnn.deterministic = True
+```
+
+---
+
+## FAQ
+
+**Q: Can I train on CPU?**
+A: Technically yes, but not recommended. Training is 50-100x slower. For debugging:
+```bash
+CUDA_VISIBLE_DEVICES="" python -m lib.train_mae --config config.yaml
+```
+
+**Q: How do I know if MAE pretraining helped?**
+A: Compare validation metrics:
+1. Train regressor from scratch (no `--resume_from`)
+2. Train regressor with MAE weights (`--resume_from mae_checkpoint.pth`)
+3. Compare `val_resolution_deg` after same number of epochs
+
+**Q: What mask_ratio should I use for MAE?**
+A: Typical values: 0.5-0.75. Higher masking forces the model to learn better representations but may hurt reconstruction quality. Start with 0.6 (65%).
+
+**Q: How do I export for C++ inference?**
+A: Use the ONNX export script:
+```bash
+python macro/export_onnx.py artifacts/my_run/checkpoint_best.pth --output model.onnx
+
+# Verify the export
+python -c "
+import onnxruntime as ort
+sess = ort.InferenceSession('model.onnx')
+print('Inputs:', [i.name for i in sess.get_inputs()])
+print('Outputs:', [o.name for o in sess.get_outputs()])
+"
+```
+
+**Q: Why is `actual_mask_ratio` different from `mask_ratio`?**
+A: `actual_mask_ratio` accounts for already-invalid sensors in the data. If 10% of sensors are already invalid (time == sentinel), and you set `mask_ratio=0.6`, then:
+- Valid sensors: 90% × 4760 = 4284
+- Randomly masked: 60% × 4284 = 2570
+- `actual_mask_ratio` = 2570 / 4284 ≈ 0.60
+
+**Q: Can I use different normalization for MAE and regression?**
+A: **No.** The encoder learns features based on the input distribution. If you change normalization, the learned features won't transfer correctly. Always use the same `npho_scale`, `time_scale`, etc. See [Data Pipeline](../architecture/data-pipeline.md) for the two available schemes.
+
+**Q: What is gradient accumulation and when should I use it?**
+A: Gradient accumulation simulates larger batch sizes when GPU memory is limited. Set `grad_accum_steps: 4` with `batch_size: 512` to get an effective batch of 2048. Use when you want larger batches for better convergence but can't fit them in GPU memory.
+
+**Q: Why does inpainter training use so much CPU memory with large datasets?**
+A: When `save_predictions: true`, the inpainter collects ALL validation predictions in memory before writing to ROOT. With 1M events × 5% mask × 238 sensors, this can use 2-5 GB of RAM. Disable `save_predictions` for large-scale training, or use a smaller validation set.
+
+**Q: How do I visualize what the model learned?**
+A: Several options:
+1. **Saliency maps:** Generated automatically at end of training (`saliency_profile_*.pdf`)
+2. **MAE reconstructions:** Check `mae_predictions_epoch_*.root`
+3. **Worst events:** Check `worst_event_*.pdf` for failure modes
+4. **TensorBoard:** `tensorboard --logdir runs`

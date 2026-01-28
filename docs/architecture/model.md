@@ -1,0 +1,500 @@
+# Model Architecture
+
+The model (`XECEncoder`) utilizes a multi-branch architecture to handle the heterogeneous sensor geometry (SiPMs vs PMTs), followed by an attention-based fusion mechanism.
+
+## A. The Pipeline
+
+```mermaid
+graph TD
+    %% -- Styles --
+    classDef tensor fill:#e1f5fe,stroke:#01579b,stroke-width:1px,color:#000000;
+    classDef op fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#000000;
+
+    subgraph "1. Input Processing"
+        Input("<b>Input Batch</b><br/>Shape: B, 4760, 2"):::tensor
+        Flatten{"Flatten if 4D"}:::op
+
+        %% Face Gathering
+        subgraph "Geometry Gathering"
+            GatherInn(Gather Inner):::op
+            GatherUS(Gather US):::op
+            GatherDS(Gather DS):::op
+            GatherOutC(Gather Outer Coarse):::op
+            GatherOutF(Gather Outer Center):::op
+
+            GatherHexT(Gather Hex Top):::op
+            GatherHexB(Gather Hex Bottom):::op
+        end
+
+        %% Outer Fine Grid Logic
+        subgraph "Outer Face Construction"
+            Fuse("<b>Build Fine Grid</b><br/>Fuse Coarse + Center"):::op
+            PoolFine(AvgPool2d Kernel=3):::op
+        end
+
+        %% Destinations
+        ToFaceIn(To FaceBackbone):::tensor
+        ToHexIn(To HexEncoder):::tensor
+    end
+
+    Input --> Flatten
+    Flatten --> GatherInn & GatherUS & GatherDS
+    Flatten --> GatherOutC & GatherOutF
+    Flatten --> GatherHexT & GatherHexB
+
+    %% Outer Grid Flow
+    GatherOutC & GatherOutF --> Fuse --> PoolFine
+
+    %% Output connections
+    PoolFine --> ToFaceIn
+    GatherInn & GatherUS & GatherDS --> ToFaceIn
+    GatherHexT & GatherHexB --> ToHexIn
+```
+```mermaid
+graph TD
+    %% -- Styles --
+    classDef tensor fill:#e1f5fe,stroke:#01579b,stroke-width:1px,color:#000000;
+    classDef op fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#000000;
+    classDef block fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px,color:#000000;
+    classDef fusion fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000000;
+    classDef param fill:#fff9c4,stroke:#fbc02d,stroke-dasharray: 5 5,color:#000000;
+
+    %% ==========================================
+    %% 2. CNN BACKBONE (SHARED)
+    %% ==========================================
+    subgraph "2. ConvNeXt V2 Path"
+        FaceIn(Face Input):::tensor
+
+        %% Stem
+        subgraph "Stem"
+            StemConv("Conv2d 2->32<br/>k=4, s=1, p=1"):::op
+            StemLN(LayerNorm):::op
+        end
+
+        %% Stage 1
+        subgraph "Stage 1 (Dim=32)"
+            CNBlock1("<b>ConvNeXtV2 Block 1</b><br/>DWConv k=7 -> LN -> PWLinear -> GELU -> GRN -> PWLinear"):::block
+            CNBlock2("<b>ConvNeXtV2 Block 2</b><br/>DWConv k=7 -> LN -> PWLinear -> GELU -> GRN -> PWLinear"):::block
+        end
+
+        %% Downsample
+        subgraph "Downsample"
+            DS_LN(LayerNorm):::op
+            DS_Conv("Conv2d 32->64<br/>k=2, s=2"):::op
+        end
+
+        %% Stage 2
+        subgraph "Stage 2 (Dim=64)"
+            CNBlock3(<b>ConvNeXtV2 Block 1</b>):::block
+            CNBlock4(<b>ConvNeXtV2 Block 2</b>):::block
+            CNBlock5(<b>ConvNeXtV2 Block 3</b>):::block
+        end
+
+        %% Output
+        Interp(Interpolate to 4x4):::op
+        FlatCNN(Flatten):::op
+        FaceOut("<b>Face Token</b><br/>Dim: 1024"):::tensor
+    end
+
+    %% ==========================================
+    %% 3. HEX ENCODER (SHARED)
+    %% ==========================================
+    subgraph "3. GraphAttention Path"
+        HexIn(Hex Nodes):::tensor
+
+        %% Stem
+        subgraph "Hex Stem"
+            HexStemLin(Linear 2->96):::op
+            HexStemLN(LayerNorm):::op
+            HexStemAct(GELU):::op
+        end
+
+        %% HexNeXt Stack
+        subgraph "HexNeXt Stack (4 Layers)"
+            HNBlock1("<b>HexNeXt Block 1</b><br/>HexDepthwise -> LN -> Linear -> GELU -> GRN -> Linear"):::block
+            HNBlock2(<b>HexNeXt Block 2</b>):::block
+            HNBlock3(<b>HexNeXt Block 3</b>):::block
+            HNBlock4(<b>HexNeXt Block 4</b>):::block
+        end
+
+        %% Pooling
+        HexPool(Global Mean Pool):::op
+
+        %% Projection
+        subgraph "Projection"
+            HexProjLN(LayerNorm):::op
+            HexProjLin(Linear 96->1024):::op
+        end
+
+        HexOut("<b>Hex Token</b><br/>Dim: 1024"):::tensor
+    end
+
+    %% ==========================================
+    %% 4. FUSION & HEAD
+    %% ==========================================
+    subgraph "4. Fusion & Regression (XECEncoder)"
+        TokenStack("<b>Stack Tokens</b><br/>[Inner, US, DS, Outer, Top, Bot]<br/>Shape: (B, 6, 1024)"):::op
+        PosEmbed(Add Pos Embed):::op
+
+        subgraph "Transformer Encoder (Dim=1024)"
+            TransL1("<b>Layer 1</b><br/>SelfAttn 8-Head -> Add&Norm -> FeedForward 4096 -> Add&Norm"):::fusion
+            TransL2("<b>Layer 2</b><br/>SelfAttn 8-Head -> Add&Norm -> FeedForward 4096 -> Add&Norm"):::fusion
+        end
+
+        FlatAll("<b>Flatten Sequence</b><br/>Dim: 6 * 1024 = 6144"):::op
+
+        subgraph "Regression Head"
+            HeadLin1(Linear 6144 -> 256):::op
+            HeadLN(LayerNorm):::op
+            HeadGELU(GELU):::op
+            HeadDrop(Dropout 0.2):::op
+            HeadLin2(Linear 256 -> 2):::op
+        end
+
+        FinalOut(("<b>Output</b><br/>Theta, Phi")):::tensor
+    end
+
+    %% ==========================================
+    %% CONNECTIONS
+    %% ==========================================
+
+    %% CNN Flow
+    FaceIn --> StemConv --> StemLN --> CNBlock1
+    CNBlock1 --> CNBlock2 --> DS_LN --> DS_Conv
+    DS_Conv --> CNBlock3 --> CNBlock4 --> CNBlock5
+    CNBlock5 --> Interp --> FlatCNN --> FaceOut
+
+    %% Hex Flow
+    HexIn --> HexStemLin --> HexStemLN --> HexStemAct
+    HexStemAct --> HNBlock1 --> HNBlock2 --> HNBlock3 --> HNBlock4
+    HNBlock4 --> HexPool --> HexProjLN --> HexProjLin --> HexOut
+
+    %% Fusion Flow
+    FaceOut --> TokenStack
+    HexOut --> TokenStack
+    TokenStack --> PosEmbed --> TransL1 --> TransL2
+    TransL2 --> FlatAll --> HeadLin1 --> HeadLN --> HeadGELU --> HeadDrop --> HeadLin2 --> FinalOut
+```
+
+## B. Key Components
+
+### 1. Rectangular Branch: ConvNeXt V2
+
+**Faces**: Inner (93×44), Outer Fine Grid (45×72), Upstream (24×6), Downstream (24×6)
+
+**Architecture**: Uses ConvNeXt V2 blocks with Global Response Normalization (GRN):
+
+```
+Input: (B, 2, H, W)  # 2 channels: npho, time
+    │
+    ▼
+┌─────────────┐
+│    Stem     │  Conv2d(2→32, k=4) + LayerNorm
+└─────────────┘
+    │
+    ▼
+┌─────────────┐
+│  Stage 1    │  2× ConvNeXtV2Block (dim=32)
+└─────────────┘
+    │
+    ▼
+┌─────────────┐
+│ Downsample  │  LayerNorm + Conv2d(32→64, k=2, s=2)
+└─────────────┘
+    │
+    ▼
+┌─────────────┐
+│  Stage 2    │  3× ConvNeXtV2Block (dim=64)
+└─────────────┘
+    │
+    ▼
+┌─────────────┐
+│ Adaptive    │  Bilinear interpolation to 4×4
+│ Pooling     │
+└─────────────┘
+    │
+    ▼
+Output: (B, 1024)  # Flattened: 64 × 4 × 4 = 1024
+```
+
+**ConvNeXtV2 Block** (`lib/models/blocks.py:76`):
+```
+Input x ─────────────────────────────────┐
+    │                                    │ (residual)
+    ▼                                    │
+┌─────────────────┐                      │
+│ DWConv 7×7      │  Depthwise spatial   │
+└─────────────────┘                      │
+    │                                    │
+    ▼                                    │
+┌─────────────────┐                      │
+│ LayerNorm       │                      │
+└─────────────────┘                      │
+    │                                    │
+    ▼                                    │
+┌─────────────────┐                      │
+│ Linear (→4×dim) │  Expand to 4× width  │
+└─────────────────┘                      │
+    │                                    │
+    ▼                                    │
+┌─────────────────┐                      │
+│ GELU            │                      │
+└─────────────────┘                      │
+    │                                    │
+    ▼                                    │
+┌─────────────────┐                      │
+│ GRN             │  Global Response Norm│
+└─────────────────┘                      │
+    │                                    │
+    ▼                                    │
+┌─────────────────┐                      │
+│ Linear (→dim)   │  Project back        │
+└─────────────────┘                      │
+    │                                    │
+    ▼                                    │
+    + ◄──────────────────────────────────┘
+    │
+Output
+```
+
+### 2. Hexagonal Branch: HexNeXt (Graph Convolution)
+
+**Faces**: Top PMT array (334 nodes), Bottom PMT array (334 nodes)
+
+**Problem**: PMTs are arranged in a hexagonal lattice, not a rectangular grid. Standard 2D convolutions don't work here.
+
+**Solution**: Use graph convolution where each PMT is a node, and edges connect neighboring PMTs (6 neighbors per node in the interior).
+
+#### HexDepthwiseConv: The Core Operation
+
+Unlike standard Graph Attention Networks (GAT) which learn attention weights dynamically per input, our `HexDepthwiseConv` uses **learnable position-dependent weights** - more similar to a depthwise convolution kernel adapted for hexagonal grids.
+
+```
+        ┌─────┐
+       /       \
+  ┌───┐    0    ┌───┐
+  │ 5 │         │ 1 │     Hexagonal neighborhood:
+  └───┘         └───┘     - Center node (0)
+ /     \       /     \    - 6 neighbors (1-6)
+┌───┐   ┌─────┐   ┌───┐   - Each position has a learned weight
+│ 4 │   │  c  │   │ 2 │
+└───┘   └─────┘   └───┘
+       \       /
+        ┌───┐
+        │ 3 │
+        └───┘
+```
+
+**How it works** (`lib/models/blocks.py:172`):
+
+```python
+class HexDepthwiseConv(nn.Module):
+    def __init__(self, dim):
+        # 7 learnable weights: 1 for center + 6 for neighbors
+        self.weight = nn.Parameter(torch.randn(1, 7, dim) * 0.02)
+        self.bias = nn.Parameter(torch.zeros(1, 1, dim))
+
+    def forward(self, x, edge_index):
+        # x: (B, N, C) - node features
+        # edge_index: [src, dst, neighbor_type] - graph structure
+
+        # 1. Gather neighbor features
+        neighbor_features = x[:, src, :]  # (B, Edges, C)
+
+        # 2. Apply position-dependent weights
+        # neighbor_type ∈ {0,1,2,3,4,5,6} indicates which neighbor position
+        w_per_edge = self.weight[0, neighbor_type, :]  # (Edges, C)
+        weighted_msgs = neighbor_features * w_per_edge
+
+        # 3. Aggregate weighted messages to destination nodes
+        out = scatter_add(weighted_msgs, dst)  # Sum neighbors
+
+        return out + self.bias
+```
+
+**Key difference from GAT:**
+- **GAT**: Computes attention weights dynamically from input features → O(n²) for dense graphs
+- **HexDepthwiseConv**: Uses fixed positional weights learned during training → O(n) operations
+- Our approach is more efficient and exploits the regular hexagonal structure
+
+#### HexNeXtBlock: Full Block Structure
+
+The HexNeXtBlock mirrors ConvNeXtV2Block but replaces 2D depthwise conv with graph depthwise conv:
+
+```
+Input x ─────────────────────────────────┐
+    │                                    │ (residual)
+    ▼                                    │
+┌─────────────────┐                      │
+│ HexDepthwiseConv│  Graph spatial conv  │
+└─────────────────┘                      │
+    │                                    │
+    ▼                                    │
+┌─────────────────┐                      │
+│ LayerNorm       │                      │
+└─────────────────┘                      │
+    │                                    │
+    ▼                                    │
+┌─────────────────┐                      │
+│ Linear (→4×dim) │  Expand to 4× width  │
+└─────────────────┘                      │
+    │                                    │
+    ▼                                    │
+┌─────────────────┐                      │
+│ GELU            │                      │
+└─────────────────┘                      │
+    │                                    │
+    ▼                                    │
+┌─────────────────┐                      │
+│ GRN             │  Same GRN as Conv!   │
+└─────────────────┘                      │
+    │                                    │
+    ▼                                    │
+┌─────────────────┐                      │
+│ Linear (→dim)   │  Project back        │
+└─────────────────┘                      │
+    │                                    │
+    ▼                                    │
+    + ◄──────────────────────────────────┘
+    │
+Output
+```
+
+**Complete DeepHexEncoder** (`lib/models/regressor.py:19`):
+```
+Input: (B, 334, 2)  # 334 PMT nodes, 2 channels
+    │
+    ▼
+┌─────────────────┐
+│ Stem            │  Linear(2→96) + LayerNorm + GELU
+└─────────────────┘
+    │
+    ▼
+┌─────────────────┐
+│ 4× HexNeXtBlock │  dim=96, with shared edge_index
+└─────────────────┘
+    │
+    ▼
+┌─────────────────┐
+│ Global Mean Pool│  Average over all 334 nodes
+└─────────────────┘
+    │
+    ▼
+┌─────────────────┐
+│ Projection      │  LayerNorm + Linear(96→1024)
+└─────────────────┘
+    │
+    ▼
+Output: (B, 1024)  # Face token
+```
+
+### 3. Global Response Normalization (GRN)
+
+GRN is used in **both** ConvNeXtV2 and HexNeXt blocks. It prevents feature collapse by normalizing based on global feature statistics.
+
+**Formula:**
+```
+GRN(x) = γ · (x · N(x)) + β + x
+
+where:
+  N(x) = ||x||₂ / mean(||x||₂)  # Normalized L2 norm
+  γ, β = learnable parameters
+```
+
+**Implementation** (`lib/models/blocks.py:43`):
+- For **4D tensors** (B, H, W, C): L2 norm over spatial dims (H, W)
+- For **3D tensors** (B, N, C): L2 norm over node dim (N)
+- Same mathematical operation, different tensor shapes
+
+```python
+class GRN(nn.Module):
+    def forward(self, x):
+        if x.dim() == 3:  # Hex branch: (B, Nodes, C)
+            Gx = torch.norm(x, p=2, dim=1, keepdim=True)  # Norm over nodes
+        elif x.dim() == 4:  # Conv branch: (B, H, W, C)
+            Gx = torch.norm(x, p=2, dim=(1,2), keepdim=True)  # Norm over H,W
+
+        Nx = Gx / (Gx.mean(dim=-1, keepdim=True) + 1e-6)
+        return self.gamma * (x * Nx) + self.beta + x
+```
+
+### 4. Token Generation: From Features to Tokens
+
+Each branch produces a **1024-dimensional token** representing its face:
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                    TOKEN GENERATION                             │
+├────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  RECTANGULAR FACES (via FaceBackbone):                         │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
+│  │ Inner       │    │ Conv Stages │    │ Pool to 4×4 │        │
+│  │ (93×44×2)   │ →  │ → (H',W',64)│ →  │ → Flatten   │ → 1024 │
+│  └─────────────┘    └─────────────┘    └─────────────┘        │
+│                                                                 │
+│  HEXAGONAL FACES (via DeepHexEncoder):                         │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
+│  │ Top PMTs    │    │ HexNeXt     │    │ Global Mean │        │
+│  │ (334×2)     │ →  │ → (334,96)  │ →  │ + Project   │ → 1024 │
+│  └─────────────┘    └─────────────┘    └─────────────┘        │
+│                                                                 │
+└────────────────────────────────────────────────────────────────┘
+
+                              ▼
+
+┌────────────────────────────────────────────────────────────────┐
+│                    TOKEN STACKING                               │
+├────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   Face Tokens:        Token 0    Token 1    ...    Token 5     │
+│                      ┌──────┐   ┌──────┐         ┌──────┐     │
+│                      │Inner │   │  US  │   ...   │Bottom│     │
+│                      │1024  │   │ 1024 │         │ 1024 │     │
+│                      └──────┘   └──────┘         └──────┘     │
+│                          │          │                │         │
+│                          ▼          ▼                ▼         │
+│                      ┌────────────────────────────────┐        │
+│   Stack:             │    (B, 6, 1024)                │        │
+│                      └────────────────────────────────┘        │
+│                                    │                           │
+│   + Positional:                    + pos_embed (1, 6, 1024)    │
+│                                    │                           │
+│                                    ▼                           │
+│                      ┌────────────────────────────────┐        │
+│   Transformer:       │ 2-layer TransformerEncoder     │        │
+│                      │ 8 heads, FFN=4096              │        │
+│                      └────────────────────────────────┘        │
+│                                    │                           │
+│                                    ▼                           │
+│                      ┌────────────────────────────────┐        │
+│   Output:            │ (B, 6, 1024) → Flatten → 6144  │        │
+│                      └────────────────────────────────┘        │
+│                                                                 │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 5. Mid-Fusion: Transformer Encoder
+
+**Problem**: Physics events (showers) often cross face boundaries. Independent processing misses cross-face correlations.
+
+**Solution**: Treat each face token as a sequence element and use self-attention:
+
+```python
+# In XECEncoder.forward_features()
+tokens = torch.stack([inner, us, ds, outer, top, bottom], dim=1)  # (B, 6, 1024)
+tokens = tokens + self.pos_embed  # Add learnable positional embeddings
+tokens = self.fusion_transformer(tokens)  # 2-layer Transformer
+```
+
+**Transformer Configuration:**
+- **d_model**: 1024 (token dimension)
+- **nhead**: 8 (attention heads)
+- **dim_feedforward**: 4096 (4× expansion)
+- **num_layers**: 2
+- **dropout**: 0.1
+
+**Why Transformer over simple concatenation:**
+1. Each face can attend to any other face
+2. Learns which face correlations matter (via attention weights)
+3. Handles variable importance dynamically (e.g., events near corners)
