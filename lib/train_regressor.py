@@ -503,6 +503,11 @@ def train_with_config(config_path: str, profile: bool = None):
                     ema_model.n_averaged.zero_()
 
     # --- MLflow Setup ---
+    # Default to SQLite backend if MLFLOW_TRACKING_URI is not set
+    if not os.environ.get("MLFLOW_TRACKING_URI"):
+        default_uri = f"sqlite:///{os.getcwd()}/mlruns.db"
+        mlflow.set_tracking_uri(default_uri)
+        print(f"[INFO] MLflow tracking URI: {default_uri}")
     mlflow.set_experiment(cfg.mlflow.experiment)
     run_name = cfg.mlflow.run_name or time.strftime("run_%Y%m%d_%H%M%S")
 

@@ -427,6 +427,11 @@ Examples:
             model.load_state_dict(checkpoint, strict=False)
 
     # MLflow setup
+    # Default to SQLite backend if MLFLOW_TRACKING_URI is not set
+    if not os.environ.get("MLFLOW_TRACKING_URI"):
+        default_uri = f"sqlite:///{os.getcwd()}/mlruns.db"
+        mlflow.set_tracking_uri(default_uri)
+        print(f"[INFO] MLflow tracking URI: {default_uri}")
     mlflow.set_experiment(mlflow_experiment)
     os.makedirs(save_path, exist_ok=True)
 
