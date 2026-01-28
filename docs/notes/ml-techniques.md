@@ -95,7 +95,65 @@ These are not currently implemented in the codebase but are promising alternativ
 
 Uses `torch.cuda.amp` for faster training with FP16 forward pass while maintaining FP32 gradients.
 
-### 5. Positional Encoding
+### 5. Vectorized Tensor Operations
+
+Replacing Python loops with vectorized tensor operations provides significant speedups, especially for operations that run multiple times per batch.
+
+#### Example: Inpainting Head Optimization
+
+The inpainting heads need to gather predictions at masked positions, which varies per sample. The naive approach uses a Python loop:
+
+**Before (slow):**
+```python
+for b in range(B):
+    masked_pos = mask_2d[b].nonzero(as_tuple=False)  # (num_masked, 2)
+    n = masked_pos.shape[0]
+    if n > 0:
+        h_idx, w_idx = masked_pos[:, 0], masked_pos[:, 1]
+        pred_masked[b, :n, :] = pred_all[b, :, h_idx, w_idx].T
+        mask_indices[b, :n, :] = masked_pos
+        valid_mask[b, :n] = True
+```
+
+**After (fast):**
+```python
+# Get ALL masked positions across entire batch: (batch_idx, h_idx, w_idx)
+batch_idx, h_idx, w_idx = mask_2d.nonzero(as_tuple=True)
+
+# Gather ALL predictions in one operation
+gathered_preds = pred_all[batch_idx, :, h_idx, w_idx]  # (total_masked, 2)
+
+# Compute within-batch indices for scattering
+cumsum = torch.zeros(B + 1, device=device, dtype=torch.long)
+cumsum[1:] = num_masked_per_sample.cumsum(0)
+within_batch_idx = torch.arange(len(batch_idx), device=device) - cumsum[batch_idx]
+
+# Scatter into output tensors using advanced indexing
+pred_masked[batch_idx, within_batch_idx] = gathered_preds
+mask_indices[batch_idx, within_batch_idx, 0] = h_idx
+mask_indices[batch_idx, within_batch_idx, 1] = w_idx
+valid_mask[batch_idx, within_batch_idx] = True
+```
+
+#### Why It Matters
+
+| Issue | Impact |
+|-------|--------|
+| **Python loop overhead** | Loops run 6× per batch (once per face), adding CPU overhead |
+| **GPU synchronization** | `nonzero()` inside loop forces GPU→CPU sync to get tensor shape |
+| **Kernel launch overhead** | Many small GPU ops have more overhead than one large vectorized op |
+| **torch.compile compatibility** | Vectorized code enables better graph capture and kernel fusion |
+
+#### Key Techniques
+
+1. **`nonzero(as_tuple=True)`**: Returns separate tensors for each dimension, enabling batch-wide indexing
+2. **Advanced indexing**: `tensor[batch_idx, h_idx, w_idx]` gathers across all samples at once
+3. **Cumulative sum for offsets**: Converts global indices to within-sample indices for scattering
+4. **Pre-allocated output tensors**: Avoids dynamic allocation inside loops
+
+This optimization is implemented in `lib/models/inpainter.py` for both `FaceInpaintingHead` and `HexInpaintingHead`.
+
+### 6. Positional Encoding
 
 Positional embeddings are essential for the Transformer to understand detector topology. Without them, attention is permutation-invariant and cannot distinguish which face is which.
 
