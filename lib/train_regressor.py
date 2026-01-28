@@ -609,7 +609,7 @@ def train_with_config(config_path: str, profile: bool = None):
             if is_plateau_scheduler:
                 scheduler.step(val_loss)
 
-            print(f"[{ep:03d}] tr_loss {tr_loss:.5f} val_loss {val_loss:.5f} lr {current_lr:.2e} time {sec:.1f}s")
+            print(f"[{ep:03d}] tr_loss {tr_loss:.2e} val_loss {val_loss:.2e} lr {current_lr:.2e} time {sec:.1f}s")
 
             # --- Logging ---
             log_system_metrics_to_mlflow(
