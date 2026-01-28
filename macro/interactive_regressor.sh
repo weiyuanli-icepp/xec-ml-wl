@@ -29,5 +29,8 @@ export CONFIG_PATH="config/reg/ene_reg_50epoch.yaml"
 cd $HOME/meghome/xec-ml-wl
 echo "Moved to directory $(pwd)"
 
+# Use SQLite backend for MLflow (consistent with submit scripts)
+export MLFLOW_TRACKING_URI="sqlite:///$(pwd)/mlruns.db"
+
 # Build command
 python -m lib.train_regressor --config ${CONFIG_PATH}
