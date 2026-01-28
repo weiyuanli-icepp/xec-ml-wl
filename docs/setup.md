@@ -47,7 +47,7 @@ $ source $HOME/miniforge-arm/bin/activate
 # 2. Create base with system libs
 $ mamba create -n xec-ml-wl-gh python=3.10 numpy scipy pandas matplotlib scikit-learn \
     tqdm pyarrow pyyaml jupyterlab ipykernel uproot awkward vector \
-    pytorch-lightning torchmetrics tensorboard onnx mlflow \
+    pytorch-lightning torchmetrics tensorboard onnx mlflow pymysql \
     -c conda-forge -y
 
 # 3. Activate
@@ -75,7 +75,7 @@ mamba create -n xec-ml-wl-gh python=3.12 \
     tqdm pyarrow pyyaml jupyterlab ipykernel \
     uproot awkward vector \
     pytorch-lightning=2.4.0 torchmetrics=1.5.0 tensorboard \
-    onnx=1.17.0 mlflow \
+    onnx=1.17.0 mlflow pymysql \
     -c conda-forge -y
 
 # 3. Activate
