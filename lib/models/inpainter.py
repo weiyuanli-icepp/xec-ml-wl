@@ -94,6 +94,7 @@ class FaceInpaintingHead(nn.Module):
             return (
                 torch.zeros(B, 0, 2, device=device, dtype=face_tensor.dtype),
                 torch.zeros(B, 0, 2, dtype=torch.long, device=device),
+                torch.zeros(B, 0, dtype=torch.bool, device=device),
             )
 
         # Vectorized gather of predictions at masked positions
