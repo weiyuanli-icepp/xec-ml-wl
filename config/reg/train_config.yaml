@@ -123,4 +123,6 @@ mlflow:
 
 # === Export ===
 export:
-  onnx: "meg2ang_convnextv2.onnx"   # null to disable ONNX export
+  # ONNX filename only (not full path). File is saved to artifacts/<run_name>/.
+  # Set to null to disable ONNX export.
+  onnx: "meg2ang_convnextv2.onnx"
