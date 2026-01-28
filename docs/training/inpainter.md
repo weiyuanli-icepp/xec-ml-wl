@@ -243,7 +243,62 @@ The output ROOT file has additional columns compared to training predictions:
 
 **Invalid values:** For dead channels (`mask_type=1`), truth and error are set to `-999`.
 
-### 8.5 Analyzing Results
+### 8.5 Event Display
+
+Visualize individual events with `macro/show_inpainter_real.py`:
+
+```bash
+# By event index
+python macro/show_inpainter_real.py 0 \
+    --predictions validation_real/real_data_predictions.root \
+    --original DataGammaAngle_430000-431000.root \
+    --channel npho --save event_0.pdf
+
+# By run/event number
+python macro/show_inpainter_real.py \
+    --predictions validation_real/real_data_predictions.root \
+    --original DataGammaAngle_430000-431000.root \
+    --run 430123 --event 456 \
+    --channel both --save event_430123_456.pdf
+```
+
+**Display layout (3 rows × 4 faces):**
+
+| Row | Content | Description |
+|-----|---------|-------------|
+| 1 | Original | Raw data with dead channels marked (hatched red) |
+| 2 | Filled | Original + predictions inserted at masked positions |
+| 3 | Residual | pred - truth for artificial masks only (dead = N/A) |
+
+**Visual markers:**
+- **Red hatching**: Dead channels (no ground truth)
+- **Blue border**: Artificially masked (has ground truth)
+
+**Console output:**
+```
+============================================================
+Event Summary: Run 430123, Event 456
+============================================================
+
+Predictions by face:
+Face         Artificial       Dead      Total
+--------------------------------------------
+inner              10         20         30
+us                  1          3          4
+ds                  1          2          3
+outer               1          8          9
+top                 1          7          8
+bot                 1          5          6
+--------------------------------------------
+Total              15         45         60
+
+Metrics (artificial masks only):
+  npho: MAE=0.0234, RMSE=0.0312, Bias=-0.0012
+  time: MAE=0.0156, RMSE=0.0198, Bias=0.0003
+============================================================
+```
+
+### 8.6 Analyzing Results
 
 ```bash
 # Analyze predictions (automatically filters by mask_type for metrics)
