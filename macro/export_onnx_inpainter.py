@@ -338,6 +338,10 @@ which cannot be exported to ONNX. Use TorchScript instead.
                         help="Export format (default: torchscript). NOTE: ONNX will fail due to TransformerEncoder.")
     parser.add_argument("--no-ema", action="store_true", help="Use standard weights instead of EMA")
     parser.add_argument("--opset", type=int, default=17, help="ONNX opset version (if attempting ONNX)")
+    parser.add_argument("--trace-batch-size", type=int, default=64,
+                        help="Batch size for tracing (should match inference batch size, default: 64)")
+    parser.add_argument("--trace-mask-per-event", type=int, default=150,
+                        help="Number of masked sensors per event for tracing (default: 150, ~88 dead + 15 artificial + margin)")
 
     args = parser.parse_args()
 
@@ -353,11 +357,23 @@ which cannot be exported to ONNX. Use TorchScript instead.
     wrapper = InpainterONNXWrapper(inpainter)
     wrapper.eval()
 
-    # Dummy inputs
-    dummy_input = torch.randn(1, 4760, 2)
-    dummy_mask = torch.zeros(1, 4760)
-    # Mask some random sensors
-    dummy_mask[0, :100] = 1.0
+    # Dummy inputs - use realistic batch size and mask count for tracing
+    # IMPORTANT: TorchScript trace captures tensor sizes as constants.
+    # The traced model works best when inference uses similar sizes.
+    trace_batch = args.trace_batch_size
+    trace_mask_per_event = args.trace_mask_per_event
+
+    print(f"[INFO] Tracing with batch_size={trace_batch}, ~{trace_mask_per_event} masked per event")
+    print(f"[INFO] (Use --trace-batch-size and --trace-mask-per-event to adjust)")
+
+    dummy_input = torch.randn(trace_batch, 4760, 2)
+    dummy_mask = torch.zeros(trace_batch, 4760)
+
+    # Create realistic mask pattern for each event in batch
+    for b in range(trace_batch):
+        # Random mask positions (simulating dead + artificial)
+        mask_indices = torch.randperm(4760)[:trace_mask_per_event]
+        dummy_mask[b, mask_indices] = 1.0
 
     # Test forward pass
     print("[INFO] Testing forward pass...")
