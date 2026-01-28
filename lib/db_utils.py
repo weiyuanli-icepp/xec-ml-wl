@@ -51,15 +51,16 @@ def _run_mysql_query(query: str, login_path: str = DEFAULT_LOGIN_PATH,
     try:
         result = subprocess.run(
             cmd,
-            capture_output=True,
-            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,  # text=True equivalent for Python 3.6
             check=True
         )
     except subprocess.CalledProcessError as e:
         raise RuntimeError(
-            f"MySQL query failed:\n"
-            f"  Command: {' '.join(cmd)}\n"
-            f"  Error: {e.stderr}"
+            "MySQL query failed:\n"
+            "  Command: {}\n"
+            "  Error: {}".format(' '.join(cmd), e.stderr)
         )
     except FileNotFoundError:
         raise RuntimeError(
