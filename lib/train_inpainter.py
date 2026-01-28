@@ -23,6 +23,10 @@ logging.getLogger("mlflow.store.db.utils").setLevel(logging.WARNING)
 logging.getLogger("alembic").setLevel(logging.WARNING)
 logging.getLogger("alembic.runtime.migration").setLevel(logging.WARNING)
 
+# Suppress Triton autotuning verbose output (must be set BEFORE importing torch)
+os.environ.setdefault("TORCHINDUCTOR_LOG_LEVEL", "WARNING")
+os.environ.setdefault("TRITON_PRINT_AUTOTUNING", "0")
+
 import torch
 import argparse
 import time

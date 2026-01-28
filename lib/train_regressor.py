@@ -7,7 +7,10 @@ Usage:
     python -m lib.train_regressor --config config/train_config.yaml
 """
 
+# Suppress Triton autotuning verbose output (must be set BEFORE importing torch)
 import os
+os.environ.setdefault("TORCHINDUCTOR_LOG_LEVEL", "WARNING")
+os.environ.setdefault("TRITON_PRINT_AUTOTUNING", "0")
 import time
 import tempfile
 import numpy as np

@@ -14,9 +14,11 @@ logging.getLogger("alembic").setLevel(logging.WARNING)
 warnings.filterwarnings("ignore", message=".*To copy construct from a tensor.*")
 warnings.filterwarnings("ignore", message=".*skipping cudagraphs.*")
 
-# Suppress torch dynamo verbose output
+# Suppress torch dynamo verbose output and Triton autotuning
 os.environ["TORCH_LOGS"] = "-all"
 os.environ["TORCHDYNAMO_VERBOSE"] = "0"
+os.environ.setdefault("TORCHINDUCTOR_LOG_LEVEL", "WARNING")
+os.environ.setdefault("TRITON_PRINT_AUTOTUNING", "0")
 
 import torch
 import argparse
