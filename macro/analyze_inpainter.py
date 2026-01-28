@@ -1,0 +1,500 @@
+#!/usr/bin/env python3
+"""
+Inpainter Prediction Analysis Macro
+
+Analyzes inpainter predictions from ROOT files and generates evaluation plots.
+
+Usage:
+    python macro/analyze_inpainter.py predictions.root --output analysis_output/
+    python macro/analyze_inpainter.py predictions.root --output analysis_output/ --denorm
+"""
+
+import argparse
+import os
+import numpy as np
+import pandas as pd
+import uproot
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+from pathlib import Path
+
+# Face mapping
+FACE_ID_TO_NAME = {0: "inner", 1: "us", 2: "ds", 3: "outer", 4: "top", 5: "bot"}
+FACE_NAME_TO_ID = {v: k for k, v in FACE_ID_TO_NAME.items()}
+
+# Face grid dimensions (H, W) for rectangular faces
+FACE_DIMENSIONS = {
+    "inner": (93, 44),
+    "us": (24, 6),
+    "ds": (24, 6),
+    "outer": (9, 24),  # coarse grid
+}
+
+# Default normalization parameters (from config)
+DEFAULT_NPHO_SCALE = 0.58
+DEFAULT_TIME_SCALE = 6.5e-8
+DEFAULT_TIME_SHIFT = 0.5
+
+
+def load_predictions(root_file: str) -> pd.DataFrame:
+    """
+    Load inpainter predictions from ROOT file into pandas DataFrame.
+
+    Args:
+        root_file: Path to the prediction ROOT file
+
+    Returns:
+        DataFrame with columns: event_idx, event_number, sensor_id, face,
+                               truth_npho, truth_time, pred_npho, pred_time,
+                               error_npho, error_time
+    """
+    with uproot.open(root_file) as f:
+        tree = f["predictions"]
+        df = tree.arrays(library="pd")
+
+    # Add face name column
+    df["face_name"] = df["face"].map(FACE_ID_TO_NAME)
+
+    print(f"[INFO] Loaded {len(df):,} predictions from {root_file}")
+    print(f"[INFO] Events: {df['event_idx'].nunique():,} unique")
+    print(f"[INFO] Faces: {df['face_name'].value_counts().to_dict()}")
+
+    return df
+
+
+def compute_global_metrics(df: pd.DataFrame) -> dict:
+    """
+    Compute global metrics for npho and time predictions.
+
+    Returns:
+        Dictionary with MAE, RMSE, bias, and 68th percentile for npho and time
+    """
+    metrics = {}
+
+    for var in ["npho", "time"]:
+        error = df[f"error_{var}"].values
+        abs_error = np.abs(error)
+
+        metrics[f"mae_{var}"] = np.mean(abs_error)
+        metrics[f"rmse_{var}"] = np.sqrt(np.mean(error ** 2))
+        metrics[f"bias_{var}"] = np.mean(error)
+        metrics[f"res68_{var}"] = np.percentile(abs_error, 68)
+        metrics[f"res95_{var}"] = np.percentile(abs_error, 95)
+        metrics[f"std_{var}"] = np.std(error)
+        metrics[f"count_{var}"] = len(error)
+
+    return metrics
+
+
+def compute_per_face_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute metrics grouped by face.
+
+    Returns:
+        DataFrame with metrics per face
+    """
+    results = []
+
+    for face_id, face_name in FACE_ID_TO_NAME.items():
+        face_df = df[df["face"] == face_id]
+        if len(face_df) == 0:
+            continue
+
+        row = {"face": face_name, "count": len(face_df)}
+
+        for var in ["npho", "time"]:
+            error = face_df[f"error_{var}"].values
+            abs_error = np.abs(error)
+
+            row[f"mae_{var}"] = np.mean(abs_error)
+            row[f"rmse_{var}"] = np.sqrt(np.mean(error ** 2))
+            row[f"bias_{var}"] = np.mean(error)
+            row[f"res68_{var}"] = np.percentile(abs_error, 68)
+
+        results.append(row)
+
+    return pd.DataFrame(results)
+
+
+def plot_residual_distributions(df: pd.DataFrame, save_dir: str):
+    """
+    Plot residual (error) distributions for npho and time.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    for ax, var in zip(axes, ["npho", "time"]):
+        error = df[f"error_{var}"].values
+
+        # Compute statistics
+        mean = np.mean(error)
+        std = np.std(error)
+
+        # Plot histogram
+        bins = np.linspace(mean - 5*std, mean + 5*std, 100)
+        ax.hist(error, bins=bins, density=True, alpha=0.7, edgecolor='black', linewidth=0.5)
+
+        # Add Gaussian fit overlay
+        from scipy.stats import norm
+        x = np.linspace(bins[0], bins[-1], 200)
+        ax.plot(x, norm.pdf(x, mean, std), 'r-', lw=2, label=f'Gaussian fit\nμ={mean:.4f}\nσ={std:.4f}')
+
+        ax.set_xlabel(f"error_{var} (pred - truth)")
+        ax.set_ylabel("Density")
+        ax.set_title(f"Residual Distribution: {var}")
+        ax.legend()
+        ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "residual_distributions.pdf"), dpi=150)
+    plt.savefig(os.path.join(save_dir, "residual_distributions.png"), dpi=150)
+    plt.close()
+    print(f"[INFO] Saved residual_distributions.pdf/png")
+
+
+def plot_residual_per_face(df: pd.DataFrame, save_dir: str):
+    """
+    Plot residual distributions separated by face.
+    """
+    faces = sorted(df["face"].unique())
+    n_faces = len(faces)
+
+    for var in ["npho", "time"]:
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        axes = axes.flatten()
+
+        for i, face_id in enumerate(faces):
+            if i >= 6:
+                break
+            ax = axes[i]
+            face_name = FACE_ID_TO_NAME.get(face_id, f"face_{face_id}")
+            face_df = df[df["face"] == face_id]
+
+            error = face_df[f"error_{var}"].values
+            mean = np.mean(error)
+            std = np.std(error)
+
+            bins = np.linspace(mean - 5*std, mean + 5*std, 50)
+            ax.hist(error, bins=bins, density=True, alpha=0.7, edgecolor='black', linewidth=0.5)
+
+            ax.set_xlabel(f"error_{var}")
+            ax.set_title(f"{face_name} (n={len(face_df):,})\nμ={mean:.4f}, σ={std:.4f}")
+            ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
+
+        # Hide unused axes
+        for i in range(len(faces), 6):
+            axes[i].set_visible(False)
+
+        plt.suptitle(f"Residual Distribution by Face: {var}", fontsize=14)
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, f"residual_per_face_{var}.pdf"), dpi=150)
+        plt.savefig(os.path.join(save_dir, f"residual_per_face_{var}.png"), dpi=150)
+        plt.close()
+
+    print(f"[INFO] Saved residual_per_face_npho/time.pdf/png")
+
+
+def plot_scatter_truth_vs_pred(df: pd.DataFrame, save_dir: str, max_points: int = 50000):
+    """
+    Plot 2D scatter/hexbin of truth vs prediction.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    for ax, var in zip(axes, ["npho", "time"]):
+        truth = df[f"truth_{var}"].values
+        pred = df[f"pred_{var}"].values
+
+        # Subsample if too many points
+        if len(truth) > max_points:
+            idx = np.random.choice(len(truth), max_points, replace=False)
+            truth_plot = truth[idx]
+            pred_plot = pred[idx]
+        else:
+            truth_plot = truth
+            pred_plot = pred
+
+        # Hexbin plot for density
+        hb = ax.hexbin(truth_plot, pred_plot, gridsize=50, cmap='viridis', mincnt=1, norm=LogNorm())
+        plt.colorbar(hb, ax=ax, label='Count')
+
+        # Add diagonal line
+        lims = [min(truth_plot.min(), pred_plot.min()), max(truth_plot.max(), pred_plot.max())]
+        ax.plot(lims, lims, 'r--', lw=2, alpha=0.7, label='y=x')
+
+        ax.set_xlabel(f"truth_{var}")
+        ax.set_ylabel(f"pred_{var}")
+        ax.set_title(f"Prediction vs Truth: {var}")
+        ax.legend()
+        ax.set_aspect('equal', adjustable='box')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "scatter_truth_vs_pred.pdf"), dpi=150)
+    plt.savefig(os.path.join(save_dir, "scatter_truth_vs_pred.png"), dpi=150)
+    plt.close()
+    print(f"[INFO] Saved scatter_truth_vs_pred.pdf/png")
+
+
+def plot_resolution_vs_signal(df: pd.DataFrame, save_dir: str, n_bins: int = 20):
+    """
+    Plot resolution (|error|) as function of truth signal magnitude.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+    for row, var in enumerate(["npho", "time"]):
+        truth = df[f"truth_{var}"].values
+        error = df[f"error_{var}"].values
+        abs_error = np.abs(error)
+
+        # Bin by truth value
+        bins = np.percentile(truth, np.linspace(0, 100, n_bins + 1))
+        bins = np.unique(bins)  # Remove duplicates
+        bin_centers = 0.5 * (bins[:-1] + bins[1:])
+        bin_indices = np.digitize(truth, bins) - 1
+        bin_indices = np.clip(bin_indices, 0, len(bins) - 2)
+
+        # Compute metrics per bin
+        mae_per_bin = []
+        bias_per_bin = []
+        res68_per_bin = []
+        count_per_bin = []
+
+        for i in range(len(bins) - 1):
+            mask = bin_indices == i
+            if mask.sum() > 0:
+                mae_per_bin.append(np.mean(abs_error[mask]))
+                bias_per_bin.append(np.mean(error[mask]))
+                res68_per_bin.append(np.percentile(abs_error[mask], 68))
+                count_per_bin.append(mask.sum())
+            else:
+                mae_per_bin.append(np.nan)
+                bias_per_bin.append(np.nan)
+                res68_per_bin.append(np.nan)
+                count_per_bin.append(0)
+
+        # Plot MAE vs truth
+        ax1 = axes[row, 0]
+        ax1.plot(bin_centers, mae_per_bin, 'o-', color='blue', label='MAE')
+        ax1.plot(bin_centers, res68_per_bin, 's-', color='green', label='68th pct')
+        ax1.set_xlabel(f"truth_{var}")
+        ax1.set_ylabel(f"Resolution (|error_{var}|)")
+        ax1.set_title(f"Resolution vs Signal: {var}")
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        # Plot bias vs truth
+        ax2 = axes[row, 1]
+        ax2.plot(bin_centers, bias_per_bin, 'o-', color='red')
+        ax2.axhline(0, color='gray', linestyle='--', alpha=0.5)
+        ax2.set_xlabel(f"truth_{var}")
+        ax2.set_ylabel(f"Bias (mean error_{var})")
+        ax2.set_title(f"Bias vs Signal: {var}")
+        ax2.grid(True, alpha=0.3)
+
+        # Add count as secondary axis
+        ax2_twin = ax2.twinx()
+        ax2_twin.bar(bin_centers, count_per_bin, width=np.diff(bins).mean() * 0.8,
+                     alpha=0.2, color='gray', label='Count')
+        ax2_twin.set_ylabel("Count", color='gray')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "resolution_vs_signal.pdf"), dpi=150)
+    plt.savefig(os.path.join(save_dir, "resolution_vs_signal.png"), dpi=150)
+    plt.close()
+    print(f"[INFO] Saved resolution_vs_signal.pdf/png")
+
+
+def plot_metrics_summary(global_metrics: dict, face_metrics: pd.DataFrame, save_dir: str):
+    """
+    Create a summary bar chart of metrics per face.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    faces = face_metrics["face"].values
+    x = np.arange(len(faces))
+    width = 0.35
+
+    # MAE comparison
+    ax = axes[0, 0]
+    ax.bar(x - width/2, face_metrics["mae_npho"], width, label='npho', color='steelblue')
+    ax.bar(x + width/2, face_metrics["mae_time"], width, label='time', color='coral')
+    ax.set_xticks(x)
+    ax.set_xticklabels(faces)
+    ax.set_ylabel("MAE")
+    ax.set_title("Mean Absolute Error by Face")
+    ax.legend()
+    ax.grid(True, alpha=0.3, axis='y')
+
+    # RMSE comparison
+    ax = axes[0, 1]
+    ax.bar(x - width/2, face_metrics["rmse_npho"], width, label='npho', color='steelblue')
+    ax.bar(x + width/2, face_metrics["rmse_time"], width, label='time', color='coral')
+    ax.set_xticks(x)
+    ax.set_xticklabels(faces)
+    ax.set_ylabel("RMSE")
+    ax.set_title("Root Mean Square Error by Face")
+    ax.legend()
+    ax.grid(True, alpha=0.3, axis='y')
+
+    # Bias comparison
+    ax = axes[1, 0]
+    ax.bar(x - width/2, face_metrics["bias_npho"], width, label='npho', color='steelblue')
+    ax.bar(x + width/2, face_metrics["bias_time"], width, label='time', color='coral')
+    ax.axhline(0, color='black', linestyle='-', linewidth=0.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(faces)
+    ax.set_ylabel("Bias (mean error)")
+    ax.set_title("Bias by Face")
+    ax.legend()
+    ax.grid(True, alpha=0.3, axis='y')
+
+    # Count per face
+    ax = axes[1, 1]
+    ax.bar(x, face_metrics["count"], color='gray', edgecolor='black')
+    ax.set_xticks(x)
+    ax.set_xticklabels(faces)
+    ax.set_ylabel("Count")
+    ax.set_title("Number of Predictions by Face")
+    ax.grid(True, alpha=0.3, axis='y')
+
+    # Add global metrics as text
+    text = f"Global Metrics:\n"
+    text += f"  npho: MAE={global_metrics['mae_npho']:.4f}, RMSE={global_metrics['rmse_npho']:.4f}, bias={global_metrics['bias_npho']:.4f}\n"
+    text += f"  time: MAE={global_metrics['mae_time']:.4f}, RMSE={global_metrics['rmse_time']:.4f}, bias={global_metrics['bias_time']:.4f}"
+    fig.text(0.5, 0.02, text, ha='center', fontsize=10, family='monospace',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.tight_layout(rect=[0, 0.08, 1, 1])
+    plt.savefig(os.path.join(save_dir, "metrics_summary.pdf"), dpi=150)
+    plt.savefig(os.path.join(save_dir, "metrics_summary.png"), dpi=150)
+    plt.close()
+    print(f"[INFO] Saved metrics_summary.pdf/png")
+
+
+def identify_outliers(df: pd.DataFrame, sigma_threshold: float = 5.0) -> pd.DataFrame:
+    """
+    Identify predictions with large errors (outliers).
+
+    Args:
+        df: DataFrame with predictions
+        sigma_threshold: Number of standard deviations to consider as outlier
+
+    Returns:
+        DataFrame with outlier predictions
+    """
+    outliers = []
+
+    for var in ["npho", "time"]:
+        error = df[f"error_{var}"].values
+        std = np.std(error)
+        mean = np.mean(error)
+
+        mask = np.abs(error - mean) > sigma_threshold * std
+        outlier_df = df[mask].copy()
+        outlier_df["outlier_var"] = var
+        outlier_df["outlier_zscore"] = (error[mask] - mean) / std
+        outliers.append(outlier_df)
+
+    if outliers:
+        result = pd.concat(outliers, ignore_index=True)
+        result = result.sort_values("outlier_zscore", key=abs, ascending=False)
+        return result
+    return pd.DataFrame()
+
+
+def print_summary(global_metrics: dict, face_metrics: pd.DataFrame, outliers: pd.DataFrame):
+    """
+    Print a text summary of the analysis.
+    """
+    print("\n" + "=" * 60)
+    print("INPAINTER EVALUATION SUMMARY")
+    print("=" * 60)
+
+    print("\n--- Global Metrics ---")
+    print(f"{'Metric':<15} {'npho':>12} {'time':>12}")
+    print("-" * 40)
+    print(f"{'MAE':<15} {global_metrics['mae_npho']:>12.6f} {global_metrics['mae_time']:>12.6f}")
+    print(f"{'RMSE':<15} {global_metrics['rmse_npho']:>12.6f} {global_metrics['rmse_time']:>12.6f}")
+    print(f"{'Bias':<15} {global_metrics['bias_npho']:>12.6f} {global_metrics['bias_time']:>12.6f}")
+    print(f"{'Res (68%)':<15} {global_metrics['res68_npho']:>12.6f} {global_metrics['res68_time']:>12.6f}")
+    print(f"{'Res (95%)':<15} {global_metrics['res95_npho']:>12.6f} {global_metrics['res95_time']:>12.6f}")
+    print(f"{'Std':<15} {global_metrics['std_npho']:>12.6f} {global_metrics['std_time']:>12.6f}")
+    print(f"{'Count':<15} {global_metrics['count_npho']:>12,}")
+
+    print("\n--- Per-Face Metrics ---")
+    print(face_metrics.to_string(index=False, float_format=lambda x: f"{x:.6f}" if isinstance(x, float) else str(x)))
+
+    print(f"\n--- Outliers (>{5}σ) ---")
+    if len(outliers) > 0:
+        print(f"Total outliers: {len(outliers)}")
+        print("Top 10 outliers:")
+        print(outliers[["event_idx", "sensor_id", "face_name", "outlier_var", "outlier_zscore"]].head(10).to_string(index=False))
+    else:
+        print("No outliers found.")
+
+    print("\n" + "=" * 60)
+
+
+def save_metrics_csv(global_metrics: dict, face_metrics: pd.DataFrame, save_dir: str):
+    """
+    Save metrics to CSV files.
+    """
+    # Global metrics
+    global_df = pd.DataFrame([global_metrics])
+    global_df.to_csv(os.path.join(save_dir, "global_metrics.csv"), index=False)
+
+    # Face metrics
+    face_metrics.to_csv(os.path.join(save_dir, "face_metrics.csv"), index=False)
+
+    print(f"[INFO] Saved global_metrics.csv and face_metrics.csv")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Analyze inpainter predictions")
+    parser.add_argument("input", type=str, help="Input ROOT file with predictions")
+    parser.add_argument("--output", "-o", type=str, default="inpainter_analysis",
+                        help="Output directory for plots and metrics")
+    parser.add_argument("--denorm", action="store_true",
+                        help="Denormalize values to physical units (not implemented yet)")
+    parser.add_argument("--max-points", type=int, default=50000,
+                        help="Maximum points for scatter plots")
+    parser.add_argument("--outlier-sigma", type=float, default=5.0,
+                        help="Sigma threshold for outlier detection")
+
+    args = parser.parse_args()
+
+    # Create output directory
+    os.makedirs(args.output, exist_ok=True)
+    print(f"[INFO] Output directory: {args.output}")
+
+    # Load data
+    df = load_predictions(args.input)
+
+    # Compute metrics
+    print("\n[INFO] Computing metrics...")
+    global_metrics = compute_global_metrics(df)
+    face_metrics = compute_per_face_metrics(df)
+    outliers = identify_outliers(df, sigma_threshold=args.outlier_sigma)
+
+    # Print summary
+    print_summary(global_metrics, face_metrics, outliers)
+
+    # Save metrics
+    save_metrics_csv(global_metrics, face_metrics, args.output)
+
+    # Save outliers
+    if len(outliers) > 0:
+        outliers.to_csv(os.path.join(args.output, "outliers.csv"), index=False)
+        print(f"[INFO] Saved outliers.csv ({len(outliers)} rows)")
+
+    # Generate plots
+    print("\n[INFO] Generating plots...")
+    plot_residual_distributions(df, args.output)
+    plot_residual_per_face(df, args.output)
+    plot_scatter_truth_vs_pred(df, args.output, max_points=args.max_points)
+    plot_resolution_vs_signal(df, args.output)
+    plot_metrics_summary(global_metrics, face_metrics, args.output)
+
+    print(f"\n[INFO] Analysis complete. Results saved to {args.output}/")
+
+
+if __name__ == "__main__":
+    main()
