@@ -215,17 +215,35 @@ print(f'Inf count: {np.isinf(npho).sum()}')
 
 ### 6. Slow Data Loading (CPU Bottleneck)
 
-**Symptom:** GPU utilization < 50%, `avg_data_load_sec` is high
+**Symptom:** GPU utilization < 50%, `data_load` takes >20% of epoch time in profiler output
 
-**Solutions:**
+**Understanding the parameters:**
+
+| Parameter | What it does | Memory Impact | Speed Impact |
+|-----------|--------------|---------------|--------------|
+| `chunksize` | Events loaded into RAM per ROOT read | **High** - directly proportional | Fewer I/O operations |
+| `num_workers` | DataLoader worker processes | **High** - each has own memory | Parallel file reading |
+| `num_threads` | Threads for preprocessing within worker | **Minimal** - threads share memory | Parallel normalization |
+
+**Solutions by platform:**
+
+For **A100 nodes** (more memory, no worker limitations):
 ```yaml
-# Increase chunk size (loads more data per ROOT read)
 data:
-  chunksize: 524288  # 512K events
-
-# Increase preprocessing threads
-  num_threads: 8
+  chunksize: 262144     # 256K events
+  num_workers: 4        # Parallel prefetching
+  num_threads: 4
 ```
+
+For **Grace-Hopper nodes** (see section 9 for limitations):
+```yaml
+data:
+  chunksize: 65536      # Keep small to avoid CPU OOM
+  num_workers: 1        # GH limitation - cannot use >1
+  num_threads: 8        # Safe to increase - speeds up preprocessing
+```
+
+**Why `num_threads` is safe from OOM:** Threads share memory within the same process. Increasing `num_threads` just parallelizes preprocessing of the *already-loaded* chunk using numpy views (not copies).
 
 ### 7. Checkpoint Resume Fails
 
@@ -262,6 +280,61 @@ torch.manual_seed(42)
 np.random.seed(42)
 random.seed(42)
 torch.backends.cudnn.deterministic = True
+```
+
+### 9. Grace-Hopper (GH) Node Specific Limitations
+
+Grace-Hopper nodes have several platform-specific constraints:
+
+#### A. DataLoader `num_workers` Must Be 1
+
+**Symptom:** Training hangs or crashes with `num_workers > 1`
+
+**Cause:** GH nodes have limited multiprocessing capacity due to ARM architecture differences and CUDA context handling with unified memory.
+
+**Solution:**
+```yaml
+data:
+  num_workers: 1        # Required for GH nodes
+  num_threads: 8        # Compensate with more preprocessing threads
+```
+
+#### B. `torch.compile` Auto-Disabled
+
+**Symptom:** Log shows `[INFO] ARM architecture detected - disabling torch.compile`
+
+**Cause:** Triton (used by torch.compile) doesn't support ARM architecture.
+
+**Impact:** Training runs in eager mode, which is slightly slower but fully functional. No action needed.
+
+#### C. `torch.compile` + Multiprocessing Conflict (A100 nodes)
+
+**Symptom:** `pthread_join failed` errors when using both `torch.compile` and `num_workers > 0`
+
+**Cause:** LLVM/Triton conflict with multiprocessing DataLoader workers.
+
+**Solutions:**
+```yaml
+# Option 1: Disable torch.compile
+training:
+  compile: false
+
+# Option 2: Use single worker
+data:
+  num_workers: 0
+```
+
+#### D. Recommended GH Configuration
+
+```yaml
+data:
+  batch_size: 2048
+  chunksize: 65536      # Keep small - GH has unified memory constraints
+  num_workers: 1        # GH limitation
+  num_threads: 8        # Safe to increase for faster preprocessing
+
+training:
+  compile: "reduce-overhead"  # Will auto-disable on ARM anyway
 ```
 
 ---
