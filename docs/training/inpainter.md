@@ -306,7 +306,49 @@ python macro/analyze_inpainter.py validation_real/real_data_predictions.root \
     --output validation_real/analysis/
 ```
 
-For quantitative metrics (MAE, RMSE, etc.), only `mask_type=0` (artificial) predictions are used since they have ground truth.
+The analysis macro automatically detects real data validation mode (when `mask_type` column exists):
+
+**For artificial masks (mask_type=0):**
+- Full quantitative metrics: MAE, RMSE, bias, resolution
+- Per-face breakdown
+- Residual distributions
+- Resolution vs signal plots
+
+**For dead channels (mask_type=1):**
+- Plausibility checks (npho ≥ 0, reasonable time range)
+- Distribution statistics
+- Per-face breakdown
+- `dead_channel_distributions.pdf` - prediction distributions
+
+**Console output example:**
+```
+======================================================================
+INPAINTER EVALUATION SUMMARY
+(Real Data Validation Mode)
+======================================================================
+
+--- Global Metrics (Artificial Masks Only) ---
+Metric              npho         time
+----------------------------------------
+MAE              0.023456     0.034567
+...
+
+--- Dead Channel Predictions (No Ground Truth) ---
+Total dead channel predictions: 4,500
+Events with dead channels: 100
+
+Npho predictions:
+  Mean: 0.1234, Std: 0.0567
+  Range: [-0.0123, 0.4567]
+  Negative fraction: 2.34%
+...
+```
+
+**Output files (real data mode):**
+- `global_metrics.csv` - Metrics for artificial masks
+- `face_metrics.csv` - Per-face metrics for artificial masks
+- `dead_channel_stats.csv` - Statistics for dead channel predictions
+- `dead_channel_distributions.pdf` - Dead channel prediction plots
 
 ---
 
