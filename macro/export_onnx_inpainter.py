@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-Export XEC_Inpainter model to ONNX format.
+Export XEC_Inpainter model to TorchScript format.
+
+NOTE: ONNX export is NOT supported because the model uses nn.TransformerEncoder,
+which has a native operator (aten::_transformer_encoder_layer_fwd) that cannot
+be exported to ONNX. Use TorchScript instead.
 
 Usage:
-    python macro/export_onnx_inpainter.py artifacts/<RUN>/inpainter_checkpoint_best.pth --output inpainter.onnx
+    python macro/export_onnx_inpainter.py artifacts/<RUN>/inpainter_checkpoint_best.pth --output inpainter.pt
 
 The exported model takes:
     - input: (B, 4760, 2) - sensor values (npho, time) with dead channels as sentinel
@@ -12,12 +16,10 @@ The exported model takes:
 Returns:
     - output: (B, 4760, 2) - reconstructed values (only masked positions are meaningful)
 
-For C++ inference, apply the output only to masked positions:
-    for each sensor i:
-        if mask[i] == 1:
-            result[i] = output[i]
-        else:
-            result[i] = input[i]
+For C++ inference with libtorch:
+    auto model = torch::jit::load("inpainter.pt");
+    auto output = model.forward({input, mask}).toTensor();
+    // Apply output only at masked positions
 """
 
 import os
@@ -316,26 +318,26 @@ def load_inpainter_checkpoint(checkpoint_path, prefer_ema=True):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Export XEC_Inpainter to ONNX or TorchScript",
+        description="Export XEC_Inpainter to TorchScript (ONNX not supported due to TransformerEncoder)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Export to ONNX (default)
-  python macro/export_onnx_inpainter.py artifacts/inpainter_run/inpainter_checkpoint_best.pth --output inpainter.onnx
-
-  # Export to TorchScript (recommended for complex models)
-  python macro/export_onnx_inpainter.py artifacts/inpainter_run/inpainter_checkpoint_best.pth --format torchscript --output inpainter.pt
+  # Export to TorchScript (default and recommended)
+  python macro/export_onnx_inpainter.py artifacts/inpainter_run/inpainter_checkpoint_best.pth --output inpainter.pt
 
   # Without EMA weights
-  python macro/export_onnx_inpainter.py checkpoint.pth --no-ema --output inpainter.onnx
+  python macro/export_onnx_inpainter.py checkpoint.pth --no-ema --output inpainter.pt
+
+NOTE: ONNX export is NOT supported because the model uses nn.TransformerEncoder,
+which cannot be exported to ONNX. Use TorchScript instead.
         """
     )
     parser.add_argument("checkpoint", type=str, help="Path to inpainter checkpoint (.pth)")
-    parser.add_argument("--output", type=str, default=None, help="Output file (default: inpainter.onnx or inpainter.pt)")
-    parser.add_argument("--format", type=str, choices=["onnx", "torchscript"], default="onnx",
-                        help="Export format (default: onnx)")
+    parser.add_argument("--output", type=str, default=None, help="Output file (default: inpainter.pt)")
+    parser.add_argument("--format", type=str, choices=["onnx", "torchscript"], default="torchscript",
+                        help="Export format (default: torchscript). NOTE: ONNX will fail due to TransformerEncoder.")
     parser.add_argument("--no-ema", action="store_true", help="Use standard weights instead of EMA")
-    parser.add_argument("--opset", type=int, default=17, help="ONNX opset version (default: 17)")
+    parser.add_argument("--opset", type=int, default=17, help="ONNX opset version (if attempting ONNX)")
 
     args = parser.parse_args()
 
@@ -406,8 +408,12 @@ Examples:
     else:
         # Export to ONNX
         print(f"[INFO] Exporting to ONNX: {args.output} (opset {args.opset})")
-        print("[WARN] ONNX export may have issues with dynamic control flow.")
-        print("[WARN] Consider using --format torchscript for production.")
+        print("[ERROR] ONNX export is NOT supported for this model!")
+        print("[ERROR] The model uses nn.TransformerEncoder which has operator")
+        print("[ERROR] 'aten::_transformer_encoder_layer_fwd' that cannot be exported to ONNX.")
+        print("[ERROR] Please use --format torchscript instead.")
+        print("")
+        print("[INFO] Attempting export anyway (will likely fail)...")
 
         try:
             torch.onnx.export(

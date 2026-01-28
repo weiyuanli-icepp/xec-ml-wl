@@ -142,37 +142,31 @@ python macro/analyze_inpainter.py artifacts/inpainter/inpainter_predictions_epoc
 
 ## 8. Model Export for Fast Inference
 
-For production use and faster inference, export the trained model to TorchScript or ONNX format.
+For production use and faster inference, export the trained model to TorchScript format.
 
-### 8.1 Why TorchScript is Recommended
+### 8.1 Why TorchScript (ONNX Not Supported)
 
-| Format | Pros | Cons |
-|--------|------|------|
-| **TorchScript** | - Handles dynamic control flow well<br>- Native PyTorch, no extra dependencies<br>- GPU support out of the box<br>- Exact numerical match with PyTorch | - Larger file size<br>- PyTorch/libtorch required |
-| **ONNX** | - Cross-platform (TensorRT, CoreML, etc.)<br>- Smaller file size<br>- Wide ecosystem support | - Dynamic shapes can be problematic<br>- Requires onnxruntime<br>- May have numerical differences |
+**ONNX export is NOT supported** for the inpainter model because:
+- The XECEncoder uses `nn.TransformerEncoder` for token fusion
+- PyTorch's TransformerEncoder uses a native operator (`aten::_transformer_encoder_layer_fwd`) that cannot be exported to ONNX
+- This is a PyTorch limitation, not something we can work around
 
-**Recommendation:** Use **TorchScript** for inpainter because:
-1. The inpainter has **variable-length outputs** (number of masked positions varies per event)
-2. The scatter operations and conditional logic don't trace well to ONNX
-3. TorchScript preserves exact PyTorch behavior
+**TorchScript is the only option** and works well because:
+- Native PyTorch format, no conversion issues
+- Handles dynamic control flow (variable mask patterns)
+- Exact numerical match with PyTorch
+- GPU support out of the box with libtorch
 
 ### 8.2 Export Commands
 
 ```bash
-# Export to TorchScript (recommended)
+# Export to TorchScript (default)
 python macro/export_onnx_inpainter.py \
     artifacts/inpainter/inpainter_checkpoint_best.pth \
-    --format torchscript \
     --output artifacts/inpainter/inpainter.pt
 
-# Export to ONNX (alternative)
-python macro/export_onnx_inpainter.py \
-    artifacts/inpainter/inpainter_checkpoint_best.pth \
-    --format onnx \
-    --output artifacts/inpainter/inpainter.onnx
-
 # Use standard weights instead of EMA
-python macro/export_onnx_inpainter.py checkpoint.pth --no-ema --format torchscript --output model.pt
+python macro/export_onnx_inpainter.py checkpoint.pth --no-ema --output model.pt
 ```
 
 ### 8.3 Exported Model Interface
@@ -204,11 +198,10 @@ Typical inference speed on CPU (batch_size=1):
 
 | Format | Speed | Notes |
 |--------|-------|-------|
-| Checkpoint (PyTorch) | ~0.9 sec/event | Includes Python overhead |
-| TorchScript | ~0.3-0.5 sec/event | Optimized, no Python GIL |
-| ONNX Runtime | ~0.2-0.4 sec/event | Highly optimized |
+| Checkpoint (PyTorch eager) | ~0.9 sec/event | Full Python overhead |
+| TorchScript | ~0.3-0.5 sec/event | Optimized, reduced overhead |
 
-**Note:** GPU inference is significantly faster for all formats. TorchScript and ONNX show the biggest improvements on GPU due to better kernel fusion.
+**Note:** GPU inference is significantly faster. TorchScript shows the biggest improvements on GPU due to kernel fusion and reduced Python overhead.
 
 ---
 
