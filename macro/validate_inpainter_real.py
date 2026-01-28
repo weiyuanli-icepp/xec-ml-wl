@@ -11,29 +11,36 @@ Workflow:
 2. Fetch dead channel list from database (or file)
 3. Identify dead channels in data (sentinel values)
 4. Randomly mask healthy sensors (artificial masking)
-5. Run inpainter inference (CPU)
+5. Run inpainter inference
 6. Save predictions with mask_type:
    - 0: Artificially masked (has ground truth)
    - 1: Originally dead (no ground truth)
 
 Usage:
-    # Basic usage
+    # Using TorchScript model (recommended - faster)
+    python macro/validate_inpainter_real.py \\
+        --torchscript inpainter.pt \\
+        --input real_data.root \\
+        --run 430000 \\
+        --output validation_output/
+
+    # Using ONNX model
+    python macro/validate_inpainter_real.py \\
+        --onnx inpainter.onnx \\
+        --input real_data.root \\
+        --run 430000 \\
+        --output validation_output/
+
+    # Using checkpoint (slower, for debugging)
     python macro/validate_inpainter_real.py \\
         --checkpoint artifacts/inpainter/checkpoint_best.pth \\
         --input real_data.root \\
         --run 430000 \\
         --output validation_output/
 
-    # With pre-saved dead channel list
-    python macro/validate_inpainter_real.py \\
-        --checkpoint checkpoint.pth \\
-        --input real_data.root \\
-        --dead-channel-file dead_channels.txt \\
-        --output validation_output/
-
     # Customize masking
     python macro/validate_inpainter_real.py \\
-        --checkpoint checkpoint.pth \\
+        --torchscript inpainter.pt \\
         --input real_data.root \\
         --run 430000 \\
         --n-mask-inner 10 \\
@@ -327,6 +334,51 @@ def load_inpainter_model(checkpoint_path: str, device: str = 'cpu') -> XEC_Inpai
     return model
 
 
+def load_torchscript_model(model_path: str, device: str = 'cpu'):
+    """
+    Load TorchScript model.
+
+    Args:
+        model_path: Path to .pt file
+        device: Device to load model on
+
+    Returns:
+        TorchScript model
+    """
+    print(f"[INFO] Loading TorchScript model from {model_path}")
+    model = torch.jit.load(model_path, map_location=device)
+    model.eval()
+    print("[INFO] TorchScript model loaded successfully")
+    return model
+
+
+def load_onnx_model(model_path: str, device: str = 'cpu'):
+    """
+    Load ONNX model with ONNX Runtime.
+
+    Args:
+        model_path: Path to .onnx file
+        device: Device to run on ('cpu' or 'cuda')
+
+    Returns:
+        ONNX Runtime session
+    """
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        raise RuntimeError("onnxruntime not installed. Install with: pip install onnxruntime")
+
+    print(f"[INFO] Loading ONNX model from {model_path}")
+
+    providers = ['CPUExecutionProvider']
+    if device == 'cuda':
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+
+    session = ort.InferenceSession(model_path, providers=providers)
+    print(f"[INFO] ONNX model loaded (providers: {session.get_providers()})")
+    return session
+
+
 def prepare_model_input(relative_npho: np.ndarray, relative_time: np.ndarray,
                         npho_scale: float = DEFAULT_NPHO_SCALE,
                         time_scale: float = DEFAULT_TIME_SCALE,
@@ -372,7 +424,7 @@ def run_inference(model: XEC_Inpainter, x: np.ndarray,
                   combined_mask: np.ndarray, batch_size: int = 64,
                   device: str = 'cpu') -> Dict[str, np.ndarray]:
     """
-    Run inpainter inference on batches.
+    Run inpainter inference on batches (checkpoint mode).
 
     Args:
         model: Inpainter model
@@ -409,6 +461,183 @@ def run_inference(model: XEC_Inpainter, x: np.ndarray,
             all_predictions.append(batch_preds)
 
     return all_predictions
+
+
+def run_inference_torchscript(model, x: np.ndarray,
+                               combined_mask: np.ndarray, batch_size: int = 64,
+                               device: str = 'cpu') -> np.ndarray:
+    """
+    Run inference with TorchScript model.
+
+    Args:
+        model: TorchScript model
+        x: Input tensor (N, 4760, 2)
+        combined_mask: Boolean mask (N, 4760) of all masked channels
+        batch_size: Batch size for inference
+        device: Device to run on
+
+    Returns:
+        Output array (N, 4760, 2) with predictions at masked positions
+    """
+    n_events = len(x)
+    output = np.zeros_like(x)
+
+    with torch.no_grad():
+        for start_idx in tqdm(range(0, n_events, batch_size), desc="Inference (TorchScript)"):
+            end_idx = min(start_idx + batch_size, n_events)
+
+            x_batch = torch.tensor(x[start_idx:end_idx], device=device, dtype=torch.float32)
+            mask_batch = torch.tensor(combined_mask[start_idx:end_idx], device=device, dtype=torch.float32)
+
+            # Run model - returns (B, 4760, 2)
+            result = model(x_batch, mask_batch)
+            output[start_idx:end_idx] = result.cpu().numpy()
+
+    return output
+
+
+def run_inference_onnx(session, x: np.ndarray,
+                       combined_mask: np.ndarray, batch_size: int = 64) -> np.ndarray:
+    """
+    Run inference with ONNX Runtime.
+
+    Args:
+        session: ONNX Runtime session
+        x: Input tensor (N, 4760, 2)
+        combined_mask: Boolean mask (N, 4760) of all masked channels
+        batch_size: Batch size for inference
+
+    Returns:
+        Output array (N, 4760, 2) with predictions at masked positions
+    """
+    n_events = len(x)
+    output = np.zeros_like(x)
+
+    for start_idx in tqdm(range(0, n_events, batch_size), desc="Inference (ONNX)"):
+        end_idx = min(start_idx + batch_size, n_events)
+
+        x_batch = x[start_idx:end_idx].astype(np.float32)
+        mask_batch = combined_mask[start_idx:end_idx].astype(np.float32)
+
+        # Run model
+        ort_inputs = {
+            "input": x_batch,
+            "mask": mask_batch
+        }
+        result = session.run(None, ort_inputs)[0]
+        output[start_idx:end_idx] = result
+
+    return output
+
+
+def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
+                              combined_mask: np.ndarray,
+                              artificial_mask: np.ndarray, dead_mask: np.ndarray,
+                              data: Dict[str, np.ndarray],
+                              npho_scale: float = DEFAULT_NPHO_SCALE,
+                              time_scale: float = DEFAULT_TIME_SCALE,
+                              time_shift: float = DEFAULT_TIME_SHIFT) -> List[Dict]:
+    """
+    Collect predictions from flat output tensor (for TorchScript/ONNX).
+
+    Args:
+        output: Model output (N, 4760, 2) with predictions
+        x_original: Original input before masking (N, 4760, 2)
+        combined_mask: Boolean mask (N, 4760) of all masked channels
+        artificial_mask: Boolean mask (N, 4760) of artificially masked
+        dead_mask: Boolean mask (4760,) of dead channels
+        data: Original data dictionary with metadata
+        npho_scale, time_scale, time_shift: Normalization parameters
+
+    Returns:
+        List of prediction dictionaries
+    """
+    all_preds = []
+    n_events = len(output)
+
+    # Determine face for each sensor
+    sensor_to_face = {}
+    for face_name, idx_map in FACE_INDEX_MAPS.items():
+        if isinstance(idx_map, np.ndarray):
+            if idx_map.ndim == 2:
+                # Rectangular face
+                for sensor_id in idx_map.flatten():
+                    if sensor_id >= 0:
+                        sensor_to_face[int(sensor_id)] = face_name
+            else:
+                # Hex face (1D array)
+                for sensor_id in idx_map:
+                    if sensor_id >= 0:
+                        sensor_to_face[int(sensor_id)] = face_name
+
+    for event_idx in tqdm(range(n_events), desc="Collecting predictions"):
+        run = int(data['run'][event_idx])
+        event = int(data['event'][event_idx])
+
+        # Find masked sensors for this event
+        masked_sensors = np.where(combined_mask[event_idx])[0]
+
+        for sensor_id in masked_sensors:
+            sensor_id = int(sensor_id)
+
+            # Determine face
+            face_name = sensor_to_face.get(sensor_id, 'unknown')
+
+            # Determine mask type
+            is_artificial = artificial_mask[event_idx, sensor_id]
+            mask_type = 0 if is_artificial else 1
+
+            # Get prediction (denormalize)
+            pred_npho_norm = float(output[event_idx, sensor_id, 0])
+            pred_time_norm = float(output[event_idx, sensor_id, 1])
+
+            # Denormalize prediction
+            pred_npho = pred_npho_norm / npho_scale if npho_scale != 0 else pred_npho_norm
+            pred_time = (pred_time_norm - time_shift) / time_scale if time_scale != 0 else pred_time_norm
+
+            # Get truth (only valid for artificial mask)
+            if is_artificial:
+                truth_npho_norm = float(x_original[event_idx, sensor_id, 0])
+                truth_time_norm = float(x_original[event_idx, sensor_id, 1])
+
+                if truth_npho_norm > 1e9 or truth_npho_norm == MODEL_SENTINEL:
+                    truth_npho = -999.0
+                    error_npho = -999.0
+                else:
+                    truth_npho = truth_npho_norm / npho_scale if npho_scale != 0 else truth_npho_norm
+                    error_npho = pred_npho - truth_npho
+
+                if truth_time_norm > 1e9 or truth_time_norm == MODEL_SENTINEL:
+                    truth_time = -999.0
+                    error_time = -999.0
+                else:
+                    truth_time = (truth_time_norm - time_shift) / time_scale if time_scale != 0 else truth_time_norm
+                    error_time = pred_time - truth_time
+            else:
+                # Dead channel - no truth
+                truth_npho = -999.0
+                truth_time = -999.0
+                error_npho = -999.0
+                error_time = -999.0
+
+            pred_dict = {
+                'event_idx': event_idx,
+                'run': run,
+                'event': event,
+                'sensor_id': sensor_id,
+                'face': face_name,
+                'mask_type': mask_type,
+                'truth_npho': truth_npho,
+                'truth_time': truth_time,
+                'pred_npho': pred_npho,
+                'pred_time': pred_time,
+                'error_npho': error_npho,
+                'error_time': error_time,
+            }
+
+            all_preds.append(pred_dict)
+
+    return all_preds
 
 
 def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
@@ -588,9 +817,16 @@ def main():
         epilog=__doc__
     )
 
+    # Model source (one required)
+    model_group = parser.add_mutually_exclusive_group(required=True)
+    model_group.add_argument("--checkpoint", "-c",
+                             help="Path to inpainter checkpoint (.pth)")
+    model_group.add_argument("--torchscript", "-t",
+                             help="Path to TorchScript model (.pt) - recommended for speed")
+    model_group.add_argument("--onnx",
+                             help="Path to ONNX model (.onnx)")
+
     # Required arguments
-    parser.add_argument("--checkpoint", "-c", required=True,
-                        help="Path to inpainter checkpoint")
     parser.add_argument("--input", "-i", required=True,
                         help="Path to input ROOT file (from PrepareRealData.C)")
     parser.add_argument("--output", "-o", required=True,
@@ -691,26 +927,69 @@ def main():
     # Mask the input
     x_input[combined_mask] = MODEL_SENTINEL
 
-    # Load model
-    model = load_inpainter_model(args.checkpoint, device='cpu')
+    # Load model and run inference based on model type
+    if args.torchscript:
+        # TorchScript model (recommended)
+        model = load_torchscript_model(args.torchscript, device='cpu')
 
-    # Run inference
-    print("[INFO] Running inference (CPU)...")
-    predictions = run_inference(
-        model, x_input, combined_mask,
-        batch_size=args.batch_size, device='cpu'
-    )
+        print("[INFO] Running inference (TorchScript)...")
+        output = run_inference_torchscript(
+            model, x_input, combined_mask.astype(np.float32),
+            batch_size=args.batch_size, device='cpu'
+        )
 
-    # Collect predictions
-    print("[INFO] Collecting predictions...")
-    pred_list = collect_predictions(
-        predictions, x_original,
-        artificial_mask, combined_dead_mask,
-        data,
-        npho_scale=args.npho_scale,
-        time_scale=args.time_scale,
-        time_shift=args.time_shift
-    )
+        # Collect predictions from flat output
+        print("[INFO] Collecting predictions...")
+        pred_list = collect_predictions_flat(
+            output, x_original, combined_mask,
+            artificial_mask, combined_dead_mask,
+            data,
+            npho_scale=args.npho_scale,
+            time_scale=args.time_scale,
+            time_shift=args.time_shift
+        )
+
+    elif args.onnx:
+        # ONNX model
+        session = load_onnx_model(args.onnx, device='cpu')
+
+        print("[INFO] Running inference (ONNX)...")
+        output = run_inference_onnx(
+            session, x_input, combined_mask.astype(np.float32),
+            batch_size=args.batch_size
+        )
+
+        # Collect predictions from flat output
+        print("[INFO] Collecting predictions...")
+        pred_list = collect_predictions_flat(
+            output, x_original, combined_mask,
+            artificial_mask, combined_dead_mask,
+            data,
+            npho_scale=args.npho_scale,
+            time_scale=args.time_scale,
+            time_shift=args.time_shift
+        )
+
+    else:
+        # Checkpoint model (slower, for debugging)
+        model = load_inpainter_model(args.checkpoint, device='cpu')
+
+        print("[INFO] Running inference (checkpoint mode - consider using --torchscript for speed)...")
+        predictions = run_inference(
+            model, x_input, combined_mask,
+            batch_size=args.batch_size, device='cpu'
+        )
+
+        # Collect predictions from dict output
+        print("[INFO] Collecting predictions...")
+        pred_list = collect_predictions(
+            predictions, x_original,
+            artificial_mask, combined_dead_mask,
+            data,
+            npho_scale=args.npho_scale,
+            time_scale=args.time_scale,
+            time_shift=args.time_shift
+        )
 
     # Save to ROOT
     output_file = os.path.join(args.output, "real_data_predictions.root")
