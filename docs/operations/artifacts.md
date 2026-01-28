@@ -1,25 +1,216 @@
 # Output & Artifacts
 
-All results are logged to **MLflow** and stored in the `artifacts/<RUN_NAME>/` directory.
+All results are logged to **MLflow** and stored in the `artifacts/<RUN_NAME>/` directory. The specific outputs depend on the training type (regressor, MAE, or inpainter) and which tasks are enabled.
 
-## Key Artifacts
+---
 
-* `checkpoint_best.pth` — Best model weights (includes EMA state).
-* `checkpoint_last.pth` — Last epoch's model weights (includes EMA state).
-* `predictions_*.csv` — Validation predictions vs truth.
-* `*.onnx` — Exported ONNX model for C++ inference (supports single-task and multi-task).
-* `validation_results_*.root` — ROOT file containing event-by-event predictions and truth variables.
+## 1. Regressor Training Artifacts
 
-## Plots
+Output directory: `artifacts/<RUN_NAME>/`
 
-* `resolution_profile_*.pdf`: 68% width resolution vs $\theta$/$\phi$.
-* `saliency_profile_*.pdf`: Physics Sensitivity analysis (Gradient of output w.r.t input Npho/Time).
-* `worst_event_*.pdf`: Event displays of the highest-loss events.
-* `saliency_profile_*.pdf`: Computes $\nabla_{\text{Input}} \text{Output}$ to quantify how much the model relies on Photon Counts vs Timing for each face (Inner, Top, Hex, etc.) to determine $\theta$ and $\phi$.
+### Checkpoint Files
+
+| File | Description | Contents |
+|------|-------------|----------|
+| `checkpoint_best.pth` | Best model (lowest validation loss) | model_state_dict, ema_state_dict, optimizer_state_dict, scheduler_state_dict, best_val, mlflow_run_id |
+| `checkpoint_last.pth` | Latest checkpoint (after each epoch) | Same as above |
+
+### Task-Specific CSV Predictions
+
+Generated at best epoch and final evaluation. Only created for enabled tasks.
+
+| Task | File | Columns |
+|------|------|---------|
+| **angle** | `predictions_angle_{run_name}.csv` | true_theta, true_phi, pred_theta, pred_phi |
+| **energy** | `predictions_energy_{run_name}.csv` | true_energy, pred_energy |
+| **timing** | `predictions_timing_{run_name}.csv` | true_timing, pred_timing |
+| **uvwFI** | `predictions_uvwFI_{run_name}.csv` | true_u, true_v, true_w, pred_u, pred_v, pred_w |
+
+### Task-Specific Plots (PDF)
+
+Only generated for enabled tasks:
+
+**Angle Task:**
+| File | Description |
+|------|-------------|
+| `resolution_angle_{run_name}.pdf` | Theta/Phi resolution profiles (binned), 68% width vs angle |
+| `scatter_angle_{run_name}.pdf` | Predicted vs true scatter plot |
+
+**Energy Task:**
+| File | Description |
+|------|-------------|
+| `resolution_energy_{run_name}.pdf` | Energy resolution profile, bias statistics |
+| `scatter_energy_{run_name}.pdf` | Predicted vs true energy scatter |
+
+**Timing Task:**
+| File | Description |
+|------|-------------|
+| `resolution_timing_{run_name}.pdf` | Timing resolution profile |
+| `scatter_timing_{run_name}.pdf` | Predicted vs true timing scatter |
+
+**Position Task:**
+| File | Description |
+|------|-------------|
+| `resolution_uvwFI_{run_name}.pdf` | U/V/W position resolution profiles |
+
+### General Plots (All Tasks)
+
+| File | Description |
+|------|-------------|
+| `face_weights_{run_name}.pdf` | Model feature importance across detector faces |
+| `worst_events/worst_01_{run_name}.pdf` | Top-5 worst predictions with detector visualization |
+| `worst_events/worst_02_{run_name}.pdf` | (comprehensive 2-panel npho + timing display) |
+| ... up to `worst_05_{run_name}.pdf` | |
+
+### ONNX Export
+
+| File | Description |
+|------|-------------|
+| `{onnx_filename}` (configurable) | Serialized model for C++ inference, includes all active task heads |
+
+---
+
+## 2. MAE Pre-training Artifacts
+
+Output directory: `{save_path}/` (typically `artifacts/<RUN_NAME>/`)
+
+### Checkpoint Files
+
+| File | Description | Contents |
+|------|-------------|----------|
+| `mae_checkpoint_best.pth` | Best MAE checkpoint | epoch, model_state_dict, optimizer_state_dict, scaler_state_dict, ema_state_dict, scheduler_state_dict, best_val_loss, mlflow_run_id, config |
+| `mae_checkpoint_last.pth` | Latest checkpoint (every 10 epochs + final) | Same as above |
+
+### Encoder Weights for Transfer Learning
+
+| File | Description |
+|------|-------------|
+| `mae_encoder_epoch_{epoch}.pth` | Standalone encoder weights extracted from EMA model |
+
+Saved at: every 10 epochs, best epoch, and final epoch. Use these for fine-tuning downstream regressor.
+
+### ROOT Predictions (if `--save_predictions` flag)
+
+| File | Description |
+|------|-------------|
+| `mae_predictions_epoch_{epoch}.root` | Validation set sensor-level predictions |
+
+**Branches:**
+- `event_id` - Event identifier
+- `truth_npho`, `truth_time` - Ground truth values
+- `mask` - Binary mask (1 = masked sensor)
+- `masked_npho`, `masked_time` - Input values (masked sensors have sentinel)
+- `pred_npho`, `pred_time` - Model predictions
+- `err_npho`, `err_time` - Prediction errors
+- `run_id` - Run number
+
+Saved at: every 10 epochs + final epoch.
+
+### MLflow Metrics
+
+- `train/total_loss`, `train/npho_loss`, `train/time_loss`
+- `val/total_loss`, `val/npho_loss`, `val/time_loss`
+- `val/mae_npho`, `val/mae_time`, `val/rmse_npho`, `val/rmse_time` (if `track_mae_rmse` enabled)
+- Per-face losses: `val/loss_{face}_npho`, `val/loss_{face}_time`
+- Channel variances (if `auto_channel_weight` enabled)
+
+---
+
+## 3. Inpainter Training Artifacts
+
+Output directory: `{save_path}/` (typically `artifacts/<RUN_NAME>/`)
+
+### Checkpoint Files
+
+| File | Description | Contents |
+|------|-------------|----------|
+| `inpainter_checkpoint_best.pth` | Best inpainter checkpoint | epoch, model_state_dict, optimizer_state_dict, scaler_state_dict, scheduler_state_dict, best_val_loss, mlflow_run_id, config |
+| `inpainter_checkpoint_last.pth` | Latest checkpoint (every 10 epochs + final) | Same as above |
+
+### ROOT Predictions (if `save_root_predictions=True`)
+
+| File | Description |
+|------|-------------|
+| `inpainter_predictions_epoch_{epoch}.root` | Validation predictions with masked channel recovery |
+
+**Branches:**
+- `event_idx` - Event index
+- `sensor_id` - Sensor identifier
+- `face` - Detector face name
+- `truth_npho`, `truth_time` - Ground truth values
+- `pred_npho`, `pred_time` - Model predictions
+- `error_npho`, `error_time` - Prediction errors
+
+Saved at: every 10 epochs + final epoch.
+
+### MLflow Metrics
+
+- `train/total_loss`, `train/npho_loss`, `train/time_loss`
+- `val/total_loss`, `val/npho_loss`, `val/time_loss`
+- Per-face losses: `val/loss_{face}_npho`, `val/loss_{face}_time`
+- `val/mae_npho`, `val/mae_time`, `val/rmse_npho`, `val/rmse_time` (if `track_mae_rmse` enabled)
+- `actual_mask_ratio`, `n_masked_total`
+
+---
+
+## Directory Structure Summary
+
+```
+artifacts/
+└── {run_name}/
+    │
+    │   # Regressor outputs
+    ├── checkpoint_best.pth
+    ├── checkpoint_last.pth
+    ├── model.onnx                        # ONNX export (if enabled)
+    ├── face_weights_{run_name}.pdf
+    │
+    │   # Angle task (if enabled)
+    ├── predictions_angle_{run_name}.csv
+    ├── resolution_angle_{run_name}.pdf
+    ├── scatter_angle_{run_name}.pdf
+    │
+    │   # Energy task (if enabled)
+    ├── predictions_energy_{run_name}.csv
+    ├── resolution_energy_{run_name}.pdf
+    ├── scatter_energy_{run_name}.pdf
+    │
+    │   # Timing task (if enabled)
+    ├── predictions_timing_{run_name}.csv
+    ├── resolution_timing_{run_name}.pdf
+    ├── scatter_timing_{run_name}.pdf
+    │
+    │   # Position task (if enabled)
+    ├── predictions_uvwFI_{run_name}.csv
+    ├── resolution_uvwFI_{run_name}.pdf
+    │
+    │   # Worst case events
+    └── worst_events/
+        ├── worst_01_{run_name}.pdf
+        ├── worst_02_{run_name}.pdf
+        └── ...
+
+    │   # MAE outputs (if MAE training)
+    ├── mae_checkpoint_best.pth
+    ├── mae_checkpoint_last.pth
+    ├── mae_encoder_epoch_{epoch}.pth
+    └── mae_predictions_epoch_{epoch}.root
+
+    │   # Inpainter outputs (if inpainter training)
+    ├── inpainter_checkpoint_best.pth
+    ├── inpainter_checkpoint_last.pth
+    └── inpainter_predictions_epoch_{epoch}.root
+
+mlruns/                                  # MLflow experiment tracking
+runs/{run_name}/                         # TensorBoard logs
+```
+
+---
 
 ## Visualization Tools
 
-The real time tracking of the training is available with MLflow and TensorBoard.
+Real-time tracking is available with MLflow and TensorBoard.
+
 ```bash
 # Start MLflow (Track metrics & PDFs)
 $ cd /path/to/xec-ml-wl
@@ -30,11 +221,13 @@ $ mlflow ui --backend-store-uri sqlite:///$(pwd)/mlruns.db --host 127.0.0.1 --po
 $ tensorboard --logdir runs --host 0.0.0.0 --port YYYY
 ```
 
+---
+
 ## Metrics Definition
 
-### 1. Physics Performance Metrics
+### 1. Physics Performance Metrics (Regressor)
 
-These metrics evaluate the quality of the photon direction reconstruction. They are calculated during the validation phase using `eval_stats` and `eval_resolution`.
+These metrics evaluate the quality of the photon direction reconstruction. Calculated during validation using `eval_stats` and `eval_resolution`.
 
 | Metric | Definition | Formula |
 | ------ | ---------- | ------- |
@@ -43,41 +236,62 @@ These metrics evaluate the quality of the photon direction reconstruction. They 
 | Theta Skewness (`theta_skew`) | A measure of the asymmetry of the error distribution. | $$\text{Skew} = \frac{\frac{1}{N} \sum_{i=1}^{N} (\Delta \theta_i - \mu)^3}{\left( \frac{1}{N} \sum_{i=1}^{N} (\Delta \theta_i - \mu)^2 \right)^{3/2}}$$ |
 | Opening Angle Resolution (`val_resolution_deg`) | The 68th percentile of the 3D opening angle $\psi$ between the predicted and true vectors. | $\psi = \arccos(v_{\mathrm{pred}} \cdot v_{\mathrm{true}})$ |
 
-### 2. System Engineering Metrics
+### 2. MAE/Inpainter Metrics
 
-These metrics monitor the health of the training infrastructure (GPU/CPU) to detect bottlenecks or imminent crashes.
+| Metric | Description |
+|--------|-------------|
+| `total_loss` | Combined weighted loss (npho + time) |
+| `loss_npho` / `loss_time` | Per-channel losses |
+| `mae_npho` / `mae_time` | Mean Absolute Error on masked positions |
+| `rmse_npho` / `rmse_time` | Root Mean Square Error on masked positions |
+| `actual_mask_ratio` | Effective mask ratio after excluding invalid sensors |
 
-| Metric           | Key in MLflow                    | Interpretation                                                                            |
-| ---------------- | -------------------------------- | --------------------------------- |
-| Allocated Memory | `system/` `memory_allocated_GB`  | The actual size of tensors (weights, gradients, data) on the GPU. Steady growth indicates a memory leak.Reserved Memorysystem/memory_reserved_GBThe total memory PyTorch has requested from the OS. If this hits the hardware limit, an OOM crash occurs.                                                      |
-| Peak Memory      | `system/` `memory_peak_GB`       | The highest memory usage recorded (usually during the backward pass). Use this to tune batch_size.                          |
-| GPU Utilization  | `system/` `gpu_utilization_pct`  | Ratio of Allocated to Total VRAM. Low values (<50%) suggest the batch size can be increased; very high values (>90%) risk OOM.  |
-| Fragmentation    | `system/` `memory_fragmentation` | Ratio of empty space within reserved memory blocks. High fragmentation (>0.5) indicates inefficient memory use.                |
-| RAM Usage        | `system/` `ram_used_gb`          | System RAM used by the process. High usage warns that step_size for ROOT file reading is too large.                            |
-| Throughput       | `system/` `epoch_duration_sec`   | Wall-clock time per epoch. If high while GPU utilization is low, the pipeline is CPU-bound (data loading bottleneck).        |
+### 3. System Engineering Metrics
 
-### 3. System Performance Metrics
+These metrics monitor the health of the training infrastructure.
 
-These metrics determine if the training pipeline is efficient or bottlenecked.
-| Metric             | Key in MLflow                      | Definition & goal                 |
-| ------------------ | ---------------------------------- | --------------------------------- |
-| Throughput         | `system/throughput_events_per_sec` | Events processed per second.      |
-| Data Load Time     | `system/avg_data_load_sec`         | Time GPU waits for CPU. If high, increase CHUNK_SIZE. |
-| Compute Efficiency | `system/compute_efficiency`        | % of time GPU is computing.       |
+| Metric | Key in MLflow | Interpretation |
+| ------ | ------------- | -------------- |
+| Allocated Memory | `system/memory_allocated_GB` | Actual tensor size on GPU. Steady growth indicates memory leak. |
+| Reserved Memory | `system/memory_reserved_GB` | Total memory PyTorch requested from OS. OOM if hits limit. |
+| Peak Memory | `system/memory_peak_GB` | Highest memory usage (usually during backward). Use to tune batch_size. |
+| GPU Utilization | `system/gpu_utilization_pct` | Ratio of Allocated to Total VRAM. Low (<50%) = increase batch size. |
+| Fragmentation | `system/memory_fragmentation` | Empty space within reserved blocks. High (>0.5) = inefficient. |
+| RAM Usage | `system/ram_used_gb` | System RAM used. High = reduce chunksize. |
+| Throughput | `system/epoch_duration_sec` | Wall-clock time per epoch. |
+
+### 4. System Performance Metrics
+
+| Metric | Key in MLflow | Description |
+| ------ | ------------- | ----------- |
+| Throughput | `system/throughput_events_per_sec` | Events processed per second. |
+| Data Load Time | `system/avg_data_load_sec` | Time GPU waits for CPU. If high, increase chunksize. |
+| Compute Efficiency | `system/compute_efficiency` | % of time GPU is computing. |
 
 ---
 
 ## Resuming Training
 
-The script supports resumption. It detects if an EMA state exists in the checkpoint and loads it; otherwise, it syncs the EMA model with the loaded weights to prevent training divergence.
+The script supports resumption. It detects if an EMA state exists in the checkpoint and loads it; otherwise, it syncs the EMA model with the loaded weights.
 
 ```bash
---resume_from "artifacts/<run name>/checkpoint_last.pth"
+--resume_from "artifacts/<run_name>/checkpoint_last.pth"
 ```
 or
 ```bash
---resume_from "artifacts/<run name>/checkpoint_best.pth"
+--resume_from "artifacts/<run_name>/checkpoint_best.pth"
 ```
 
-If the run configurated with a scheduler and stopped in the middle of training, it can be resumed from the learning rate ( $\mathrm{LR}$ ) where it stopped. The learning rate can be calculated with following formula:
- $$\mathrm{LR} = \mathrm{LR}_\mathrm{min} + \frac{1}{2} \Big(\mathrm{LR}_{\mathrm{max}} - \mathrm{LR}_{\mathrm{min}}\Big) \Bigg(1 + \cos \Big(\frac{\mathrm{epoch} - \mathrm{warmup}}{\mathrm{total} - \mathrm{warmup}} \pi\Big)\Bigg)$$
+If the run was configured with a scheduler and stopped mid-training, it resumes from the learning rate where it stopped:
+
+$$\mathrm{LR} = \mathrm{LR}_\mathrm{min} + \frac{1}{2} \Big(\mathrm{LR}_{\mathrm{max}} - \mathrm{LR}_{\mathrm{min}}\Big) \Bigg(1 + \cos \Big(\frac{\mathrm{epoch} - \mathrm{warmup}}{\mathrm{total} - \mathrm{warmup}} \pi\Big)\Bigg)$$
+
+### Checkpoint Compatibility
+
+| Source | Target | Compatible? | Notes |
+|--------|--------|-------------|-------|
+| Regressor checkpoint | Regressor | Yes | Full state restored |
+| MAE checkpoint | Regressor | Yes | Encoder weights only, optimizer reset |
+| MAE checkpoint | MAE | Yes | Full state restored |
+| Inpainter checkpoint | Inpainter | Yes | Full state restored |
+| Regressor checkpoint | MAE/Inpainter | No | Different model architecture |
