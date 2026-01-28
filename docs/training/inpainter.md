@@ -271,16 +271,105 @@ output = model(input_tensor, mask_tensor)
 final = torch.where(mask.unsqueeze(-1).bool(), output, input_tensor)
 ```
 
-### 8.4 Performance Comparison
+### 8.4 TorchScript Tracing Limitation
 
-Typical inference speed on CPU (batch_size=1):
+**TorchScript tracing does NOT work** for the inpainter due to dynamic tensor sizes:
 
-| Format | Speed | Notes |
-|--------|-------|-------|
-| Checkpoint (PyTorch eager) | ~0.9 sec/event | Full Python overhead |
-| TorchScript | ~0.3-0.5 sec/event | Optimized, reduced overhead |
+```python
+# In FaceInpaintingHead.forward():
+within_batch_idx = torch.arange(len(batch_idx), device=device) - cumsum[batch_idx]
+```
 
-**Note:** GPU inference is significantly faster. TorchScript shows the biggest improvements on GPU due to kernel fusion and reduced Python overhead.
+During tracing:
+- `len(batch_idx)` becomes a **constant** (e.g., 8299)
+- But `batch_idx` varies at runtime (e.g., size 4096)
+- Size mismatch → RuntimeError
+
+This is fundamental to how tracing works - it captures one execution path with fixed sizes.
+
+### 8.5 Recommended: Use Checkpoint Mode
+
+For Python inference (validation, analysis), use the checkpoint directly:
+
+```bash
+python macro/validate_inpainter_real.py \
+    --checkpoint artifacts/inpainter/inpainter_checkpoint_best.pth \
+    --input real_data.root \
+    --run 430000 \
+    --output validation_output/
+```
+
+This is ~3x slower than optimized inference but **works correctly** with any mask pattern.
+
+### 8.6 Future: Fast C++ Inference Options
+
+If fast C++ inference is needed, here are the options:
+
+#### Option A: Fixed-Size Output Model (Recommended)
+
+Modify the inpainter to output predictions for ALL sensors, not just masked ones:
+
+**Current (variable size - not exportable):**
+```python
+# Heads extract only masked positions → variable tensor sizes
+pred_masked, indices, valid = head(face_tensor, latent, mask)
+```
+
+**Fixed-size (exportable):**
+```python
+# Heads predict ALL positions → fixed tensor size (B, 4760, 2)
+pred_all = head_full(face_tensor, latent)
+# Mask is applied AFTER inference in C++ code
+```
+
+Changes required:
+1. Modify `FaceInpaintingHead`, `HexInpaintingHead`, `OuterSensorInpaintingHead` to return full predictions
+2. Create new `XEC_Inpainter_FixedOutput` class that returns (B, 4760, 2)
+3. Re-train or adapt weights (heads architecture changes slightly)
+
+**Pros:** Clean TorchScript export, fast inference
+**Cons:** Requires model modification and possibly retraining
+
+#### Option B: Pure C++ Implementation with libtorch
+
+Implement the entire inpainter in C++ using libtorch:
+
+1. Load checkpoint weights using `torch::load()`
+2. Reconstruct model architecture in C++ (Conv2d, TransformerEncoder, etc.)
+3. Implement dynamic masking logic natively in C++
+
+```cpp
+// Pseudocode
+auto checkpoint = torch::load("inpainter_checkpoint_best.pth");
+auto encoder = build_xec_encoder(checkpoint);
+auto heads = build_inpainting_heads(checkpoint);
+
+// Dynamic masking works naturally in C++
+auto latent = encoder->forward(input);
+auto predictions = heads->forward(latent, mask);  // C++ handles variable sizes
+```
+
+**Pros:** Full control, maximum performance, handles dynamic sizes
+**Cons:** Significant development effort, must maintain C++ and Python versions
+
+#### Option C: Hybrid - Export Encoder, C++ Heads
+
+Split the model:
+1. Export XECEncoder's face processing (ConvNeXt, HexNeXt blocks) to TorchScript
+2. Implement simple inpainting heads in C++ (just Conv2d + Linear layers)
+
+**Problem:** The TransformerEncoder fusion layer still can't export to ONNX, limiting this approach.
+
+### 8.7 Performance Comparison
+
+| Method | Speed (CPU) | Works with any mask? | Effort |
+|--------|-------------|---------------------|--------|
+| Checkpoint (Python) | ~0.9 sec/event | ✅ Yes | None |
+| TorchScript | ~0.3 sec/event | ❌ No (tracing limitation) | - |
+| Fixed-size model | ~0.3 sec/event | ✅ Yes | Medium (modify heads) |
+| Pure C++ libtorch | ~0.2 sec/event | ✅ Yes | High (full reimplementation) |
+
+**Current recommendation:** Use checkpoint mode for validation. If C++ inference becomes critical, pursue Option A (fixed-size output).
 
 ---
 
