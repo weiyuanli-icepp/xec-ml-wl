@@ -117,6 +117,42 @@ training:
 
 - **`false`/`none`**: Disables torch.compile entirely (eager execution). No compilation overhead. Useful for debugging or when compilation causes issues.
 
+**Factors Affecting Compile Time:**
+
+| Factor | Impact |
+|--------|--------|
+| Number of unique operations | More ops = more kernels to compile |
+| Number of unique tensor shapes | Each shape triggers separate compilation |
+| Branching/conditionals | Dynamic control flow requires more graph analysis |
+| `max-autotune` kernel variants | Benchmarks 10-50+ configurations per matmul/conv |
+
+**Estimated Compile Times for XEC Model:**
+
+The XEC architecture has moderate complexity with 6 parallel face branches (4 ConvNeXt + 2 HexNeXt), Transformer fusion, and multiple task heads. This means more unique kernels than a simple ResNet, but not as many as a very deep model.
+
+| Mode | Estimated Time | Notes |
+|------|----------------|-------|
+| `max-autotune` | 5-10 min | Benchmarks every matmul/conv variant; 6 branches mean ~6× more kernels to tune |
+| `reduce-overhead` | 1-3 min | CUDA graph capture + basic tuning; no exhaustive benchmarking |
+| `default` | 30-90 sec | Just fusion/optimization passes; no autotuning |
+
+**Practical Notes:**
+
+1. **First epoch appears slow** - compilation happens on first forward pass
+2. **Compilation is cached** - subsequent runs in same session reuse compiled kernels
+3. **Shape changes retrigger compilation** - if batch size changes (e.g., last incomplete batch), it recompiles for that shape
+
+**Recommendations by Use Case:**
+
+| Use Case | Recommended Mode | Reason |
+|----------|------------------|--------|
+| Hyperparameter search | `reduce-overhead` or `default` | Fast iteration, compile time dominates short runs |
+| Quick experiments | `reduce-overhead` | Good balance of compile time and runtime |
+| Final production training | `max-autotune` | 5-10 min compile amortized over many hours of training |
+| Debugging | `none` | Skip compilation entirely for faster feedback |
+
+The runtime performance difference between `reduce-overhead` and `max-autotune` is typically ~5-15%, so unless training for many hours, `reduce-overhead` often provides the better time tradeoff.
+
 #### D. Cudagraphs Warning with reduce-overhead Mode
 
 **Symptom:** When using `compile: "reduce-overhead"`, you see warnings like:
