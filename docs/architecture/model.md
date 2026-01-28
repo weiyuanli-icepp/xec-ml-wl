@@ -498,3 +498,116 @@ tokens = self.fusion_transformer(tokens)  # 2-layer Transformer
 1. Each face can attend to any other face
 2. Learns which face correlations matter (via attention weights)
 3. Handles variable importance dynamically (e.g., events near corners)
+
+---
+
+## C. HexNeXt: Comparison with Related Work
+
+The HexNeXt architecture combines ideas from modern CNNs (ConvNeXt V2) with graph neural networks, creating a novel approach for hexagonal lattice data.
+
+### Design Philosophy
+
+HexNeXt uses **direction-aware depthwise convolution on graphs**:
+
+```python
+# Core operation: 7 learnable weights (center + 6 hex directions)
+self.weight = nn.Parameter(torch.randn(1, 7, dim))
+
+# Forward: weight lookup by neighbor type, then aggregate
+w_per_edge = self.weight[0, neighbor_type, :]  # Select by direction
+weighted_msgs = neighbor_features * w_per_edge
+out = scatter_add(weighted_msgs, dst)
+```
+
+### Comparison with Existing Methods
+
+| Method | Year | Approach | Key Difference from HexNeXt |
+|--------|------|----------|----------------------------|
+| **GCN** | 2017 | Isotropic aggregation | Same weight for all neighbors; HexNeXt is anisotropic |
+| **GAT** | 2018 | Dynamic attention weights | Computes weights from features; HexNeXt uses fixed positional weights |
+| **MoNet** | 2017 | Gaussian mixture on pseudo-coords | Continuous weights; HexNeXt uses discrete neighbor types |
+| **RGCN** | 2018 | Per-relation weight matrices | Full matrices per type; HexNeXt uses depthwise vectors |
+
+### Detailed Comparisons
+
+#### vs. MoNet (Monti et al., CVPR 2017) — **Most Similar**
+
+MoNet generalizes CNNs to non-Euclidean domains using learnable Gaussian mixture models:
+
+```
+MoNet:    w(u) = exp(-½(u-μ)ᵀΣ⁻¹(u-μ))  # Gaussian on pseudo-coordinates
+HexNeXt:  w[type] = learnable_vector    # Direct lookup by neighbor type
+```
+
+| Aspect | MoNet | HexNeXt |
+|--------|-------|---------|
+| Neighbor weighting | Continuous (Gaussian) | Discrete (7 types) |
+| Parameters | μ, Σ per kernel | Vector per type |
+| Flexibility | Any geometry | Hexagonal lattice |
+| Complexity | GMM computation | Direct lookup |
+
+**Why HexNeXt is simpler:** We exploit the known hexagonal structure (exactly 6 neighbors in fixed positions), avoiding the overhead of Gaussian mixture computation.
+
+#### vs. GAT (Veličković et al., ICLR 2018)
+
+GAT computes attention weights dynamically from node features:
+
+```
+GAT:      αᵢⱼ = softmax(LeakyReLU(aᵀ[Whᵢ || Whⱼ]))
+HexNeXt:  wᵢⱼ = weight[neighbor_type(i,j)]
+```
+
+| Aspect | GAT | HexNeXt |
+|--------|-----|---------|
+| Edge weights | Dynamic (content-dependent) | Static (position-dependent) |
+| Computation | O(E) attention per layer | O(1) weight lookup |
+| Adaptability | Can adapt to input | Fixed spatial pattern |
+
+**Trade-off:** GAT is more flexible but slower. HexNeXt is faster and sufficient when spatial position is the primary distinguishing factor (as in our detector).
+
+#### vs. RGCN (Schlichtkrull et al., 2018)
+
+RGCN uses different weight matrices for different edge types:
+
+```
+RGCN:     hᵢ' = σ(Σᵣ Σⱼ (1/cᵢ,ᵣ) Wᵣ hⱼ)  # Full matrix Wᵣ per relation
+HexNeXt:  hᵢ' = Σⱼ wₜ ⊙ hⱼ              # Depthwise vector wₜ per type
+```
+
+| Aspect | RGCN | HexNeXt |
+|--------|------|---------|
+| Edge types | Semantic relations | Spatial directions |
+| Weights per type | Full matrix W | Depthwise vector |
+| Parameters | O(d² × R) | O(d × 7) |
+
+**Parameter efficiency:** HexNeXt uses depthwise (element-wise) weights instead of full matrices, dramatically reducing parameters.
+
+### Novel Contributions of HexNeXt
+
+1. **ConvNeXt V2 block design on graphs** — First adaptation of the modern ConvNeXt V2 pattern (depthwise → norm → inverted bottleneck → GRN → residual) to graph neural networks.
+
+2. **Discrete direction encoding** — Exploits fixed hexagonal geometry with 7 discrete neighbor types instead of continuous pseudo-coordinates.
+
+3. **Depthwise separable on graphs** — Separates spatial aggregation (HexDepthwiseConv) from channel mixing (MLP), matching the efficiency gains seen in MobileNet/ConvNeXt.
+
+4. **Shared GRN across modalities** — Same Global Response Normalization works for both 2D convolutions and graph convolutions.
+
+### Summary: Feature Comparison
+
+| Feature | GCN | GAT | MoNet | RGCN | **HexNeXt** |
+|---------|-----|-----|-------|------|-------------|
+| Anisotropic | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Direction-aware | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Learnable spatial weights | ❌ | Dynamic | Gaussian | Matrix | **Depthwise** |
+| Depthwise separable | ❌ | ❌ | ❌ | ❌ | ✅ |
+| GRN normalization | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Inverted bottleneck (4×) | ❌ | ❌ | ❌ | ❌ | ✅ |
+
+### References
+
+- **GCN**: Kipf & Welling, ["Semi-Supervised Classification with Graph Convolutional Networks"](https://arxiv.org/abs/1609.02907), ICLR 2017
+- **GAT**: Veličković et al., ["Graph Attention Networks"](https://arxiv.org/abs/1710.10903), ICLR 2018
+- **MoNet**: Monti et al., ["Geometric deep learning on graphs and manifolds using mixture model CNNs"](https://arxiv.org/abs/1611.08402), CVPR 2017
+- **RGCN**: Schlichtkrull et al., ["Modeling Relational Data with Graph Convolutional Networks"](https://arxiv.org/abs/1703.06103), ESWC 2018
+- **ConvNeXt V2**: Woo et al., ["ConvNeXt V2: Co-designing and Scaling ConvNets with Masked Autoencoders"](https://arxiv.org/abs/2301.00808), CVPR 2023
+- **Distill GNN Tutorial**: [Understanding Convolutions on Graphs](https://distill.pub/2021/understanding-gnns/)
