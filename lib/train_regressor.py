@@ -61,6 +61,8 @@ logging.getLogger("torch._dynamo").setLevel(logging.WARNING)
 warnings.filterwarnings("ignore", message=".*To copy construct from a tensor.*", category=UserWarning)
 warnings.filterwarnings("ignore", module="torch._dynamo.*")
 warnings.filterwarnings("ignore", module="torch.fx.*")
+# Suppress SequentialLR epoch deprecation warning (harmless, PyTorch internal)
+warnings.filterwarnings("ignore", message=".*epoch parameter in.*scheduler.step.*", category=UserWarning)
 
 # ------------------------------------------------------------
 # Enable TensorFloat32
@@ -671,7 +673,7 @@ def train_with_config(config_path: str, profile: bool = None):
                     "mlflow_run_id": mlflow_run_id,
                 }
                 torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_best.pth"))
-                print(f"   [info] New best val_loss: {best_val:.6f}")
+                print(f"   [info] New best val_loss: {best_val:.2e}")
 
                 # Save validation artifacts (plots and CSVs) for best checkpoint
                 # Note: worst_events are only saved at end of training to reduce time
