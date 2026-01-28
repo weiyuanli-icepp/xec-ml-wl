@@ -362,6 +362,166 @@ For the XEC detector, heteroscedastic regression could be useful because:
 
 ---
 
+## Attention Mechanisms in CNNs
+
+Attention mechanisms can enhance CNNs by enabling the network to focus on the most relevant features. This section summarizes the main approaches and considerations for integrating attention into CNN architectures like ConvNeXt V2.
+
+### Main Approaches
+
+| Mechanism | Focus | How It Works | Overhead |
+|-----------|-------|--------------|----------|
+| **SE (Squeeze-and-Excitation)** | Channel | Global avg pool → FC (reduction) → sigmoid → scale channels | ~0.26% FLOPs |
+| **CBAM** | Channel + Spatial | SE-like channel attention → spatial conv (7×7) → multiply | Lightweight |
+| **Non-local / Self-Attention** | All positions | Query-Key-Value on feature maps, O(N²) where N = H×W | Heavy |
+
+### Squeeze-and-Excitation (SE) Networks
+
+SE blocks recalibrate channel-wise feature responses by modeling interdependencies between channels:
+
+1. **Squeeze**: Global average pooling reduces spatial dimensions to 1×1
+2. **Excitation**: Two FC layers (with reduction ratio r=16) learn channel weights
+3. **Scale**: Multiply original features by learned weights
+
+```python
+class SEBlock(nn.Module):
+    """Squeeze-and-Excitation block for channel attention."""
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        self.fc = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(channels, channels // reduction),
+            nn.ReLU(),
+            nn.Linear(channels // reduction, channels),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        # x: (B, C, H, W)
+        scale = self.fc(x).unsqueeze(-1).unsqueeze(-1)  # (B, C, 1, 1)
+        return x * scale  # Channel-wise scaling
+```
+
+**Key insight:** With r=16, SE-ResNet-50 adds only ~0.26% FLOPs increase over vanilla ResNet-50.
+
+### CBAM (Convolutional Block Attention Module)
+
+CBAM applies channel and spatial attention sequentially:
+
+1. **Channel Attention**: Similar to SE, but uses both avg-pooling AND max-pooling for finer attention
+2. **Spatial Attention**: 7×7 convolution on channel-pooled features to identify "where" to focus
+
+**Key findings from the paper:**
+- Sequential application (channel → spatial) outperforms parallel
+- Using both avg and max pooling gives finer attention than SE (avg-only)
+- Kernel size of 7×7 for spatial attention performs best
+
+### Non-local / Self-Attention
+
+Non-local blocks compute responses as weighted sums of features at ALL positions:
+
+$$y_i = \frac{1}{C(x)} \sum_{\forall j} f(x_i, x_j) g(x_j)$$
+
+Where $f$ computes pairwise affinity (attention weights) and $g$ is a linear transform.
+
+**SAGAN findings on placement:**
+- Self-attention at **middle-to-high level features** (32×32, 64×64) significantly outperforms low-level (8×8, 16×16)
+- FID improved from 22.98 → 18.28 when moving attention from feat8 to feat32
+
+### Key Lessons from Literature
+
+| Lesson | Source | Implication |
+|--------|--------|-------------|
+| Place attention at higher-resolution features | SAGAN | Middle layers benefit most from global context |
+| Channel-first, then spatial | CBAM | Sequential ordering matters |
+| Use both avg and max pooling | CBAM | Captures different aspects of channel importance |
+| Sparse placement is often sufficient | Various | Don't need attention after every block |
+| Use residual connections | General | `x + attention(x)` not just `attention(x)` |
+
+### Considerations for ConvNeXt V2
+
+Our architecture has ConvNeXt V2 branches → 1024-dim tokens → Transformer fusion. Key considerations:
+
+**The Transformer fusion is already attention.** Adding more attention after fusion would be redundant.
+
+**Where attention could help:**
+
+| Location | Approach | Benefit | Cost |
+|----------|----------|---------|------|
+| After ConvNeXt blocks (before pooling) | SE block | Channel recalibration within each face | Minimal |
+| After ConvNeXt blocks | CBAM | Channel + spatial weighting | Low |
+| After final ConvNeXt block | Self-attention | Global spatial reasoning within face | O(H²W²) |
+
+**Recommended approach:** Try SE blocks first (minimal overhead, proven effectiveness). Add only 1-2 at the end of each face branch, not after every block.
+
+### Pitfalls to Avoid
+
+1. **Quadratic complexity of self-attention**
+   - For feature maps of 45×72 = 3240 positions, attention matrix is ~10M elements
+   - Solutions: Use channel attention (SE/CBAM), downsample first, or use sparse attention
+
+2. **Information loss from pooling**
+   - SE's global average pool loses spatial info
+   - CBAM compensates with separate spatial branch using both avg and max pooling
+
+3. **Oversimplified spatial compression**
+   - Some methods reduce spatial dims too aggressively
+   - Non-local blocks preserve full resolution but are expensive
+
+4. **Training instability**
+   - Self-attention needs time to learn meaningful patterns
+   - Always use residual connections: `output = x + attention(x)`
+
+5. **Overcomplicating working architectures**
+   - ConvNeXt V2 was designed to match ViT without explicit attention
+   - Your Transformer fusion already provides cross-face attention
+   - Adding more attention may give diminishing returns
+
+### Integration Example
+
+To add SE attention to ConvNeXt V2 blocks:
+
+```python
+class ConvNeXtV2BlockWithSE(nn.Module):
+    def __init__(self, dim, drop_path=0., se_reduction=16):
+        super().__init__()
+        self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim)
+        self.norm = nn.LayerNorm(dim, eps=1e-6)
+        self.pwconv1 = nn.Linear(dim, 4 * dim)
+        self.act = nn.GELU()
+        self.grn = GRN(4 * dim)
+        self.pwconv2 = nn.Linear(4 * dim, dim)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+        # SE attention
+        self.se = SEBlock(dim, reduction=se_reduction)
+
+    def forward(self, x):
+        input = x
+        x = self.dwconv(x)
+        x = x.permute(0, 2, 3, 1)  # (B, C, H, W) -> (B, H, W, C)
+        x = self.norm(x)
+        x = self.pwconv1(x)
+        x = self.act(x)
+        x = self.grn(x)
+        x = self.pwconv2(x)
+        x = x.permute(0, 3, 1, 2)  # (B, H, W, C) -> (B, C, H, W)
+
+        # Apply SE attention before residual
+        x = self.se(x)
+
+        return input + self.drop_path(x)
+```
+
+### References
+
+- **SE Networks**: Hu et al., "Squeeze-and-Excitation Networks." CVPR 2018. [arXiv:1709.01507](https://arxiv.org/abs/1709.01507)
+- **CBAM**: Woo et al., "CBAM: Convolutional Block Attention Module." ECCV 2018. [arXiv:1807.06521](https://arxiv.org/abs/1807.06521)
+- **Non-local Networks**: Wang et al., "Non-local Neural Networks." CVPR 2018. [Paper](https://openaccess.thecvf.com/content_cvpr_2018/papers/Wang_Non-Local_Neural_Networks_CVPR_2018_paper.pdf)
+- **SAGAN**: Zhang et al., "Self-Attention Generative Adversarial Networks." ICML 2019. [arXiv:1805.08318](https://arxiv.org/abs/1805.08318)
+
+---
+
 ## FCMAE-Style Masked Convolution
 
 For MAE pretraining and dead channel inpainting, we implement **FCMAE-style masked convolution** following the approach from [ConvNeXt V2](https://github.com/facebookresearch/ConvNeXt-V2).
@@ -472,3 +632,17 @@ If you need true sparse convolution (e.g., for 3D point clouds or extremely high
    - *Summary:* Learning rate schedule following cosine decay with optional warm restarts. We use single-cycle cosine with warmup.
 
 9. **Gradient Accumulation** - Standard technique for simulating larger batch sizes when GPU memory is limited. Effective batch size = `batch_size × grad_accum_steps`.
+
+### Attention Mechanisms
+
+10. **Squeeze-and-Excitation Networks (SE)** - Hu, J., et al. "Squeeze-and-Excitation Networks." CVPR 2018. [arXiv:1709.01507](https://arxiv.org/abs/1709.01507)
+    - *Summary:* Channel attention via global pooling + FC layers. Adds only ~0.26% FLOPs to ResNet-50. Reduction ratio r=16 is the recommended default.
+
+11. **CBAM** - Woo, S., et al. "CBAM: Convolutional Block Attention Module." ECCV 2018. [arXiv:1807.06521](https://arxiv.org/abs/1807.06521)
+    - *Summary:* Sequential channel + spatial attention. Uses both avg and max pooling for finer attention than SE. Channel-first ordering performs best.
+
+12. **Non-local Neural Networks** - Wang, X., et al. "Non-local Neural Networks." CVPR 2018. [Paper](https://openaccess.thecvf.com/content_cvpr_2018/papers/Wang_Non-Local_Neural_Networks_CVPR_2018_paper.pdf)
+    - *Summary:* Full self-attention on feature maps for long-range dependencies. O(N²) complexity where N = H×W. Best applied sparsely at middle-to-high level features.
+
+13. **SAGAN** - Zhang, H., et al. "Self-Attention Generative Adversarial Networks." ICML 2019. [arXiv:1805.08318](https://arxiv.org/abs/1805.08318)
+    - *Summary:* Self-attention for image generation. Key finding: attention at 32×32/64×64 features outperforms 8×8/16×16 (FID 22.98 → 18.28).
