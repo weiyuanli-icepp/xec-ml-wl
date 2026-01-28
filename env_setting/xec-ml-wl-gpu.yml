@@ -68,3 +68,6 @@ dependencies:
       - comet-ml>=3.44
       - mlflow
       - mlflow-export-import
+
+      # Database access (for dead channel queries)
+      - pymysql

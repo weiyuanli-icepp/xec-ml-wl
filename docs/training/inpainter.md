@@ -423,12 +423,34 @@ print_dead_channel_summary(run_number=430000)
 
 ### 9.4 Requirements
 
-- MySQL client (`mysql` command) must be installed and in PATH
-- Login credentials configured via `mysql_config_editor`:
+**Option A: PyMySQL with environment variables (Recommended)**
+
+```bash
+# Install pymysql (already in conda environment)
+pip install pymysql
+
+# Set environment variables
+export MYSQL_HOST="your_db_host"
+export MYSQL_USER="your_username"
+export MYSQL_PASSWORD="your_password"
+
+# Test connection
+python -m lib.db_utils --check
+python -m lib.db_utils 430000
+```
+
+**Option B: MySQL CLI with login-path**
+
+- Requires official MySQL client (not MariaDB) with `--login-path` support
+- Configure credentials:
   ```bash
   mysql_config_editor set --login-path=meg_ro --host=<host> --user=<user> --password
   ```
-- Access to MEG2 database from the machine running the script
+
+**Check connection status:**
+```bash
+python -m lib.db_utils --check
+```
 
 ---
 

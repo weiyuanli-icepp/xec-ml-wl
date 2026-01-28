@@ -58,3 +58,4 @@ dependencies:
   - pip
   - pip:
       - comet-ml>=3.44
+      - pymysql  # Database access for dead channel queries
