@@ -546,7 +546,10 @@ def train_with_config(config_path: str, profile: bool = None):
             reweighter = None  # Set to None so it won't be passed to run_epoch_stream
 
     # --- Training Loop ---
-    with mlflow.start_run(run_id=mlflow_run_id, run_name=run_name if not mlflow_run_id else None) as run:
+    # Disable MLflow's automatic system metrics (uses wall clock time)
+    # We log our own system metrics with step=epoch for consistent x-axis
+    with mlflow.start_run(run_id=mlflow_run_id, run_name=run_name if not mlflow_run_id else None,
+                          log_system_metrics=False) as run:
         mlflow_run_id = run.info.run_id
         artifact_dir = os.path.abspath(os.path.join(cfg.checkpoint.save_dir, run_name))
         os.makedirs(artifact_dir, exist_ok=True)

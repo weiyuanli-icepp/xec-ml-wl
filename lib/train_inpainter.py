@@ -440,7 +440,10 @@ Examples:
     print(f"  - Run name: {mlflow_run_name}")
     print(f"  - Mask ratio: {mask_ratio}")
 
-    with mlflow.start_run(run_id=mlflow_run_id, run_name=mlflow_run_name if not mlflow_run_id else None) as run:
+    # Disable MLflow's automatic system metrics (uses wall clock time)
+    # We log our own system metrics with step=epoch for consistent x-axis
+    with mlflow.start_run(run_id=mlflow_run_id, run_name=mlflow_run_name if not mlflow_run_id else None,
+                          log_system_metrics=False) as run:
         mlflow_run_id = run.info.run_id
         # Log parameters
         mlflow.log_params({
