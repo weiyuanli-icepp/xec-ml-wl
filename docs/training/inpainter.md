@@ -140,13 +140,98 @@ python macro/analyze_inpainter.py artifacts/inpainter/inpainter_predictions_epoc
 
 ---
 
-## 8. Real Data Validation
+## 8. Model Export for Fast Inference
+
+For production use and faster inference, export the trained model to TorchScript or ONNX format.
+
+### 8.1 Why TorchScript is Recommended
+
+| Format | Pros | Cons |
+|--------|------|------|
+| **TorchScript** | - Handles dynamic control flow well<br>- Native PyTorch, no extra dependencies<br>- GPU support out of the box<br>- Exact numerical match with PyTorch | - Larger file size<br>- PyTorch/libtorch required |
+| **ONNX** | - Cross-platform (TensorRT, CoreML, etc.)<br>- Smaller file size<br>- Wide ecosystem support | - Dynamic shapes can be problematic<br>- Requires onnxruntime<br>- May have numerical differences |
+
+**Recommendation:** Use **TorchScript** for inpainter because:
+1. The inpainter has **variable-length outputs** (number of masked positions varies per event)
+2. The scatter operations and conditional logic don't trace well to ONNX
+3. TorchScript preserves exact PyTorch behavior
+
+### 8.2 Export Commands
+
+```bash
+# Export to TorchScript (recommended)
+python macro/export_onnx_inpainter.py \
+    artifacts/inpainter/inpainter_checkpoint_best.pth \
+    --format torchscript \
+    --output artifacts/inpainter/inpainter.pt
+
+# Export to ONNX (alternative)
+python macro/export_onnx_inpainter.py \
+    artifacts/inpainter/inpainter_checkpoint_best.pth \
+    --format onnx \
+    --output artifacts/inpainter/inpainter.onnx
+
+# Use standard weights instead of EMA
+python macro/export_onnx_inpainter.py checkpoint.pth --no-ema --format torchscript --output model.pt
+```
+
+### 8.3 Exported Model Interface
+
+**Inputs:**
+| Name | Shape | Description |
+|------|-------|-------------|
+| `input` | `(B, 4760, 2)` | Sensor data `[npho, time]` with dead channels as sentinel (-5.0) |
+| `mask` | `(B, 4760)` | Binary mask: 1 = masked/dead, 0 = valid |
+
+**Output:**
+| Name | Shape | Description |
+|------|-------|-------------|
+| `output` | `(B, 4760, 2)` | Full tensor with predictions at masked positions |
+
+**Usage in C++/Python:**
+```python
+# TorchScript
+model = torch.jit.load("inpainter.pt")
+output = model(input_tensor, mask_tensor)
+
+# Apply predictions only at masked positions
+final = torch.where(mask.unsqueeze(-1).bool(), output, input_tensor)
+```
+
+### 8.4 Performance Comparison
+
+Typical inference speed on CPU (batch_size=1):
+
+| Format | Speed | Notes |
+|--------|-------|-------|
+| Checkpoint (PyTorch) | ~0.9 sec/event | Includes Python overhead |
+| TorchScript | ~0.3-0.5 sec/event | Optimized, no Python GIL |
+| ONNX Runtime | ~0.2-0.4 sec/event | Highly optimized |
+
+**Note:** GPU inference is significantly faster for all formats. TorchScript and ONNX show the biggest improvements on GPU due to better kernel fusion.
+
+---
+
+## 9. Real Data Validation
 
 Validate the inpainter on real detector data that already contains dead channels.
 
-### 8.1 Workflow
+### 9.1 Workflow
 
 ```
+Checkpoint (.pth)
+    │
+    ▼
+┌─────────────────────────────────────┐
+│ Export (one-time)                   │
+│ macro/export_onnx_inpainter.py      │
+│ --format torchscript                │
+└─────────────────────────────────────┘
+    │
+    ▼
+TorchScript Model (.pt)
+    │
+    ▼
 Real Data (with dead channels)
     │
     ▼
@@ -159,9 +244,9 @@ Real Data (with dead channels)
     │
     ▼
 ┌─────────────────────────────────────┐
-│ Inpainter Inference (CPU)           │
-│ - Input: masked real data           │
-│ - Output: predictions for all masked│
+│ Inpainter Inference (TorchScript)   │
+│ - Input: masked real data + mask    │
+│ - Output: (B, 4760, 2) predictions  │
 └─────────────────────────────────────┘
     │
     ▼
@@ -174,7 +259,7 @@ Real Data (with dead channels)
 └─────────────────────────────────────┘
 ```
 
-### 8.2 Preparing Real Data
+### 9.2 Preparing Real Data
 
 Use `macro/PrepareRealData.C` to generate input ROOT files:
 
@@ -194,26 +279,55 @@ Use `macro/PrepareRealData.C` to generate input ROOT files:
 
 **Note:** PrepareRealData.C uses `1e10` as sentinel for invalid values. The validation script converts this to `-5.0` (model sentinel) automatically.
 
-### 8.3 Running Validation
+### 9.3 Running Validation
+
+**Recommended workflow (TorchScript - faster):**
 
 ```bash
-# Using database for dead channels (recommended)
+# Step 1: Export model to TorchScript (one-time)
+python macro/export_onnx_inpainter.py \
+    artifacts/inpainter/inpainter_checkpoint_best.pth \
+    --format torchscript \
+    --output artifacts/inpainter/inpainter.pt
+
+# Step 2: Run validation with TorchScript model
 python macro/validate_inpainter_real.py \
-    --checkpoint artifacts/inpainter/checkpoint_best.pth \
+    --torchscript artifacts/inpainter/inpainter.pt \
     --input DataGammaAngle_430000-431000.root \
     --run 430000 \
     --output validation_real/
+```
 
-# Using pre-saved dead channel list
+**Alternative: Using checkpoint directly (slower, for debugging):**
+
+```bash
 python macro/validate_inpainter_real.py \
-    --checkpoint artifacts/inpainter/checkpoint_best.pth \
+    --checkpoint artifacts/inpainter/inpainter_checkpoint_best.pth \
+    --input DataGammaAngle_430000-431000.root \
+    --run 430000 \
+    --output validation_real/
+```
+
+**Other options:**
+
+```bash
+# Using ONNX model
+python macro/validate_inpainter_real.py \
+    --onnx artifacts/inpainter/inpainter.onnx \
+    --input real_data.root \
+    --run 430000 \
+    --output validation_real/
+
+# Using pre-saved dead channel list (instead of database)
+python macro/validate_inpainter_real.py \
+    --torchscript inpainter.pt \
     --input real_data.root \
     --dead-channel-file dead_channels_430000.txt \
     --output validation_real/
 
 # Customize artificial masking
 python macro/validate_inpainter_real.py \
-    --checkpoint checkpoint.pth \
+    --torchscript inpainter.pt \
     --input real_data.root \
     --run 430000 \
     --n-mask-inner 10 \
@@ -222,7 +336,14 @@ python macro/validate_inpainter_real.py \
     --output validation_real/
 ```
 
-**Options:**
+**Model options (mutually exclusive):**
+| Option | Description |
+|--------|-------------|
+| `--torchscript PATH` | TorchScript model (.pt) - **recommended for speed** |
+| `--onnx PATH` | ONNX model (.onnx) |
+| `--checkpoint PATH` | Checkpoint file (.pth) - slower, for debugging |
+
+**Other options:**
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--n-mask-inner` | 10 | Healthy sensors to mask in inner face |
@@ -231,7 +352,7 @@ python macro/validate_inpainter_real.py \
 | `--batch-size` | 64 | Batch size for inference |
 | `--max-events` | all | Limit number of events |
 
-### 8.4 Output Format
+### 9.4 Output Format
 
 The output ROOT file has additional columns compared to training predictions:
 
@@ -243,7 +364,7 @@ The output ROOT file has additional columns compared to training predictions:
 
 **Invalid values:** For dead channels (`mask_type=1`), truth and error are set to `-999`.
 
-### 8.5 Event Display
+### 9.5 Event Display
 
 Visualize individual events with `macro/show_inpainter_real.py`:
 
@@ -298,7 +419,7 @@ Metrics (artificial masks only):
 ============================================================
 ```
 
-### 8.6 Analyzing Results
+### 9.6 Analyzing Results
 
 ```bash
 # Analyze predictions (automatically filters by mask_type for metrics)
@@ -352,11 +473,11 @@ Npho predictions:
 
 ---
 
-## 9. Database Utilities
+## 10. Database Utilities
 
 Query dead channel information from the MEG2 database.
 
-### 9.1 Database Hierarchy
+### 10.1 Database Hierarchy
 
 ```
 RunCatalog (run id) → XECConf_id
@@ -365,7 +486,7 @@ RunCatalog (run id) → XECConf_id
             → XECPMStatus (idx: 0-4759, IsBad: 0/1)
 ```
 
-### 9.2 Command Line Usage
+### 10.2 Command Line Usage
 
 ```bash
 # Print summary for a run
@@ -396,7 +517,7 @@ Dead by face:
 ==================================================
 ```
 
-### 9.3 Python API
+### 10.3 Python API
 
 ```python
 from lib.db_utils import (
@@ -421,7 +542,7 @@ print(info['dead_by_face'])  # {'inner': 20, 'us': 3, ...}
 print_dead_channel_summary(run_number=430000)
 ```
 
-### 9.4 Requirements
+### 10.4 Requirements
 
 ```bash
 # Install pymysql (already included in conda environment)
@@ -438,11 +559,11 @@ The read-only database credentials are built into the module. No environment var
 
 ---
 
-## 10. MC Pseudo-Experiment
+## 11. MC Pseudo-Experiment
 
 Apply real data dead channel patterns to MC data for baseline comparison.
 
-### 10.1 Purpose
+### 11.1 Purpose
 
 Real data validation (Section 8) has a limitation: dead channels have no ground truth, so we can only evaluate on artificially masked healthy sensors. The MC pseudo-experiment addresses this by:
 
@@ -453,7 +574,7 @@ Real data validation (Section 8) has a limitation: dead channels have no ground 
 
 This provides a performance baseline for dead channel recovery.
 
-### 10.2 Usage
+### 11.2 Usage
 
 ```bash
 # Basic usage
@@ -480,7 +601,7 @@ for run in 430000 431000 432000; do
 done
 ```
 
-### 10.3 Output
+### 11.3 Output
 
 **ROOT file:** `pseudo_experiment_run{RUN}.root`
 | Branch | Type | Description |
@@ -523,7 +644,7 @@ Per-Face Metrics:
 ============================================================
 ```
 
-### 10.4 Comparison Workflow
+### 11.4 Comparison Workflow
 
 To compare inpainter performance on real data vs MC:
 
