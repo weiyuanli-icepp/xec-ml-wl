@@ -423,34 +423,18 @@ print_dead_channel_summary(run_number=430000)
 
 ### 9.4 Requirements
 
-**Option A: PyMySQL with environment variables (Recommended)**
-
 ```bash
-# Install pymysql (already in conda environment)
+# Install pymysql (already included in conda environment)
 pip install pymysql
-
-# Set environment variables
-export MYSQL_HOST="your_db_host"
-export MYSQL_USER="your_username"
-export MYSQL_PASSWORD="your_password"
 
 # Test connection
 python -m lib.db_utils --check
+
+# Query dead channels
 python -m lib.db_utils 430000
 ```
 
-**Option B: MySQL CLI with login-path**
-
-- Requires official MySQL client (not MariaDB) with `--login-path` support
-- Configure credentials:
-  ```bash
-  mysql_config_editor set --login-path=meg_ro --host=<host> --user=<user> --password
-  ```
-
-**Check connection status:**
-```bash
-python -m lib.db_utils --check
-```
+The read-only database credentials are built into the module. No environment variables needed.
 
 ---
 

@@ -3,20 +3,18 @@
 Database utilities for MEG II XEC ML.
 
 Provides functions to query the MEG2 database for dead channel information.
-
-Authentication methods (in order of priority):
-1. Environment variables: MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD
-2. MySQL CLI with --login-path (requires mysql client with login-path support)
+Uses read-only credentials (meg_ro) with built-in defaults.
 
 Usage:
-    # Set environment variables
-    export MYSQL_HOST="your_host"
-    export MYSQL_USER="your_user"
-    export MYSQL_PASSWORD="your_password"
+    # Command line
+    python -m lib.db_utils 430000
 
-    # Then use in Python
+    # Python
     from lib.db_utils import get_dead_channels
     dead_channels = get_dead_channels(run_number=430000)
+
+Requirements:
+    pip install pymysql
 """
 
 import os
@@ -26,12 +24,12 @@ from typing import List, Optional, Tuple
 from functools import lru_cache
 
 
-# Database connection settings
+# Database connection settings (read-only access)
 DEFAULT_LOGIN_PATH = "meg_ro"
 DEFAULT_DATABASE = "MEG2"
-DEFAULT_HOST = os.environ.get("MYSQL_HOST", "")
-DEFAULT_USER = os.environ.get("MYSQL_USER", "")
-DEFAULT_PASSWORD = os.environ.get("MYSQL_PASSWORD", "")
+DEFAULT_HOST = os.environ.get("MYSQL_HOST", "meg.psi.ch")
+DEFAULT_USER = os.environ.get("MYSQL_USER", "meg_ro")
+DEFAULT_PASSWORD = os.environ.get("MYSQL_PASSWORD", "readonly")
 
 # Try to import pymysql
 _HAS_PYMYSQL = False
@@ -373,43 +371,26 @@ def check_connection():
     """Check database connection and print status."""
     print("\nDatabase Connection Check")
     print("=" * 50)
-
-    # Check environment variables
-    if DEFAULT_HOST and DEFAULT_USER and DEFAULT_PASSWORD:
-        print("Environment variables: SET")
-        print("  MYSQL_HOST: {}".format(DEFAULT_HOST))
-        print("  MYSQL_USER: {}".format(DEFAULT_USER))
-        print("  MYSQL_PASSWORD: ****")
-    else:
-        print("Environment variables: NOT SET")
-        missing = []
-        if not DEFAULT_HOST:
-            missing.append("MYSQL_HOST")
-        if not DEFAULT_USER:
-            missing.append("MYSQL_USER")
-        if not DEFAULT_PASSWORD:
-            missing.append("MYSQL_PASSWORD")
-        print("  Missing: {}".format(", ".join(missing)))
+    print("Host: {}".format(DEFAULT_HOST))
+    print("User: {}".format(DEFAULT_USER))
+    print("Database: {}".format(DEFAULT_DATABASE))
 
     # Check pymysql
     if _HAS_PYMYSQL:
         print("pymysql: INSTALLED")
+        # Try a test query
+        try:
+            rows = _run_mysql_query("SELECT 1", database=DEFAULT_DATABASE)
+            print("Connection: OK")
+        except Exception as e:
+            print("Connection: FAILED - {}".format(e))
+            return False
     else:
-        print("pymysql: NOT INSTALLED (install with: pip install pymysql)")
-
-    print("=" * 50 + "\n")
-
-    if not _HAS_PYMYSQL and not (DEFAULT_HOST and DEFAULT_USER and DEFAULT_PASSWORD):
-        print("To use this module, either:")
-        print("1. Install pymysql and set environment variables:")
-        print("   pip install pymysql")
-        print("   export MYSQL_HOST=<host>")
-        print("   export MYSQL_USER=<user>")
-        print("   export MYSQL_PASSWORD=<password>")
-        print("")
-        print("2. Or use mysql CLI with --login-path (requires official MySQL client)")
+        print("pymysql: NOT INSTALLED")
+        print("\nInstall with: pip install pymysql")
         return False
 
+    print("=" * 50 + "\n")
     return True
 
 
