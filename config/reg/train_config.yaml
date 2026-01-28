@@ -78,6 +78,9 @@ training:
   ema_decay: 0.999
   channel_dropout_rate: 0.1
   grad_clip: 1.0
+  # Gradient accumulation: effective_batch = batch_size × grad_accum_steps
+  # Use when GPU memory limits batch_size but larger effective batches improve convergence
+  grad_accum_steps: 1
   profile: false                    # Enable training profiler to identify bottlenecks
   # torch.compile mode options:
   #   "max-autotune" - Maximum optimization, benchmarks many kernel configs (highest memory)
