@@ -117,6 +117,44 @@ training:
 
 - **`false`/`none`**: Disables torch.compile entirely (eager execution). No compilation overhead. Useful for debugging or when compilation causes issues.
 
+#### D. Cudagraphs Warning with reduce-overhead Mode
+
+**Symptom:** When using `compile: "reduce-overhead"`, you see warnings like:
+```
+skipping cudagraphs due to cpu device (primals_2). Found from:
+   File "lib/geom_utils.py", line 25, in gather_face
+     idx_flat = torch.tensor(index_map.reshape(-1), device=device, dtype=torch.long)
+```
+
+**Cause:** The `reduce-overhead` mode attempts to capture CUDA graphs for the forward pass. CUDA graphs require all operations to run purely on GPU with no CPU-GPU synchronization. In `geom_utils.py`, the `gather_face()` function creates index tensors from numpy arrays:
+
+```python
+idx_flat = torch.tensor(index_map.reshape(-1), device=device, dtype=torch.long)
+```
+
+Even though `device=device` is specified, `torch.tensor()` first creates an intermediate CPU tensor from the numpy array before moving to GPU. This CPU→GPU transfer breaks cudagraph compatibility.
+
+**Is it a problem?** No. The warning is informational, not an error. PyTorch simply falls back to eager mode for that specific operation. Your training will:
+- Run correctly with no functional issues
+- Still benefit from `torch.compile` optimizations for other parts of the model (convolutions, attention, etc.)
+- Use the index caching mechanism (after the first forward pass, tensors are cached on GPU)
+
+**Performance impact:** Minimal. The `gather_face()` operation is a simple index gather, which is fast regardless of cudagraphs. The bulk of compute time is in convolutions and attention layers, which are still optimized.
+
+**Potential fix (not recommended):** To enable full cudagraph capture, all index tensors would need to be pre-registered as model buffers in `__init__` rather than created lazily:
+
+```python
+# In model __init__
+self.register_buffer('inner_idx', torch.tensor(INNER_INDEX_MAP.reshape(-1), dtype=torch.long))
+
+# In forward
+vals = torch.index_select(x_batch, 1, self.inner_idx)
+```
+
+However, this adds complexity and the performance gain is negligible for this architecture. The current caching approach in `geom_utils.py` is sufficient.
+
+**Recommendation:** Keep `reduce-overhead` as-is and ignore the warning. If you want to suppress the warning entirely, use `compile: "default"` which doesn't attempt cudagraph capture.
+
 ### 5. NaN Loss During Training
 
 **Symptom:** Loss becomes NaN after a few epochs
