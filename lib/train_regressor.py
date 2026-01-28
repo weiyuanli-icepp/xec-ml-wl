@@ -674,8 +674,8 @@ def train_with_config(config_path: str, profile: bool = None):
                 print(f"   [info] New best val_loss: {best_val:.6f}")
 
                 # Save validation artifacts (plots and CSVs) for best checkpoint
+                # Note: worst_events are only saved at end of training to reduce time
                 if getattr(cfg.checkpoint, 'save_artifacts', True):
-                    worst_events = extra_info.get("worst_events", []) if extra_info else []
                     save_validation_artifacts(
                         model=val_model,
                         angle_pred=pred_val,
@@ -685,7 +685,7 @@ def train_with_config(config_path: str, profile: bool = None):
                         artifact_dir=artifact_dir,
                         run_name=run_name,
                         epoch=ep,
-                        worst_events=worst_events,
+                        worst_events=None,  # Skip during training, only save at end
                     )
 
             # Save last checkpoint
