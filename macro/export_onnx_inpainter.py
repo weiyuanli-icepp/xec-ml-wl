@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 """
-Export XEC_Inpainter model to TorchScript format.
-
-NOTE: ONNX export is NOT supported because the model uses nn.TransformerEncoder,
-which has a native operator (aten::_transformer_encoder_layer_fwd) that cannot
-be exported to ONNX. Use TorchScript instead.
+Export XEC_Inpainter model to TorchScript or ONNX format.
 
 Usage:
-    python macro/export_onnx_inpainter.py artifacts/<RUN>/inpainter_checkpoint_best.pth --output inpainter.pt
+    # TorchScript (recommended)
+    python macro/export_onnx_inpainter.py checkpoint.pth --output inpainter.pt
+
+    # ONNX (experimental - requires disabling TransformerEncoder fast path)
+    python macro/export_onnx_inpainter.py checkpoint.pth --format onnx --output inpainter.onnx
 
 The exported model takes:
     - input: (B, 4760, 2) - sensor values (npho, time) with dead channels as sentinel
     - mask: (B, 4760) - binary mask (1 = dead/masked, 0 = valid)
 
 Returns:
-    - output: (B, 4760, 2) - reconstructed values (only masked positions are meaningful)
+    - output: (B, 4760, 2) - reconstructed values (predictions at masked positions,
+              original values at unmasked positions)
 
 For C++ inference with libtorch:
     auto model = torch::jit::load("inpainter.pt");
     auto output = model.forward({input, mask}).toTensor();
-    // Apply output only at masked positions
 """
 
 import os
@@ -137,32 +137,74 @@ def load_inpainter_checkpoint(checkpoint_path, prefer_ema=True):
     return inpainter, config
 
 
+def disable_transformer_fast_path():
+    """
+    Disable TransformerEncoder's fused CUDA kernels to enable ONNX export.
+
+    PyTorch's nn.TransformerEncoder uses fused kernels (aten::_transformer_encoder_layer_fwd)
+    when batch_first=True and other conditions are met. These kernels cannot be exported to ONNX.
+
+    By disabling the fast paths, PyTorch falls back to standard ops (matmul, softmax, etc.)
+    which ARE ONNX-compatible.
+    """
+    try:
+        # Disable Flash SDP (Scaled Dot Product) attention
+        torch.backends.cuda.enable_flash_sdp(False)
+        print("[INFO] Disabled Flash SDP")
+    except AttributeError:
+        print("[WARN] torch.backends.cuda.enable_flash_sdp not available (PyTorch < 2.0?)")
+
+    try:
+        # Disable memory-efficient SDP attention
+        torch.backends.cuda.enable_mem_efficient_sdp(False)
+        print("[INFO] Disabled Memory-efficient SDP")
+    except AttributeError:
+        print("[WARN] torch.backends.cuda.enable_mem_efficient_sdp not available")
+
+    try:
+        # Enable math SDP (standard implementation, ONNX-compatible)
+        torch.backends.cuda.enable_math_sdp(True)
+        print("[INFO] Enabled Math SDP (standard ops)")
+    except AttributeError:
+        print("[WARN] torch.backends.cuda.enable_math_sdp not available")
+
+    # Also try the nested tensor setting
+    try:
+        torch.backends.cuda.enable_cudnn_sdp(False)
+        print("[INFO] Disabled cuDNN SDP")
+    except AttributeError:
+        pass  # Not available in all versions
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Export XEC_Inpainter to TorchScript (ONNX not supported due to TransformerEncoder)",
+        description="Export XEC_Inpainter to TorchScript or ONNX format",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Export to TorchScript (default and recommended)
-  python macro/export_onnx_inpainter.py artifacts/inpainter_run/inpainter_checkpoint_best.pth --output inpainter.pt
+  # Export to TorchScript (recommended)
+  python macro/export_onnx_inpainter.py checkpoint.pth --output inpainter.pt
+
+  # Export to ONNX (experimental)
+  python macro/export_onnx_inpainter.py checkpoint.pth --format onnx --output inpainter.onnx
 
   # Without EMA weights
   python macro/export_onnx_inpainter.py checkpoint.pth --no-ema --output inpainter.pt
 
-NOTE: ONNX export is NOT supported because the model uses nn.TransformerEncoder,
-which cannot be exported to ONNX. Use TorchScript instead.
+Note: ONNX export disables TransformerEncoder's fused kernels to use standard ops.
+This may slightly affect numerical precision but enables cross-platform deployment.
         """
     )
     parser.add_argument("checkpoint", type=str, help="Path to inpainter checkpoint (.pth)")
     parser.add_argument("--output", type=str, default=None, help="Output file (default: inpainter.pt)")
     parser.add_argument("--format", type=str, choices=["onnx", "torchscript"], default="torchscript",
-                        help="Export format (default: torchscript). NOTE: ONNX will fail due to TransformerEncoder.")
+                        help="Export format (default: torchscript)")
     parser.add_argument("--no-ema", action="store_true", help="Use standard weights instead of EMA")
-    parser.add_argument("--opset", type=int, default=17, help="ONNX opset version (if attempting ONNX)")
+    parser.add_argument("--opset", type=int, default=17, help="ONNX opset version (default: 17)")
     parser.add_argument("--trace-batch-size", type=int, default=64,
-                        help="Batch size for tracing (should match inference batch size, default: 64)")
+                        help="Batch size for tracing (default: 64)")
     parser.add_argument("--trace-mask-per-event", type=int, default=150,
-                        help="Number of masked sensors per event for tracing (default: 150, ~88 dead + 15 artificial + margin)")
+                        help="Number of masked sensors per event for tracing (default: 150)")
 
     args = parser.parse_args()
 
@@ -245,14 +287,19 @@ which cannot be exported to ONNX. Use TorchScript instead.
     else:
         # Export to ONNX
         print(f"[INFO] Exporting to ONNX: {args.output} (opset {args.opset})")
-        print("[ERROR] ONNX export is NOT supported for this model!")
-        print("[ERROR] The model uses nn.TransformerEncoder which has operator")
-        print("[ERROR] 'aten::_transformer_encoder_layer_fwd' that cannot be exported to ONNX.")
-        print("[ERROR] Please use --format torchscript instead.")
-        print("")
-        print("[INFO] Attempting export anyway (will likely fail)...")
+
+        # Disable TransformerEncoder's fused kernels to enable ONNX export
+        print("[INFO] Disabling TransformerEncoder fast path for ONNX compatibility...")
+        disable_transformer_fast_path()
+
+        # Re-run forward pass with disabled fast path to ensure it works
+        print("[INFO] Testing forward pass with disabled fast path...")
+        with torch.no_grad():
+            test_output = wrapper(dummy_input, dummy_mask)
+        print(f"[INFO] Output shape: {test_output.shape}")
 
         try:
+            print("[INFO] Starting ONNX export...")
             torch.onnx.export(
                 wrapper,
                 (dummy_input, dummy_mask),

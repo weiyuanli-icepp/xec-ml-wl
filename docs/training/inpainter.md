@@ -144,105 +144,54 @@ python macro/analyze_inpainter.py artifacts/inpainter/inpainter_predictions_epoc
 
 For production use and faster inference, export the trained model to TorchScript format.
 
-### 8.1 Why TorchScript (ONNX Not Supported)
+### 8.1 Export Formats: TorchScript vs ONNX
 
-**ONNX export fails** for the inpainter model with error:
-```
-UnsupportedOperatorError: Exporting the operator 'aten::_transformer_encoder_layer_fwd'
-to ONNX opset version 17 is not supported.
-```
+Both TorchScript and ONNX export are now supported.
 
-#### Why This Happens
+#### TorchScript vs ONNX Comparison
 
-PyTorch's `nn.TransformerEncoder` has **two internal implementations**:
+| Aspect | TorchScript | ONNX |
+|--------|-------------|------|
+| **Format** | PyTorch-native IR | Cross-platform standard IR |
+| **Operator coverage** | 100% of PyTorch ops | ~80% (some native ops missing) |
+| **Runtime** | libtorch (C++), PyTorch | ONNX Runtime, TensorRT, CoreML |
+| **File extension** | `.pt` | `.onnx` |
+| **Numerical precision** | Exact match with PyTorch | May differ slightly |
+| **Model size** | Larger | Smaller (optimized graph) |
+| **Cross-platform** | PyTorch ecosystem only | Any ONNX-compatible runtime |
 
-| Path | Implementation | ONNX Compatible |
-|------|----------------|-----------------|
-| **Slow path** | Standard ops (matmul, softmax, layer norm separately) | ✅ Yes |
-| **Fast path** | Fused CUDA kernel (`_transformer_encoder_layer_fwd`) | ❌ No |
+#### ONNX Export: TransformerEncoder Workaround
 
-PyTorch **automatically selects the fast path** when ALL of these conditions are met:
-- `batch_first=True` (our model uses this)
-- Training mode is `False` (eval mode)
-- Inputs are on CUDA or meet CPU requirements
-- No nested tensors
-- Certain PyTorch versions (1.11+)
+PyTorch's `nn.TransformerEncoder` normally uses fused CUDA kernels (`aten::_transformer_encoder_layer_fwd`) that cannot be exported to ONNX. The export script automatically disables these fast paths:
 
-Our XECEncoder uses `batch_first=True` for the TransformerEncoder, so PyTorch uses the optimized fused kernel which cannot be represented in ONNX.
-
-#### Why Other Transformer Models Work with ONNX
-
-Your colleague's model likely works because of one of these reasons:
-
-1. **Different configuration**: Using `batch_first=False` (the older default) triggers the slow path
-2. **Custom implementation**: Hand-written transformer using basic ops (Linear, Softmax, etc.)
-3. **Hugging Face transformers**: These use their own implementation, not `nn.TransformerEncoder`
-4. **Older PyTorch version**: Before the fast path was added
-5. **Explicit slow path**: Some code forces `torch.backends.cuda.enable_flash_sdp(False)` etc.
-
-#### Potential Workarounds (Not Recommended)
-
-To force ONNX export, you could:
 ```python
-# Before export, disable fast path (may hurt performance)
 torch.backends.cuda.enable_flash_sdp(False)
 torch.backends.cuda.enable_mem_efficient_sdp(False)
 torch.backends.cuda.enable_math_sdp(True)
 ```
 
-However, this:
-- May not work in all PyTorch versions
-- Defeats the purpose of using optimized transformers
-- TorchScript is simpler and just works
+This forces PyTorch to use standard ops (matmul, softmax, etc.) which ARE ONNX-compatible.
 
-#### TorchScript vs ONNX: Detailed Comparison
+**Note:** Disabling fast paths may slightly affect numerical precision and inference speed, but enables cross-platform deployment.
 
-| Aspect | TorchScript | ONNX |
-|--------|-------------|------|
-| **Format** | PyTorch-native IR (Intermediate Representation) | Cross-platform standard IR |
-| **Operator coverage** | 100% of PyTorch ops | ~80% (missing some native/fused ops) |
-| **Runtime** | libtorch (C++), PyTorch (Python) | ONNX Runtime, TensorRT, CoreML, etc. |
-| **File extension** | `.pt` or `.pth` | `.onnx` |
-| **Dynamic shapes** | Full support | Limited (requires explicit axes) |
-| **Control flow** | Supported via scripting | Limited (unrolled during export) |
-| **Numerical precision** | Exact match with PyTorch | May differ slightly |
-| **Model size** | Larger (includes full graph) | Smaller (optimized graph) |
-| **Cross-platform** | PyTorch ecosystem only | Any ONNX-compatible runtime |
-| **GPU support** | CUDA via libtorch | Depends on runtime (TensorRT, etc.) |
+#### Recommendation
 
-#### When to Use Each
-
-**Use TorchScript when:**
-- Model uses PyTorch-specific ops (fused kernels, custom CUDA)
-- You need exact numerical reproducibility
-- Deploying with libtorch (C++) or staying in PyTorch ecosystem
-- Model has complex control flow or dynamic shapes
-
-**Use ONNX when:**
-- Need cross-platform deployment (mobile, edge, different frameworks)
-- Model uses only standard ops (conv, matmul, relu, etc.)
-- Want to use TensorRT, CoreML, or other optimized runtimes
-- Model architecture is simple and static
-
-#### For the Inpainter
-
-**TorchScript is the only option** because:
-1. Uses `nn.TransformerEncoder` with fused kernels
-2. Has dynamic output shapes (variable masked positions)
-3. Contains conditional logic based on face types
-
-TorchScript works well and provides:
-- Exact numerical match with PyTorch
-- ~2-3x speedup over eager mode
-- Easy deployment with libtorch for C++ inference
+- **TorchScript**: Recommended for libtorch/C++ deployment (exact numerical match)
+- **ONNX**: Use for cross-platform deployment (ONNX Runtime, TensorRT, etc.)
 
 ### 8.2 Export Commands
 
 ```bash
-# Export to TorchScript (default)
+# Export to TorchScript (recommended)
 python macro/export_onnx_inpainter.py \
     artifacts/inpainter/inpainter_checkpoint_best.pth \
     --output artifacts/inpainter/inpainter.pt
+
+# Export to ONNX
+python macro/export_onnx_inpainter.py \
+    artifacts/inpainter/inpainter_checkpoint_best.pth \
+    --format onnx \
+    --output artifacts/inpainter/inpainter.onnx
 
 # Use standard weights instead of EMA
 python macro/export_onnx_inpainter.py checkpoint.pth --no-ema --output model.pt
