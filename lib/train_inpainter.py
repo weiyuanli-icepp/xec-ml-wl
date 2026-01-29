@@ -615,6 +615,14 @@ Examples:
                         'outer_fine_pool': outer_fine_pool,
                         'mask_ratio': mask_ratio,
                         'freeze_encoder': freeze_encoder,
+                        # Normalization parameters (critical for inference)
+                        'npho_scale': float(npho_scale),
+                        'npho_scale2': float(npho_scale2),
+                        'time_scale': float(time_scale),
+                        'time_shift': float(time_shift),
+                        'sentinel_value': float(sentinel_value),
+                        'npho_branch': npho_branch,
+                        'time_branch': time_branch,
                     }
                 }
                 if scheduler is not None:
