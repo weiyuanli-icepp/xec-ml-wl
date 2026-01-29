@@ -539,6 +539,7 @@ def plot_resolution_vs_signal(df: pd.DataFrame, save_dir: str, n_bins: int = 20,
         ax_twin = ax.twinx()
         ax_twin.bar(bin_centers, count_per_bin, width=np.diff(bins).mean() * 0.8, alpha=0.2, color='gray')
         ax_twin.set_ylabel("Count per bin (gray bars)", color='gray')
+        ax_twin.set_ylim(300, 350)
 
     plt.suptitle("Npho Resolution and Bias profiled by truth_npho", fontsize=12)
     plt.tight_layout()
@@ -600,6 +601,7 @@ def plot_resolution_vs_signal(df: pd.DataFrame, save_dir: str, n_bins: int = 20,
         ax_twin = ax.twinx()
         ax_twin.bar(bin_centers, count_per_bin, width=np.diff(bins).mean() * 0.8, alpha=0.2, color='gray')
         ax_twin.set_ylabel("Count per bin (gray bars)", color='gray')
+        ax_twin.set_ylim(300, 350)
 
     plt.suptitle("Time Resolution and Bias profiled by truth_npho", fontsize=12)
     plt.tight_layout()
