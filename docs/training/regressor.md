@@ -85,6 +85,9 @@ Training is now **config-based** using `config/train_config.yaml`. CLI arguments
 | `--outer_mode` | `model.outer_mode` | `finegrid` | Outer face mode (`finegrid` or `split`) |
 | `--tasks` | `tasks.*` | angle only | Enable specific tasks (angle, energy, timing, uvwFI) |
 | `--resume_from` | `checkpoint.resume_from` | `null` | Path to checkpoint to resume |
+| `--refresh_lr` | `checkpoint.refresh_lr` | `false` | Reset LR scheduler for remaining epochs |
+| `--reset_epoch` | `checkpoint.reset_epoch` | `false` | Start from epoch 1 (load weights only) |
+| `--new_mlflow_run` | `checkpoint.new_mlflow_run` | `false` | Force new MLflow run when resuming |
 
 ### Normalization Parameters
 

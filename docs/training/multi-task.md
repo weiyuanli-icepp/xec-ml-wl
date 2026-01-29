@@ -79,3 +79,45 @@ reweighting:
 ## Implementation
 
 The `SampleReweighter` class (`lib/reweighting.py`) fits histograms on training data and computes per-sample weights to balance underrepresented regions during training.
+
+---
+
+# Validation Metrics
+
+Task-specific metrics are logged to MLflow during validation.
+
+## Angle Task Metrics
+
+| Metric | MLflow Key | Description |
+|--------|------------|-------------|
+| Cosine Loss | `val_cos` | `1 - cos_sim` where cos_sim is dot product of predicted and true emission direction unit vectors. Range: 0 (perfect) to 2 (opposite). |
+| Opening Angle | `angle_resolution_68pct` | 68th percentile of opening angle between pred/true directions (degrees). |
+| Theta Bias | `theta_bias` | Mean of θ residuals. |
+| Theta RMS | `theta_rms` | Standard deviation of θ residuals. |
+
+## Position Task Metrics
+
+| Metric | MLflow Key | Description |
+|--------|------------|-------------|
+| Cosine Loss | `val_cos_pos` | `1 - cos_sim` for position vectors. Measures if pred/true positions point in same direction from origin. |
+| Distance 68% | `uvw_dist_68pct` | 68th percentile of Euclidean distance between pred/true positions. |
+| U/V/W Resolution | `uvw_{u,v,w}_res_68pct` | 68th percentile of absolute residual for each axis. |
+
+## Energy/Timing Task Metrics
+
+Energy and timing tasks use residual-based metrics tracked in resolution plots rather than dedicated MLflow metrics.
+
+## Regenerating Plots
+
+Regenerate resolution plots from saved predictions CSV files:
+
+```bash
+# Regenerate all available plots
+python macro/regenerate_resolution_plots.py artifacts/<RUN_NAME>/
+
+# Regenerate specific tasks
+python macro/regenerate_resolution_plots.py artifacts/<RUN_NAME>/ --tasks energy angle
+
+# Save to different directory
+python macro/regenerate_resolution_plots.py artifacts/<RUN_NAME>/ --output_dir plots/
+```

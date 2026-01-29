@@ -28,30 +28,27 @@ Generated at best epoch and final evaluation. Only created for enabled tasks.
 
 ### Task-Specific Plots (PDF)
 
-Only generated for enabled tasks:
+Only generated for enabled tasks. Scatter plots are included within resolution plots.
 
 **Angle Task:**
 | File | Description |
 |------|-------------|
-| `resolution_angle_{run_name}.pdf` | Theta/Phi resolution profiles (binned), 68% width vs angle |
-| `scatter_angle_{run_name}.pdf` | Predicted vs true scatter plot |
+| `resolution_angle_{run_name}.pdf` | Theta/Phi resolution profiles (binned), 68% width vs angle, opening angle vs angle |
 
 **Energy Task:**
 | File | Description |
 |------|-------------|
-| `resolution_energy_{run_name}.pdf` | Energy resolution profile, bias statistics |
-| `scatter_energy_{run_name}.pdf` | Predicted vs true energy scatter |
+| `resolution_energy_{run_name}.pdf` | Row 1: Residual histogram, resolution vs energy, relative resolution (σ/E) vs energy, pred vs true scatter. Row 2 (if uvwFI enabled): Resolution vs U/V/W first interaction point |
 
 **Timing Task:**
 | File | Description |
 |------|-------------|
-| `resolution_timing_{run_name}.pdf` | Timing resolution profile |
-| `scatter_timing_{run_name}.pdf` | Predicted vs true timing scatter |
+| `resolution_timing_{run_name}.pdf` | Timing resolution profile with residual histogram and pred vs true scatter |
 
 **Position Task:**
 | File | Description |
 |------|-------------|
-| `resolution_uvwFI_{run_name}.pdf` | U/V/W position resolution profiles |
+| `resolution_uvwFI_{run_name}.pdf` | U/V/W position resolution profiles with residual histograms |
 
 ### General Plots (All Tasks)
 
@@ -61,6 +58,11 @@ Only generated for enabled tasks:
 | `worst_events/worst_01_{run_name}.pdf` | Top-5 worst predictions with detector visualization |
 | `worst_events/worst_02_{run_name}.pdf` | (comprehensive 2-panel npho + timing display) |
 | ... up to `worst_05_{run_name}.pdf` | |
+
+**Worst Case Event Display Details:**
+- Title shows: Run/Event ID, loss (×1000 scale), truth energy (MeV), first interaction point (u,v,w in cm)
+- Energy predictions displayed in MeV units (internal GeV × 1000)
+- Two-panel layout: Photon counts (top) and timing (bottom) across all detector faces
 
 ### ONNX Export
 
@@ -168,17 +170,14 @@ artifacts/
     │   # Angle task (if enabled)
     ├── predictions_angle_{run_name}.csv
     ├── resolution_angle_{run_name}.pdf
-    ├── scatter_angle_{run_name}.pdf
     │
     │   # Energy task (if enabled)
     ├── predictions_energy_{run_name}.csv
-    ├── resolution_energy_{run_name}.pdf
-    ├── scatter_energy_{run_name}.pdf
+    ├── resolution_energy_{run_name}.pdf   # Includes position-profiled plots if uvwFI enabled
     │
     │   # Timing task (if enabled)
     ├── predictions_timing_{run_name}.csv
     ├── resolution_timing_{run_name}.pdf
-    ├── scatter_timing_{run_name}.pdf
     │
     │   # Position task (if enabled)
     ├── predictions_uvwFI_{run_name}.csv
@@ -278,7 +277,29 @@ or
 --resume_from "artifacts/<run_name>/checkpoint_best.pth"
 ```
 
-If the run was configured with a scheduler and stopped mid-training, it resumes from the learning rate where it stopped:
+### Resume Options
+
+| Option | Config Path | CLI | Description |
+|--------|-------------|-----|-------------|
+| Refresh LR | `checkpoint.refresh_lr` | `--refresh_lr` | Reset scheduler for remaining epochs. If resuming at epoch 15 with total 50, creates new scheduler with T_max=35. |
+| Reset Epoch | `checkpoint.reset_epoch` | `--reset_epoch` | Start from epoch 1 (only load model weights, fresh optimizer/scheduler). |
+| New MLflow Run | `checkpoint.new_mlflow_run` | `--new_mlflow_run` | Force new MLflow run instead of resuming previous run ID. |
+
+**Example: Resume with fresh learning rate**
+```bash
+python -m lib.train_regressor --config config.yaml \
+    --resume_from artifacts/my_run/checkpoint_best.pth \
+    --refresh_lr --lr 1e-5 --epochs 100
+```
+
+**Example: Fine-tune from checkpoint with fresh training state**
+```bash
+python -m lib.train_regressor --config config.yaml \
+    --resume_from artifacts/my_run/checkpoint_best.pth \
+    --reset_epoch --new_mlflow_run --epochs 50
+```
+
+If the run was configured with a scheduler and stopped mid-training (without `--refresh_lr`), it resumes from the learning rate where it stopped:
 
 $$\mathrm{LR} = \mathrm{LR}_\mathrm{min} + \frac{1}{2} \Big(\mathrm{LR}_{\mathrm{max}} - \mathrm{LR}_{\mathrm{min}}\Big) \Bigg(1 + \cos \Big(\frac{\mathrm{epoch} - \mathrm{warmup}}{\mathrm{total} - \mathrm{warmup}} \pi\Big)\Bigg)$$
 
