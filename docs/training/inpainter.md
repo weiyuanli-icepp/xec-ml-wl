@@ -146,12 +146,66 @@ For production use and faster inference, export the trained model to TorchScript
 
 ### 8.1 Export Format: TorchScript Only
 
-**ONNX export is NOT supported** for the inpainter model. PyTorch's `nn.TransformerEncoder` uses a fused CUDA kernel (`aten::_transformer_encoder_layer_fwd`) that cannot be exported to ONNX. This is a PyTorch limitation - the fused kernel is selected at the C++ level during JIT tracing, and cannot be disabled at the Python level.
+**ONNX export is NOT supported** for the inpainter model. PyTorch's `nn.TransformerEncoder` uses a fused CUDA kernel (`aten::_transformer_encoder_layer_fwd`) that cannot be exported to ONNX.
 
 TorchScript export works correctly and provides:
 - Exact numerical match with PyTorch
 - C++ inference via libtorch
 - ~3x speedup over eager mode (on GPU)
+
+#### Why ONNX Export Fails
+
+The error occurs during `torch.onnx.export()`:
+```
+UnsupportedOperatorError: Exporting the operator 'aten::_transformer_encoder_layer_fwd'
+to ONNX opset version 17 is not supported.
+```
+
+**Root cause:** PyTorch's `nn.TransformerEncoder` has two internal paths:
+- **Slow path**: Standard ops (matmul, softmax, layer norm) - ONNX compatible
+- **Fast path**: Fused CUDA kernel (`_transformer_encoder_layer_fwd`) - NOT ONNX compatible
+
+The fast path is automatically selected when `batch_first=True` (which our model uses).
+
+#### Workarounds Attempted (All Failed)
+
+1. **Disable SDP backends** - Did not affect TransformerEncoder's fused kernel
+   ```python
+   torch.backends.cuda.enable_flash_sdp(False)
+   torch.backends.cuda.enable_mem_efficient_sdp(False)
+   torch.backends.cuda.enable_math_sdp(True)
+   ```
+   **Result:** Still uses `_transformer_encoder_layer_fwd`
+
+2. **Disable nested tensor** - Set `enable_nested_tensor=False` on TransformerEncoder
+   ```python
+   for module in model.modules():
+       if isinstance(module, nn.TransformerEncoder):
+           module.enable_nested_tensor = False
+   ```
+   **Result:** Still uses fused kernel
+
+3. **Set TransformerEncoder to training mode** - Fast path only used in eval mode
+   ```python
+   for module in model.modules():
+       if isinstance(module, nn.TransformerEncoder):
+           module.train()
+   ```
+   **Result:** PyTorch's ONNX exporter uses JIT tracing internally, which still triggers the fused kernel at the C++ level regardless of Python-level training mode.
+
+#### Why Other Transformer Models Work with ONNX
+
+Some transformer models export to ONNX successfully because they:
+- Use `batch_first=False` (older default, triggers slow path)
+- Use custom transformer implementations with basic ops
+- Use Hugging Face transformers (different implementation, not `nn.TransformerEncoder`)
+- Were built with older PyTorch versions (before fast path was added)
+
+#### Possible Solutions (Not Implemented)
+
+1. **Replace `nn.TransformerEncoder`** with a custom implementation using basic ops
+2. **Use `torch.onnx.dynamo_export`** (newer PyTorch 2.0+ API, may have better support)
+3. **Rebuild with `batch_first=False`** and transpose inputs/outputs
 
 ### 8.2 Export Commands
 
