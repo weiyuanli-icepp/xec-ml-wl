@@ -24,6 +24,7 @@ import pandas as pd
 import uproot
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
+from matplotlib.patches import Patch
 from pathlib import Path
 
 # Face mapping
@@ -238,7 +239,14 @@ def compute_dead_channel_stats(df: pd.DataFrame) -> dict:
 def plot_residual_distributions(df: pd.DataFrame, save_dir: str, suffix: str = ""):
     """
     Plot residual (error) distributions for npho and time.
+
+    Creates 6 plots in a 3x2 grid:
+    - Row 1: All data (npho, time)
+    - Row 2: truth_npho > 100 filter (npho, time)
+    - Row 3: truth_npho > 100 with normalized error (pred-truth)/truth (npho, time)
     """
+    from scipy.stats import norm
+
     # Filter to valid predictions
     valid_df = filter_valid_predictions(df)
 
@@ -246,35 +254,115 @@ def plot_residual_distributions(df: pd.DataFrame, save_dir: str, suffix: str = "
         print("[WARNING] No valid predictions for residual plot")
         return
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    # Create 3x2 figure
+    fig, axes = plt.subplots(3, 2, figsize=(14, 15))
 
-    for ax, var in zip(axes, ["npho", "time"]):
+    # Fixed ranges
+    npho_range = (-1000, 2000)
+    time_range = (-3e-7, 0.5e-7)
+    nbins = 200
+
+    # Row 1: All data
+    for col, var in enumerate(["npho", "time"]):
+        ax = axes[0, col]
         error = valid_df[f"error_{var}"].values
 
-        # Compute statistics
         mean = np.mean(error)
         std = np.std(error)
 
-        # Plot histogram
-        bins = np.linspace(mean - 5*std, mean + 5*std, 100)
-        ax.hist(error, bins=bins, density=True, alpha=0.7, edgecolor='black', linewidth=0.5)
+        if var == "npho":
+            bins = np.linspace(npho_range[0], npho_range[1], nbins)
+        else:
+            bins = np.linspace(time_range[0], time_range[1], nbins)
 
-        # Add Gaussian fit overlay
-        from scipy.stats import norm
-        x = np.linspace(bins[0], bins[-1], 200)
-        ax.plot(x, norm.pdf(x, mean, std), 'r-', lw=2, label=f'Gaussian fit\nμ={mean:.4f}\nσ={std:.4f}')
+        ax.hist(error, bins=bins, density=True, alpha=0.7, edgecolor='black', linewidth=0.3)
+
+        x = np.linspace(bins[0], bins[-1], 500)
+        ax.plot(x, norm.pdf(x, mean, std), 'r-', lw=2, label=f'Gaussian fit\nμ={mean:.4g}\nσ={std:.4g}')
 
         ax.set_xlabel(f"error_{var} (pred - truth)")
         ax.set_ylabel("Density")
-        ax.set_title(f"Residual Distribution: {var}")
-        ax.legend()
+        ax.set_title(f"Residual: {var} (all data, n={len(error):,})")
+        ax.legend(fontsize=8)
+        ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
+        ax.set_xlim(bins[0], bins[-1])
+
+    # Row 2: truth_npho > 100
+    high_npho_df = valid_df[valid_df["truth_npho"] > 100]
+    for col, var in enumerate(["npho", "time"]):
+        ax = axes[1, col]
+        error = high_npho_df[f"error_{var}"].values
+
+        if len(error) == 0:
+            ax.text(0.5, 0.5, "No data with truth_npho > 100", ha='center', va='center', transform=ax.transAxes)
+            continue
+
+        mean = np.mean(error)
+        std = np.std(error)
+
+        if var == "npho":
+            bins = np.linspace(npho_range[0], npho_range[1], nbins)
+        else:
+            bins = np.linspace(time_range[0], time_range[1], nbins)
+
+        ax.hist(error, bins=bins, density=True, alpha=0.7, edgecolor='black', linewidth=0.3)
+
+        x = np.linspace(bins[0], bins[-1], 500)
+        ax.plot(x, norm.pdf(x, mean, std), 'r-', lw=2, label=f'Gaussian fit\nμ={mean:.4g}\nσ={std:.4g}')
+
+        ax.set_xlabel(f"error_{var} (pred - truth)")
+        ax.set_ylabel("Density")
+        ax.set_title(f"Residual: {var} (truth_npho>100, n={len(error):,})")
+        ax.legend(fontsize=8)
+        ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
+        ax.set_xlim(bins[0], bins[-1])
+
+    # Row 3: truth_npho > 100 with normalized error (pred-truth)/truth
+    for col, var in enumerate(["npho", "time"]):
+        ax = axes[2, col]
+
+        if var == "npho":
+            # Normalized npho error
+            mask = high_npho_df["truth_npho"] > 100
+            truth = high_npho_df.loc[mask, "truth_npho"].values
+            pred = high_npho_df.loc[mask, "pred_npho"].values
+        else:
+            # For time, also filter by truth_npho > 100 but normalize by truth_time
+            mask = (high_npho_df["truth_npho"] > 100) & (np.abs(high_npho_df["truth_time"]) > 1e-10)
+            truth = high_npho_df.loc[mask, "truth_time"].values
+            pred = high_npho_df.loc[mask, "pred_time"].values
+
+        if len(truth) == 0:
+            ax.text(0.5, 0.5, "No valid data", ha='center', va='center', transform=ax.transAxes)
+            continue
+
+        norm_error = (pred - truth) / truth
+
+        # Remove extreme outliers for plotting
+        pct_low, pct_high = np.percentile(norm_error, [1, 99])
+        plot_mask = (norm_error >= pct_low) & (norm_error <= pct_high)
+        norm_error_plot = norm_error[plot_mask]
+
+        mean = np.mean(norm_error_plot)
+        std = np.std(norm_error_plot)
+
+        bins = np.linspace(pct_low, pct_high, nbins)
+        ax.hist(norm_error_plot, bins=bins, density=True, alpha=0.7, edgecolor='black', linewidth=0.3)
+
+        x = np.linspace(bins[0], bins[-1], 500)
+        ax.plot(x, norm.pdf(x, mean, std), 'r-', lw=2, label=f'Gaussian fit\nμ={mean:.4g}\nσ={std:.4g}')
+
+        ax.set_xlabel(f"(pred - truth) / truth [{var}]")
+        ax.set_ylabel("Density")
+        ax.set_title(f"Normalized Residual: {var} (truth_npho>100, n={len(norm_error_plot):,})")
+        ax.legend(fontsize=8)
         ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
 
     # Add count info
     n_total = len(df)
     n_valid = len(valid_df)
     if "mask_type" in df.columns:
-        fig.suptitle(f"Artificial Masks Only (n={n_valid:,} / {n_total:,} total)", fontsize=11)
+        fig.suptitle(f"Residual Distributions - Artificial Masks Only (n={n_valid:,} / {n_total:,} total)", fontsize=12)
 
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, f"residual_distributions{suffix}.pdf"), dpi=150)
@@ -346,9 +434,19 @@ def plot_scatter_truth_vs_pred(df: pd.DataFrame, save_dir: str, max_points: int 
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
+    # Fixed ranges
+    npho_range = (-500, 4000)
+    time_range = (-0.2e-7, 1e-7)
+
     for ax, var in zip(axes, ["npho", "time"]):
         truth = valid_df[f"truth_{var}"].values
         pred = valid_df[f"pred_{var}"].values
+
+        # Set range based on variable
+        if var == "npho":
+            plot_range = npho_range
+        else:
+            plot_range = time_range
 
         # Subsample if too many points
         if len(truth) > max_points:
@@ -359,18 +457,20 @@ def plot_scatter_truth_vs_pred(df: pd.DataFrame, save_dir: str, max_points: int 
             truth_plot = truth
             pred_plot = pred
 
-        # Hexbin plot for density
-        hb = ax.hexbin(truth_plot, pred_plot, gridsize=50, cmap='viridis', mincnt=1, norm=LogNorm())
+        # Hexbin plot for density with fixed extent
+        hb = ax.hexbin(truth_plot, pred_plot, gridsize=50, cmap='viridis', mincnt=1, norm=LogNorm(),
+                       extent=[plot_range[0], plot_range[1], plot_range[0], plot_range[1]])
         plt.colorbar(hb, ax=ax, label='Count')
 
         # Add diagonal line
-        lims = [min(truth_plot.min(), pred_plot.min()), max(truth_plot.max(), pred_plot.max())]
-        ax.plot(lims, lims, 'r--', lw=2, alpha=0.7, label='y=x')
+        ax.plot(plot_range, plot_range, 'r--', lw=2, alpha=0.7, label='y=x')
 
         ax.set_xlabel(f"truth_{var}")
         ax.set_ylabel(f"pred_{var}")
         ax.set_title(f"Prediction vs Truth: {var}")
         ax.legend()
+        ax.set_xlim(plot_range)
+        ax.set_ylim(plot_range)
         ax.set_aspect('equal', adjustable='box')
 
     plt.tight_layout()
@@ -381,7 +481,11 @@ def plot_scatter_truth_vs_pred(df: pd.DataFrame, save_dir: str, max_points: int 
 
 def plot_resolution_vs_signal(df: pd.DataFrame, save_dir: str, n_bins: int = 20, suffix: str = ""):
     """
-    Plot resolution (|error|) as function of truth signal magnitude.
+    Plot resolution and bias as function of truth_npho.
+
+    Creates two files:
+    1. resolution_npho_vs_truthnpho.pdf: npho resolution/bias vs log(truth_npho) and sqrt(truth_npho)
+    2. resolution_time_vs_truthnpho.pdf: time resolution/bias vs truth_npho, log(truth_npho), sqrt(truth_npho)
     """
     # Filter to valid predictions
     valid_df = filter_valid_predictions(df)
@@ -390,32 +494,147 @@ def plot_resolution_vs_signal(df: pd.DataFrame, save_dir: str, n_bins: int = 20,
         print("[WARNING] No valid predictions for resolution plot")
         return
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    # Filter to positive npho for log scale
+    valid_df = valid_df[valid_df["truth_npho"] > 0].copy()
 
-    for row, var in enumerate(["npho", "time"]):
-        truth = valid_df[f"truth_{var}"].values
-        error = valid_df[f"error_{var}"].values
-        abs_error = np.abs(error)
+    if len(valid_df) == 0:
+        print("[WARNING] No valid predictions with truth_npho > 0")
+        return
 
-        # Bin by truth value
-        bins = np.percentile(truth, np.linspace(0, 100, n_bins + 1))
-        bins = np.unique(bins)  # Remove duplicates
+    truth_npho = valid_df["truth_npho"].values
+    log_truth_npho = np.log10(truth_npho)
+    sqrt_truth_npho = np.sqrt(truth_npho)
+
+    # ============================================================
+    # File 1: Npho resolution/bias profiled by truth_npho transforms
+    # ============================================================
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    error_npho = valid_df["error_npho"].values
+    abs_error_npho = np.abs(error_npho)
+
+    # Column 0: Profiled by log10(truth_npho)
+    x_vals = log_truth_npho
+    x_label = "log10(truth_npho)"
+
+    bins = np.percentile(x_vals, np.linspace(0, 100, n_bins + 1))
+    bins = np.unique(bins)
+    bin_centers = 0.5 * (bins[:-1] + bins[1:])
+    bin_indices = np.digitize(x_vals, bins) - 1
+    bin_indices = np.clip(bin_indices, 0, len(bins) - 2)
+
+    mae_per_bin, bias_per_bin, res68_per_bin, count_per_bin = [], [], [], []
+    for i in range(len(bins) - 1):
+        mask = bin_indices == i
+        if mask.sum() > 0:
+            mae_per_bin.append(np.mean(abs_error_npho[mask]))
+            bias_per_bin.append(np.mean(error_npho[mask]))
+            res68_per_bin.append(np.percentile(abs_error_npho[mask], 68))
+            count_per_bin.append(mask.sum())
+        else:
+            mae_per_bin.append(np.nan)
+            bias_per_bin.append(np.nan)
+            res68_per_bin.append(np.nan)
+            count_per_bin.append(0)
+
+    ax = axes[0, 0]
+    ax.plot(bin_centers, mae_per_bin, 'o-', color='blue', label='MAE')
+    ax.plot(bin_centers, res68_per_bin, 's-', color='green', label='68th pct')
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Resolution (|error_npho|)")
+    ax.set_title(f"Npho Resolution vs {x_label}")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1, 0]
+    ax.plot(bin_centers, bias_per_bin, 'o-', color='red')
+    ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Bias (mean error_npho)")
+    ax.set_title(f"Npho Bias vs {x_label}")
+    ax.grid(True, alpha=0.3)
+    ax_twin = ax.twinx()
+    ax_twin.bar(bin_centers, count_per_bin, width=np.diff(bins).mean() * 0.8, alpha=0.2, color='gray')
+    ax_twin.set_ylabel("Count", color='gray')
+
+    # Column 1: Profiled by sqrt(truth_npho)
+    x_vals = sqrt_truth_npho
+    x_label = "sqrt(truth_npho)"
+
+    bins = np.percentile(x_vals, np.linspace(0, 100, n_bins + 1))
+    bins = np.unique(bins)
+    bin_centers = 0.5 * (bins[:-1] + bins[1:])
+    bin_indices = np.digitize(x_vals, bins) - 1
+    bin_indices = np.clip(bin_indices, 0, len(bins) - 2)
+
+    mae_per_bin, bias_per_bin, res68_per_bin, count_per_bin = [], [], [], []
+    for i in range(len(bins) - 1):
+        mask = bin_indices == i
+        if mask.sum() > 0:
+            mae_per_bin.append(np.mean(abs_error_npho[mask]))
+            bias_per_bin.append(np.mean(error_npho[mask]))
+            res68_per_bin.append(np.percentile(abs_error_npho[mask], 68))
+            count_per_bin.append(mask.sum())
+        else:
+            mae_per_bin.append(np.nan)
+            bias_per_bin.append(np.nan)
+            res68_per_bin.append(np.nan)
+            count_per_bin.append(0)
+
+    ax = axes[0, 1]
+    ax.plot(bin_centers, mae_per_bin, 'o-', color='blue', label='MAE')
+    ax.plot(bin_centers, res68_per_bin, 's-', color='green', label='68th pct')
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Resolution (|error_npho|)")
+    ax.set_title(f"Npho Resolution vs {x_label}")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1, 1]
+    ax.plot(bin_centers, bias_per_bin, 'o-', color='red')
+    ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Bias (mean error_npho)")
+    ax.set_title(f"Npho Bias vs {x_label}")
+    ax.grid(True, alpha=0.3)
+    ax_twin = ax.twinx()
+    ax_twin.bar(bin_centers, count_per_bin, width=np.diff(bins).mean() * 0.8, alpha=0.2, color='gray')
+    ax_twin.set_ylabel("Count", color='gray')
+
+    plt.suptitle("Npho Resolution and Bias profiled by truth_npho", fontsize=12)
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"resolution_npho_vs_truthnpho{suffix}.pdf"), dpi=150)
+    plt.close()
+    print(f"[INFO] Saved resolution_npho_vs_truthnpho{suffix}.pdf")
+
+    # ============================================================
+    # File 2: Time resolution/bias profiled by truth_npho transforms
+    # ============================================================
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+
+    error_time = valid_df["error_time"].values
+    abs_error_time = np.abs(error_time)
+
+    x_transforms = [
+        (truth_npho, "truth_npho"),
+        (log_truth_npho, "log10(truth_npho)"),
+        (sqrt_truth_npho, "sqrt(truth_npho)"),
+    ]
+
+    for col, (x_vals, x_label) in enumerate(x_transforms):
+        bins = np.percentile(x_vals, np.linspace(0, 100, n_bins + 1))
+        bins = np.unique(bins)
         bin_centers = 0.5 * (bins[:-1] + bins[1:])
-        bin_indices = np.digitize(truth, bins) - 1
+        bin_indices = np.digitize(x_vals, bins) - 1
         bin_indices = np.clip(bin_indices, 0, len(bins) - 2)
 
-        # Compute metrics per bin
-        mae_per_bin = []
-        bias_per_bin = []
-        res68_per_bin = []
-        count_per_bin = []
-
+        mae_per_bin, bias_per_bin, res68_per_bin, count_per_bin = [], [], [], []
         for i in range(len(bins) - 1):
             mask = bin_indices == i
             if mask.sum() > 0:
-                mae_per_bin.append(np.mean(abs_error[mask]))
-                bias_per_bin.append(np.mean(error[mask]))
-                res68_per_bin.append(np.percentile(abs_error[mask], 68))
+                mae_per_bin.append(np.mean(abs_error_time[mask]))
+                bias_per_bin.append(np.mean(error_time[mask]))
+                res68_per_bin.append(np.percentile(abs_error_time[mask], 68))
                 count_per_bin.append(mask.sum())
             else:
                 mae_per_bin.append(np.nan)
@@ -423,35 +642,31 @@ def plot_resolution_vs_signal(df: pd.DataFrame, save_dir: str, n_bins: int = 20,
                 res68_per_bin.append(np.nan)
                 count_per_bin.append(0)
 
-        # Plot MAE vs truth
-        ax1 = axes[row, 0]
-        ax1.plot(bin_centers, mae_per_bin, 'o-', color='blue', label='MAE')
-        ax1.plot(bin_centers, res68_per_bin, 's-', color='green', label='68th pct')
-        ax1.set_xlabel(f"truth_{var}")
-        ax1.set_ylabel(f"Resolution (|error_{var}|)")
-        ax1.set_title(f"Resolution vs Signal: {var}")
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
+        ax = axes[0, col]
+        ax.plot(bin_centers, mae_per_bin, 'o-', color='blue', label='MAE')
+        ax.plot(bin_centers, res68_per_bin, 's-', color='green', label='68th pct')
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("Resolution (|error_time|)")
+        ax.set_title(f"Time Resolution vs {x_label}")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
 
-        # Plot bias vs truth
-        ax2 = axes[row, 1]
-        ax2.plot(bin_centers, bias_per_bin, 'o-', color='red')
-        ax2.axhline(0, color='gray', linestyle='--', alpha=0.5)
-        ax2.set_xlabel(f"truth_{var}")
-        ax2.set_ylabel(f"Bias (mean error_{var})")
-        ax2.set_title(f"Bias vs Signal: {var}")
-        ax2.grid(True, alpha=0.3)
+        ax = axes[1, col]
+        ax.plot(bin_centers, bias_per_bin, 'o-', color='red')
+        ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("Bias (mean error_time)")
+        ax.set_title(f"Time Bias vs {x_label}")
+        ax.grid(True, alpha=0.3)
+        ax_twin = ax.twinx()
+        ax_twin.bar(bin_centers, count_per_bin, width=np.diff(bins).mean() * 0.8, alpha=0.2, color='gray')
+        ax_twin.set_ylabel("Count", color='gray')
 
-        # Add count as secondary axis
-        ax2_twin = ax2.twinx()
-        ax2_twin.bar(bin_centers, count_per_bin, width=np.diff(bins).mean() * 0.8,
-                     alpha=0.2, color='gray', label='Count')
-        ax2_twin.set_ylabel("Count", color='gray')
-
+    plt.suptitle("Time Resolution and Bias profiled by truth_npho", fontsize=12)
     plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, f"resolution_vs_signal{suffix}.pdf"), dpi=150)
+    plt.savefig(os.path.join(save_dir, f"resolution_time_vs_truthnpho{suffix}.pdf"), dpi=150)
     plt.close()
-    print(f"[INFO] Saved resolution_vs_signal{suffix}.pdf")
+    print(f"[INFO] Saved resolution_time_vs_truthnpho{suffix}.pdf")
 
 
 def plot_dead_channel_distributions(df: pd.DataFrame, save_dir: str):
@@ -467,20 +682,22 @@ def plot_dead_channel_distributions(df: pd.DataFrame, save_dir: str):
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
-    # Npho distribution
+    # Npho distribution - fixed range [-500, 3000]
     ax = axes[0, 0]
     pred_npho = dead_df["pred_npho"].values
-    ax.hist(pred_npho, bins=50, density=True, alpha=0.7, edgecolor='black', linewidth=0.5)
+    npho_bins = np.linspace(-500, 3000, 100)
+    ax.hist(pred_npho, bins=npho_bins, density=True, alpha=0.7, edgecolor='black', linewidth=0.5)
     ax.axvline(0, color='red', linestyle='--', alpha=0.7, label='Zero')
     ax.set_xlabel("pred_npho")
     ax.set_ylabel("Density")
     ax.set_title(f"Dead Channel Npho Predictions (n={len(dead_df):,})")
+    ax.set_xlim(-500, 3000)
     ax.legend()
 
-    # Time distribution
+    # Time distribution - auto range
     ax = axes[0, 1]
     pred_time = dead_df["pred_time"].values
-    ax.hist(pred_time, bins=50, density=True, alpha=0.7, edgecolor='black', linewidth=0.5)
+    ax.hist(pred_time, bins=100, density=True, alpha=0.7, edgecolor='black', linewidth=0.5)
     ax.set_xlabel("pred_time")
     ax.set_ylabel("Density")
     ax.set_title("Dead Channel Time Predictions")
@@ -527,6 +744,9 @@ def plot_metrics_summary(global_metrics: dict, face_metrics: pd.DataFrame, save_
                          dead_stats: dict = None, suffix: str = ""):
     """
     Create a summary bar chart of metrics per face.
+
+    Uses separate y-axes for npho (left) and time (right) since they have
+    very different scales (10 orders of magnitude difference).
     """
     if len(face_metrics) == 0:
         print("[WARNING] No face metrics to plot")
@@ -538,39 +758,60 @@ def plot_metrics_summary(global_metrics: dict, face_metrics: pd.DataFrame, save_
     x = np.arange(len(faces))
     width = 0.35
 
-    # MAE comparison
+    # MAE comparison - dual y-axis
     ax = axes[0, 0]
     ax.bar(x - width/2, face_metrics["mae_npho"], width, label='npho', color='steelblue')
-    ax.bar(x + width/2, face_metrics["mae_time"], width, label='time', color='coral')
     ax.set_xticks(x)
     ax.set_xticklabels(faces)
-    ax.set_ylabel("MAE")
+    ax.set_ylabel("MAE (npho)", color='steelblue')
+    ax.tick_params(axis='y', labelcolor='steelblue')
     ax.set_title("Mean Absolute Error by Face")
-    ax.legend()
     ax.grid(True, alpha=0.3, axis='y')
 
-    # RMSE comparison
+    ax2 = ax.twinx()
+    ax2.bar(x + width/2, face_metrics["mae_time"], width, label='time', color='coral')
+    ax2.set_ylabel("MAE (time)", color='coral')
+    ax2.tick_params(axis='y', labelcolor='coral')
+
+    # Combined legend
+    from matplotlib.patches import Patch
+    legend_elements = [Patch(facecolor='steelblue', label='npho'),
+                       Patch(facecolor='coral', label='time')]
+    ax.legend(handles=legend_elements, loc='upper right')
+
+    # RMSE comparison - dual y-axis
     ax = axes[0, 1]
     ax.bar(x - width/2, face_metrics["rmse_npho"], width, label='npho', color='steelblue')
-    ax.bar(x + width/2, face_metrics["rmse_time"], width, label='time', color='coral')
     ax.set_xticks(x)
     ax.set_xticklabels(faces)
-    ax.set_ylabel("RMSE")
+    ax.set_ylabel("RMSE (npho)", color='steelblue')
+    ax.tick_params(axis='y', labelcolor='steelblue')
     ax.set_title("Root Mean Square Error by Face")
-    ax.legend()
     ax.grid(True, alpha=0.3, axis='y')
 
-    # Bias comparison
+    ax2 = ax.twinx()
+    ax2.bar(x + width/2, face_metrics["rmse_time"], width, label='time', color='coral')
+    ax2.set_ylabel("RMSE (time)", color='coral')
+    ax2.tick_params(axis='y', labelcolor='coral')
+    ax.legend(handles=legend_elements, loc='upper right')
+
+    # Bias comparison - dual y-axis
     ax = axes[1, 0]
     ax.bar(x - width/2, face_metrics["bias_npho"], width, label='npho', color='steelblue')
-    ax.bar(x + width/2, face_metrics["bias_time"], width, label='time', color='coral')
-    ax.axhline(0, color='black', linestyle='-', linewidth=0.5)
+    ax.axhline(0, color='steelblue', linestyle='--', linewidth=0.5, alpha=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels(faces)
-    ax.set_ylabel("Bias (mean error)")
+    ax.set_ylabel("Bias (npho)", color='steelblue')
+    ax.tick_params(axis='y', labelcolor='steelblue')
     ax.set_title("Bias by Face")
-    ax.legend()
     ax.grid(True, alpha=0.3, axis='y')
+
+    ax2 = ax.twinx()
+    ax2.bar(x + width/2, face_metrics["bias_time"], width, label='time', color='coral')
+    ax2.axhline(0, color='coral', linestyle='--', linewidth=0.5, alpha=0.5)
+    ax2.set_ylabel("Bias (time)", color='coral')
+    ax2.tick_params(axis='y', labelcolor='coral')
+    ax.legend(handles=legend_elements, loc='upper right')
 
     # Count per face
     ax = axes[1, 1]
@@ -583,8 +824,8 @@ def plot_metrics_summary(global_metrics: dict, face_metrics: pd.DataFrame, save_
 
     # Add global metrics as text
     text = f"Global Metrics (Artificial Masks Only):\n"
-    text += f"  npho: MAE={global_metrics['mae_npho']:.4f}, RMSE={global_metrics['rmse_npho']:.4f}, bias={global_metrics['bias_npho']:.4f}\n"
-    text += f"  time: MAE={global_metrics['mae_time']:.4f}, RMSE={global_metrics['rmse_time']:.4f}, bias={global_metrics['bias_time']:.4f}"
+    text += f"  npho: MAE={global_metrics['mae_npho']:.4g}, RMSE={global_metrics['rmse_npho']:.4g}, bias={global_metrics['bias_npho']:.4g}\n"
+    text += f"  time: MAE={global_metrics['mae_time']:.4g}, RMSE={global_metrics['rmse_time']:.4g}, bias={global_metrics['bias_time']:.4g}"
 
     if dead_stats and dead_stats.get("n_dead", 0) > 0:
         text += f"\n\nDead Channels: {dead_stats['n_dead']:,} predictions"
