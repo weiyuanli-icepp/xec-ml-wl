@@ -13,9 +13,10 @@ from typing import Dict, List, Optional, Any
 class TaskConfig:
     """Configuration for a single task."""
     enabled: bool = False
-    loss_fn: str = "smooth_l1"  # "smooth_l1", "l1", "mse", "huber"
+    loss_fn: str = "smooth_l1"  # smooth_l1, l1, mse, relative_l1, relative_smooth_l1, relative_mse
     loss_beta: float = 1.0      # For smooth_l1/huber
     weight: float = 1.0         # Manual loss weight
+    log_transform: bool = False  # Train on log(value) for energy/timing tasks
 
 
 @dataclass
@@ -239,7 +240,7 @@ def get_task_weights(config: XECConfig) -> Dict[str, Dict[str, Any]]:
     Convert task configs to task_weights dict for engine_regressor.py.
 
     Returns:
-        Dict like: {"angle": {"loss_fn": "smooth_l1", "weight": 1.0}, ...}
+        Dict like: {"angle": {"loss_fn": "smooth_l1", "weight": 1.0, "log_transform": False}, ...}
     """
     weights = {}
     for name, tc in config.tasks.items():
@@ -247,7 +248,8 @@ def get_task_weights(config: XECConfig) -> Dict[str, Dict[str, Any]]:
             weights[name] = {
                 "loss_fn": tc.loss_fn,
                 "loss_beta": tc.loss_beta,
-                "weight": tc.weight
+                "weight": tc.weight,
+                "log_transform": tc.log_transform,
             }
     return weights
 

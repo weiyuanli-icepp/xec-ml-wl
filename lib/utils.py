@@ -192,18 +192,54 @@ def iterate_chunks(files, tree, branches, step_size=4000):
 # ------------------------------------------------------------
 # Loss function helper
 # ------------------------------------------------------------
-def get_pointwise_loss_fn(loss_name: str):
+def get_pointwise_loss_fn(loss_name: str, epsilon: float = 1e-3):
     """
     Returns a point-wise loss function with reduction='none'.
-    Supported: smooth_l1/huber, mse, l1. Defaults to smooth_l1.
+
+    Supported loss functions:
+    - smooth_l1, huber: Smooth L1 loss
+    - l1: L1 loss (mean absolute error)
+    - mse, l2: MSE loss (mean squared error)
+    - relative_l1: L1 divided by |target| (scale-invariant)
+    - relative_smooth_l1: Smooth L1 divided by |target|
+    - relative_mse, relative_l2: MSE divided by target^2
+
+    For relative losses, epsilon prevents division by zero for small targets.
+    Defaults to smooth_l1.
     """
     name = (loss_name or "").lower()
+
+    # Standard losses
     if name in ("smooth_l1", "huber"):
         return lambda pred, target: torch.nn.functional.smooth_l1_loss(pred, target, reduction="none")
     if name == "l1":
         return lambda pred, target: torch.nn.functional.l1_loss(pred, target, reduction="none")
-    if name == "mse":
+    if name in ("mse", "l2"):
         return lambda pred, target: torch.nn.functional.mse_loss(pred, target, reduction="none")
+
+    # Relative losses (scale-invariant)
+    if name == "relative_l1":
+        def relative_l1_loss(pred, target):
+            abs_error = torch.abs(pred - target)
+            scale = torch.abs(target).clamp(min=epsilon)
+            return abs_error / scale
+        return relative_l1_loss
+
+    if name == "relative_smooth_l1":
+        def relative_smooth_l1_loss(pred, target):
+            sl1 = torch.nn.functional.smooth_l1_loss(pred, target, reduction="none")
+            scale = torch.abs(target).clamp(min=epsilon)
+            return sl1 / scale
+        return relative_smooth_l1_loss
+
+    if name in ("relative_mse", "relative_l2"):
+        def relative_mse_loss(pred, target):
+            sq_error = (pred - target) ** 2
+            scale = (target ** 2).clamp(min=epsilon ** 2)
+            return sq_error / scale
+        return relative_mse_loss
+
+    # Default to smooth_l1
     return lambda pred, target: torch.nn.functional.smooth_l1_loss(pred, target, reduction="none")
 
 # ------------------------------------------------------------

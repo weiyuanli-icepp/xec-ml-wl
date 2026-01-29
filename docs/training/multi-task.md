@@ -10,13 +10,14 @@ Configure tasks in `config/train_config.yaml`:
 tasks:
   angle:
     enabled: true
-    loss_fn: "smooth_l1"    # smooth_l1, l1, mse, huber
+    loss_fn: "smooth_l1"    # See loss functions below
     loss_beta: 1.0
     weight: 1.0
   energy:
     enabled: false
-    loss_fn: "l1"
+    loss_fn: "relative_l1"  # Scale-invariant for energy
     weight: 1.0
+    log_transform: false    # Train on log(energy) if true
   timing:
     enabled: false
     loss_fn: "l1"
@@ -26,6 +27,25 @@ tasks:
     loss_fn: "mse"
     weight: 1.0
 ```
+
+## Loss Functions
+
+| Loss Function | Formula | Use Case |
+|---------------|---------|----------|
+| `smooth_l1` (default) | Huber loss | General purpose, robust to outliers |
+| `l1` | \|pred - target\| | Median regression |
+| `mse` / `l2` | (pred - target)² | Mean regression |
+| `relative_l1` | \|pred - target\| / \|target\| | Scale-invariant, good for energy |
+| `relative_smooth_l1` | smooth_l1 / \|target\| | Robust scale-invariant loss |
+| `relative_mse` | (pred - target)² / target² | Relative MSE |
+
+### Relative Loss Functions
+
+For energy regression where σ ∝ √E (stochastic term), standard L1/MSE losses penalize high-energy errors more heavily. Relative losses normalize by the target value, providing scale-invariant training.
+
+### Log Transform
+
+When `log_transform: true` is set, the model learns to predict log(value) instead of value directly. This can improve training stability for quantities spanning multiple orders of magnitude. Predictions are automatically converted back to linear space for validation and artifact generation.
 
 ## Models
 
@@ -79,6 +99,14 @@ reweighting:
 ## Implementation
 
 The `SampleReweighter` class (`lib/reweighting.py`) fits histograms on training data and computes per-sample weights to balance underrepresented regions during training.
+
+### How It Works
+
+1. **Range Detection**: First pass through training data to find min/max values for each enabled task
+2. **Histogram Building**: Build histogram with specified `nbins` within the auto-detected range
+3. **Weight Computation**: Weights = 1 / (bin_count + ε), normalized to mean = 1
+
+The histogram range is automatically determined from your training data - you only specify the number of bins.
 
 ---
 

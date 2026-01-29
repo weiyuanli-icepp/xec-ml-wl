@@ -163,24 +163,32 @@ def run_epoch_stream(
                         truth = truth.unsqueeze(-1)
 
                     # Get loss function from task_weights config
-                    # task_weights can be: {task: {"loss_fn": str, "weight": float}} or {task: float}
+                    # task_weights can be: {task: {"loss_fn": str, "weight": float, "log_transform": bool}} or {task: float}
                     loss_fn_name = loss_type  # default
                     task_weight = 1.0
+                    use_log_transform = False
                     if task_weights and task in task_weights:
                         cfg = task_weights[task]
                         if isinstance(cfg, dict):
                             loss_fn_name = cfg.get("loss_fn", loss_type)
                             task_weight = cfg.get("weight", 1.0)
+                            use_log_transform = cfg.get("log_transform", False)
                         else:
                             task_weight = cfg
-                    valid_names = {"smooth_l1", "huber", "l1", "mse"}
+                    valid_names = {"smooth_l1", "huber", "l1", "mse", "l2",
+                                   "relative_l1", "relative_smooth_l1", "relative_mse", "relative_l2"}
                     if loss_fn_name not in valid_names:
                         warnings.warn(
                             f"Unknown loss function '{loss_fn_name}' for task '{task}'. "
-                            f"Falling back to smooth_l1. Supported: smooth_l1, huber, l1, mse.",
+                            f"Falling back to smooth_l1. Supported: {valid_names}.",
                             UserWarning
                         )
                         loss_fn_name = "smooth_l1"
+
+                    # Apply log transform if configured (for energy/timing)
+                    if use_log_transform:
+                        # Clamp to avoid log(0); model outputs log(value)
+                        truth = torch.log(truth.clamp(min=1e-6))
 
                     loss_fn = get_pointwise_loss_fn(loss_fn_name)
                     l_task = loss_fn(pred, truth).mean(dim=-1)
@@ -249,6 +257,12 @@ def run_epoch_stream(
                 preds = model(X_batch)
                 if not isinstance(preds, dict):
                     preds = {"angle": preds}
+
+                # Convert predictions from log space to linear space for tasks with log_transform
+                if task_weights:
+                    for task, cfg in task_weights.items():
+                        if isinstance(cfg, dict) and cfg.get("log_transform", False) and task in preds:
+                            preds[task] = torch.exp(preds[task])
             profiler.stop()
 
             profiler.start("loss_compute")
