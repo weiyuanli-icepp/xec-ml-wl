@@ -139,6 +139,20 @@ def run_epoch_stream(
                 "log_transform": use_log_transform,
             }
 
+    # Pre-cache legacy reweighting tensors on GPU (avoid recreation every batch)
+    legacy_rw_cache = {}
+    if reweight_mode != "none" and reweighter is None:
+        if reweight_mode == "theta" and edges_theta is not None:
+            legacy_rw_cache["edges"] = torch.as_tensor(edges_theta, device=device)
+            legacy_rw_cache["weights"] = torch.as_tensor(weights_theta, device=device, dtype=torch.float32)
+        elif reweight_mode == "phi" and edges_phi is not None:
+            legacy_rw_cache["edges"] = torch.as_tensor(edges_phi, device=device)
+            legacy_rw_cache["weights"] = torch.as_tensor(weights_phi, device=device, dtype=torch.float32)
+        elif reweight_mode == "theta_phi" and edges2_theta is not None:
+            legacy_rw_cache["edges_th"] = torch.as_tensor(edges2_theta, device=device)
+            legacy_rw_cache["edges_ph"] = torch.as_tensor(edges2_phi, device=device)
+            legacy_rw_cache["weights"] = torch.as_tensor(weights_2d, device=device, dtype=torch.float32)
+
     # ========================== START OF BATCH LOOP ==========================
     for i_batch, (X_batch, target_dict) in enumerate(loader):
         t_data      = time.time() - t_end
@@ -158,28 +172,21 @@ def run_epoch_stream(
         w = None
         if reweighter is not None:
             w = reweighter.compute_weights(target_dict, device)
-        # Legacy reweighting support (GPU-based to avoid CPU transfers)
-        elif reweight_mode != "none" and "angle" in target_dict:
+        # Legacy reweighting support (using pre-cached GPU tensors)
+        elif legacy_rw_cache and "angle" in target_dict:
             angles = target_dict["angle"]  # Already on GPU
-            if reweight_mode == "theta" and (edges_theta is not None):
-                edges_t = torch.as_tensor(edges_theta, device=device)
-                weights_t = torch.as_tensor(weights_theta, device=device, dtype=torch.float32)
-                bin_id = torch.bucketize(angles[:, 0], edges_t) - 1
-                bin_id = bin_id.clamp(0, len(weights_theta) - 1)
-                w = weights_t[bin_id]
-            elif reweight_mode == "phi" and (edges_phi is not None):
-                edges_t = torch.as_tensor(edges_phi, device=device)
-                weights_t = torch.as_tensor(weights_phi, device=device, dtype=torch.float32)
-                bin_id = torch.bucketize(angles[:, 1], edges_t) - 1
-                bin_id = bin_id.clamp(0, len(weights_phi) - 1)
-                w = weights_t[bin_id]
-            elif reweight_mode == "theta_phi" and (edges2_theta is not None):
-                edges_th_t = torch.as_tensor(edges2_theta, device=device)
-                edges_ph_t = torch.as_tensor(edges2_phi, device=device)
-                weights_2d_t = torch.as_tensor(weights_2d, device=device, dtype=torch.float32)
-                id_th = (torch.bucketize(angles[:, 0], edges_th_t) - 1).clamp(0, len(edges2_theta) - 2)
-                id_ph = (torch.bucketize(angles[:, 1], edges_ph_t) - 1).clamp(0, len(edges2_phi) - 2)
-                w = weights_2d_t[id_th, id_ph]
+            if reweight_mode == "theta":
+                bin_id = torch.bucketize(angles[:, 0], legacy_rw_cache["edges"]) - 1
+                bin_id = bin_id.clamp(0, legacy_rw_cache["weights"].shape[0] - 1)
+                w = legacy_rw_cache["weights"][bin_id]
+            elif reweight_mode == "phi":
+                bin_id = torch.bucketize(angles[:, 1], legacy_rw_cache["edges"]) - 1
+                bin_id = bin_id.clamp(0, legacy_rw_cache["weights"].shape[0] - 1)
+                w = legacy_rw_cache["weights"][bin_id]
+            elif reweight_mode == "theta_phi":
+                id_th = (torch.bucketize(angles[:, 0], legacy_rw_cache["edges_th"]) - 1).clamp(0, legacy_rw_cache["weights"].shape[0] - 1)
+                id_ph = (torch.bucketize(angles[:, 1], legacy_rw_cache["edges_ph"]) - 1).clamp(0, legacy_rw_cache["weights"].shape[1] - 1)
+                w = legacy_rw_cache["weights"][id_th, id_ph]
 
         if train:
             profiler.start("forward")

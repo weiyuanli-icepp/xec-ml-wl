@@ -257,10 +257,48 @@ class SampleReweighter:
             weights[valid] = k / counts[valid]
         return weights
 
+    def to_device(self, device: torch.device):
+        """
+        Move edges and weights tensors to GPU for fast lookup.
+        Call this once before training loop.
+        """
+        if self.config.angle.enabled and self._angle_edges is not None:
+            self._angle_edges_t = (
+                torch.as_tensor(self._angle_edges[0], device=device),
+                torch.as_tensor(self._angle_edges[1], device=device),
+            )
+            self._angle_weights_t = torch.as_tensor(
+                self._angle_weights, device=device, dtype=torch.float32
+            )
+
+        if self.config.energy.enabled and self._energy_edges is not None:
+            self._energy_edges_t = torch.as_tensor(self._energy_edges, device=device)
+            self._energy_weights_t = torch.as_tensor(
+                self._energy_weights, device=device, dtype=torch.float32
+            )
+
+        if self.config.timing.enabled and self._timing_edges is not None:
+            self._timing_edges_t = torch.as_tensor(self._timing_edges, device=device)
+            self._timing_weights_t = torch.as_tensor(
+                self._timing_weights, device=device, dtype=torch.float32
+            )
+
+        if self.config.uvwFI.enabled and self._uvw_edges is not None:
+            self._uvw_edges_t = (
+                torch.as_tensor(self._uvw_edges[0], device=device),
+                torch.as_tensor(self._uvw_edges[1], device=device),
+                torch.as_tensor(self._uvw_edges[2], device=device),
+            )
+            self._uvw_weights_t = torch.as_tensor(
+                self._uvw_weights, device=device, dtype=torch.float32
+            )
+
+        self._device = device
+
     def compute_weights(self, target_dict: Dict[str, torch.Tensor],
                         device: torch.device) -> Optional[torch.Tensor]:
         """
-        Compute sample weights for a batch.
+        Compute sample weights for a batch using GPU operations.
 
         Args:
             target_dict: Dictionary of target tensors from DataLoader.
@@ -275,76 +313,77 @@ class SampleReweighter:
         if not self.is_enabled:
             return None
 
-        batch_size = None
-        weights_list = []
+        # Lazy initialization of GPU tensors
+        if not hasattr(self, '_device') or self._device != device:
+            self.to_device(device)
 
-        # Angle weights
+        batch_size = None
+        combined_weights = None
+
+        # Angle weights (GPU-based lookup)
         if self.config.angle.enabled and "angle" in target_dict:
-            angles = target_dict["angle"].cpu().numpy()
-            batch_size = len(angles)
-            w = self._lookup_2d(angles[:, 0], angles[:, 1],
-                               self._angle_edges[0], self._angle_edges[1],
-                               self._angle_weights)
-            weights_list.append(w)
+            angles = target_dict["angle"]  # Already on GPU
+            batch_size = angles.shape[0]
+            w = self._lookup_2d_gpu(
+                angles[:, 0], angles[:, 1],
+                self._angle_edges_t[0], self._angle_edges_t[1],
+                self._angle_weights_t
+            )
+            combined_weights = w if combined_weights is None else combined_weights * w
 
         # Energy weights
         if self.config.energy.enabled and "energy" in target_dict:
-            energy = target_dict["energy"].cpu().numpy().flatten()
-            batch_size = len(energy)
-            w = self._lookup_1d(energy, self._energy_edges, self._energy_weights)
-            weights_list.append(w)
+            energy = target_dict["energy"].flatten()
+            batch_size = energy.shape[0]
+            w = self._lookup_1d_gpu(energy, self._energy_edges_t, self._energy_weights_t)
+            combined_weights = w if combined_weights is None else combined_weights * w
 
         # Timing weights
         if self.config.timing.enabled and "timing" in target_dict:
-            timing = target_dict["timing"].cpu().numpy().flatten()
-            batch_size = len(timing)
-            w = self._lookup_1d(timing, self._timing_edges, self._timing_weights)
-            weights_list.append(w)
+            timing = target_dict["timing"].flatten()
+            batch_size = timing.shape[0]
+            w = self._lookup_1d_gpu(timing, self._timing_edges_t, self._timing_weights_t)
+            combined_weights = w if combined_weights is None else combined_weights * w
 
         # Position weights
         if self.config.uvwFI.enabled and "uvwFI" in target_dict:
-            uvw = target_dict["uvwFI"].cpu().numpy()
-            batch_size = len(uvw)
-            w = self._lookup_3d(uvw[:, 0], uvw[:, 1], uvw[:, 2],
-                               self._uvw_edges[0], self._uvw_edges[1], self._uvw_edges[2],
-                               self._uvw_weights)
-            weights_list.append(w)
+            uvw = target_dict["uvwFI"]
+            batch_size = uvw.shape[0]
+            w = self._lookup_3d_gpu(
+                uvw[:, 0], uvw[:, 1], uvw[:, 2],
+                self._uvw_edges_t[0], self._uvw_edges_t[1], self._uvw_edges_t[2],
+                self._uvw_weights_t
+            )
+            combined_weights = w if combined_weights is None else combined_weights * w
 
-        if not weights_list:
-            return None
-
-        # Combine weights (multiply)
-        combined = np.ones(batch_size, dtype=np.float32)
-        for w in weights_list:
-            combined *= w
-
-        return torch.from_numpy(combined).to(device)
+        return combined_weights
 
     @staticmethod
-    def _lookup_1d(values: np.ndarray, edges: np.ndarray, weights: np.ndarray) -> np.ndarray:
-        """Lookup weights for 1D histogram."""
-        bin_idx = np.clip(np.digitize(values, edges) - 1, 0, len(weights) - 1)
-        return weights[bin_idx].astype(np.float32)
+    def _lookup_1d_gpu(values: torch.Tensor, edges: torch.Tensor,
+                       weights: torch.Tensor) -> torch.Tensor:
+        """GPU-based lookup for 1D histogram."""
+        bin_idx = torch.bucketize(values, edges) - 1
+        bin_idx = bin_idx.clamp(0, weights.shape[0] - 1)
+        return weights[bin_idx]
 
     @staticmethod
-    def _lookup_2d(v1: np.ndarray, v2: np.ndarray,
-                   edges1: np.ndarray, edges2: np.ndarray,
-                   weights: np.ndarray) -> np.ndarray:
-        """Lookup weights for 2D histogram."""
-        idx1 = np.clip(np.digitize(v1, edges1) - 1, 0, weights.shape[0] - 1)
-        idx2 = np.clip(np.digitize(v2, edges2) - 1, 0, weights.shape[1] - 1)
-        return weights[idx1, idx2].astype(np.float32)
+    def _lookup_2d_gpu(v1: torch.Tensor, v2: torch.Tensor,
+                       edges1: torch.Tensor, edges2: torch.Tensor,
+                       weights: torch.Tensor) -> torch.Tensor:
+        """GPU-based lookup for 2D histogram."""
+        idx1 = (torch.bucketize(v1, edges1) - 1).clamp(0, weights.shape[0] - 1)
+        idx2 = (torch.bucketize(v2, edges2) - 1).clamp(0, weights.shape[1] - 1)
+        return weights[idx1, idx2]
 
     @staticmethod
-    def _lookup_3d(v1: np.ndarray, v2: np.ndarray, v3: np.ndarray,
-                   edges1: np.ndarray, edges2: np.ndarray, edges3: np.ndarray,
-                   weights: np.ndarray) -> np.ndarray:
-        """Lookup weights for 3D histogram."""
-        idx1 = np.clip(np.digitize(v1, edges1) - 1, 0, weights.shape[0] - 1)
-        idx2 = np.clip(np.digitize(v2, edges2) - 1, 0, weights.shape[1] - 1)
-        idx3 = np.clip(np.digitize(v3, edges3) - 1, 0, weights.shape[2] - 1)
-        return weights[idx1, idx2, idx3].astype(np.float32)
-
+    def _lookup_3d_gpu(v1: torch.Tensor, v2: torch.Tensor, v3: torch.Tensor,
+                       edges1: torch.Tensor, edges2: torch.Tensor, edges3: torch.Tensor,
+                       weights: torch.Tensor) -> torch.Tensor:
+        """GPU-based lookup for 3D histogram."""
+        idx1 = (torch.bucketize(v1, edges1) - 1).clamp(0, weights.shape[0] - 1)
+        idx2 = (torch.bucketize(v2, edges2) - 1).clamp(0, weights.shape[1] - 1)
+        idx3 = (torch.bucketize(v3, edges3) - 1).clamp(0, weights.shape[2] - 1)
+        return weights[idx1, idx2, idx3]
 
 def create_reweighter_from_config(config_dict: Dict) -> SampleReweighter:
     """
