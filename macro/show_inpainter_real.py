@@ -235,6 +235,7 @@ def plot_face_panel(ax, grid: np.ndarray, title: str,
                     cmap: str = 'viridis', vmin: float = None, vmax: float = None,
                     norm=None, dead_mask: np.ndarray = None,
                     artificial_mask: np.ndarray = None,
+                    artificial_color: str = 'blue',
                     show_colorbar: bool = True):
     """
     Plot a single face panel with optional mask overlays.
@@ -248,6 +249,7 @@ def plot_face_panel(ax, grid: np.ndarray, title: str,
         norm: Matplotlib normalization (overrides vmin/vmax)
         dead_mask: 2D boolean mask of dead channels (show with hatching)
         artificial_mask: 2D boolean mask of artificial masks (show with edge)
+        artificial_color: Color for artificial mask edge (default 'blue')
         show_colorbar: Whether to add colorbar
     """
     if norm is not None:
@@ -278,7 +280,7 @@ def plot_face_panel(ax, grid: np.ndarray, title: str,
             for j in range(W):
                 if artificial_mask[i, j]:
                     rect = plt.Rectangle((j-0.5, i-0.5), 1, 1,
-                                          fill=False, edgecolor='blue',
+                                          fill=False, edgecolor=artificial_color,
                                           linewidth=1.5)
                     ax.add_patch(rect)
 
@@ -313,7 +315,8 @@ def plot_hex_face(ax, row_list: list, sensor_values: np.ndarray,
                   title: str, mode: str,
                   cmap: str = 'viridis', vmin: float = None, vmax: float = None,
                   norm=None, dead_mask: np.ndarray = None,
-                  artificial_mask: np.ndarray = None):
+                  artificial_mask: np.ndarray = None,
+                  artificial_color: str = 'blue'):
     """
     Plot a hexagonal face (top/bottom PMT arrays).
 
@@ -328,6 +331,7 @@ def plot_hex_face(ax, row_list: list, sensor_values: np.ndarray,
         norm: Matplotlib normalization (overrides vmin/vmax)
         dead_mask: Boolean mask (4760,) of dead channels
         artificial_mask: Boolean mask (4760,) of artificial masks
+        artificial_color: Color for artificial mask edge (default 'blue')
     """
     pitch_y, pitch_x = 7.5, 7.1
 
@@ -392,7 +396,7 @@ def plot_hex_face(ax, row_list: list, sensor_values: np.ndarray,
     # Overlay artificial masks
     if len(art_xs) > 0:
         ax.scatter(art_xs, art_ys, s=200, facecolors='none', marker='h',
-                  edgecolors='blue', linewidths=2)
+                  edgecolors=artificial_color, linewidths=2)
 
     ax.set_xlim(-55, 55)
     ax.set_ylim(-5, 45)
@@ -553,13 +557,31 @@ def plot_real_data_event(event_data: dict, predictions: dict,
             cmap = 'viridis'
             norm = data_norm
 
+        # Determine which masks to show per row:
+        # Row 0 (Original): dead (red hatch) + artificial (blue box)
+        # Row 1 (Filled): no masks
+        # Row 2 (Residual): artificial only (green frame)
+        if row_idx == 0:
+            show_dead = True
+            show_art = True
+            art_color = 'blue'
+        elif row_idx == 1:
+            show_dead = False
+            show_art = False
+            art_color = 'blue'
+        else:  # row_idx == 2
+            show_dead = False
+            show_art = True
+            art_color = 'green'
+
         # Column 0: Top hex face
         ax_top = fig.add_subplot(gs[row_idx, 0])
         plot_hex_face(ax_top, TOP_HEX_ROWS, values,
                      f"Top - {row_label}", mode='top',
                      cmap=cmap, norm=norm,
-                     dead_mask=dead_mask if row_idx > 0 else None,
-                     artificial_mask=artificial_mask if row_idx > 0 else None)
+                     dead_mask=dead_mask if show_dead else None,
+                     artificial_mask=artificial_mask if show_art else None,
+                     artificial_color=art_color)
 
         # Columns 1-3: DS, Inner, US rectangular faces
         for face_name, col in zip(rect_faces, rect_cols):
@@ -569,12 +591,13 @@ def plot_real_data_event(event_data: dict, predictions: dict,
             face_title = config['title']
 
             grid = create_face_grid(values, idx_map)
-            dead_grid = create_mask_grid(dead_mask, idx_map) if row_idx > 0 else None
-            art_grid = create_mask_grid(artificial_mask, idx_map) if row_idx > 0 else None
+            dead_grid = create_mask_grid(dead_mask, idx_map) if show_dead else None
+            art_grid = create_mask_grid(artificial_mask, idx_map) if show_art else None
 
             plot_face_panel(ax, grid, f"{face_title} - {row_label}",
                            cmap=cmap, norm=norm,
                            dead_mask=dead_grid, artificial_mask=art_grid,
+                           artificial_color=art_color,
                            show_colorbar=False)
 
         # Column 4: Outer face (using fine grid)
@@ -582,8 +605,9 @@ def plot_real_data_event(event_data: dict, predictions: dict,
         outer_data = outer_arrays[row_idx]
         plot_face_panel(ax_outer, outer_data['grid'], f"Outer - {row_label}",
                        cmap=cmap, norm=norm,
-                       dead_mask=outer_data['dead'] if row_idx > 0 else None,
-                       artificial_mask=outer_data['art'] if row_idx > 0 else None,
+                       dead_mask=outer_data['dead'] if show_dead else None,
+                       artificial_mask=outer_data['art'] if show_art else None,
+                       artificial_color=art_color,
                        show_colorbar=False)
 
         # Column 5: Bottom hex face
@@ -591,8 +615,9 @@ def plot_real_data_event(event_data: dict, predictions: dict,
         plot_hex_face(ax_bot, BOTTOM_HEX_ROWS, values,
                      f"Bottom - {row_label}", mode='bottom',
                      cmap=cmap, norm=norm,
-                     dead_mask=dead_mask if row_idx > 0 else None,
-                     artificial_mask=artificial_mask if row_idx > 0 else None)
+                     dead_mask=dead_mask if show_dead else None,
+                     artificial_mask=artificial_mask if show_art else None,
+                     artificial_color=art_color)
 
     # Add colorbars
     cbar_ax1 = fig.add_axes([0.92, 0.4, 0.012, 0.5])
@@ -606,11 +631,13 @@ def plot_real_data_event(event_data: dict, predictions: dict,
     # Add legend
     legend_elements = [
         mpatches.Patch(facecolor='gray', edgecolor='red', hatch='///',
-                       label='Dead channel (no truth)'),
+                       label='Dead channel (Original row)'),
         mpatches.Patch(facecolor='none', edgecolor='blue', linewidth=2,
-                       label='Artificial mask (has truth)'),
+                       label='Artificial mask (Original row)'),
+        mpatches.Patch(facecolor='none', edgecolor='green', linewidth=2,
+                       label='Artificial mask (Residual row)'),
     ]
-    fig.legend(handles=legend_elements, loc='lower center', ncol=2,
+    fig.legend(handles=legend_elements, loc='lower center', ncol=3,
                fontsize=10, frameon=True, bbox_to_anchor=(0.5, 0.01))
 
     # Main title
