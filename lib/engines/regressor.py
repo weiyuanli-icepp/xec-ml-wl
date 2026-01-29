@@ -9,6 +9,7 @@ Provides the main training loop with support for:
 - AMP (automatic mixed precision)
 """
 
+import math
 import torch
 import torch.nn as nn
 import numpy as np
@@ -98,6 +99,7 @@ def run_epoch_stream(
     # Gradient accumulation
     grad_accum_steps = max(int(grad_accum_steps), 1)
     accum_step = 0
+    max_grad_norm = 0.0  # Track max gradient norm for monitoring
     if train:
         optimizer.zero_grad(set_to_none=True)
 
@@ -196,8 +198,15 @@ def run_epoch_stream(
 
             profiler.stop()  # forward
 
+            # Check for NaN/Inf loss - skip batch if detected
+            loss_val = loss.item()
+            if not math.isfinite(loss_val):
+                print(f"[WARN] Skipping batch due to non-finite loss: {loss_val}")
+                optimizer.zero_grad(set_to_none=True)
+                continue
+
             # Backward with gradient accumulation
-            loss_sums["total_opt"] += loss.item() * X_batch.size(0)
+            loss_sums["total_opt"] += loss_val * X_batch.size(0)
             nobs += X_batch.size(0)
 
             profiler.start("backward")
@@ -216,12 +225,14 @@ def run_epoch_stream(
                 if scaler is not None:
                     if grad_clip > 0:
                         scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                        max_grad_norm = max(max_grad_norm, grad_norm.item())
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     if grad_clip > 0:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                        max_grad_norm = max(max_grad_norm, grad_norm.item())
                     optimizer.step()
 
                 if ema_model is not None:
@@ -420,6 +431,10 @@ def run_epoch_stream(
             metrics["system/compute_efficiency"] = max(0.0, min(1.0, efficiency))
         else:
             metrics["system/compute_efficiency"] = 0.0
+
+    # Log max gradient norm (helps diagnose gradient explosion)
+    if train and max_grad_norm > 0:
+        metrics["system/grad_norm_max"] = max_grad_norm
 
     extra_info = {}
     val_stats = {}

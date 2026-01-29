@@ -22,7 +22,6 @@ import mlflow.pytorch
 warnings.filterwarnings("ignore", category=FutureWarning, module="mlflow.tracking._tracking_service.utils")
 import torch
 import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import (
     CosineAnnealingLR, LinearLR, SequentialLR,
     OneCycleLR, ReduceLROnPlateau
@@ -343,28 +342,46 @@ def train_with_config(config_path: str, profile: bool = None):
     # --- AMP Scaler ---
     scaler = torch.amp.GradScaler("cuda", enabled=(cfg.training.amp and torch.cuda.is_available()))
 
+    # --- Detect resume to auto-disable warmup ---
+    # When resuming from a checkpoint, warmup is not needed since the model
+    # is already past the initial training phase. We detect this before
+    # creating the scheduler to avoid unnecessary warmup.
+    warmup_epochs = cfg.training.warmup_epochs
+    is_resuming = False
+    if cfg.checkpoint.resume_from and os.path.exists(cfg.checkpoint.resume_from):
+        try:
+            ckpt_probe = torch.load(cfg.checkpoint.resume_from, map_location="cpu", weights_only=False)
+            if isinstance(ckpt_probe, dict) and "epoch" in ckpt_probe and ckpt_probe.get("epoch", 0) > 0:
+                is_resuming = True
+                if warmup_epochs > 0:
+                    print(f"[INFO] Resuming from checkpoint - disabling warmup (was {warmup_epochs} epochs)")
+                    warmup_epochs = 0
+            del ckpt_probe
+        except Exception:
+            pass  # Will be handled later in the full resume logic
+
     # --- Scheduler ---
     scheduler = None
     scheduler_type = getattr(cfg.training, 'scheduler', 'cosine') if cfg.training.use_scheduler else 'none'
 
     if scheduler_type == 'cosine':
-        print(f"[INFO] Using Cosine Annealing with {cfg.training.warmup_epochs} warmup epochs.")
+        print(f"[INFO] Using Cosine Annealing with {warmup_epochs} warmup epochs.")
         main_scheduler = CosineAnnealingLR(
             optimizer,
-            T_max=cfg.training.epochs - cfg.training.warmup_epochs,
+            T_max=cfg.training.epochs - warmup_epochs,
             eta_min=getattr(cfg.training, 'lr_min', 1e-6)
         )
-        if cfg.training.warmup_epochs > 0:
+        if warmup_epochs > 0:
             warmup_scheduler = LinearLR(
                 optimizer,
                 start_factor=0.01,
                 end_factor=1.0,
-                total_iters=cfg.training.warmup_epochs
+                total_iters=warmup_epochs
             )
             scheduler = SequentialLR(
                 optimizer,
                 schedulers=[warmup_scheduler, main_scheduler],
-                milestones=[cfg.training.warmup_epochs]
+                milestones=[warmup_epochs]
             )
         else:
             scheduler = main_scheduler
@@ -504,6 +521,18 @@ def train_with_config(config_path: str, profile: bool = None):
                 if hasattr(ema_model, 'n_averaged'):
                     ema_model.n_averaged.zero_()
 
+    # --- Check for valid epoch range ---
+    if start_epoch >= cfg.training.epochs:
+        print("\n" + "=" * 70)
+        print("[ERROR] No epochs to train!")
+        print(f"  Resumed from epoch {start_epoch - 1}, but config has epochs={cfg.training.epochs}")
+        print(f"  The training loop range({start_epoch}, {cfg.training.epochs}) is empty.")
+        print(f"\n  To continue training, set 'epochs' higher than {start_epoch - 1}.")
+        print(f"  For example, to train 10 more epochs, set epochs={start_epoch + 9}")
+        print("=" * 70 + "\n")
+        raise ValueError(f"start_epoch ({start_epoch}) >= epochs ({cfg.training.epochs}). "
+                        f"Set epochs > {start_epoch - 1} to continue training.")
+
     # --- MLflow Setup ---
     # Default to SQLite backend if MLFLOW_TRACKING_URI is not set
     if not os.environ.get("MLFLOW_TRACKING_URI"):
@@ -553,8 +582,6 @@ def train_with_config(config_path: str, profile: bool = None):
         mlflow_run_id = run.info.run_id
         artifact_dir = os.path.abspath(os.path.join(cfg.checkpoint.save_dir, run_name))
         os.makedirs(artifact_dir, exist_ok=True)
-
-        writer = SummaryWriter(log_dir=os.path.join("runs", run_name))
 
         # Log config
         if start_epoch == 1:
@@ -634,6 +661,10 @@ def train_with_config(config_path: str, profile: bool = None):
                 "val_loss": val_loss,
             }
 
+            # Add gradient norm from training metrics
+            if "system/grad_norm_max" in tr_metrics:
+                log_dict["grad_norm_max"] = tr_metrics["system/grad_norm_max"]
+
             for metric_key in ["smooth_l1", "l1", "mse", "cos"]:
                 if metric_key in val_metrics:
                     log_dict[f"val_{metric_key}"] = val_metrics[metric_key]
@@ -650,10 +681,6 @@ def train_with_config(config_path: str, profile: bool = None):
                         f"task/{task}_log_var": log_var.item(),
                         f"task/{task}_weight": weight,
                     }, step=ep)
-
-            writer.add_scalar("loss/train", tr_loss, ep)
-            writer.add_scalar("loss/val", val_loss, ep)
-            writer.add_scalar("lr", current_lr, ep)
 
             # --- Checkpointing ---
             # Get validation data for artifact saving
@@ -677,6 +704,11 @@ def train_with_config(config_path: str, profile: bool = None):
                 }
                 torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_best.pth"))
                 print(f"   [info] New best val_loss: {best_val:.2e}")
+
+            # Loss spike detection: warn if val_loss suddenly increases significantly
+            elif val_loss > best_val * 5.0:
+                print(f"   [WARN] Loss spike detected! val_loss ({val_loss:.2e}) > 5x best ({best_val:.2e})")
+                print(f"   [WARN] Consider: (1) reducing lr, (2) reducing grad_clip, (3) resuming from checkpoint_best.pth")
 
                 # Save validation artifacts (plots and CSVs) for best checkpoint
                 # Note: worst_events are only saved at end of training to reduce time
@@ -769,8 +801,6 @@ def train_with_config(config_path: str, profile: bool = None):
                 print(f"[INFO] ONNX exported to {onnx_path}")
             except Exception as e:
                 print(f"[WARN] ONNX export failed: {e}")
-
-        writer.close()
 
     print(f"[INFO] Training complete. Best val_loss: {best_val:.6f}")
     return best_val

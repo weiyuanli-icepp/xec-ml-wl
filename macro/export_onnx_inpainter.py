@@ -32,39 +32,19 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from lib.models import XECEncoder
 from lib.models.inpainter import XEC_Inpainter
-from lib.geom_defs import (
-    INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
-    OUTER_COARSE_FULL_INDEX_MAP, TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
-    flatten_hex_rows, OUTER_ALL_SENSOR_IDS, OUTER_SENSOR_ID_TO_IDX
-)
 
 
 class InpainterScriptableWrapper(nn.Module):
     """
     TorchScript-compatible wrapper for XEC_Inpainter.
 
-    Uses vectorized scatter operations that work with torch.jit.script.
-    Converts the complex dict output to a simple (B, 4760, 2) tensor.
+    Uses the forward_full_output() method which returns fixed-size (B, 4760, 2) tensor,
+    enabling clean TorchScript export without dynamic tensor size issues.
     """
 
     def __init__(self, inpainter: XEC_Inpainter):
         super().__init__()
         self.inpainter = inpainter
-
-        # Pre-register face index maps as buffers
-        self.register_buffer("inner_idx_flat", torch.from_numpy(INNER_INDEX_MAP).long().flatten())
-        self.register_buffer("us_idx_flat", torch.from_numpy(US_INDEX_MAP).long().flatten())
-        self.register_buffer("ds_idx_flat", torch.from_numpy(DS_INDEX_MAP).long().flatten())
-        self.register_buffer("outer_coarse_idx_flat", torch.from_numpy(OUTER_COARSE_FULL_INDEX_MAP).long().flatten())
-        self.register_buffer("top_hex_idx", torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long())
-        self.register_buffer("bot_hex_idx", torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long())
-        self.register_buffer("outer_sensor_ids_buf", torch.from_numpy(OUTER_ALL_SENSOR_IDS).long())
-
-        # Store face dimensions as tensors for scriptability
-        self.inner_W = 44
-        self.us_W = 6
-        self.ds_W = 6
-        self.outer_W = 24
 
     def forward(self, x_input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
@@ -73,174 +53,15 @@ class InpainterScriptableWrapper(nn.Module):
             mask: (B, 4760) - binary mask (1 = masked/dead, 0 = valid)
 
         Returns:
-            output: (B, 4760, 2) - full tensor with predictions at masked positions
+            output: (B, 4760, 2) - tensor with inpainted values at masked positions,
+                    original values preserved at unmasked positions
         """
-        # Run inpainter
-        results, original_values, _ = self.inpainter(x_input, mask=mask)
+        # Use fixed-size output method for clean TorchScript export
+        pred_all = self.inpainter.forward_full_output(x_input, mask)
 
-        # Start with original input
-        output = x_input.clone()
-
-        # Process each face with vectorized scatter
-        # Inner face
-        if "inner" in results:
-            output = self._scatter_rect_face_vectorized(
-                output, results["inner"]["pred"], results["inner"]["indices"],
-                results["inner"]["valid"], self.inner_idx_flat, self.inner_W
-            )
-
-        # US face
-        if "us" in results:
-            output = self._scatter_rect_face_vectorized(
-                output, results["us"]["pred"], results["us"]["indices"],
-                results["us"]["valid"], self.us_idx_flat, self.us_W
-            )
-
-        # DS face
-        if "ds" in results:
-            output = self._scatter_rect_face_vectorized(
-                output, results["ds"]["pred"], results["ds"]["indices"],
-                results["ds"]["valid"], self.ds_idx_flat, self.ds_W
-            )
-
-        # Outer face
-        if "outer" in results:
-            outer_result = results["outer"]
-            if outer_result.get("is_sensor_level", False):
-                output = self._scatter_sensor_level_vectorized(
-                    output, outer_result["pred"], outer_result["sensor_ids"],
-                    outer_result["valid"]
-                )
-            else:
-                output = self._scatter_rect_face_vectorized(
-                    output, outer_result["pred"], outer_result["indices"],
-                    outer_result["valid"], self.outer_coarse_idx_flat, self.outer_W
-                )
-
-        # Top hex face
-        if "top" in results:
-            output = self._scatter_hex_face_vectorized(
-                output, results["top"]["pred"], results["top"]["indices"],
-                results["top"]["valid"], self.top_hex_idx
-            )
-
-        # Bottom hex face
-        if "bot" in results:
-            output = self._scatter_hex_face_vectorized(
-                output, results["bot"]["pred"], results["bot"]["indices"],
-                results["bot"]["valid"], self.bot_hex_idx
-            )
-
-        return output
-
-    def _scatter_rect_face_vectorized(
-        self,
-        output: torch.Tensor,
-        pred: torch.Tensor,
-        indices: torch.Tensor,
-        valid: torch.Tensor,
-        idx_flat: torch.Tensor,
-        W: int
-    ) -> torch.Tensor:
-        """Vectorized scatter for rectangular faces."""
-        B = output.shape[0]
-        max_masked = pred.shape[1]
-
-        if max_masked == 0:
-            return output
-
-        # Convert (h, w) indices to sensor IDs
-        h_idx = indices[:, :, 0]  # (B, max_masked)
-        w_idx = indices[:, :, 1]  # (B, max_masked)
-        flat_pos = h_idx * W + w_idx  # (B, max_masked)
-
-        # Clamp and gather sensor IDs
-        flat_pos_clamped = flat_pos.clamp(0, idx_flat.shape[0] - 1)
-        sensor_ids = idx_flat[flat_pos_clamped]  # (B, max_masked)
-
-        # Valid mask: valid flag AND valid sensor ID
-        valid_mask = valid & (sensor_ids >= 0) & (sensor_ids < 4760)
-
-        # Vectorized scatter using index_put_ with flattened indices
-        # Flatten batch and position dimensions
-        batch_indices = torch.arange(B, device=output.device).unsqueeze(1).expand(B, max_masked)
-
-        # Get flat indices where valid
-        valid_flat = valid_mask.flatten()  # (B * max_masked,)
-        batch_flat = batch_indices.flatten()[valid_flat]  # (N_valid,)
-        sensor_flat = sensor_ids.flatten()[valid_flat]  # (N_valid,)
-        pred_flat = pred.reshape(-1, 2)[valid_flat]  # (N_valid, 2)
-
-        # Scatter predictions
-        if pred_flat.shape[0] > 0:
-            output[batch_flat, sensor_flat] = pred_flat
-
-        return output
-
-    def _scatter_sensor_level_vectorized(
-        self,
-        output: torch.Tensor,
-        pred: torch.Tensor,
-        sensor_ids: torch.Tensor,
-        valid: torch.Tensor
-    ) -> torch.Tensor:
-        """Vectorized scatter for sensor-level predictions (outer finegrid)."""
-        B = output.shape[0]
-        max_masked = pred.shape[1]
-
-        if max_masked == 0:
-            return output
-
-        # Valid mask
-        valid_mask = valid & (sensor_ids >= 0) & (sensor_ids < 4760)
-
-        # Flatten and gather valid entries
-        batch_indices = torch.arange(B, device=output.device).unsqueeze(1).expand(B, max_masked)
-
-        valid_flat = valid_mask.flatten()
-        batch_flat = batch_indices.flatten()[valid_flat]
-        sensor_flat = sensor_ids.flatten()[valid_flat]
-        pred_flat = pred.reshape(-1, 2)[valid_flat]
-
-        # Scatter
-        if pred_flat.shape[0] > 0:
-            output[batch_flat, sensor_flat] = pred_flat
-
-        return output
-
-    def _scatter_hex_face_vectorized(
-        self,
-        output: torch.Tensor,
-        pred: torch.Tensor,
-        indices: torch.Tensor,
-        valid: torch.Tensor,
-        hex_indices: torch.Tensor
-    ) -> torch.Tensor:
-        """Vectorized scatter for hex faces."""
-        B = output.shape[0]
-        max_masked = pred.shape[1]
-
-        if max_masked == 0:
-            return output
-
-        # Map node indices to sensor IDs
-        indices_clamped = indices.clamp(0, hex_indices.shape[0] - 1)
-        sensor_ids = hex_indices[indices_clamped]
-
-        # Valid mask
-        valid_mask = valid & (sensor_ids >= 0)
-
-        # Flatten and gather valid entries
-        batch_indices = torch.arange(B, device=output.device).unsqueeze(1).expand(B, max_masked)
-
-        valid_flat = valid_mask.flatten()
-        batch_flat = batch_indices.flatten()[valid_flat]
-        sensor_flat = sensor_ids.flatten()[valid_flat]
-        pred_flat = pred.reshape(-1, 2)[valid_flat]
-
-        # Scatter
-        if pred_flat.shape[0] > 0:
-            output[batch_flat, sensor_flat] = pred_flat
+        # Combine: use predictions at masked positions, original at unmasked
+        mask_expanded = mask.bool().unsqueeze(-1).expand_as(x_input)
+        output = torch.where(mask_expanded, pred_all, x_input)
 
         return output
 
@@ -357,14 +178,14 @@ which cannot be exported to ONNX. Use TorchScript instead.
     wrapper = InpainterONNXWrapper(inpainter)
     wrapper.eval()
 
-    # Dummy inputs - use realistic batch size and mask count for tracing
-    # IMPORTANT: TorchScript trace captures tensor sizes as constants.
-    # The traced model works best when inference uses similar sizes.
+    # Dummy inputs for tracing
+    # With forward_full_output(), the model returns fixed-size (B, 4760, 2) tensor,
+    # so tracing is clean and batch size can vary at inference time.
     trace_batch = args.trace_batch_size
     trace_mask_per_event = args.trace_mask_per_event
 
     print(f"[INFO] Tracing with batch_size={trace_batch}, ~{trace_mask_per_event} masked per event")
-    print(f"[INFO] (Use --trace-batch-size and --trace-mask-per-event to adjust)")
+    print(f"[INFO] Using fixed-size output method (forward_full_output) for clean tracing")
 
     dummy_input = torch.randn(trace_batch, 4760, 2)
     dummy_mask = torch.zeros(trace_batch, 4760)

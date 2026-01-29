@@ -202,23 +202,19 @@ artifacts/
     └── inpainter_predictions_epoch_{epoch}.root
 
 mlruns/                                  # MLflow experiment tracking
-runs/{run_name}/                         # TensorBoard logs
 ```
 
 ---
 
 ## Visualization Tools
 
-Real-time tracking is available with MLflow and TensorBoard.
+Real-time tracking is available with MLflow.
 
 ```bash
-# Start MLflow (Track metrics & PDFs)
+# Start MLflow UI
 $ cd /path/to/xec-ml-wl
 $ (activate xec-ml-wl conda environment)
 $ mlflow ui --backend-store-uri sqlite:///$(pwd)/mlruns.db --host 127.0.0.1 --port 5000
-
-# Start TensorBoard (Track Loss Curves)
-$ tensorboard --logdir runs --host 0.0.0.0 --port YYYY
 ```
 
 ---

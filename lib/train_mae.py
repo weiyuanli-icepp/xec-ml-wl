@@ -362,6 +362,19 @@ Examples:
         print(f"[INFO] EMA enabled with decay={ema_decay}")
         ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
 
+    # Detect resume to auto-disable warmup
+    # When resuming from a checkpoint, warmup is not needed since the model
+    # is already past the initial training phase.
+    if resume_from and os.path.exists(resume_from) and warmup_epochs > 0:
+        try:
+            ckpt_probe = torch.load(resume_from, map_location="cpu", weights_only=False)
+            if isinstance(ckpt_probe, dict) and "epoch" in ckpt_probe and ckpt_probe.get("epoch", 0) > 0:
+                print(f"[INFO] Resuming from checkpoint - disabling warmup (was {warmup_epochs} epochs)")
+                warmup_epochs = 0
+            del ckpt_probe
+        except Exception:
+            pass  # Will be handled later in the full resume logic
+
     scheduler = None
     if lr_scheduler:
         if lr_scheduler == "cosine":
@@ -417,6 +430,18 @@ Examples:
             print("[WARN] Loaded raw weights. Starting from Epoch 1 (Optimizer reset).")
             model.load_state_dict(checkpoint, strict=False)
             start_epoch = 0
+
+    # Check for valid epoch range
+    if start_epoch >= epochs:
+        print("\n" + "=" * 70)
+        print("[ERROR] No epochs to train!")
+        print(f"  Resumed from epoch {start_epoch - 1}, but config has epochs={epochs}")
+        print(f"  The training loop range({start_epoch}, {epochs}) is empty.")
+        print(f"\n  To continue training, set 'epochs' higher than {start_epoch - 1}.")
+        print(f"  For example, to train 10 more epochs, set epochs={start_epoch + 9}")
+        print("=" * 70 + "\n")
+        raise ValueError(f"start_epoch ({start_epoch}) >= epochs ({epochs}). "
+                        f"Set epochs > {start_epoch - 1} to continue training.")
 
     # MLflow Setup
     # Default to SQLite backend if MLFLOW_TRACKING_URI is not set

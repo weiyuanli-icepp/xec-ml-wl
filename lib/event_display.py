@@ -121,7 +121,7 @@ def plot_event_faces(npho_event, title="Event Faces", savepath=None, outer_mode=
     plot_rect_face(ax_us, to_np(faces["us"]), "Upstream", flip_lr=False)
 
     ax_outer = plt.subplot(gs[1, 3])
-    plot_rect_face(ax_outer, to_np(outer_fine_fused), "Outer", flip_lr=True)
+    plot_rect_face(ax_outer, to_np(outer_fine_fused), "Outer", flip_lr=False)
     rect = patches.Rectangle((29.5, 14.5), 12, 15, linewidth=1.5, edgecolor='white', facecolor='none', linestyle=':')
     ax_outer.add_patch(rect)
 
@@ -241,7 +241,7 @@ def plot_event_time(npho_data, time_data, title="Event Time", savepath=None):
     plot_face(ax_us, faces_time["us"], faces_npho["us"], "Upstream", flip_lr=False)
     
     ax_outer = plt.subplot(gs[1, 3])
-    plot_face(ax_outer, outer_time_fused, outer_npho_fused, "Outer", flip_lr=True)
+    plot_face(ax_outer, outer_time_fused, outer_npho_fused, "Outer", flip_lr=False)
     rect = patches.Rectangle((29.5, 14.5), 12, 15, linewidth=1.5, edgecolor='black', facecolor='none', linestyle=':')
     ax_outer.add_patch(rect)
 
@@ -806,7 +806,7 @@ def _plot_event_faces_on_axes(fig, gs, npho_event, subtitle="Npho"):
     plot_rect_face(ax_us, to_np(faces["us"]), f"Upstream", flip_lr=False)
 
     ax_outer = fig.add_subplot(gs[1, 3])
-    plot_rect_face(ax_outer, to_np(outer_fine_fused), f"Outer", flip_lr=True)
+    plot_rect_face(ax_outer, to_np(outer_fine_fused), f"Outer", flip_lr=False)
     rect = patches.Rectangle((29.5, 14.5), 12, 15, linewidth=1.5, edgecolor='white', facecolor='none', linestyle=':')
     ax_outer.add_patch(rect)
 
@@ -922,7 +922,7 @@ def _plot_event_time_on_axes(fig, gs, npho_data, time_data, subtitle="Time"):
     plot_face(ax_us, faces_time["us"], faces_npho["us"], "Upstream", flip_lr=False)
 
     ax_outer = fig.add_subplot(gs[1, 3])
-    plot_face(ax_outer, outer_time_fused, outer_npho_fused, "Outer", flip_lr=True)
+    plot_face(ax_outer, outer_time_fused, outer_npho_fused, "Outer", flip_lr=False)
     rect = patches.Rectangle((29.5, 14.5), 12, 15, linewidth=1.5, edgecolor='black', facecolor='none', linestyle=':')
     ax_outer.add_patch(rect)
 

@@ -3,6 +3,8 @@ import numpy as np
 import uproot
 import time
 import os
+import sys
+import resource
 import psutil
 from .geom_utils import gather_face, gather_hex_nodes
 from .geom_defs import (
@@ -347,47 +349,46 @@ class SimpleProfiler:
 # ------------------------------------------------------------
 def get_system_metrics(device=None):
     """
-    Collect standardized system metrics for MLflow logging.
+    Collect process-specific metrics for MLflow logging.
 
     Returns:
         dict: Metrics dictionary with standardized names:
-            - system/vram_allocated_GB: GPU memory allocated
-            - system/vram_reserved_GB: GPU memory reserved
-            - system/vram_peak_GB: GPU peak memory
-            - system/vram_utilization: GPU memory utilization (0-1)
-            - system/ram_used_GB: System RAM used
-            - system/ram_percent: System RAM percentage
-            - system/process_rss_GB: Process resident memory
+            - system/vram_allocated_GB: GPU memory currently allocated by this process
+            - system/vram_peak_GB: Peak GPU memory allocated by this process
+            - system/process_rss_GB: Current process resident memory
+            - system/process_rss_peak_GB: Peak process resident memory (max RSS)
     """
     metrics = {}
 
-    # GPU metrics
+    # GPU metrics (process-specific)
     if torch.cuda.is_available():
         if device is None:
             device = torch.device("cuda")
         torch.cuda.synchronize(device)
 
         allocated = torch.cuda.memory_allocated(device)
-        reserved = torch.cuda.memory_reserved(device)
         peak = torch.cuda.max_memory_allocated(device)
 
         metrics["system/vram_allocated_GB"] = allocated / 1e9
-        metrics["system/vram_reserved_GB"] = reserved / 1e9
         metrics["system/vram_peak_GB"] = peak / 1e9
 
-        # Utilization: allocated / reserved (how efficiently we use reserved memory)
-        if reserved > 0:
-            metrics["system/vram_utilization"] = allocated / reserved
-
-    # RAM metrics
+    # Process memory metrics
     try:
-        ram = psutil.virtual_memory()
         process = psutil.Process(os.getpid())
         mem_info = process.memory_info()
 
-        metrics["system/ram_used_GB"] = ram.used / 1e9
-        metrics["system/ram_percent"] = ram.percent
+        # Current RSS
         metrics["system/process_rss_GB"] = mem_info.rss / 1e9
+
+        # Peak RSS (max resident set size) - this is what matters for OOM
+        # ru_maxrss is in kilobytes on Linux, bytes on macOS
+        rusage = resource.getrusage(resource.RUSAGE_SELF)
+        if sys.platform == "darwin":
+            # macOS returns bytes
+            metrics["system/process_rss_peak_GB"] = rusage.ru_maxrss / 1e9
+        else:
+            # Linux returns kilobytes
+            metrics["system/process_rss_peak_GB"] = rusage.ru_maxrss / 1e6
     except Exception:
         pass
 

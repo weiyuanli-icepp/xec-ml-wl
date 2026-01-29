@@ -213,6 +213,93 @@ print(f'Inf count: {np.isinf(npho).sum()}')
 "
 ```
 
+**Note:** The training code automatically skips batches that produce NaN/Inf loss values to prevent model corruption.
+
+### 5b. Loss Spike / Gradient Explosion
+
+**Symptom:** Training progresses normally, then loss suddenly increases by 10x or more and never recovers.
+
+**Root Cause:** A single batch with unusual data or numerical instability causes large gradients that corrupt model weights. Once weights are corrupted, the model cannot recover through normal gradient descent.
+
+**Prevention and Diagnosis:**
+
+#### A. Gradient Clipping (`grad_clip`)
+
+Gradient clipping limits how much the model can change in one update:
+
+```
+How it works:
+1. Compute total gradient norm: ||g|| = sqrt(Σ gᵢ²) across all parameters
+2. If ||g|| > grad_clip: scale all gradients by (grad_clip / ||g||)
+3. Direction preserved, magnitude capped
+```
+
+**Configuration:**
+```yaml
+training:
+  grad_clip: 1.0    # Default - caps gradient norm at 1.0
+```
+
+#### B. Using `grad_norm_max` Metric
+
+The training logs `grad_norm_max` to MLflow each epoch - the maximum gradient norm observed during that epoch (before clipping).
+
+**How to use it:**
+
+1. **Run a few epochs** and observe `grad_norm_max` in MLflow
+2. **Interpret the values:**
+
+| `grad_norm_max` | `grad_clip` | Interpretation |
+|-----------------|-------------|----------------|
+| 0.01 - 0.1 | 1.0 | Gradients small, clipping never activates |
+| 0.5 - 0.8 | 1.0 | Healthy - gradients moderate, headroom for spikes |
+| ~1.0 consistently | 1.0 | Clipping every step - may slow learning |
+| Spike to 1.0 before loss spike | 1.0 | Gradient explosion caught by clipping |
+
+3. **Set `grad_clip` appropriately:**
+
+| Typical `grad_norm_max` | Recommended `grad_clip` |
+|-------------------------|-------------------------|
+| ~0.01 | 0.05 - 0.1 |
+| ~0.1 | 0.3 - 0.5 |
+| ~0.5 | 1.0 - 2.0 |
+
+**Goal:** Set `grad_clip` to ~2-5× your typical gradient norm. This allows normal training while catching abnormal spikes.
+
+#### C. Recovery from Loss Spike
+
+If a loss spike occurs:
+
+1. **Resume from best checkpoint:**
+   ```yaml
+   checkpoint:
+     resume_from: "artifacts/<run_name>/checkpoint_best.pth"
+   ```
+
+2. **Lower learning rate:**
+   ```yaml
+   training:
+     lr: 1.0e-4    # Try 3-10x lower than before
+   ```
+
+3. **Lower grad_clip:**
+   ```yaml
+   training:
+     grad_clip: 0.5    # More aggressive clipping
+   ```
+
+#### D. Task-Specific Considerations
+
+Different tasks may need different settings:
+
+| Task | Typical Error Scale | `loss_beta` | Notes |
+|------|---------------------|-------------|-------|
+| Angle | ~1-10° | 1.0 | Default works well |
+| Energy (GeV) | ~0.001-0.01 | 0.01 | Small errors need small beta |
+| Timing | ~1e-9 | 0.1 | Adjust based on time scale |
+
+For energy regression with GeV units (0.015-0.06 range), errors are typically ~0.005 GeV. With `loss_beta: 1.0`, smooth_l1 is always in quadratic mode (effectively MSE). Consider `loss_beta: 0.01` or use pure `loss_fn: "l1"` for more robustness.
+
 ### 6. Slow Data Loading (CPU Bottleneck)
 
 **Symptom:** GPU utilization < 50%, `data_load` takes >20% of epoch time in profiler output
@@ -390,4 +477,4 @@ A: Several options:
 1. **Saliency maps:** Generated automatically at end of training (`saliency_profile_*.pdf`)
 2. **MAE reconstructions:** Check `mae_predictions_epoch_*.root`
 3. **Worst events:** Check `worst_event_*.pdf` for failure modes
-4. **TensorBoard:** `tensorboard --logdir runs`
+4. **MLflow:** `mlflow ui --backend-store-uri sqlite:///$(pwd)/mlruns.db`

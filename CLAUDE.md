@@ -57,7 +57,6 @@ python val_data/inference_real_data.py --onnx model.onnx --input data.root --out
 ### Monitoring
 ```bash
 mlflow ui --backend-store-uri mlruns --host 0.0.0.0 --port 5000
-tensorboard --logdir runs --host 0.0.0.0 --port 6006
 ```
 
 ## Architecture
@@ -143,4 +142,3 @@ Models: `XECEncoder` (angle-only legacy), `XECMultiHeadModel` (multi-task)
 - `artifacts/<RUN>/predictions_*.csv`: Validation predictions
 - `artifacts/<RUN>/*.onnx`: ONNX export for C++ inference
 - `mlruns/`: MLflow experiment tracking
-- `runs/`: TensorBoard logs

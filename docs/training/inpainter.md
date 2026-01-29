@@ -271,105 +271,120 @@ output = model(input_tensor, mask_tensor)
 final = torch.where(mask.unsqueeze(-1).bool(), output, input_tensor)
 ```
 
-### 8.4 TorchScript Tracing Limitation
+### 8.4 Fixed-Size Output for TorchScript Export
 
-**TorchScript tracing does NOT work** for the inpainter due to dynamic tensor sizes:
+The inpainter supports two forward methods:
+
+| Method | Output Shape | Use Case |
+|--------|--------------|----------|
+| `forward()` | Variable (only masked positions) | Training (efficient memory) |
+| `forward_full_output()` | Fixed `(B, 4760, 2)` | Export/inference (TorchScript compatible) |
+
+The `forward_full_output()` method predicts ALL sensor positions, enabling clean TorchScript tracing:
 
 ```python
-# In FaceInpaintingHead.forward():
-within_batch_idx = torch.arange(len(batch_idx), device=device) - cumsum[batch_idx]
+# Training (variable-size, more efficient)
+results, original_values, mask = model.forward(x_batch, mask=mask)
+
+# Export/inference (fixed-size, TorchScript compatible)
+pred_all = model.forward_full_output(x_batch, mask)  # (B, 4760, 2)
 ```
 
-During tracing:
-- `len(batch_idx)` becomes a **constant** (e.g., 8299)
-- But `batch_idx` varies at runtime (e.g., size 4096)
-- Size mismatch → RuntimeError
+**Why this works:**
+- The model internally computes predictions for all positions anyway
+- The `forward()` method extracts only masked positions for efficiency
+- The `forward_full_output()` method skips the extraction, returning the full tensor
+- No retraining needed - same weights work for both methods
 
-This is fundamental to how tracing works - it captures one execution path with fixed sizes.
+**Note on prediction quality:**
+- Predictions at masked positions are the same regardless of which method is used
+- Predictions at unmasked positions are computed but meaningless (use original values instead)
+- The export wrapper automatically combines: predictions at masked positions, originals elsewhere
 
-### 8.5 Recommended: Use Checkpoint Mode
-
-For Python inference (validation, analysis), use the checkpoint directly:
+### 8.5 TorchScript Export Workflow
 
 ```bash
+# Export to TorchScript
+python macro/export_onnx_inpainter.py \
+    artifacts/inpainter/inpainter_checkpoint_best.pth \
+    --output artifacts/inpainter/inpainter.pt
+
+# Use for fast inference
 python macro/validate_inpainter_real.py \
-    --checkpoint artifacts/inpainter/inpainter_checkpoint_best.pth \
+    --torchscript artifacts/inpainter/inpainter.pt \
     --input real_data.root \
     --run 430000 \
     --output validation_output/
 ```
 
-This is ~3x slower than optimized inference but **works correctly** with any mask pattern.
+### 8.6 Performance Comparison
 
-### 8.6 Future: Fast C++ Inference Options
+| Method | Speed (relative) | Works with any mask? | Notes |
+|--------|------------------|---------------------|-------|
+| Checkpoint (Python) | 1× | ✅ Yes | For debugging/development |
+| TorchScript (fixed output) | ~3× faster | ✅ Yes | Recommended for production |
+| Pure C++ libtorch | ~4× faster | ✅ Yes | For future optimization |
 
-If fast C++ inference is needed, here are the options:
+### 8.7 Future Research: Direct Masked Prediction
 
-#### Option A: Fixed-Size Output Model (Recommended)
-
-Modify the inpainter to output predictions for ALL sensors, not just masked ones:
-
-**Current (variable size - not exportable):**
-```python
-# Heads extract only masked positions → variable tensor sizes
-pred_masked, indices, valid = head(face_tensor, latent, mask)
+**Current architecture** predicts all positions then extracts masked ones:
+```
+Encoder → Predict ALL → Extract masked → Variable output
 ```
 
-**Fixed-size (exportable):**
-```python
-# Heads predict ALL positions → fixed tensor size (B, 4760, 2)
-pred_all = head_full(face_tensor, latent)
-# Mask is applied AFTER inference in C++ code
+**Alternative approach** could use attention to directly predict only masked positions:
+```
+Encoder → Cross-attention (masked queries) → Fixed output
 ```
 
-Changes required:
-1. Modify `FaceInpaintingHead`, `HexInpaintingHead`, `OuterSensorInpaintingHead` to return full predictions
-2. Create new `XEC_Inpainter_FixedOutput` class that returns (B, 4760, 2)
-3. Re-train or adapt weights (heads architecture changes slightly)
+This would:
+1. Use position embeddings for masked sensor locations as queries
+2. Attend to encoder features to gather context
+3. Predict only the required positions
 
-**Pros:** Clean TorchScript export, fast inference
-**Cons:** Requires model modification and possibly retraining
+**Potential advantages:**
+- More efficient (fewer computations)
+- Could improve quality by focusing on masked positions
+- Natural fixed-size output (always predict N positions)
 
-#### Option B: Pure C++ Implementation with libtorch
+**Implementation considerations:**
+- Backbone (XECEncoder) can be kept unchanged
+- New head architecture required:
+  ```python
+  class DirectMaskedHead(nn.Module):
+      def __init__(self, max_masked=200):
+          # Position embeddings for masked locations
+          self.pos_embed = nn.Embedding(4760, hidden_dim)
+          # Cross-attention layers
+          self.cross_attn = nn.TransformerDecoder(...)
+          # Output projection
+          self.output = nn.Linear(hidden_dim, 2)
 
-Implement the entire inpainter in C++ using libtorch:
+      def forward(self, encoder_features, masked_indices):
+          # Query positions from masked indices
+          queries = self.pos_embed(masked_indices)
+          # Cross-attend to encoder features
+          features = self.cross_attn(queries, encoder_features)
+          # Predict (npho, time)
+          return self.output(features)
+  ```
 
-1. Load checkpoint weights using `torch::load()`
-2. Reconstruct model architecture in C++ (Conv2d, TransformerEncoder, etc.)
-3. Implement dynamic masking logic natively in C++
+**Status:** Future research direction, not implemented.
 
-```cpp
-// Pseudocode
-auto checkpoint = torch::load("inpainter_checkpoint_best.pth");
-auto encoder = build_xec_encoder(checkpoint);
-auto heads = build_inpainting_heads(checkpoint);
+### 8.8 Future Enhancement: Full Sensor Predictions
 
-// Dynamic masking works naturally in C++
-auto latent = encoder->forward(input);
-auto predictions = heads->forward(latent, mask);  // C++ handles variable sizes
-```
+Since `forward_full_output()` returns predictions for ALL 4760 sensors, we could enrich the output:
 
-**Pros:** Full control, maximum performance, handles dynamic sizes
-**Cons:** Significant development effort, must maintain C++ and Python versions
+**Current output:** Only masked sensor predictions
+**Enhanced output:** All sensor predictions (masked + valid)
 
-#### Option C: Hybrid - Export Encoder, C++ Heads
+**Potential benefits:**
+1. Compare predicted vs actual for valid sensors (reconstruction quality)
+2. Identify sensors where model struggles
+3. Detect data quality issues (large pred-truth mismatch on "valid" sensors)
+4. Study model behavior across the full detector
 
-Split the model:
-1. Export XECEncoder's face processing (ConvNeXt, HexNeXt blocks) to TorchScript
-2. Implement simple inpainting heads in C++ (just Conv2d + Linear layers)
-
-**Problem:** The TransformerEncoder fusion layer still can't export to ONNX, limiting this approach.
-
-### 8.7 Performance Comparison
-
-| Method | Speed (CPU) | Works with any mask? | Effort |
-|--------|-------------|---------------------|--------|
-| Checkpoint (Python) | ~0.9 sec/event | ✅ Yes | None |
-| TorchScript | ~0.3 sec/event | ❌ No (tracing limitation) | - |
-| Fixed-size model | ~0.3 sec/event | ✅ Yes | Medium (modify heads) |
-| Pure C++ libtorch | ~0.2 sec/event | ✅ Yes | High (full reimplementation) |
-
-**Current recommendation:** Use checkpoint mode for validation. If C++ inference becomes critical, pursue Option A (fixed-size output).
+**TODO:** Update `validate_inpainter_real.py` and `analyze_inpainter.py` to support full predictions output mode.
 
 ---
 

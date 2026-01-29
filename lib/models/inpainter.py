@@ -122,6 +122,35 @@ class FaceInpaintingHead(nn.Module):
 
         return pred_masked, mask_indices, valid_mask
 
+    def forward_full(self, face_tensor, latent_token):
+        """
+        Forward pass that returns predictions for ALL positions (fixed size output).
+
+        Args:
+            face_tensor: (B, 2, H, W) - sensor values (masked positions as sentinel)
+            latent_token: (B, latent_dim) - global context from encoder
+
+        Returns:
+            pred_all: (B, H, W, 2) - predictions for all positions
+        """
+        B, C, H, W = face_tensor.shape
+
+        # Project latent to spatial conditioning
+        latent_cond = self.latent_proj(latent_token)  # (B, hidden_dim)
+        latent_cond = latent_cond.view(B, -1, 1, 1).expand(-1, -1, H, W)  # (B, hidden_dim, H, W)
+
+        # Concatenate input with latent conditioning
+        x = torch.cat([face_tensor, latent_cond], dim=1)  # (B, 2 + hidden_dim, H, W)
+
+        # Local encoding
+        features = self.local_encoder(x)  # (B, hidden_dim, H, W)
+
+        # Predict all positions
+        pred_all = self.pred_head(features)  # (B, 2, H, W)
+
+        # Return in (B, H, W, 2) format for easier scattering
+        return pred_all.permute(0, 2, 3, 1)  # (B, H, W, 2)
+
 
 class HexInpaintingHead(nn.Module):
     """
@@ -223,6 +252,36 @@ class HexInpaintingHead(nn.Module):
         valid_mask[batch_idx, within_batch_idx] = True
 
         return pred_masked, mask_indices, valid_mask
+
+    def forward_full(self, node_features, latent_token):
+        """
+        Forward pass that returns predictions for ALL nodes (fixed size output).
+
+        Args:
+            node_features: (B, num_nodes, 2) - sensor values (masked as sentinel)
+            latent_token: (B, latent_dim) - global context from encoder
+
+        Returns:
+            pred_all: (B, num_nodes, 2) - predictions for all nodes
+        """
+        B, N, C = node_features.shape
+
+        # Project latent to per-node conditioning
+        latent_cond = self.latent_proj(latent_token)  # (B, hidden_dim)
+        latent_cond = latent_cond.unsqueeze(1).expand(-1, N, -1)  # (B, N, hidden_dim)
+
+        # Concatenate input with conditioning
+        x = torch.cat([node_features, latent_cond], dim=-1)  # (B, N, 2 + hidden_dim)
+        x = self.input_proj(x)  # (B, N, hidden_dim)
+
+        # GNN layers
+        for layer in self.gnn_layers:
+            x = layer(x, self.edge_index)
+
+        # Predict all nodes
+        pred_all = self.pred_head(x)  # (B, N, 2)
+
+        return pred_all
 
 
 class OuterSensorInpaintingHead(nn.Module):
@@ -405,6 +464,62 @@ class OuterSensorInpaintingHead(nn.Module):
         valid_mask[batch_idx, within_batch_idx] = True
 
         return pred_masked, sensor_ids_masked, valid_mask
+
+    def forward_full(self, finegrid_tensor, latent_token):
+        """
+        Forward pass that returns predictions for ALL sensors (fixed size output).
+
+        Args:
+            finegrid_tensor: (B, 2, H, W) finegrid values
+            latent_token: (B, latent_dim) global context from encoder
+
+        Returns:
+            all_preds: (B, n_sensors, 2) predictions for all 234 outer sensors
+            sensor_ids: (n_sensors,) tensor of sensor IDs (constant across batch)
+        """
+        B, C, H, W = finegrid_tensor.shape
+        device = finegrid_tensor.device
+
+        # Project latent to spatial conditioning
+        latent_cond = self.latent_proj(latent_token)  # (B, hidden_dim)
+        latent_cond_spatial = latent_cond.view(B, -1, 1, 1).expand(-1, -1, H, W)
+
+        # Concatenate input with latent conditioning
+        x = torch.cat([finegrid_tensor, latent_cond_spatial], dim=1)  # (B, 2 + hidden_dim, H, W)
+
+        # Local encoding
+        features = self.local_encoder(x)  # (B, hidden_dim, H, W)
+        hidden_dim = features.shape[1]
+
+        # Predict for all sensors using attention pooling over their regions
+        all_sensor_features = []
+
+        for i, (h0, h1, w0, w1) in enumerate(self.region_bounds):
+            # Extract region features
+            region_h = h1 - h0
+            region_w = w1 - w0
+
+            if region_h <= 0 or region_w <= 0:
+                all_sensor_features.append(torch.zeros(B, hidden_dim, device=device))
+                continue
+
+            region = features[:, :, h0:h1, w0:w1]  # (B, hidden_dim, region_h, region_w)
+
+            # Attention pooling
+            region_flat = region.permute(0, 2, 3, 1).reshape(B, -1, hidden_dim)  # (B, region_h*region_w, hidden_dim)
+            attn_logits = self.attn_weight(region_flat).squeeze(-1)  # (B, region_h*region_w)
+            attn_weights = F.softmax(attn_logits, dim=-1).unsqueeze(-1)  # (B, region_h*region_w, 1)
+            pooled = (region_flat * attn_weights).sum(dim=1)  # (B, hidden_dim)
+            all_sensor_features.append(pooled)
+
+        all_sensor_features = torch.stack(all_sensor_features, dim=1)  # (B, n_sensors, hidden_dim)
+
+        # Concatenate with latent and predict
+        latent_expanded = latent_cond.unsqueeze(1).expand(-1, self.n_sensors, -1)  # (B, n_sensors, hidden_dim)
+        combined = torch.cat([all_sensor_features, latent_expanded], dim=-1)  # (B, n_sensors, 2*hidden_dim)
+        all_preds = self.pred_head(combined)  # (B, n_sensors, 2)
+
+        return all_preds, self.sensor_ids
 
 
 class XEC_Inpainter(nn.Module):
@@ -679,3 +794,108 @@ class XEC_Inpainter(nn.Module):
     def get_num_total_params(self):
         """Returns total number of parameters."""
         return sum(p.numel() for p in self.parameters())
+
+    def forward_full_output(self, x_batch, mask):
+        """
+        Forward pass that returns predictions for ALL 4760 sensors (fixed size output).
+
+        This method is designed for TorchScript export where fixed tensor sizes are required.
+        Unlike forward() which returns variable-length masked predictions, this returns
+        a fixed (B, 4760, 2) tensor with predictions for every sensor position.
+
+        Args:
+            x_batch: (B, 4760, 2) or (B, N, 2) - sensor values
+            mask: (B, 4760) - binary mask (1 = masked/dead, 0 = valid)
+
+        Returns:
+            pred_all: (B, 4760, 2) - predictions for all sensor positions
+                      Note: Only predictions at masked positions are meaningful.
+                      Predictions at valid (unmasked) positions are computed but
+                      should be ignored (original values should be used instead).
+        """
+        B = x_batch.shape[0]
+        device = x_batch.device
+
+        # Flatten if needed
+        x_flat = x_batch if x_batch.dim() == 3 else x_batch.view(B, -1, 2)
+
+        # Apply masking
+        x_masked = x_flat.clone()
+        x_masked[mask.bool().unsqueeze(-1).expand_as(x_flat)] = self.sentinel_value
+
+        # Get encoder features (with masked input and FCMAE-style masking)
+        # Include both randomly-masked AND already-invalid sensors in the encoder mask
+        already_invalid = (x_flat[:, :, 1] == self.sentinel_value)  # (B, N)
+        encoder_mask = (mask.bool() | already_invalid).float()
+
+        with torch.set_grad_enabled(not self.freeze_encoder):
+            latent_seq = self.encoder.forward_features(x_masked, mask=encoder_mask)  # (B, num_tokens, 1024)
+
+        # Map token indices
+        cnn_names = list(self.encoder.cnn_face_names)
+        name_to_idx = {name: i for i, name in enumerate(cnn_names)}
+
+        if self.encoder.outer_fine:
+            outer_idx = len(cnn_names)
+            top_idx = outer_idx + 1
+        else:
+            outer_idx = name_to_idx.get("outer_coarse", name_to_idx.get("outer_center"))
+            top_idx = len(cnn_names)
+        bot_idx = top_idx + 1
+
+        # Initialize output tensor
+        pred_all = torch.zeros(B, 4760, 2, device=device, dtype=x_flat.dtype)
+
+        # Process each face and scatter back to flat indices
+
+        # Inner face (93×44 = 4092 sensors)
+        inner_tensor = gather_face(x_masked, INNER_INDEX_MAP)  # (B, 2, 93, 44)
+        inner_latent = latent_seq[:, name_to_idx["inner"]]
+        inner_pred = self.head_inner.forward_full(inner_tensor, inner_latent)  # (B, 93, 44, 2)
+        # Scatter back to flat indices
+        inner_flat_idx = self.inner_idx.flatten()  # (93*44,)
+        pred_all[:, inner_flat_idx, :] = inner_pred.reshape(B, -1, 2)
+
+        # US face (24×6 = 144 sensors)
+        us_tensor = gather_face(x_masked, US_INDEX_MAP)  # (B, 2, 24, 6)
+        us_latent = latent_seq[:, name_to_idx["us"]]
+        us_pred = self.head_us.forward_full(us_tensor, us_latent)  # (B, 24, 6, 2)
+        us_flat_idx = self.us_idx.flatten()
+        pred_all[:, us_flat_idx, :] = us_pred.reshape(B, -1, 2)
+
+        # DS face (24×6 = 144 sensors)
+        ds_tensor = gather_face(x_masked, DS_INDEX_MAP)  # (B, 2, 24, 6)
+        ds_latent = latent_seq[:, name_to_idx["ds"]]
+        ds_pred = self.head_ds.forward_full(ds_tensor, ds_latent)  # (B, 24, 6, 2)
+        ds_flat_idx = self.ds_idx.flatten()
+        pred_all[:, ds_flat_idx, :] = ds_pred.reshape(B, -1, 2)
+
+        # Outer face
+        outer_latent = latent_seq[:, outer_idx]
+
+        if self.encoder.outer_fine and self.head_outer_sensor is not None:
+            # Sensor-level prediction for finegrid mode (234 sensors)
+            outer_tensor = build_outer_fine_grid_tensor(x_masked, pool_kernel=self.encoder.outer_fine_pool)
+            outer_pred, outer_sensor_ids = self.head_outer_sensor.forward_full(outer_tensor, outer_latent)  # (B, 234, 2)
+            # Scatter back using sensor IDs
+            pred_all[:, outer_sensor_ids, :] = outer_pred
+        else:
+            # Grid-level prediction for split/coarse mode (9×24 = 216 sensors)
+            outer_tensor = gather_face(x_masked, OUTER_COARSE_FULL_INDEX_MAP)  # (B, 2, 9, 24)
+            outer_pred = self.head_outer.forward_full(outer_tensor, outer_latent)  # (B, 9, 24, 2)
+            outer_flat_idx = self.outer_coarse_idx.flatten()
+            pred_all[:, outer_flat_idx, :] = outer_pred.reshape(B, -1, 2)
+
+        # Top hex face
+        top_nodes = gather_hex_nodes(x_masked, self.top_hex_indices)  # (B, num_top, 2)
+        top_latent = latent_seq[:, top_idx]
+        top_pred = self.head_top.forward_full(top_nodes, top_latent)  # (B, num_top, 2)
+        pred_all[:, self.top_hex_indices, :] = top_pred
+
+        # Bottom hex face
+        bot_nodes = gather_hex_nodes(x_masked, self.bottom_hex_indices)  # (B, num_bot, 2)
+        bot_latent = latent_seq[:, bot_idx]
+        bot_pred = self.head_bot.forward_full(bot_nodes, bot_latent)  # (B, num_bot, 2)
+        pred_all[:, self.bottom_hex_indices, :] = bot_pred
+
+        return pred_all
