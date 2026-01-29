@@ -137,43 +137,69 @@ def load_inpainter_checkpoint(checkpoint_path, prefer_ema=True):
     return inpainter, config
 
 
-def disable_transformer_fast_path():
+def disable_transformer_fast_path(model):
     """
     Disable TransformerEncoder's fused CUDA kernels to enable ONNX export.
 
     PyTorch's nn.TransformerEncoder uses fused kernels (aten::_transformer_encoder_layer_fwd)
-    when batch_first=True and other conditions are met. These kernels cannot be exported to ONNX.
+    when batch_first=True and in eval mode. These kernels cannot be exported to ONNX.
 
-    By disabling the fast paths, PyTorch falls back to standard ops (matmul, softmax, etc.)
-    which ARE ONNX-compatible.
+    This function disables the fast path by:
+    1. Setting enable_nested_tensor=False on TransformerEncoder instances
+    2. Putting TransformerEncoder in training mode (fast path only used in eval)
+    3. Setting dropout to 0 to ensure consistent behavior in training mode
+    4. Disabling SDP backends as a fallback
     """
+    # Disable fast path on all TransformerEncoder instances in the model
+    disabled_count = 0
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.TransformerEncoder):
+            # Disable nested tensor (triggers fast path)
+            if hasattr(module, 'enable_nested_tensor'):
+                module.enable_nested_tensor = False
+                print(f"[INFO] Disabled nested tensor on {name}")
+
+            # Put TransformerEncoder in training mode
+            # Fast path is ONLY used in eval mode, so training mode forces slow path
+            module.train()
+            disabled_count += 1
+            print(f"[INFO] Set {name} to training mode (disables fast path)")
+
+            # Disable dropout in encoder layers to ensure deterministic behavior
+            for layer in module.layers:
+                if hasattr(layer, 'dropout'):
+                    if hasattr(layer.dropout, 'p'):
+                        layer.dropout.p = 0.0
+                if hasattr(layer, 'dropout1'):
+                    layer.dropout1.p = 0.0
+                if hasattr(layer, 'dropout2'):
+                    layer.dropout2.p = 0.0
+
+    print(f"[INFO] Modified {disabled_count} TransformerEncoder(s)")
+
+    # Also disable SDP backends as additional measure
     try:
-        # Disable Flash SDP (Scaled Dot Product) attention
         torch.backends.cuda.enable_flash_sdp(False)
         print("[INFO] Disabled Flash SDP")
     except AttributeError:
-        print("[WARN] torch.backends.cuda.enable_flash_sdp not available (PyTorch < 2.0?)")
+        pass
 
     try:
-        # Disable memory-efficient SDP attention
         torch.backends.cuda.enable_mem_efficient_sdp(False)
         print("[INFO] Disabled Memory-efficient SDP")
     except AttributeError:
-        print("[WARN] torch.backends.cuda.enable_mem_efficient_sdp not available")
+        pass
 
     try:
-        # Enable math SDP (standard implementation, ONNX-compatible)
         torch.backends.cuda.enable_math_sdp(True)
         print("[INFO] Enabled Math SDP (standard ops)")
     except AttributeError:
-        print("[WARN] torch.backends.cuda.enable_math_sdp not available")
+        pass
 
-    # Also try the nested tensor setting
     try:
         torch.backends.cuda.enable_cudnn_sdp(False)
-        print("[INFO] Disabled cuDNN SDP")
     except AttributeError:
-        pass  # Not available in all versions
+        pass
 
 
 def main():
@@ -290,7 +316,7 @@ This may slightly affect numerical precision but enables cross-platform deployme
 
         # Disable TransformerEncoder's fused kernels to enable ONNX export
         print("[INFO] Disabling TransformerEncoder fast path for ONNX compatibility...")
-        disable_transformer_fast_path()
+        disable_transformer_fast_path(wrapper)
 
         # Re-run forward pass with disabled fast path to ensure it works
         print("[INFO] Testing forward pass with disabled fast path...")
