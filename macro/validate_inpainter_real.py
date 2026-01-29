@@ -66,7 +66,7 @@ from lib.geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
     OUTER_COARSE_FULL_INDEX_MAP, TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
     flatten_hex_rows,
-    DEFAULT_NPHO_SCALE, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
+    DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
 )
 
 # Constants
@@ -106,10 +106,11 @@ def load_real_data(input_path: str, tree_name: str = "tree") -> Dict[str, np.nda
         tree = f[tree_name]
 
         # Required branches
+        # Note: Use raw 'npho' (not 'relative_npho') to match training normalization
         data = {
             'run': tree['run'].array(library='np'),
             'event': tree['event'].array(library='np'),
-            'relative_npho': tree['relative_npho'].array(library='np'),
+            'npho': tree['npho'].array(library='np'),
             'relative_time': tree['relative_time'].array(library='np'),
         }
 
@@ -160,21 +161,21 @@ def get_dead_channels_from_file(file_path: str) -> np.ndarray:
     return load_dead_channel_list(file_path)
 
 
-def detect_dead_from_data(relative_npho: np.ndarray, relative_time: np.ndarray,
+def detect_dead_from_data(npho: np.ndarray, relative_time: np.ndarray,
                           sentinel_threshold: float = 1e9) -> np.ndarray:
     """
     Detect dead channels from data by checking for sentinel values.
 
     Args:
-        relative_npho: Normalized npho array (N, 4760)
-        relative_time: Normalized time array (N, 4760)
+        npho: Raw photon count array (N, 4760)
+        relative_time: Time array (N, 4760)
         sentinel_threshold: Threshold to consider as sentinel
 
     Returns:
         Boolean mask (4760,) indicating consistently dead channels
     """
     # A channel is dead if it has sentinel values in most events
-    npho_invalid = relative_npho > sentinel_threshold  # (N, 4760)
+    npho_invalid = npho > sentinel_threshold  # (N, 4760)
     time_invalid = relative_time > sentinel_threshold  # (N, 4760)
 
     # Channel is dead if invalid in > 90% of events
@@ -379,8 +380,9 @@ def load_onnx_model(model_path: str, device: str = 'cpu'):
     return session
 
 
-def prepare_model_input(relative_npho: np.ndarray, relative_time: np.ndarray,
+def prepare_model_input(npho: np.ndarray, relative_time: np.ndarray,
                         npho_scale: float = DEFAULT_NPHO_SCALE,
+                        npho_scale2: float = DEFAULT_NPHO_SCALE2,
                         time_scale: float = DEFAULT_TIME_SCALE,
                         time_shift: float = DEFAULT_TIME_SHIFT,
                         sentinel: float = MODEL_SENTINEL) -> np.ndarray:
@@ -388,31 +390,42 @@ def prepare_model_input(relative_npho: np.ndarray, relative_time: np.ndarray,
     Prepare input tensor for the model.
 
     Converts real data format to model input format:
-    - Apply normalization (npho * scale, time * scale + shift)
+    - Apply normalization: npho_norm = log1p(npho / npho_scale) / npho_scale2
+                          time_norm = time / time_scale + time_shift
     - Stack into (N, 4760, 2) tensor
 
     Args:
-        relative_npho: Normalized npho from real data
-        relative_time: Normalized time from real data
-        npho_scale, time_scale, time_shift: Normalization parameters
+        npho: Raw photon counts from real data
+        relative_time: Time relative to minimum (in seconds)
+        npho_scale, npho_scale2: Npho normalization parameters (log1p transform)
+        time_scale, time_shift: Time normalization parameters
         sentinel: Sentinel value for invalid channels
 
     Returns:
         Input array (N, 4760, 2)
     """
-    n_events = len(relative_npho)
+    n_events = len(npho)
 
     # Convert sentinel values
-    npho = convert_sentinel_values(relative_npho, REAL_DATA_SENTINEL, sentinel)
-    time = convert_sentinel_values(relative_time, REAL_DATA_SENTINEL, sentinel)
+    npho_clean = convert_sentinel_values(npho, REAL_DATA_SENTINEL, sentinel)
+    time_clean = convert_sentinel_values(relative_time, REAL_DATA_SENTINEL, sentinel)
 
     # Apply normalization (matching training preprocessing)
     # For valid values only
-    npho_valid = npho != sentinel
-    time_valid = time != sentinel
+    npho_valid = npho_clean != sentinel
+    time_valid = time_clean != sentinel
 
-    npho_normalized = np.where(npho_valid, npho * npho_scale, sentinel)
-    time_normalized = np.where(time_valid, time * time_scale + time_shift, sentinel)
+    # Npho: log1p(npho / npho_scale) / npho_scale2
+    # Clip npho to avoid negative values in log1p
+    npho_clipped = np.maximum(npho_clean, 0)
+    npho_normalized = np.where(npho_valid,
+                               np.log1p(npho_clipped / npho_scale) / npho_scale2,
+                               sentinel)
+
+    # Time: time / time_scale + time_shift
+    time_normalized = np.where(time_valid,
+                               time_clean / time_scale + time_shift,
+                               sentinel)
 
     # Stack into (N, 4760, 2)
     x = np.stack([npho_normalized, time_normalized], axis=-1)
@@ -535,6 +548,7 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
                               artificial_mask: np.ndarray, dead_mask: np.ndarray,
                               data: Dict[str, np.ndarray],
                               npho_scale: float = DEFAULT_NPHO_SCALE,
+                              npho_scale2: float = DEFAULT_NPHO_SCALE2,
                               time_scale: float = DEFAULT_TIME_SCALE,
                               time_shift: float = DEFAULT_TIME_SHIFT) -> List[Dict]:
     """
@@ -547,13 +561,26 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
         artificial_mask: Boolean mask (N, 4760) of artificially masked
         dead_mask: Boolean mask (4760,) of dead channels
         data: Original data dictionary with metadata
-        npho_scale, time_scale, time_shift: Normalization parameters
+        npho_scale, npho_scale2: Npho normalization parameters (for log1p inverse)
+        time_scale, time_shift: Time normalization parameters
 
     Returns:
         List of prediction dictionaries
     """
     all_preds = []
     n_events = len(output)
+
+    def denorm_npho(npho_norm):
+        """Denormalize npho: inverse of log1p(npho/scale)/scale2"""
+        # npho_norm = log1p(npho / npho_scale) / npho_scale2
+        # => npho = (expm1(npho_norm * npho_scale2)) * npho_scale
+        return (np.expm1(npho_norm * npho_scale2)) * npho_scale
+
+    def denorm_time(time_norm):
+        """Denormalize time: inverse of time/scale + shift"""
+        # time_norm = time / time_scale + time_shift
+        # => time = (time_norm - time_shift) * time_scale
+        return (time_norm - time_shift) * time_scale
 
     # Determine face for each sensor
     sensor_to_face = {}
@@ -592,8 +619,8 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
             pred_time_norm = float(output[event_idx, sensor_id, 1])
 
             # Denormalize prediction
-            pred_npho = pred_npho_norm / npho_scale if npho_scale != 0 else pred_npho_norm
-            pred_time = (pred_time_norm - time_shift) / time_scale if time_scale != 0 else pred_time_norm
+            pred_npho = denorm_npho(pred_npho_norm)
+            pred_time = denorm_time(pred_time_norm)
 
             # Get truth (only valid for artificial mask)
             if is_artificial:
@@ -604,14 +631,14 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
                     truth_npho = -999.0
                     error_npho = -999.0
                 else:
-                    truth_npho = truth_npho_norm / npho_scale if npho_scale != 0 else truth_npho_norm
+                    truth_npho = denorm_npho(truth_npho_norm)
                     error_npho = pred_npho - truth_npho
 
                 if truth_time_norm > 1e9 or truth_time_norm == MODEL_SENTINEL:
                     truth_time = -999.0
                     error_time = -999.0
                 else:
-                    truth_time = (truth_time_norm - time_shift) / time_scale if time_scale != 0 else truth_time_norm
+                    truth_time = denorm_time(truth_time_norm)
                     error_time = pred_time - truth_time
             else:
                 # Dead channel - no truth
@@ -644,6 +671,7 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                         artificial_mask: np.ndarray, dead_mask: np.ndarray,
                         data: Dict[str, np.ndarray],
                         npho_scale: float = DEFAULT_NPHO_SCALE,
+                        npho_scale2: float = DEFAULT_NPHO_SCALE2,
                         time_scale: float = DEFAULT_TIME_SCALE,
                         time_shift: float = DEFAULT_TIME_SHIFT) -> List[Dict]:
     """
@@ -655,12 +683,21 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
         artificial_mask: Boolean mask (N, 4760) of artificially masked
         dead_mask: Boolean mask (4760,) of dead channels
         data: Original data dictionary with metadata
-        npho_scale, time_scale, time_shift: Normalization parameters
+        npho_scale, npho_scale2: Npho normalization parameters (for log1p inverse)
+        time_scale, time_shift: Time normalization parameters
 
     Returns:
         List of prediction dictionaries
     """
     all_preds = []
+
+    def denorm_npho(npho_norm):
+        """Denormalize npho: inverse of log1p(npho/scale)/scale2"""
+        return (np.expm1(npho_norm * npho_scale2)) * npho_scale
+
+    def denorm_time(time_norm):
+        """Denormalize time: inverse of time/scale + shift"""
+        return (time_norm - time_shift) * time_scale
 
     for batch in predictions:
         start_idx = batch['batch_start']
@@ -717,8 +754,8 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                     pred_time_norm = float(pred[b, i, 1])
 
                     # Denormalize prediction
-                    pred_npho = pred_npho_norm / npho_scale if npho_scale != 0 else pred_npho_norm
-                    pred_time = (pred_time_norm - time_shift) / time_scale if time_scale != 0 else pred_time_norm
+                    pred_npho = denorm_npho(pred_npho_norm)
+                    pred_time = denorm_time(pred_time_norm)
 
                     # Get truth (only valid for artificial mask)
                     if is_artificial:
@@ -729,14 +766,14 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                             truth_npho = -999.0
                             error_npho = -999.0
                         else:
-                            truth_npho = truth_npho_norm / npho_scale if npho_scale != 0 else truth_npho_norm
+                            truth_npho = denorm_npho(truth_npho_norm)
                             error_npho = pred_npho - truth_npho
 
                         if truth_time_norm > 1e9 or truth_time_norm == MODEL_SENTINEL:
                             truth_time = -999.0
                             error_time = -999.0
                         else:
-                            truth_time = (truth_time_norm - time_shift) / time_scale if time_scale != 0 else truth_time_norm
+                            truth_time = denorm_time(truth_time_norm)
                             error_time = pred_time - truth_time
                     else:
                         # Dead channel - no truth
@@ -856,8 +893,12 @@ def main():
                         help="Maximum number of events to process (default: all)")
 
     # Normalization (should match training)
+    # Npho: npho_norm = log1p(npho / npho_scale) / npho_scale2
+    # Time: time_norm = time / time_scale + time_shift
     parser.add_argument("--npho-scale", type=float, default=DEFAULT_NPHO_SCALE,
                         help=f"Npho normalization scale (default: {DEFAULT_NPHO_SCALE})")
+    parser.add_argument("--npho-scale2", type=float, default=DEFAULT_NPHO_SCALE2,
+                        help=f"Npho normalization scale2 for log1p (default: {DEFAULT_NPHO_SCALE2})")
     parser.add_argument("--time-scale", type=float, default=DEFAULT_TIME_SCALE,
                         help=f"Time normalization scale (default: {DEFAULT_TIME_SCALE})")
     parser.add_argument("--time-shift", type=float, default=DEFAULT_TIME_SHIFT,
@@ -891,7 +932,7 @@ def main():
     print(f"[INFO] Dead channels from DB/file: {len(dead_channels)}")
 
     # Also detect dead from data
-    data_dead_mask = detect_dead_from_data(data['relative_npho'], data['relative_time'])
+    data_dead_mask = detect_dead_from_data(data['npho'], data['relative_time'])
     n_data_dead = data_dead_mask.sum()
     print(f"[INFO] Dead channels detected from data: {n_data_dead}")
 
@@ -912,8 +953,9 @@ def main():
     # Prepare model input
     print("[INFO] Preparing model input...")
     x_input = prepare_model_input(
-        data['relative_npho'], data['relative_time'],
+        data['npho'], data['relative_time'],
         npho_scale=args.npho_scale,
+        npho_scale2=args.npho_scale2,
         time_scale=args.time_scale,
         time_shift=args.time_shift
     )
@@ -954,6 +996,7 @@ def main():
             artificial_mask, combined_dead_mask,
             data,
             npho_scale=args.npho_scale,
+            npho_scale2=args.npho_scale2,
             time_scale=args.time_scale,
             time_shift=args.time_shift
         )
@@ -975,6 +1018,7 @@ def main():
             artificial_mask, combined_dead_mask,
             data,
             npho_scale=args.npho_scale,
+            npho_scale2=args.npho_scale2,
             time_scale=args.time_scale,
             time_shift=args.time_shift
         )
@@ -996,6 +1040,7 @@ def main():
             artificial_mask, combined_dead_mask,
             data,
             npho_scale=args.npho_scale,
+            npho_scale2=args.npho_scale2,
             time_scale=args.time_scale,
             time_shift=args.time_shift
         )

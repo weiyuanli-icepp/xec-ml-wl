@@ -28,6 +28,7 @@ import numpy as np
 import uproot
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.gridspec as gridspec
 from matplotlib.colors import Normalize, TwoSlopeNorm
 from pathlib import Path
 
@@ -37,19 +38,28 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lib.geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
     OUTER_COARSE_FULL_INDEX_MAP, OUTER_CENTER_INDEX_MAP,
+    TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
     DEFAULT_NPHO_SCALE, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
 )
+from lib.geom_utils import build_outer_fine_grid_tensor
+import torch
 
 # Constants
 N_CHANNELS = 4760
 REAL_DATA_SENTINEL = 1e10  # Sentinel value in PrepareRealData.C output
 
-# Face configurations
+# Face configurations for rectangular faces
 FACE_CONFIGS = {
     'inner': {'index_map': INNER_INDEX_MAP, 'title': 'Inner', 'type': 'rect'},
     'us': {'index_map': US_INDEX_MAP, 'title': 'Upstream', 'type': 'rect'},
     'ds': {'index_map': DS_INDEX_MAP, 'title': 'Downstream', 'type': 'rect'},
-    'outer': {'index_map': OUTER_COARSE_FULL_INDEX_MAP, 'title': 'Outer', 'type': 'rect'},
+    # Note: outer face uses build_outer_fine_grid_tensor, not direct index map
+}
+
+# Hex face configurations (top/bottom PMT arrays)
+HEX_FACE_CONFIGS = {
+    'top': {'rows': TOP_HEX_ROWS, 'title': 'Top', 'mode': 'top'},
+    'bot': {'rows': BOTTOM_HEX_ROWS, 'title': 'Bottom', 'mode': 'bottom'},
 }
 
 FACE_ID_TO_NAME = {0: 'inner', 1: 'us', 2: 'ds', 3: 'outer', 4: 'top', 5: 'bot'}
@@ -281,6 +291,114 @@ def plot_face_panel(ax, grid: np.ndarray, title: str,
     return im
 
 
+def build_outer_grid_from_sensor_values(sensor_values: np.ndarray) -> np.ndarray:
+    """
+    Build the outer face fine grid using build_outer_fine_grid_tensor.
+
+    Args:
+        sensor_values: Flat array of sensor values (4760,)
+
+    Returns:
+        2D array with the interpolated outer face grid
+    """
+    # Convert to tensor format expected by build_outer_fine_grid_tensor
+    x = torch.from_numpy(sensor_values.reshape(1, -1, 1).astype(np.float32))
+    # Get the fine grid (B, C, H, W) -> squeeze to (H, W)
+    fine_grid = build_outer_fine_grid_tensor(x, pool_kernel=None)
+    return fine_grid.squeeze(0).squeeze(0).cpu().numpy()
+
+
+def plot_hex_face(ax, row_list: list, sensor_values: np.ndarray,
+                  title: str, mode: str,
+                  cmap: str = 'viridis', vmin: float = None, vmax: float = None,
+                  norm=None, dead_mask: np.ndarray = None,
+                  artificial_mask: np.ndarray = None):
+    """
+    Plot a hexagonal face (top/bottom PMT arrays).
+
+    Args:
+        ax: Matplotlib axes
+        row_list: List of rows, each containing sensor IDs
+        sensor_values: Flat array of sensor values (4760,)
+        title: Panel title
+        mode: 'top' or 'bottom' for layout direction
+        cmap: Colormap name
+        vmin, vmax: Color limits
+        norm: Matplotlib normalization (overrides vmin/vmax)
+        dead_mask: Boolean mask (4760,) of dead channels
+        artificial_mask: Boolean mask (4760,) of artificial masks
+    """
+    pitch_y, pitch_x = 7.5, 7.1
+
+    xs, ys, vals = [], [], []
+    dead_xs, dead_ys = [], []
+    art_xs, art_ys = [], []
+
+    for r_idx, ids in enumerate(row_list):
+        n_items = len(ids)
+        x_start = -(n_items - 1) * pitch_x / 2.0
+        y_pos = r_idx * pitch_y if mode == 'top' else (5 - r_idx) * pitch_y
+
+        for c_idx, pmt_id in enumerate(ids):
+            x = -(x_start + c_idx * pitch_x)
+            y = y_pos
+            val = sensor_values[pmt_id]
+
+            # Check mask status
+            is_dead = dead_mask is not None and dead_mask[pmt_id]
+            is_art = artificial_mask is not None and artificial_mask[pmt_id]
+
+            if is_dead:
+                dead_xs.append(x)
+                dead_ys.append(y)
+            elif is_art:
+                art_xs.append(x)
+                art_ys.append(y)
+
+            if not np.isnan(val):
+                xs.append(x)
+                ys.append(y)
+                vals.append(val)
+
+    xs, ys, vals = np.array(xs), np.array(ys), np.array(vals)
+
+    # Background (all positions)
+    all_xs, all_ys = [], []
+    for r_idx, ids in enumerate(row_list):
+        n_items = len(ids)
+        x_start = -(n_items - 1) * pitch_x / 2.0
+        y_pos = r_idx * pitch_y if mode == 'top' else (5 - r_idx) * pitch_y
+        for c_idx, _ in enumerate(ids):
+            all_xs.append(-(x_start + c_idx * pitch_x))
+            all_ys.append(y_pos)
+
+    ax.scatter(all_xs, all_ys, s=200, c='lightgray', marker='h', alpha=0.3)
+
+    # Plot values
+    if len(xs) > 0:
+        if norm is not None:
+            ax.scatter(xs, ys, c=vals, s=200, cmap=cmap, norm=norm,
+                      marker='h', edgecolors='none')
+        else:
+            ax.scatter(xs, ys, c=vals, s=200, cmap=cmap, vmin=vmin, vmax=vmax,
+                      marker='h', edgecolors='none')
+
+    # Overlay dead channels
+    if len(dead_xs) > 0:
+        ax.scatter(dead_xs, dead_ys, s=200, c='gray', marker='h',
+                  edgecolors='red', linewidths=1.5, hatch='///')
+
+    # Overlay artificial masks
+    if len(art_xs) > 0:
+        ax.scatter(art_xs, art_ys, s=200, facecolors='none', marker='h',
+                  edgecolors='blue', linewidths=2)
+
+    ax.set_xlim(-55, 55)
+    ax.set_ylim(-5, 45)
+    ax.set_title(title, fontsize=10)
+    ax.axis('off')
+
+
 def plot_real_data_event(event_data: dict, predictions: dict,
                          channel: str = 'npho',
                          title: str = None,
@@ -291,10 +409,12 @@ def plot_real_data_event(event_data: dict, predictions: dict,
     """
     Plot real data event with inpainter predictions.
 
-    Layout:
+    Layout (6 faces per row):
     - Row 1: Original data (with dead channels marked)
     - Row 2: Prediction (all masked sensors filled)
     - Row 3: Residual (only for artificial masks, dead channels marked as N/A)
+
+    Faces: Top, Downstream, Inner, Upstream, Outer, Bottom
 
     Args:
         event_data: Dictionary from load_real_data_event
@@ -352,7 +472,9 @@ def plot_real_data_event(event_data: dict, predictions: dict,
         title_parts = [f"Run {run} Event {event}"]
 
         if 'energyReco' in event_data:
-            title_parts.append(f"E={event_data['energyReco']:.1f} MeV")
+            # energyReco is in GeV, convert to MeV for display
+            energy_MeV = event_data['energyReco'] * 1000
+            title_parts.append(f"E={energy_MeV:.1f} MeV")
         if 'uvwRecoFI' in event_data:
             uvw = event_data['uvwRecoFI']
             title_parts.append(f"uvw=({uvw[0]:.1f}, {uvw[1]:.1f}, {uvw[2]:.1f})")
@@ -363,15 +485,8 @@ def plot_real_data_event(event_data: dict, predictions: dict,
 
         title = " | ".join(title_parts)
 
-    # Setup figure
-    faces = ['inner', 'us', 'ds', 'outer']
-    n_faces = len(faces)
-
-    fig, axes = plt.subplots(3, n_faces, figsize=(4*n_faces, 10))
-
     # Determine color limits
     valid_original = original[~np.isnan(original)]
-    valid_pred = pred_values[~np.isnan(pred_values)]
     valid_residual = residual_values[~np.isnan(residual_values)]
 
     if len(valid_original) > 0:
@@ -388,45 +503,103 @@ def plot_real_data_event(event_data: dict, predictions: dict,
 
     # Create diverging norm for residual
     res_norm = TwoSlopeNorm(vmin=vmin_res, vcenter=0, vmax=vmax_res)
+    data_norm = Normalize(vmin=vmin_data, vmax=vmax_data)
 
-    # Plot each face
-    for col, face_name in enumerate(faces):
-        config = FACE_CONFIGS[face_name]
-        idx_map = config['index_map']
-        face_title = config['title']
+    # Setup figure with 6 columns: Top, DS, Inner, US, Outer, Bottom
+    # Using gridspec for better control over hex face aspect ratios
+    fig = plt.figure(figsize=(24, 12))
 
-        # Create grids
-        orig_grid = create_face_grid(original, idx_map)
-        filled_grid = create_face_grid(filled, idx_map)
-        residual_grid = create_face_grid(residual_values, idx_map)
-        dead_grid = create_mask_grid(dead_mask, idx_map)
-        art_grid = create_mask_grid(artificial_mask, idx_map)
+    # Width ratios: hex faces need different aspect ratio
+    # Top(hex), DS(rect), Inner(rect), US(rect), Outer(rect), Bottom(hex)
+    width_ratios = [1, 0.5, 2, 0.5, 2, 1]
+    gs = gridspec.GridSpec(3, 6, width_ratios=width_ratios, wspace=0.15, hspace=0.2)
 
-        # Row 0: Original
-        plot_face_panel(axes[0, col], orig_grid,
-                        f"{face_title} - Original",
-                        cmap='viridis', vmin=vmin_data, vmax=vmax_data,
-                        dead_mask=dead_grid)
+    # Build grids for rectangular faces
+    rect_faces = ['ds', 'inner', 'us']
+    rect_cols = [1, 2, 3]  # Column positions for DS, Inner, US
 
-        # Row 1: Filled (original + predictions)
-        plot_face_panel(axes[1, col], filled_grid,
-                        f"{face_title} - Filled",
-                        cmap='viridis', vmin=vmin_data, vmax=vmax_data,
-                        dead_mask=dead_grid, artificial_mask=art_grid)
+    # Build outer face grids using proper interpolation
+    outer_orig = build_outer_grid_from_sensor_values(np.nan_to_num(original, nan=0))
+    outer_filled = build_outer_grid_from_sensor_values(np.nan_to_num(filled, nan=0))
+    outer_residual = build_outer_grid_from_sensor_values(np.nan_to_num(residual_values, nan=0))
+    outer_dead = build_outer_grid_from_sensor_values(dead_mask.astype(np.float32)) > 0.01
+    outer_art = build_outer_grid_from_sensor_values(artificial_mask.astype(np.float32)) > 0.01
 
-        # Row 2: Residual (only artificial)
-        plot_face_panel(axes[2, col], residual_grid,
-                        f"{face_title} - Residual",
-                        cmap='RdBu_r', norm=res_norm,
-                        dead_mask=dead_grid, artificial_mask=art_grid)
+    # Data arrays for each row
+    data_arrays = [
+        {'values': original, 'label': 'Original'},
+        {'values': filled, 'label': 'Filled'},
+        {'values': residual_values, 'label': 'Residual'},
+    ]
 
-    # Add row labels
-    fig.text(0.02, 0.83, 'Original\n(dead=hatched)', va='center', ha='left',
-             fontsize=11, fontweight='bold', rotation=90)
-    fig.text(0.02, 0.50, 'Filled\n(pred inserted)', va='center', ha='left',
-             fontsize=11, fontweight='bold', rotation=90)
-    fig.text(0.02, 0.17, 'Residual\n(artificial only)', va='center', ha='left',
-             fontsize=11, fontweight='bold', rotation=90)
+    outer_arrays = [
+        {'grid': outer_orig, 'dead': outer_dead, 'art': outer_art},
+        {'grid': outer_filled, 'dead': outer_dead, 'art': outer_art},
+        {'grid': outer_residual, 'dead': outer_dead, 'art': outer_art},
+    ]
+
+    for row_idx in range(3):
+        row_data = data_arrays[row_idx]
+        values = row_data['values']
+        row_label = row_data['label']
+
+        # Determine colormap and norm for this row
+        if row_idx == 2:  # Residual row
+            cmap = 'RdBu_r'
+            norm = res_norm
+        else:
+            cmap = 'viridis'
+            norm = data_norm
+
+        # Column 0: Top hex face
+        ax_top = fig.add_subplot(gs[row_idx, 0])
+        plot_hex_face(ax_top, TOP_HEX_ROWS, values,
+                     f"Top - {row_label}", mode='top',
+                     cmap=cmap, norm=norm,
+                     dead_mask=dead_mask if row_idx > 0 else None,
+                     artificial_mask=artificial_mask if row_idx > 0 else None)
+
+        # Columns 1-3: DS, Inner, US rectangular faces
+        for face_name, col in zip(rect_faces, rect_cols):
+            ax = fig.add_subplot(gs[row_idx, col])
+            config = FACE_CONFIGS[face_name]
+            idx_map = config['index_map']
+            face_title = config['title']
+
+            grid = create_face_grid(values, idx_map)
+            dead_grid = create_mask_grid(dead_mask, idx_map) if row_idx > 0 else None
+            art_grid = create_mask_grid(artificial_mask, idx_map) if row_idx > 0 else None
+
+            plot_face_panel(ax, grid, f"{face_title} - {row_label}",
+                           cmap=cmap, norm=norm,
+                           dead_mask=dead_grid, artificial_mask=art_grid,
+                           show_colorbar=False)
+
+        # Column 4: Outer face (using fine grid)
+        ax_outer = fig.add_subplot(gs[row_idx, 4])
+        outer_data = outer_arrays[row_idx]
+        plot_face_panel(ax_outer, outer_data['grid'], f"Outer - {row_label}",
+                       cmap=cmap, norm=norm,
+                       dead_mask=outer_data['dead'] if row_idx > 0 else None,
+                       artificial_mask=outer_data['art'] if row_idx > 0 else None,
+                       show_colorbar=False)
+
+        # Column 5: Bottom hex face
+        ax_bot = fig.add_subplot(gs[row_idx, 5])
+        plot_hex_face(ax_bot, BOTTOM_HEX_ROWS, values,
+                     f"Bottom - {row_label}", mode='bottom',
+                     cmap=cmap, norm=norm,
+                     dead_mask=dead_mask if row_idx > 0 else None,
+                     artificial_mask=artificial_mask if row_idx > 0 else None)
+
+    # Add colorbars
+    cbar_ax1 = fig.add_axes([0.92, 0.4, 0.012, 0.5])
+    fig.colorbar(plt.cm.ScalarMappable(norm=data_norm, cmap='viridis'),
+                 cax=cbar_ax1, label='Value')
+
+    cbar_ax2 = fig.add_axes([0.92, 0.1, 0.012, 0.25])
+    fig.colorbar(plt.cm.ScalarMappable(norm=res_norm, cmap='RdBu_r'),
+                 cax=cbar_ax2, label='Residual')
 
     # Add legend
     legend_elements = [
@@ -442,7 +615,7 @@ def plot_real_data_event(event_data: dict, predictions: dict,
     channel_label = 'Npho' if channel == 'npho' else 'Time'
     fig.suptitle(f"{channel_label}: {title}", fontsize=12, fontweight='bold', y=0.98)
 
-    plt.tight_layout(rect=[0.05, 0.05, 1, 0.96])
+    plt.tight_layout(rect=[0.02, 0.05, 0.9, 0.95])
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')

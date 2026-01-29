@@ -41,10 +41,11 @@ FACE_DIMENSIONS = {
     "outer": (9, 24),  # coarse grid
 }
 
-# Default normalization parameters (from config)
-DEFAULT_NPHO_SCALE = 0.58
-DEFAULT_TIME_SCALE = 6.5e-8
-DEFAULT_TIME_SHIFT = 0.5
+# Default normalization parameters (must match training config)
+DEFAULT_NPHO_SCALE = 1000.0
+DEFAULT_NPHO_SCALE2 = 4.08
+DEFAULT_TIME_SCALE = 1.14e-7
+DEFAULT_TIME_SHIFT = -0.46
 
 # Invalid value marker (used for dead channels in real data validation)
 INVALID_VALUE = -999.0
@@ -277,9 +278,8 @@ def plot_residual_distributions(df: pd.DataFrame, save_dir: str, suffix: str = "
 
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, f"residual_distributions{suffix}.pdf"), dpi=150)
-    plt.savefig(os.path.join(save_dir, f"residual_distributions{suffix}.png"), dpi=150)
     plt.close()
-    print(f"[INFO] Saved residual_distributions{suffix}.pdf/png")
+    print(f"[INFO] Saved residual_distributions{suffix}.pdf")
 
 
 def plot_residual_per_face(df: pd.DataFrame, save_dir: str, suffix: str = ""):
@@ -328,10 +328,9 @@ def plot_residual_per_face(df: pd.DataFrame, save_dir: str, suffix: str = ""):
         plt.suptitle(f"Residual Distribution by Face: {var}", fontsize=14)
         plt.tight_layout()
         plt.savefig(os.path.join(save_dir, f"residual_per_face_{var}{suffix}.pdf"), dpi=150)
-        plt.savefig(os.path.join(save_dir, f"residual_per_face_{var}{suffix}.png"), dpi=150)
         plt.close()
 
-    print(f"[INFO] Saved residual_per_face_npho/time{suffix}.pdf/png")
+    print(f"[INFO] Saved residual_per_face_npho/time{suffix}.pdf")
 
 
 def plot_scatter_truth_vs_pred(df: pd.DataFrame, save_dir: str, max_points: int = 50000, suffix: str = ""):
@@ -376,9 +375,8 @@ def plot_scatter_truth_vs_pred(df: pd.DataFrame, save_dir: str, max_points: int 
 
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, f"scatter_truth_vs_pred{suffix}.pdf"), dpi=150)
-    plt.savefig(os.path.join(save_dir, f"scatter_truth_vs_pred{suffix}.png"), dpi=150)
     plt.close()
-    print(f"[INFO] Saved scatter_truth_vs_pred{suffix}.pdf/png")
+    print(f"[INFO] Saved scatter_truth_vs_pred{suffix}.pdf")
 
 
 def plot_resolution_vs_signal(df: pd.DataFrame, save_dir: str, n_bins: int = 20, suffix: str = ""):
@@ -452,9 +450,8 @@ def plot_resolution_vs_signal(df: pd.DataFrame, save_dir: str, n_bins: int = 20,
 
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, f"resolution_vs_signal{suffix}.pdf"), dpi=150)
-    plt.savefig(os.path.join(save_dir, f"resolution_vs_signal{suffix}.png"), dpi=150)
     plt.close()
-    print(f"[INFO] Saved resolution_vs_signal{suffix}.pdf/png")
+    print(f"[INFO] Saved resolution_vs_signal{suffix}.pdf")
 
 
 def plot_dead_channel_distributions(df: pd.DataFrame, save_dir: str):
@@ -499,7 +496,7 @@ def plot_dead_channel_distributions(df: pd.DataFrame, save_dir: str):
             face_labels.append(f"{face_name}\n(n={len(face_dead)})")
 
     if face_data:
-        ax.boxplot(face_data, labels=face_labels)
+        ax.boxplot(face_data, tick_labels=face_labels)
         ax.axhline(0, color='red', linestyle='--', alpha=0.5)
         ax.set_ylabel("pred_npho")
         ax.set_title("Dead Channel Npho by Face")
@@ -515,16 +512,15 @@ def plot_dead_channel_distributions(df: pd.DataFrame, save_dir: str):
             face_labels.append(f"{face_name}\n(n={len(face_dead)})")
 
     if face_data:
-        ax.boxplot(face_data, labels=face_labels)
+        ax.boxplot(face_data, tick_labels=face_labels)
         ax.set_ylabel("pred_time")
         ax.set_title("Dead Channel Time by Face")
 
     plt.suptitle("Dead Channel Predictions (No Ground Truth)", fontsize=12, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.savefig(os.path.join(save_dir, "dead_channel_distributions.pdf"), dpi=150)
-    plt.savefig(os.path.join(save_dir, "dead_channel_distributions.png"), dpi=150)
     plt.close()
-    print(f"[INFO] Saved dead_channel_distributions.pdf/png")
+    print(f"[INFO] Saved dead_channel_distributions.pdf")
 
 
 def plot_metrics_summary(global_metrics: dict, face_metrics: pd.DataFrame, save_dir: str,
@@ -598,9 +594,8 @@ def plot_metrics_summary(global_metrics: dict, face_metrics: pd.DataFrame, save_
 
     plt.tight_layout(rect=[0, 0.1, 1, 1])
     plt.savefig(os.path.join(save_dir, f"metrics_summary{suffix}.pdf"), dpi=150)
-    plt.savefig(os.path.join(save_dir, f"metrics_summary{suffix}.png"), dpi=150)
     plt.close()
-    print(f"[INFO] Saved metrics_summary{suffix}.pdf/png")
+    print(f"[INFO] Saved metrics_summary{suffix}.pdf")
 
 
 def identify_outliers(df: pd.DataFrame, sigma_threshold: float = 5.0) -> pd.DataFrame:
