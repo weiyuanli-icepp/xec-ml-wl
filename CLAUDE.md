@@ -136,9 +136,48 @@ Models: `XECEncoder` (angle-only legacy), `XECMultiHeadModel` (multi-task)
 - MAE checkpoints: Encoder weights only (no heads/EMA)
 - Auto-detection: Script differentiates full vs MAE checkpoints and resumes appropriately
 
+### Checkpoint Resume Options
+
+```yaml
+checkpoint:
+  resume_from: path/to/checkpoint.pth
+  refresh_lr: false      # Reset LR scheduler for remaining epochs (T_max = epochs - current)
+  reset_epoch: false     # Start from epoch 1 (only load model weights, fresh training state)
+  new_mlflow_run: false  # Force new MLflow run instead of resuming previous run
+  save_dir: artifacts
+  save_artifacts: true
+```
+
+CLI equivalents: `--refresh_lr`, `--reset_epoch`, `--new_mlflow_run`
+
+**refresh_lr behavior:** When resuming at epoch 15 with `epochs: 50`, the cosine scheduler is recreated with `T_max=35` (remaining epochs). LR starts at configured value and decays properly over epochs 15-50.
+
+**reset_epoch behavior:** Only loads model weights from checkpoint, starts training from epoch 1. Useful for fine-tuning with completely fresh optimizer/scheduler state.
+
 ## Key Artifacts
 
 - `artifacts/<RUN>/checkpoint_*.pth`: Model weights
 - `artifacts/<RUN>/predictions_*.csv`: Validation predictions
+- `artifacts/<RUN>/resolution_*.pdf`: Resolution profile plots
+- `artifacts/<RUN>/worst_events/`: Worst case event displays (MeV units)
 - `artifacts/<RUN>/*.onnx`: ONNX export for C++ inference
 - `mlruns/`: MLflow experiment tracking
+
+### Resolution Plots
+
+Energy resolution plots (`resolution_energy_*.pdf`) include:
+- Row 1: Residual histogram, Resolution vs energy, Relative resolution (σ/E) vs energy, Pred vs True scatter
+- Row 2: Resolution vs U, V, W (first interaction point profiled), Relative resolution vs U
+
+Regenerate plots from saved predictions:
+```bash
+python macro/regenerate_resolution_plots.py artifacts/<RUN>/ --tasks energy angle
+```
+
+## Validation Metrics
+
+MLflow tracks task-specific metrics:
+- **Angle task:** `val_cos` (cosine loss = 1 - cos_sim between direction vectors), `angle_resolution_68pct`
+- **Position task:** `val_cos_pos` (cosine loss between position vectors), `uvw_dist_68pct`, `uvw_{u,v,w}_res_68pct`
+- **Energy task:** Tracked via resolution plots
+- **Common:** `val_loss`, `val_smooth_l1`, `val_l1`, `val_mse`

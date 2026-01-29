@@ -681,9 +681,12 @@ def train_with_config(config_path: str, profile: bool = None):
             for metric_key in ["smooth_l1", "l1", "mse"]:
                 if metric_key in val_metrics:
                     log_dict[f"val_{metric_key}"] = val_metrics[metric_key]
-            # Only log cosine loss if angle task is active (cos is not meaningful for other tasks)
+            # Only log cosine loss if angle task is active
             if "angle" in active_tasks and "cos" in val_metrics:
                 log_dict["val_cos"] = val_metrics["cos"]
+            # Log position cosine loss if position task is active
+            if "uvwFI" in active_tasks and "cos_pos" in val_metrics:
+                log_dict["val_cos_pos"] = val_metrics["cos_pos"]
 
             if val_stats:
                 log_dict.update(val_stats)

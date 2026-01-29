@@ -82,6 +82,46 @@ class PositionTaskHandler(TaskHandler):
         dist = torch.norm(residual, dim=1)
         loss_sums["uvw_dist"].append(dist.cpu().numpy())
 
+    def compute_cosine_loss(
+        self,
+        preds: Dict[str, torch.Tensor],
+        targets: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Compute cosine similarity loss for position vectors.
+
+        Cosine similarity measures whether the predicted position vector
+        points in the same direction from origin as the true position.
+        cos_loss = 1 - cos_sim, where cos_sim = (pred · true) / (|pred| * |true|)
+
+        Returns:
+            Dict with 'cos_pos' (cosine loss) and 'pos_angle' (angle in degrees)
+        """
+        p_uvw = preds["uvwFI"]
+        t_uvw = targets["uvwFI"]
+
+        # Compute norms
+        p_norm = torch.norm(p_uvw, dim=1, keepdim=True).clamp(min=1e-8)
+        t_norm = torch.norm(t_uvw, dim=1, keepdim=True).clamp(min=1e-8)
+
+        # Normalize to unit vectors
+        p_unit = p_uvw / p_norm
+        t_unit = t_uvw / t_norm
+
+        # Cosine similarity: dot product of unit vectors
+        cos_sim = torch.sum(p_unit * t_unit, dim=1).clamp(-1.0, 1.0)
+
+        # Cosine loss: 1 - cos_sim (0 = perfect alignment, 2 = opposite directions)
+        cos_loss = 1.0 - cos_sim
+
+        # Angle between vectors in degrees
+        pos_angle = torch.acos(cos_sim) * (180.0 / np.pi)
+
+        return {
+            "cos_pos": cos_loss,
+            "pos_angle": pos_angle,
+        }
+
     def compute_metrics(
         self,
         val_root_data: Dict[str, np.ndarray],

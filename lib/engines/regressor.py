@@ -64,7 +64,7 @@ def run_epoch_stream(
     criterion_l1 = nn.L1Loss(reduction="none")
     criterion_mse = nn.MSELoss(reduction="none")
 
-    loss_sums = {"total_opt": 0.0, "smooth_l1": 0.0, "l1": 0.0, "mse": 0.0, "cos": 0.0}
+    loss_sums = {"total_opt": 0.0, "smooth_l1": 0.0, "l1": 0.0, "mse": 0.0, "cos": 0.0, "cos_pos": 0.0}
     nobs = 0
 
     epoch_throughput = []
@@ -86,6 +86,7 @@ def run_epoch_stream(
         # Position task (uvwFI)
         "pred_u": [],        "pred_v": [],        "pred_w": [],
         "true_u": [],        "true_v": [],        "true_w": [],
+        "pos_angle": [],     # Angle between pred and true position vectors
         # Legacy position fields
         "x_truth": [], "y_truth": [], "z_truth": [],
         "x_vtx": [],   "y_vtx": [],   "z_vtx": []
@@ -295,6 +296,14 @@ def run_epoch_stream(
                     if isinstance(handler, PositionTaskHandler):
                         # Collect residuals for position resolution
                         handler.collect_residuals(preds, target_dict, loss_sums)
+                        # Compute cosine loss for position task
+                        cos_losses = handler.compute_cosine_loss(preds, target_dict)
+                        if "cos_pos" in cos_losses:
+                            loss_sums["cos_pos"] += cos_losses["cos_pos"].sum().item()
+                        if "pos_angle" in cos_losses:
+                            val_root_data["pos_angle"].append(
+                                cos_losses["pos_angle"].cpu().numpy()
+                            )
 
                 # === Common data collection ===
                 # Check for required keys and warn if missing
