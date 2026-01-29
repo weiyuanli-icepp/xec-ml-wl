@@ -3,8 +3,6 @@ import numpy as np
 import uproot
 import time
 import os
-import sys
-import resource
 import psutil
 from .geom_utils import gather_face, gather_hex_nodes
 from .geom_defs import (
@@ -392,7 +390,6 @@ def get_system_metrics(device=None):
             - system/vram_allocated_GB: GPU memory currently allocated by this process
             - system/vram_peak_GB: Peak GPU memory allocated by this process
             - system/process_rss_GB: Current process resident memory
-            - system/process_rss_peak_GB: Peak process resident memory (max RSS)
     """
     metrics = {}
 
@@ -412,19 +409,7 @@ def get_system_metrics(device=None):
     try:
         process = psutil.Process(os.getpid())
         mem_info = process.memory_info()
-
-        # Current RSS
         metrics["system/process_rss_GB"] = mem_info.rss / 1e9
-
-        # Peak RSS (max resident set size) - this is what matters for OOM
-        # ru_maxrss is in kilobytes on Linux, bytes on macOS
-        rusage = resource.getrusage(resource.RUSAGE_SELF)
-        if sys.platform == "darwin":
-            # macOS returns bytes
-            metrics["system/process_rss_peak_GB"] = rusage.ru_maxrss / 1e9
-        else:
-            # Linux returns kilobytes
-            metrics["system/process_rss_peak_GB"] = rusage.ru_maxrss / 1e6
     except Exception:
         pass
 
