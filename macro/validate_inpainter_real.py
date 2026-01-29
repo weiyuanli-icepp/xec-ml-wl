@@ -557,20 +557,29 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
     Collect predictions from flat output tensor (for TorchScript/ONNX).
 
     Args:
-        output: Model output (N, 4760, 2) with predictions
-        x_original: Original input before masking (N, 4760, 2)
+        output: Model output (N, 4760, 2) with predictions (in normalized space)
+        x_original: Original input before masking (N, 4760, 2) - NOT USED, kept for API compat
         combined_mask: Boolean mask (N, 4760) of all masked channels
         artificial_mask: Boolean mask (N, 4760) of artificially masked
         dead_mask: Boolean mask (4760,) of dead channels
-        data: Original data dictionary with metadata
-        npho_scale, npho_scale2: Npho normalization parameters (for log1p inverse)
-        time_scale, time_shift: Time normalization parameters
+        data: Original data dictionary with raw npho/time and metadata
+        npho_scale, npho_scale2: Npho normalization parameters (for denormalizing predictions)
+        time_scale, time_shift: Time normalization parameters (for denormalizing predictions)
 
     Returns:
         List of prediction dictionaries
+
+    Note:
+        Truth values are taken DIRECTLY from raw data (data['npho'], data['relative_time']),
+        NOT from normalized/denormalized values. This avoids any roundtrip errors.
+        Only predictions need denormalization since they come from the model in normalized space.
     """
     all_preds = []
     n_events = len(output)
+
+    # Raw data arrays for truth values (no normalization needed!)
+    raw_npho = data['npho']
+    raw_time = data['relative_time']
 
     def denorm_npho(npho_norm):
         """Denormalize npho: inverse of log1p(npho/scale)/scale2"""
@@ -616,7 +625,7 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
             is_artificial = artificial_mask[event_idx, sensor_id]
             mask_type = 0 if is_artificial else 1
 
-            # Get prediction (denormalize)
+            # Get prediction (denormalize from model's normalized output)
             pred_npho_norm = float(output[event_idx, sensor_id, 0])
             pred_time_norm = float(output[event_idx, sensor_id, 1])
 
@@ -624,23 +633,24 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
             pred_npho = denorm_npho(pred_npho_norm)
             pred_time = denorm_time(pred_time_norm)
 
-            # Get truth (only valid for artificial mask)
+            # Get truth DIRECTLY from raw data (no normalization roundtrip!)
             if is_artificial:
-                truth_npho_norm = float(x_original[event_idx, sensor_id, 0])
-                truth_time_norm = float(x_original[event_idx, sensor_id, 1])
+                truth_npho_raw = float(raw_npho[event_idx, sensor_id])
+                truth_time_raw = float(raw_time[event_idx, sensor_id])
 
-                if truth_npho_norm > 1e9 or truth_npho_norm == MODEL_SENTINEL:
+                # Check for invalid values (sentinel in raw data is 1e10)
+                if truth_npho_raw > 1e9 or truth_npho_raw < 0:
                     truth_npho = -999.0
                     error_npho = -999.0
                 else:
-                    truth_npho = denorm_npho(truth_npho_norm)
+                    truth_npho = truth_npho_raw  # Use raw value directly!
                     error_npho = pred_npho - truth_npho
 
-                if truth_time_norm > 1e9 or truth_time_norm == MODEL_SENTINEL:
+                if truth_time_raw > 1e9:
                     truth_time = -999.0
                     error_time = -999.0
                 else:
-                    truth_time = denorm_time(truth_time_norm)
+                    truth_time = truth_time_raw  # Use raw value directly!
                     error_time = pred_time - truth_time
             else:
                 # Dead channel - no truth
@@ -681,17 +691,26 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
 
     Args:
         predictions: List of batch predictions from run_inference
-        x_original: Original input before masking (N, 4760, 2)
+        x_original: Original input before masking (N, 4760, 2) - NOT USED, kept for API compat
         artificial_mask: Boolean mask (N, 4760) of artificially masked
         dead_mask: Boolean mask (4760,) of dead channels
-        data: Original data dictionary with metadata
-        npho_scale, npho_scale2: Npho normalization parameters (for log1p inverse)
-        time_scale, time_shift: Time normalization parameters
+        data: Original data dictionary with raw npho/time and metadata
+        npho_scale, npho_scale2: Npho normalization parameters (for denormalizing predictions)
+        time_scale, time_shift: Time normalization parameters (for denormalizing predictions)
 
     Returns:
         List of prediction dictionaries
+
+    Note:
+        Truth values are taken DIRECTLY from raw data (data['npho'], data['relative_time']),
+        NOT from normalized/denormalized values. This avoids any roundtrip errors.
+        Only predictions need denormalization since they come from the model in normalized space.
     """
     all_preds = []
+
+    # Raw data arrays for truth values (no normalization needed!)
+    raw_npho = data['npho']
+    raw_time = data['relative_time']
 
     def denorm_npho(npho_norm):
         """Denormalize npho: inverse of log1p(npho/scale)/scale2"""
@@ -753,7 +772,7 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                     is_dead = dead_mask[sensor_id]
                     mask_type = 0 if is_artificial else 1
 
-                    # Get prediction (denormalize)
+                    # Get prediction (denormalize from model's normalized output)
                     pred_npho_norm = float(pred[b, i, 0])
                     pred_time_norm = float(pred[b, i, 1])
 
@@ -761,23 +780,24 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                     pred_npho = denorm_npho(pred_npho_norm)
                     pred_time = denorm_time(pred_time_norm)
 
-                    # Get truth (only valid for artificial mask)
+                    # Get truth DIRECTLY from raw data (no normalization roundtrip!)
                     if is_artificial:
-                        truth_npho_norm = float(x_original[event_idx, sensor_id, 0])
-                        truth_time_norm = float(x_original[event_idx, sensor_id, 1])
+                        truth_npho_raw = float(raw_npho[event_idx, sensor_id])
+                        truth_time_raw = float(raw_time[event_idx, sensor_id])
 
-                        if truth_npho_norm > 1e9 or truth_npho_norm == MODEL_SENTINEL:
+                        # Check for invalid values (sentinel in raw data is 1e10)
+                        if truth_npho_raw > 1e9 or truth_npho_raw < 0:
                             truth_npho = -999.0
                             error_npho = -999.0
                         else:
-                            truth_npho = denorm_npho(truth_npho_norm)
+                            truth_npho = truth_npho_raw  # Use raw value directly!
                             error_npho = pred_npho - truth_npho
 
-                        if truth_time_norm > 1e9 or truth_time_norm == MODEL_SENTINEL:
+                        if truth_time_raw > 1e9:
                             truth_time = -999.0
                             error_time = -999.0
                         else:
-                            truth_time = denorm_time(truth_time_norm)
+                            truth_time = truth_time_raw  # Use raw value directly!
                             error_time = pred_time - truth_time
                     else:
                         # Dead channel - no truth
@@ -1059,61 +1079,39 @@ def main():
             time_shift=args.time_shift
         )
 
-    # Diagnostic: Show normalization parameters and sanity checks
+    # Diagnostic: Show normalization parameters used for PREDICTIONS ONLY
+    # (Truth values come directly from raw data, no normalization applied)
     print(f"\n" + "=" * 60)
     print("NORMALIZATION DIAGNOSTICS")
     print("=" * 60)
-    print(f"Parameters used for normalization AND denormalization:")
+    print(f"Parameters used for DENORMALIZING PREDICTIONS:")
     print(f"  npho_scale  = {args.npho_scale}")
     print(f"  npho_scale2 = {args.npho_scale2}")
     print(f"  time_scale  = {args.time_scale}")
     print(f"  time_shift  = {args.time_shift}")
-    print(f"\nFormulas:")
-    print(f"  npho: norm = log1p(raw / {args.npho_scale}) / {args.npho_scale2}")
-    print(f"        denorm = expm1(norm * {args.npho_scale2}) * {args.npho_scale}")
-    print(f"  time: norm = raw / {args.time_scale} - ({args.time_shift})")
-    print(f"        denorm = (norm + ({args.time_shift})) * {args.time_scale}")
+    print(f"\nDenormalization formulas (applied to model output):")
+    print(f"  pred_npho = expm1(model_output * {args.npho_scale2}) * {args.npho_scale}")
+    print(f"  pred_time = (model_output + ({args.time_shift})) * {args.time_scale}")
+    print(f"\nNote: truth_npho and truth_time are taken DIRECTLY from raw input data")
+    print(f"      (no normalization roundtrip - avoids any transformation errors)")
 
-    # Sanity check: compare raw npho vs denormalized truth for artificially masked sensors
+    # Check pred vs truth
     artificial_preds = [p for p in pred_list if p['mask_type'] == 0 and p['truth_npho'] > 0]
     if artificial_preds:
-        # Get raw npho values for the same sensors
-        raw_npho_for_check = []
-        truth_npho_for_check = []
-        pred_npho_for_check = []
-        for p in artificial_preds[:1000]:  # Check first 1000 for speed
-            event_idx = p['event_idx']
-            sensor_id = p['sensor_id']
-            raw_val = data['npho'][event_idx, sensor_id]
-            if raw_val < 1e9:  # Valid value
-                raw_npho_for_check.append(raw_val)
-                truth_npho_for_check.append(p['truth_npho'])
-                pred_npho_for_check.append(p['pred_npho'])
+        truth_npho_arr = np.array([p['truth_npho'] for p in artificial_preds])
+        pred_npho_arr = np.array([p['pred_npho'] for p in artificial_preds])
 
-        if raw_npho_for_check:
-            raw_npho_arr = np.array(raw_npho_for_check)
-            truth_npho_arr = np.array(truth_npho_for_check)
-            pred_npho_arr = np.array(pred_npho_for_check)
-
-            # Check if truth matches raw (sanity check for normalization roundtrip)
-            truth_vs_raw_ratio = truth_npho_arr / np.maximum(raw_npho_arr, 1e-6)
-            print(f"\nSanity check (truth should equal raw after normalize→denormalize):")
-            print(f"  raw_npho:   mean={raw_npho_arr.mean():.1f}, median={np.median(raw_npho_arr):.1f}")
-            print(f"  truth_npho: mean={truth_npho_arr.mean():.1f}, median={np.median(truth_npho_arr):.1f}")
-            print(f"  truth/raw ratio: mean={truth_vs_raw_ratio.mean():.6f}, median={np.median(truth_vs_raw_ratio):.6f}")
-            if abs(np.median(truth_vs_raw_ratio) - 1.0) > 0.001:
-                print(f"  [WARNING] truth_npho != raw_npho! Normalization roundtrip error detected.")
-            else:
-                print(f"  [OK] truth_npho matches raw_npho (normalization roundtrip correct)")
-
-            # Check pred vs truth
-            pred_vs_truth_ratio = pred_npho_arr / np.maximum(truth_npho_arr, 1e-6)
-            print(f"\nPrediction comparison:")
-            print(f"  pred_npho:  mean={pred_npho_arr.mean():.1f}, median={np.median(pred_npho_arr):.1f}")
-            print(f"  pred/truth ratio: mean={pred_vs_truth_ratio.mean():.3f}, median={np.median(pred_vs_truth_ratio):.3f}")
-            if abs(np.median(pred_vs_truth_ratio) - 1.0) > 0.1:
-                print(f"  [WARNING] pred_npho != truth_npho! Model may have been trained with different normalization.")
-                print(f"            Check what npho_scale/npho_scale2 were used during training.")
+        pred_vs_truth_ratio = pred_npho_arr / np.maximum(truth_npho_arr, 1e-6)
+        print(f"\nPrediction vs Truth comparison (npho):")
+        print(f"  truth_npho (raw): mean={truth_npho_arr.mean():.1f}, median={np.median(truth_npho_arr):.1f}")
+        print(f"  pred_npho:        mean={pred_npho_arr.mean():.1f}, median={np.median(pred_npho_arr):.1f}")
+        print(f"  pred/truth ratio: mean={pred_vs_truth_ratio.mean():.3f}, median={np.median(pred_vs_truth_ratio):.3f}")
+        if abs(np.median(pred_vs_truth_ratio) - 1.0) > 0.1:
+            print(f"\n  [WARNING] pred_npho systematically differs from truth_npho!")
+            print(f"            This likely means the model was trained with DIFFERENT normalization parameters.")
+            print(f"            Check what npho_scale/npho_scale2 were used during training.")
+        else:
+            print(f"  [OK] Predictions are close to truth values")
     print("=" * 60)
 
     # Save to ROOT
