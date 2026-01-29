@@ -219,6 +219,7 @@ Examples:
         ema_decay = args.ema_decay if args.ema_decay is not None else getattr(cfg.training, 'ema_decay', None)
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
+        mlflow_new_run = getattr(cfg.mlflow, 'new_run', False)
         resume_from = args.resume_from or cfg.checkpoint.resume_from
         save_predictions = args.save_predictions or getattr(cfg.checkpoint, 'save_predictions', False)
         save_interval = getattr(cfg.checkpoint, 'save_interval', 10)
@@ -267,6 +268,7 @@ Examples:
         ema_decay = args.ema_decay  # None by default
         mlflow_experiment = args.mlflow_experiment or "mae_pretraining"
         mlflow_run_name = args.mlflow_run_name
+        mlflow_new_run = False  # No config file, default to False
         resume_from = args.resume_from
         save_predictions = args.save_predictions
         save_interval = 10
@@ -442,6 +444,11 @@ Examples:
         print("=" * 70 + "\n")
         raise ValueError(f"start_epoch ({start_epoch}) >= epochs ({epochs}). "
                         f"Set epochs > {start_epoch - 1} to continue training.")
+
+    # Force new MLflow run if requested
+    if mlflow_new_run and mlflow_run_id is not None:
+        print(f"[INFO] mlflow.new_run=true: Starting fresh MLflow run (ignoring run_id from checkpoint)")
+        mlflow_run_id = None
 
     # MLflow Setup
     # Default to SQLite backend if MLFLOW_TRACKING_URI is not set

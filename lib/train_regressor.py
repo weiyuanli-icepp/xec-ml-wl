@@ -533,6 +533,11 @@ def train_with_config(config_path: str, profile: bool = None):
         raise ValueError(f"start_epoch ({start_epoch}) >= epochs ({cfg.training.epochs}). "
                         f"Set epochs > {start_epoch - 1} to continue training.")
 
+    # --- Force new MLflow run if requested ---
+    if getattr(cfg.mlflow, 'new_run', False) and mlflow_run_id is not None:
+        print(f"[INFO] mlflow.new_run=true: Starting fresh MLflow run (ignoring run_id from checkpoint)")
+        mlflow_run_id = None
+
     # --- MLflow Setup ---
     # Default to SQLite backend if MLFLOW_TRACKING_URI is not set
     if not os.environ.get("MLFLOW_TRACKING_URI"):

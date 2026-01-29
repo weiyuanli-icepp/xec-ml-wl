@@ -254,6 +254,7 @@ Examples:
 
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
+        mlflow_new_run = getattr(cfg.mlflow, 'new_run', False)
         resume_from = args.resume_from or cfg.checkpoint.resume_from
         save_interval = args.save_interval if args.save_interval is not None else cfg.checkpoint.save_interval
 
@@ -307,6 +308,7 @@ Examples:
 
         mlflow_experiment = args.mlflow_experiment or "inpainting"
         mlflow_run_name = args.mlflow_run_name
+        mlflow_new_run = False  # No config file, default to False
         resume_from = args.resume_from
         save_interval = args.save_interval or 10
 
@@ -450,6 +452,11 @@ Examples:
         print("=" * 70 + "\n")
         raise ValueError(f"start_epoch ({start_epoch}) >= epochs ({epochs}). "
                         f"Set epochs > {start_epoch - 1} to continue training.")
+
+    # Force new MLflow run if requested
+    if mlflow_new_run and mlflow_run_id is not None:
+        print(f"[INFO] mlflow.new_run=true: Starting fresh MLflow run (ignoring run_id from checkpoint)")
+        mlflow_run_id = None
 
     # MLflow setup
     # Default to SQLite backend if MLFLOW_TRACKING_URI is not set

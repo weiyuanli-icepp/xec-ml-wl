@@ -107,6 +107,7 @@ class MLflowConfig:
     """MLflow tracking configuration."""
     experiment: str = "gamma_angle"
     run_name: Optional[str] = None
+    new_run: bool = False  # Force new MLflow run even when resuming from checkpoint
 
 
 @dataclass
@@ -352,6 +353,7 @@ class MAEMLflowConfig:
     """MLflow configuration for MAE."""
     experiment: str = "mae_pretraining"
     run_name: Optional[str] = None
+    new_run: bool = False  # Force new MLflow run even when resuming from checkpoint
 
 
 @dataclass
@@ -486,6 +488,7 @@ class InpainterMLflowConfig:
     """MLflow configuration for inpainter."""
     experiment: str = "inpainting"
     run_name: Optional[str] = None
+    new_run: bool = False  # Force new MLflow run even when resuming from checkpoint
 
 
 @dataclass
