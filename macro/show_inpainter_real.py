@@ -103,7 +103,8 @@ def load_real_data_event(original_file: str, event_idx: int = None,
             raise ValueError(f"Event index {event_idx} out of range (0-{n_entries-1})")
 
         # Load required branches
-        branches = ['run', 'event', 'relative_npho', 'relative_time']
+        # Note: Use 'npho' (not 'relative_npho') to match validate_inpainter_real.py
+        branches = ['run', 'event', 'npho', 'relative_time']
 
         # Optional branches
         optional = ['energyReco', 'timeReco', 'xyzRecoFI', 'uvwRecoFI', 'emiAng']
@@ -117,7 +118,7 @@ def load_real_data_event(original_file: str, event_idx: int = None,
             'event_idx': event_idx,
             'run': int(arrays['run'][0]),
             'event': int(arrays['event'][0]),
-            'relative_npho': arrays['relative_npho'][0].astype(np.float32),
+            'npho': arrays['npho'][0].astype(np.float32),  # Use 'npho' to match validate_inpainter_real.py
             'relative_time': arrays['relative_time'][0].astype(np.float32),
         }
 
@@ -425,8 +426,9 @@ def plot_real_data_event(event_data: dict, predictions: dict,
         npho_scale, time_scale, time_shift: Normalization parameters
     """
     # Get sensor values
+    # Note: Use 'npho' (not 'relative_npho') to match validate_inpainter_real.py truth values
     if channel == 'npho':
-        original_raw = event_data['relative_npho'].copy()
+        original_raw = event_data['npho'].copy()
         ch_idx = 0
     else:
         original_raw = event_data['relative_time'].copy()
