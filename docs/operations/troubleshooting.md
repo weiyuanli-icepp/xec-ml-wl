@@ -244,6 +244,8 @@ training:
 
 The training logs `grad_norm_max` to MLflow each epoch - the maximum gradient norm observed during that epoch (before clipping).
 
+**Key concept:** `grad_clip` is a **safety ceiling**, not a target. When gradients are naturally small, a loose ceiling (e.g., 1.0) is perfectly fine - it simply won't activate. You only need to tighten it if you observe instability or want a closer safety margin.
+
 **How to use it:**
 
 1. **Run a few epochs** and observe `grad_norm_max` in MLflow
@@ -251,20 +253,21 @@ The training logs `grad_norm_max` to MLflow each epoch - the maximum gradient no
 
 | `grad_norm_max` | `grad_clip` | Interpretation |
 |-----------------|-------------|----------------|
-| 0.01 - 0.1 | 1.0 | Gradients small, clipping never activates |
-| 0.5 - 0.8 | 1.0 | Healthy - gradients moderate, headroom for spikes |
-| ~1.0 consistently | 1.0 | Clipping every step - may slow learning |
+| 0.001 - 0.01 | 1.0 | Gradients very small - training is stable, no action needed |
+| 0.01 - 0.1 | 1.0 | Gradients small, clipping never activates - this is healthy |
+| 0.5 - 0.8 | 1.0 | Gradients moderate, some headroom for spikes |
+| ~1.0 consistently | 1.0 | Clipping every step - may slow learning, consider raising |
 | Spike to 1.0 before loss spike | 1.0 | Gradient explosion caught by clipping |
 
-3. **Set `grad_clip` appropriately:**
+3. **Optionally tighten `grad_clip`** (only if you want a closer safety net):
 
-| Typical `grad_norm_max` | Recommended `grad_clip` |
-|-------------------------|-------------------------|
+| Typical `grad_norm_max` | Optional tighter `grad_clip` |
+|-------------------------|------------------------------|
 | ~0.01 | 0.05 - 0.1 |
 | ~0.1 | 0.3 - 0.5 |
 | ~0.5 | 1.0 - 2.0 |
 
-**Goal:** Set `grad_clip` to ~2-5× your typical gradient norm. This allows normal training while catching abnormal spikes.
+**Goal:** Keep `grad_clip` at ~2-5× your typical gradient norm. The default of 1.0 is safe for most cases and will catch explosions without interfering with normal training.
 
 #### C. Recovery from Loss Spike
 
