@@ -144,54 +144,22 @@ python macro/analyze_inpainter.py artifacts/inpainter/inpainter_predictions_epoc
 
 For production use and faster inference, export the trained model to TorchScript format.
 
-### 8.1 Export Formats: TorchScript vs ONNX
+### 8.1 Export Format: TorchScript Only
 
-Both TorchScript and ONNX export are now supported.
+**ONNX export is NOT supported** for the inpainter model. PyTorch's `nn.TransformerEncoder` uses a fused CUDA kernel (`aten::_transformer_encoder_layer_fwd`) that cannot be exported to ONNX. This is a PyTorch limitation - the fused kernel is selected at the C++ level during JIT tracing, and cannot be disabled at the Python level.
 
-#### TorchScript vs ONNX Comparison
-
-| Aspect | TorchScript | ONNX |
-|--------|-------------|------|
-| **Format** | PyTorch-native IR | Cross-platform standard IR |
-| **Operator coverage** | 100% of PyTorch ops | ~80% (some native ops missing) |
-| **Runtime** | libtorch (C++), PyTorch | ONNX Runtime, TensorRT, CoreML |
-| **File extension** | `.pt` | `.onnx` |
-| **Numerical precision** | Exact match with PyTorch | May differ slightly |
-| **Model size** | Larger | Smaller (optimized graph) |
-| **Cross-platform** | PyTorch ecosystem only | Any ONNX-compatible runtime |
-
-#### ONNX Export: TransformerEncoder Workaround
-
-PyTorch's `nn.TransformerEncoder` normally uses fused CUDA kernels (`aten::_transformer_encoder_layer_fwd`) that cannot be exported to ONNX. The export script automatically disables these fast paths:
-
-```python
-torch.backends.cuda.enable_flash_sdp(False)
-torch.backends.cuda.enable_mem_efficient_sdp(False)
-torch.backends.cuda.enable_math_sdp(True)
-```
-
-This forces PyTorch to use standard ops (matmul, softmax, etc.) which ARE ONNX-compatible.
-
-**Note:** Disabling fast paths may slightly affect numerical precision and inference speed, but enables cross-platform deployment.
-
-#### Recommendation
-
-- **TorchScript**: Recommended for libtorch/C++ deployment (exact numerical match)
-- **ONNX**: Use for cross-platform deployment (ONNX Runtime, TensorRT, etc.)
+TorchScript export works correctly and provides:
+- Exact numerical match with PyTorch
+- C++ inference via libtorch
+- ~3x speedup over eager mode (on GPU)
 
 ### 8.2 Export Commands
 
 ```bash
-# Export to TorchScript (recommended)
+# Export to TorchScript
 python macro/export_onnx_inpainter.py \
     artifacts/inpainter/inpainter_checkpoint_best.pth \
     --output artifacts/inpainter/inpainter.pt
-
-# Export to ONNX
-python macro/export_onnx_inpainter.py \
-    artifacts/inpainter/inpainter_checkpoint_best.pth \
-    --format onnx \
-    --output artifacts/inpainter/inpainter.onnx
 
 # Use standard weights instead of EMA
 python macro/export_onnx_inpainter.py checkpoint.pth --no-ema --output model.pt
