@@ -10,6 +10,7 @@ Provides the main training loop with support for:
 """
 
 import math
+import heapq
 import torch
 import torch.nn as nn
 import numpy as np
@@ -92,7 +93,9 @@ def run_epoch_stream(
         "x_vtx": [],   "y_vtx": [],   "z_vtx": []
     }
 
-    worst_events_buffer = []
+    # Use heapq for efficient worst-case tracking (min-heap, so we store negative loss)
+    worst_events_heap = []  # (negative_loss, event_dict)
+    MAX_WORST_EVENTS = 10
 
     # Initialize profiler
     profiler = SimpleProfiler(enabled=profile, sync_cuda=True)
@@ -106,6 +109,35 @@ def run_epoch_stream(
 
     # Get task handlers for validation
     task_handlers = get_task_handlers()  # Get all handlers, filter by active tasks later
+
+    # Pre-cache loss functions and settings for each task (avoid repeated lookups in loop)
+    task_loss_cache = {}
+    valid_loss_names = {"smooth_l1", "huber", "l1", "mse", "l2",
+                        "relative_l1", "relative_smooth_l1", "relative_mse", "relative_l2"}
+    if task_weights:
+        for task, cfg in task_weights.items():
+            if isinstance(cfg, dict):
+                loss_fn_name = cfg.get("loss_fn", loss_type)
+                task_weight = cfg.get("weight", 1.0)
+                use_log_transform = cfg.get("log_transform", False)
+            else:
+                loss_fn_name = loss_type
+                task_weight = cfg
+                use_log_transform = False
+
+            if loss_fn_name not in valid_loss_names:
+                warnings.warn(
+                    f"Unknown loss function '{loss_fn_name}' for task '{task}'. "
+                    f"Falling back to smooth_l1. Supported: {valid_loss_names}.",
+                    UserWarning
+                )
+                loss_fn_name = "smooth_l1"
+
+            task_loss_cache[task] = {
+                "loss_fn": get_pointwise_loss_fn(loss_fn_name),
+                "weight": task_weight,
+                "log_transform": use_log_transform,
+            }
 
     # ========================== START OF BATCH LOOP ==========================
     for i_batch, (X_batch, target_dict) in enumerate(loader):
@@ -126,22 +158,28 @@ def run_epoch_stream(
         w = None
         if reweighter is not None:
             w = reweighter.compute_weights(target_dict, device)
-        # Legacy reweighting support
+        # Legacy reweighting support (GPU-based to avoid CPU transfers)
         elif reweight_mode != "none" and "angle" in target_dict:
-            angles = target_dict["angle"].cpu().numpy()
+            angles = target_dict["angle"]  # Already on GPU
             if reweight_mode == "theta" and (edges_theta is not None):
-                bin_id = np.clip(np.digitize(angles[:, 0], edges_theta) - 1, 0, len(weights_theta) - 1)
-                w = torch.from_numpy(weights_theta[bin_id]).to(device)
+                edges_t = torch.as_tensor(edges_theta, device=device)
+                weights_t = torch.as_tensor(weights_theta, device=device, dtype=torch.float32)
+                bin_id = torch.bucketize(angles[:, 0], edges_t) - 1
+                bin_id = bin_id.clamp(0, len(weights_theta) - 1)
+                w = weights_t[bin_id]
             elif reweight_mode == "phi" and (edges_phi is not None):
-                bin_id = np.clip(np.digitize(angles[:, 1], edges_phi) - 1, 0, len(weights_phi) - 1)
-                w = torch.from_numpy(weights_phi[bin_id]).to(device)
+                edges_t = torch.as_tensor(edges_phi, device=device)
+                weights_t = torch.as_tensor(weights_phi, device=device, dtype=torch.float32)
+                bin_id = torch.bucketize(angles[:, 1], edges_t) - 1
+                bin_id = bin_id.clamp(0, len(weights_phi) - 1)
+                w = weights_t[bin_id]
             elif reweight_mode == "theta_phi" and (edges2_theta is not None):
-                th = angles[:, 0]
-                ph = angles[:, 1]
-                id_th = np.clip(np.digitize(th, edges2_theta) - 1, 0, len(edges2_theta) - 2)
-                id_ph = np.clip(np.digitize(ph, edges2_phi)   - 1, 0, len(edges2_phi)   - 2)
-                w_np = weights_2d[id_th, id_ph].astype("float32")
-                w = torch.from_numpy(w_np).to(device)
+                edges_th_t = torch.as_tensor(edges2_theta, device=device)
+                edges_ph_t = torch.as_tensor(edges2_phi, device=device)
+                weights_2d_t = torch.as_tensor(weights_2d, device=device, dtype=torch.float32)
+                id_th = (torch.bucketize(angles[:, 0], edges_th_t) - 1).clamp(0, len(edges2_theta) - 2)
+                id_ph = (torch.bucketize(angles[:, 1], edges_ph_t) - 1).clamp(0, len(edges2_phi) - 2)
+                w = weights_2d_t[id_th, id_ph]
 
         if train:
             profiler.start("forward")
@@ -150,9 +188,9 @@ def run_epoch_stream(
                 # Forward Pass
                 preds = model(X_batch)
                 if not isinstance(preds, dict):
-                    preds = {"angle": preds} # Compatibility for single-head models
+                    preds = {"angle": preds}  # Compatibility for single-head models
 
-                # Multi-task loss computation
+                # Multi-task loss computation using cached loss functions
                 total_loss = 0.0
                 for task, pred in preds.items():
                     if task not in target_dict:
@@ -162,35 +200,22 @@ def run_epoch_stream(
                     if truth.ndim == 1 and pred.ndim == 2:
                         truth = truth.unsqueeze(-1)
 
-                    # Get loss function from task_weights config
-                    # task_weights can be: {task: {"loss_fn": str, "weight": float, "log_transform": bool}} or {task: float}
-                    loss_fn_name = loss_type  # default
-                    task_weight = 1.0
-                    use_log_transform = False
-                    if task_weights and task in task_weights:
-                        cfg = task_weights[task]
-                        if isinstance(cfg, dict):
-                            loss_fn_name = cfg.get("loss_fn", loss_type)
-                            task_weight = cfg.get("weight", 1.0)
-                            use_log_transform = cfg.get("log_transform", False)
-                        else:
-                            task_weight = cfg
-                    valid_names = {"smooth_l1", "huber", "l1", "mse", "l2",
-                                   "relative_l1", "relative_smooth_l1", "relative_mse", "relative_l2"}
-                    if loss_fn_name not in valid_names:
-                        warnings.warn(
-                            f"Unknown loss function '{loss_fn_name}' for task '{task}'. "
-                            f"Falling back to smooth_l1. Supported: {valid_names}.",
-                            UserWarning
-                        )
-                        loss_fn_name = "smooth_l1"
+                    # Use cached loss function and settings
+                    if task in task_loss_cache:
+                        cache = task_loss_cache[task]
+                        loss_fn = cache["loss_fn"]
+                        task_weight = cache["weight"]
+                        use_log_transform = cache["log_transform"]
+                    else:
+                        # Fallback for uncached tasks
+                        loss_fn = get_pointwise_loss_fn(loss_type)
+                        task_weight = 1.0
+                        use_log_transform = False
 
                     # Apply log transform if configured (for energy/timing)
                     if use_log_transform:
-                        # Clamp to avoid log(0); model outputs log(value)
                         truth = torch.log(truth.clamp(min=1e-6))
 
-                    loss_fn = get_pointwise_loss_fn(loss_fn_name)
                     l_task = loss_fn(pred, truth).mean(dim=-1)
 
                     # Apply sample weights if available
@@ -350,46 +375,52 @@ def run_epoch_stream(
                     val_root_data["z_vtx"].append(v_vtx[:, 2])
 
                 # === Worst Case Tracking (based on total loss across all tasks) ===
-                if active_tasks:  # Track worst cases if any task is active
-                    batch_errs_np = sample_total_loss.cpu().numpy()
+                # Use GPU topk + heapq for efficient tracking without full CPU transfers
+                if active_tasks:
+                    # Find top-5 worst in this batch using GPU
+                    k = min(5, batch_size)
+                    top_losses, top_indices = torch.topk(sample_total_loss, k)
 
-                    # Get metadata
-                    xyz_truth_np = target_dict["xyzTruth"].cpu().numpy() if "xyzTruth" in target_dict else None
-                    energy_np = target_dict["energy"].cpu().numpy() if "energy" in target_dict else None
-                    run_np = target_dict["run"].cpu().numpy() if "run" in target_dict else None
-                    event_np = target_dict["event"].cpu().numpy() if "event" in target_dict else None
+                    # Check if any of these are worse than our current worst
+                    min_heap_loss = -worst_events_heap[0][0] if worst_events_heap else float('-inf')
 
-                    # Find worst 5 samples in this batch
-                    worst_idx = np.argsort(batch_errs_np)[-5:]
-                    for idx in worst_idx:
-                        worst_event = {
-                            "total_loss": batch_errs_np[idx],
-                            "input_npho": X_batch[idx, :, 0].cpu().numpy(),
-                            "input_time": X_batch[idx, :, 1].cpu().numpy(),
-                            "run": run_np[idx] if run_np is not None else None,
-                            "event": event_np[idx] if event_np is not None else None,
-                            "energy_truth": energy_np[idx] if energy_np is not None else None,
-                            "uvw_truth": v_uvw[idx] if v_uvw is not None else None,
-                            "xyz_truth": xyz_truth_np[idx] if xyz_truth_np is not None else None,
-                            "vtx": v_vtx[idx] if v_vtx is not None else None,
-                        }
-                        # Add predictions and truths for active tasks
-                        if "angle" in preds:
-                            worst_event["pred_angle"] = preds["angle"][idx].cpu().numpy()
-                            worst_event["true_angle"] = target_dict["angle"][idx].cpu().numpy()
-                        if "energy" in preds:
-                            worst_event["pred_energy"] = preds["energy"][idx].cpu().numpy()
-                        if "timing" in preds:
-                            worst_event["pred_timing"] = preds["timing"][idx].cpu().numpy()
-                        if "uvwFI" in preds:
-                            worst_event["pred_uvwFI"] = preds["uvwFI"][idx].cpu().numpy()
-                            worst_event["true_uvwFI"] = target_dict["uvwFI"][idx].cpu().numpy()
+                    for i in range(k):
+                        loss_val = top_losses[i].item()
+                        # Only process if this could be in our top-N
+                        if len(worst_events_heap) < MAX_WORST_EVENTS or loss_val > min_heap_loss:
+                            idx = top_indices[i].item()
+                            # Now transfer only this sample's data to CPU
+                            worst_event = {
+                                "total_loss": loss_val,
+                                "input_npho": X_batch[idx, :, 0].cpu().numpy(),
+                                "input_time": X_batch[idx, :, 1].cpu().numpy(),
+                                "run": target_dict["run"][idx].item() if "run" in target_dict else None,
+                                "event": target_dict["event"][idx].item() if "event" in target_dict else None,
+                                "energy_truth": target_dict["energy"][idx].item() if "energy" in target_dict else None,
+                                "uvw_truth": v_uvw[idx] if v_uvw is not None else None,
+                                "xyz_truth": target_dict["xyzTruth"][idx].cpu().numpy() if "xyzTruth" in target_dict else None,
+                                "vtx": v_vtx[idx] if v_vtx is not None else None,
+                            }
+                            # Add predictions and truths for active tasks
+                            if "angle" in preds:
+                                worst_event["pred_angle"] = preds["angle"][idx].cpu().numpy()
+                                worst_event["true_angle"] = target_dict["angle"][idx].cpu().numpy()
+                            if "energy" in preds:
+                                worst_event["pred_energy"] = preds["energy"][idx].cpu().numpy()
+                            if "timing" in preds:
+                                worst_event["pred_timing"] = preds["timing"][idx].cpu().numpy()
+                            if "uvwFI" in preds:
+                                worst_event["pred_uvwFI"] = preds["uvwFI"][idx].cpu().numpy()
+                                worst_event["true_uvwFI"] = target_dict["uvwFI"][idx].cpu().numpy()
 
-                        worst_events_buffer.append(worst_event)
+                            # Use heapq (min-heap with negative loss for max behavior)
+                            if len(worst_events_heap) < MAX_WORST_EVENTS:
+                                heapq.heappush(worst_events_heap, (-loss_val, worst_event))
+                            elif loss_val > -worst_events_heap[0][0]:
+                                heapq.heapreplace(worst_events_heap, (-loss_val, worst_event))
 
-                    # Keep only top 10 worst events
-                    worst_events_buffer.sort(key=lambda x: x["total_loss"], reverse=True)
-                    worst_events_buffer = worst_events_buffer[:10]
+                            # Update threshold for early exit
+                            min_heap_loss = -worst_events_heap[0][0]
 
                 loss_sums["total_opt"] += batch_total_loss.item() * X_batch.size(0)
                 nobs += X_batch.size(0)
@@ -482,7 +513,9 @@ def run_epoch_stream(
             angle_pred_np = np.stack([val_root_data["pred_theta"], val_root_data["pred_phi"]], axis=1)
             angle_true_np = np.stack([val_root_data["true_theta"], val_root_data["true_phi"]], axis=1)
 
-        extra_info["worst_events"] = worst_events_buffer
+        # Convert heap to sorted list (highest loss first)
+        worst_events_list = [event for (neg_loss, event) in sorted(worst_events_heap, reverse=True)]
+        extra_info["worst_events"] = worst_events_list
         extra_info["root_data"] = val_root_data
 
         return metrics, angle_pred_np, angle_true_np, extra_info, val_stats

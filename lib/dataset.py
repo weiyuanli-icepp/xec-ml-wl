@@ -114,7 +114,7 @@ class XECStreamingDataset(IterableDataset):
 
     def __iter__(self):
         """
-        Iterates over chunks and yields batches.
+        Iterates over chunks and yields pre-batched tensors.
         """
         # DistributedDataParallel (DDP)
         worker_info = torch.utils.data.get_worker_info()
@@ -128,18 +128,35 @@ class XECStreamingDataset(IterableDataset):
 
         for chunk in iterate_chunks(files, self.tree_name, self.all_branches, self.step_size):
             num_events = len(chunk[self.input_branches[0]])
-            
+
             indices = np.linspace(0, num_events, self.num_threads + 1, dtype=int)
             futures = []
-            
+
             for i in range(self.num_threads):
                 sub = {key: chunk[key][indices[i]:indices[i+1]] for key in self.all_branches}
                 futures.append(self.executor.submit(self._process_sub_chunk, sub))
-                
+
+            # Collect all processed sub-chunks
+            x_parts = []
+            t_parts = {k: [] for k in ["energy", "timing", "uvwFI", "angle", "emiVec", "xyzTruth", "xyzVTX", "run", "event"]}
+
             for f in futures:
                 x_sub, t_sub = f.result()
-                for i in range(len(x_sub)):
-                    yield torch.from_numpy(x_sub[i]), {k: torch.as_tensor(v[i]) for k, v in t_sub.items()}
+                x_parts.append(x_sub)
+                for k in t_parts:
+                    t_parts[k].append(t_sub[k])
+
+            # Concatenate all sub-chunks
+            x_all = np.concatenate(x_parts, axis=0)
+            t_all = {k: np.concatenate(v, axis=0) for k, v in t_parts.items()}
+
+            # Yield batches directly
+            num_samples = len(x_all)
+            for start in range(0, num_samples, self.batch_size):
+                end = min(start + self.batch_size, num_samples)
+                x_batch = torch.from_numpy(x_all[start:end])
+                t_batch = {k: torch.from_numpy(v[start:end]) for k, v in t_all.items()}
+                yield x_batch, t_batch
 
 def expand_path(path):
     """
@@ -189,10 +206,11 @@ def get_dataloader(file_path, batch_size=1024, num_workers=4, num_threads=4, **k
         **kwargs
     )
 
+    # Dataset yields pre-batched tensors, so batch_size=None to pass through
     # Using persistent_workers=True keeps workers alive between epochs
     return DataLoader(
         dataset,
-        batch_size=batch_size,
+        batch_size=None,  # Dataset yields pre-batched tensors
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=(num_workers > 0),
