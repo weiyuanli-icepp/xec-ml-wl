@@ -254,7 +254,7 @@ Examples:
 
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
-        mlflow_new_run = getattr(cfg.mlflow, 'new_run', False)
+        mlflow_new_run = getattr(cfg.checkpoint, 'new_mlflow_run', False)
         resume_from = args.resume_from or cfg.checkpoint.resume_from
         save_interval = args.save_interval if args.save_interval is not None else cfg.checkpoint.save_interval
 

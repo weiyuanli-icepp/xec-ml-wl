@@ -219,7 +219,7 @@ Examples:
         ema_decay = args.ema_decay if args.ema_decay is not None else getattr(cfg.training, 'ema_decay', None)
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
-        mlflow_new_run = getattr(cfg.mlflow, 'new_run', False)
+        mlflow_new_run = getattr(cfg.checkpoint, 'new_mlflow_run', False)
         resume_from = args.resume_from or cfg.checkpoint.resume_from
         save_predictions = args.save_predictions or getattr(cfg.checkpoint, 'save_predictions', False)
         save_interval = getattr(cfg.checkpoint, 'save_interval', 10)

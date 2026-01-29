@@ -449,15 +449,33 @@ def train_with_config(config_path: str, profile: bool = None):
             print(f"[INFO] Detected full regressor checkpoint. Resuming training state.")
             model.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            start_epoch = checkpoint["epoch"] + 1
+            checkpoint_epoch = checkpoint["epoch"]
             best_val = checkpoint.get("best_val", float("inf"))
             mlflow_run_id = checkpoint.get("mlflow_run_id", None)
 
-            # Load scheduler state if available (unless refresh_lr is requested)
+            # Handle reset_epoch: start from epoch 1 (only load weights)
+            reset_epoch = getattr(cfg.checkpoint, 'reset_epoch', False)
+            if reset_epoch:
+                start_epoch = 1
+                print(f"[INFO] reset_epoch=True: Starting from epoch 1 (weights loaded from epoch {checkpoint_epoch})")
+            else:
+                start_epoch = checkpoint_epoch + 1
+
+            # Handle refresh_lr: recreate scheduler for remaining epochs
             refresh_lr = getattr(cfg.checkpoint, 'refresh_lr', False)
             if scheduler is not None and "scheduler_state_dict" in checkpoint:
                 if refresh_lr:
-                    print(f"[INFO] refresh_lr=True: Starting fresh scheduler with lr={cfg.training.lr}")
+                    # Recreate scheduler for remaining epochs
+                    remaining_epochs = cfg.training.epochs - start_epoch + 1
+                    print(f"[INFO] refresh_lr=True: Creating fresh scheduler with lr={cfg.training.lr}, "
+                          f"T_max={remaining_epochs} (epochs {start_epoch}-{cfg.training.epochs})")
+                    if scheduler_type == 'cosine':
+                        scheduler = CosineAnnealingLR(
+                            optimizer,
+                            T_max=remaining_epochs,
+                            eta_min=getattr(cfg.training, 'lr_min', 1e-6)
+                        )
+                    # Note: OneCycleLR and Plateau don't need recreation as they adapt
                 else:
                     scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
                     print(f"[INFO] Restored scheduler state.")
@@ -524,8 +542,8 @@ def train_with_config(config_path: str, profile: bool = None):
                         f"Set epochs > {start_epoch - 1} to continue training.")
 
     # --- Force new MLflow run if requested ---
-    if getattr(cfg.mlflow, 'new_run', False) and mlflow_run_id is not None:
-        print(f"[INFO] mlflow.new_run=true: Starting fresh MLflow run (ignoring run_id from checkpoint)")
+    if getattr(cfg.checkpoint, 'new_mlflow_run', False) and mlflow_run_id is not None:
+        print(f"[INFO] new_mlflow_run=True: Starting fresh MLflow run (ignoring run_id from checkpoint)")
         mlflow_run_id = None
 
     # --- MLflow Setup ---
@@ -873,7 +891,9 @@ Examples:
     # Checkpoint (override config)
     parser.add_argument("--resume_from", type=str, default=None, help="Checkpoint to resume from")
     parser.add_argument("--save_dir", type=str, default=None, help="Directory to save artifacts")
-    parser.add_argument("--refresh_lr", action="store_true", help="Reset learning rate when resuming from checkpoint")
+    parser.add_argument("--refresh_lr", action="store_true", help="Reset LR scheduler when resuming (schedule for remaining epochs)")
+    parser.add_argument("--reset_epoch", action="store_true", help="Start from epoch 1 when resuming (only load model weights)")
+    parser.add_argument("--new_mlflow_run", action="store_true", help="Force new MLflow run when resuming")
 
     # MLflow (override config)
     parser.add_argument("--mlflow_experiment", type=str, default=None, help="MLflow experiment name")
@@ -973,6 +993,10 @@ def apply_cli_overrides(cfg, args):
         cfg.checkpoint.save_dir = args.save_dir
     if getattr(args, 'refresh_lr', False):
         cfg.checkpoint.refresh_lr = True
+    if getattr(args, 'reset_epoch', False):
+        cfg.checkpoint.reset_epoch = True
+    if getattr(args, 'new_mlflow_run', False):
+        cfg.checkpoint.new_mlflow_run = True
 
     # MLflow
     if args.mlflow_experiment is not None:
@@ -1005,7 +1029,7 @@ def collect_cli_overrides(args):
         "mlflow_experiment", "run_name", "onnx"
     ]
     # Boolean flags (action="store_true") - only include if True
-    bool_flags = ["profile", "refresh_lr"]
+    bool_flags = ["profile", "refresh_lr", "reset_epoch", "new_mlflow_run"]
     for arg_name in override_args:
         val = getattr(args, arg_name, None)
         if val is not None:

@@ -100,7 +100,9 @@ class CheckpointConfig:
     resume_from: Optional[str] = None
     save_dir: str = "artifacts"
     save_artifacts: bool = True  # Save plots, CSVs, worst case displays (disable for quick testing)
-    refresh_lr: bool = False  # Reset learning rate scheduler when resuming (use new lr from config)
+    refresh_lr: bool = False  # Reset LR scheduler when resuming (schedule runs from current epoch to end)
+    reset_epoch: bool = False  # Start from epoch 1 when resuming (only load model weights)
+    new_mlflow_run: bool = False  # Force new MLflow run even when resuming from checkpoint
 
 
 @dataclass
@@ -108,7 +110,6 @@ class MLflowConfig:
     """MLflow tracking configuration."""
     experiment: str = "gamma_angle"
     run_name: Optional[str] = None
-    new_run: bool = False  # Force new MLflow run even when resuming from checkpoint
 
 
 @dataclass
@@ -347,6 +348,7 @@ class MAECheckpointConfig:
     save_dir: str = "artifacts"
     save_interval: int = 10  # Save checkpoint every N epochs
     save_predictions: bool = True  # Save ROOT file with sensor predictions
+    new_mlflow_run: bool = False  # Force new MLflow run even when resuming from checkpoint
 
 
 @dataclass
@@ -354,7 +356,6 @@ class MAEMLflowConfig:
     """MLflow configuration for MAE."""
     experiment: str = "mae_pretraining"
     run_name: Optional[str] = None
-    new_run: bool = False  # Force new MLflow run even when resuming from checkpoint
 
 
 @dataclass
@@ -482,6 +483,7 @@ class InpainterCheckpointConfig:
     resume_from: Optional[str] = None
     save_dir: str = "artifacts"
     save_interval: int = 10
+    new_mlflow_run: bool = False  # Force new MLflow run even when resuming from checkpoint
 
 
 @dataclass
@@ -489,7 +491,6 @@ class InpainterMLflowConfig:
     """MLflow configuration for inpainter."""
     experiment: str = "inpainting"
     run_name: Optional[str] = None
-    new_run: bool = False  # Force new MLflow run even when resuming from checkpoint
 
 
 @dataclass
