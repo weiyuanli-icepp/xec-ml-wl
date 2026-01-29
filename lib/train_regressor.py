@@ -821,7 +821,7 @@ def train_with_config(config_path: str, profile: bool = None):
             except Exception as e:
                 print(f"[WARN] ONNX export failed: {e}")
 
-    print(f"[INFO] Training complete. Best val_loss: {best_val:.6f}")
+    print(f"[INFO] Training complete. Best val_loss: {best_val:.2e}")
     return best_val
 
 

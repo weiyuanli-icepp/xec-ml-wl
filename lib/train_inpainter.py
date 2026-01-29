@@ -687,7 +687,7 @@ Examples:
                     mlflow.log_artifact(root_path)
 
         print(f"\n[INFO] Training complete!")
-        print(f"  Best validation loss: {best_val_loss:.6f}")
+        print(f"  Best validation loss: {best_val_loss:.2e}")
         print(f"  Checkpoints saved to: {save_path}")
 
 
