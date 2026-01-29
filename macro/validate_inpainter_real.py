@@ -850,6 +850,8 @@ def main():
     # Inference options
     parser.add_argument("--batch-size", type=int, default=64,
                         help="Batch size for inference (default: 64)")
+    parser.add_argument("--device", type=str, default=None,
+                        help="Device for inference: 'cuda' or 'cpu' (default: cpu)")
     parser.add_argument("--max-events", type=int, default=None,
                         help="Maximum number of events to process (default: all)")
 
@@ -927,15 +929,22 @@ def main():
     # Mask the input
     x_input[combined_mask] = MODEL_SENTINEL
 
+    # Determine device (default: cpu for compatibility)
+    device = args.device if args.device else 'cpu'
+    if device == 'cuda' and not torch.cuda.is_available():
+        print("[WARN] CUDA requested but not available, falling back to CPU")
+        device = 'cpu'
+    print(f"[INFO] Using device: {device}")
+
     # Load model and run inference based on model type
     if args.torchscript:
         # TorchScript model (recommended)
-        model = load_torchscript_model(args.torchscript, device='cpu')
+        model = load_torchscript_model(args.torchscript, device=device)
 
         print("[INFO] Running inference (TorchScript)...")
         output = run_inference_torchscript(
             model, x_input, combined_mask.astype(np.float32),
-            batch_size=args.batch_size, device='cpu'
+            batch_size=args.batch_size, device=device
         )
 
         # Collect predictions from flat output
@@ -951,7 +960,7 @@ def main():
 
     elif args.onnx:
         # ONNX model
-        session = load_onnx_model(args.onnx, device='cpu')
+        session = load_onnx_model(args.onnx, device=device)
 
         print("[INFO] Running inference (ONNX)...")
         output = run_inference_onnx(
@@ -972,12 +981,12 @@ def main():
 
     else:
         # Checkpoint model (slower, for debugging)
-        model = load_inpainter_model(args.checkpoint, device='cpu')
+        model = load_inpainter_model(args.checkpoint, device=device)
 
         print("[INFO] Running inference (checkpoint mode - consider using --torchscript for speed)...")
         predictions = run_inference(
             model, x_input, combined_mask,
-            batch_size=args.batch_size, device='cpu'
+            batch_size=args.batch_size, device=device
         )
 
         # Collect predictions from dict output
