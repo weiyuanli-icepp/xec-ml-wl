@@ -45,8 +45,6 @@ from .plotting import (
     plot_timing_resolution_profile,
     plot_position_resolution_profile,
     plot_face_weights,
-    plot_scalar_scatter,
-    plot_pred_truth_scatter,
 )
 from .event_display import save_worst_case_events
 
@@ -125,10 +123,6 @@ def save_validation_artifacts(
         plot_resolution_profile(angle_pred, angle_true, outfile=res_pdf)
         mlflow.log_artifact(res_pdf)
 
-        scatter_pdf = os.path.join(artifact_dir, f"scatter_angle_{run_name}{suffix}.pdf")
-        plot_pred_truth_scatter(angle_pred, angle_true, outfile=scatter_pdf)
-        mlflow.log_artifact(scatter_pdf)
-
     # --- Energy Task ---
     if "energy" in active_tasks:
         pred_energy = root_data.get("pred_energy", np.array([]))
@@ -142,12 +136,8 @@ def save_validation_artifacts(
             mlflow.log_artifact(csv_path)
 
             res_pdf = os.path.join(artifact_dir, f"resolution_energy_{run_name}{suffix}.pdf")
-            plot_energy_resolution_profile(pred_energy, true_energy, outfile=res_pdf)
+            plot_energy_resolution_profile(pred_energy, true_energy, root_data, outfile=res_pdf)
             mlflow.log_artifact(res_pdf)
-
-            scatter_pdf = os.path.join(artifact_dir, f"scatter_energy_{run_name}{suffix}.pdf")
-            plot_scalar_scatter(pred_energy, true_energy, label="Energy", outfile=scatter_pdf)
-            mlflow.log_artifact(scatter_pdf)
 
     # --- Timing Task ---
     if "timing" in active_tasks:
@@ -164,10 +154,6 @@ def save_validation_artifacts(
             res_pdf = os.path.join(artifact_dir, f"resolution_timing_{run_name}{suffix}.pdf")
             plot_timing_resolution_profile(pred_timing, true_timing, outfile=res_pdf)
             mlflow.log_artifact(res_pdf)
-
-            scatter_pdf = os.path.join(artifact_dir, f"scatter_timing_{run_name}{suffix}.pdf")
-            plot_scalar_scatter(pred_timing, true_timing, label="Timing", outfile=scatter_pdf)
-            mlflow.log_artifact(scatter_pdf)
 
     # --- Position Task (uvwFI) ---
     if "uvwFI" in active_tasks:
@@ -467,10 +453,14 @@ def train_with_config(config_path: str, profile: bool = None):
             best_val = checkpoint.get("best_val", float("inf"))
             mlflow_run_id = checkpoint.get("mlflow_run_id", None)
 
-            # Load scheduler state if available
+            # Load scheduler state if available (unless refresh_lr is requested)
+            refresh_lr = getattr(cfg.checkpoint, 'refresh_lr', False)
             if scheduler is not None and "scheduler_state_dict" in checkpoint:
-                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-                print(f"[INFO] Restored scheduler state.")
+                if refresh_lr:
+                    print(f"[INFO] refresh_lr=True: Starting fresh scheduler with lr={cfg.training.lr}")
+                else:
+                    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                    print(f"[INFO] Restored scheduler state.")
 
             if ema_model is not None and "ema_state_dict" in checkpoint:
                 ema_model.load_state_dict(checkpoint["ema_state_dict"])
@@ -670,9 +660,12 @@ def train_with_config(config_path: str, profile: bool = None):
             if "system/grad_norm_max" in tr_metrics:
                 log_dict["grad_norm_max"] = tr_metrics["system/grad_norm_max"]
 
-            for metric_key in ["smooth_l1", "l1", "mse", "cos"]:
+            for metric_key in ["smooth_l1", "l1", "mse"]:
                 if metric_key in val_metrics:
                     log_dict[f"val_{metric_key}"] = val_metrics[metric_key]
+            # Only log cosine loss if angle task is active (cos is not meaningful for other tasks)
+            if "angle" in active_tasks and "cos" in val_metrics:
+                log_dict["val_cos"] = val_metrics["cos"]
 
             if val_stats:
                 log_dict.update(val_stats)
@@ -880,6 +873,7 @@ Examples:
     # Checkpoint (override config)
     parser.add_argument("--resume_from", type=str, default=None, help="Checkpoint to resume from")
     parser.add_argument("--save_dir", type=str, default=None, help="Directory to save artifacts")
+    parser.add_argument("--refresh_lr", action="store_true", help="Reset learning rate when resuming from checkpoint")
 
     # MLflow (override config)
     parser.add_argument("--mlflow_experiment", type=str, default=None, help="MLflow experiment name")
@@ -977,6 +971,8 @@ def apply_cli_overrides(cfg, args):
         cfg.checkpoint.resume_from = args.resume_from
     if args.save_dir is not None:
         cfg.checkpoint.save_dir = args.save_dir
+    if getattr(args, 'refresh_lr', False):
+        cfg.checkpoint.refresh_lr = True
 
     # MLflow
     if args.mlflow_experiment is not None:
@@ -1009,7 +1005,7 @@ def collect_cli_overrides(args):
         "mlflow_experiment", "run_name", "onnx"
     ]
     # Boolean flags (action="store_true") - only include if True
-    bool_flags = ["profile"]
+    bool_flags = ["profile", "refresh_lr"]
     for arg_name in override_args:
         val = getattr(args, arg_name, None)
         if val is not None:

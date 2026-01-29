@@ -273,13 +273,21 @@ def plot_saliency_profile(saliency_data, outfile=None):
     else:
         plt.show()
         
-def plot_energy_resolution_profile(pred, true, bins=20, outfile=None):
+def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=None):
     """
     Plots energy resolution profile:
-    - Residual distribution histogram
-    - Resolution (68% |residual|) vs true energy
-    - Pred vs True scatter plot
+    - Row 1: Residual histogram, Resolution vs energy, Normalized resolution (sigma/E) vs energy
+    - Row 2: Pred vs True scatter, Resolution vs U, V, W (first interaction point)
+
+    Args:
+        pred: Predicted energy values
+        true: True energy values
+        root_data: Dict with 'true_u', 'true_v', 'true_w' for position-profiled plots
+        bins: Number of bins for profiling
+        outfile: Output file path
     """
+    from matplotlib.colors import LogNorm
+
     residual = pred - true
     abs_residual = np.abs(residual)
 
@@ -302,35 +310,83 @@ def plot_energy_resolution_profile(pred, true, bins=20, outfile=None):
 
     percentile_68 = lambda x: np.percentile(x, 68)
 
-    fig, axs = plt.subplots(1, 3, figsize=(15, 4))
-    fig.suptitle("Energy Resolution Profile", fontsize=14)
+    # Check if we have uvwFI data for position-profiled plots
+    has_uvw = (root_data is not None and
+               'true_u' in root_data and len(root_data.get('true_u', [])) > 0)
 
-    # 1. Residual histogram
-    axs[0].hist(residual, bins=100, alpha=0.7, color='tab:blue')
-    axs[0].axvline(0, color='red', linestyle='--', linewidth=1)
-    axs[0].set_xlabel("Residual (Pred - True)")
-    axs[0].set_ylabel("Count")
-    axs[0].set_title(f"Residual Distribution\nBias={np.mean(residual):.4f}, 68%={np.percentile(abs_residual, 68):.4f}")
+    # 2 rows x 4 cols if we have uvwFI data, otherwise 1 row x 4 cols
+    if has_uvw:
+        fig, axs = plt.subplots(2, 4, figsize=(18, 9))
+        fig.suptitle("Energy Resolution Profile", fontsize=14)
+    else:
+        fig, axs = plt.subplots(1, 4, figsize=(18, 4))
+        fig.suptitle("Energy Resolution Profile", fontsize=14)
+        axs = axs.reshape(1, -1)  # Make it 2D for consistent indexing
 
-    # 2. Resolution vs True Energy
+    # Row 1, Col 1: Residual histogram
+    axs[0, 0].hist(residual, bins=100, alpha=0.7, color='tab:blue')
+    axs[0, 0].axvline(0, color='red', linestyle='--', linewidth=1)
+    axs[0, 0].set_xlabel("Residual (Pred - True)")
+    axs[0, 0].set_ylabel("Count")
+    axs[0, 0].set_title(f"Residual Distribution\nBias={np.mean(residual):.4f}, 68%={np.percentile(abs_residual, 68):.4f}")
+
+    # Row 1, Col 2: Resolution vs True Energy
     x, y = get_binned_stat(true, abs_residual, percentile_68, bins)
-    axs[1].plot(x, y, 'o-', color='tab:orange')
-    axs[1].set_xlabel("True Energy")
-    axs[1].set_ylabel("68% |Residual|")
-    axs[1].set_title("Resolution vs True Energy")
-    axs[1].grid(True, alpha=0.3)
+    axs[0, 1].plot(x, y, 'o-', color='tab:orange')
+    axs[0, 1].set_xlabel("True Energy [GeV]")
+    axs[0, 1].set_ylabel("68% |Residual| [GeV]")
+    axs[0, 1].set_title("Resolution vs True Energy")
+    axs[0, 1].grid(True, alpha=0.3)
 
-    # 3. Pred vs True scatter
-    from matplotlib.colors import LogNorm
+    # Row 1, Col 3: Normalized Resolution (sigma/E) vs True Energy
+    # Compute relative resolution: |residual| / true_energy
+    # Use small epsilon to avoid division by zero
+    safe_true = np.where(np.abs(true) > 1e-6, true, 1e-6)
+    rel_residual = abs_residual / np.abs(safe_true)
+    x, y = get_binned_stat(true, rel_residual, percentile_68, bins)
+    axs[0, 2].plot(x, y, 'o-', color='tab:green')
+    axs[0, 2].set_xlabel("True Energy [GeV]")
+    axs[0, 2].set_ylabel("68% |Residual|/E")
+    axs[0, 2].set_title("Relative Resolution (sigma/E) vs Energy")
+    axs[0, 2].grid(True, alpha=0.3)
+
+    # Row 1, Col 4: Pred vs True scatter
     vmin = min(true.min(), pred.min())
     vmax = max(true.max(), pred.max())
-    axs[2].hist2d(true, pred, bins=50, range=[[vmin, vmax], [vmin, vmax]],
+    h = axs[0, 3].hist2d(true, pred, bins=50, range=[[vmin, vmax], [vmin, vmax]],
                   cmap='viridis', norm=LogNorm())
-    axs[2].plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=1, label='y=x')
-    axs[2].set_xlabel("True Energy")
-    axs[2].set_ylabel("Pred Energy")
-    axs[2].set_title("Pred vs True")
-    axs[2].legend()
+    axs[0, 3].plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=1, label='y=x')
+    axs[0, 3].set_xlabel("True Energy [GeV]")
+    axs[0, 3].set_ylabel("Pred Energy [GeV]")
+    axs[0, 3].set_title("Pred vs True")
+    axs[0, 3].legend()
+    plt.colorbar(h[3], ax=axs[0, 3], label='Count')
+
+    if has_uvw:
+        # Row 2: Resolution vs U, V, W (first interaction point)
+        true_u = root_data['true_u']
+        true_v = root_data['true_v']
+        true_w = root_data['true_w']
+        uvw_labels = ['U', 'V', 'W']
+        uvw_data = [true_u, true_v, true_w]
+        uvw_colors = ['tab:blue', 'tab:orange', 'tab:green']
+
+        for i, (uvw_val, label, color) in enumerate(zip(uvw_data, uvw_labels, uvw_colors)):
+            x, y = get_binned_stat(uvw_val, abs_residual, percentile_68, bins)
+            axs[1, i].plot(x, y, 'o-', color=color)
+            axs[1, i].set_xlabel(f"True {label} [cm]")
+            axs[1, i].set_ylabel("68% |Residual| [GeV]")
+            axs[1, i].set_title(f"Resolution vs {label}")
+            axs[1, i].grid(True, alpha=0.3)
+
+        # Row 2, Col 4: Relative resolution vs U (or leave empty)
+        # Let's add relative resolution vs U as an additional insight
+        x, y = get_binned_stat(true_u, rel_residual, percentile_68, bins)
+        axs[1, 3].plot(x, y, 'o-', color='tab:purple')
+        axs[1, 3].set_xlabel("True U [cm]")
+        axs[1, 3].set_ylabel("68% |Residual|/E")
+        axs[1, 3].set_title("Relative Resolution vs U")
+        axs[1, 3].grid(True, alpha=0.3)
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     if outfile:

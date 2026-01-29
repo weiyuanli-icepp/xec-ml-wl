@@ -627,8 +627,13 @@ def plot_worst_case_event(event_data, rank=1, savepath=None):
             - pred_angle, true_angle: (2,) arrays (optional)
             - pred_energy, pred_timing, pred_uvwFI: predictions (optional)
             - true_uvwFI: (3,) array (optional)
+            - energy_truth: float (optional)
+            - uvw_truth: (3,) array (optional) - first interaction point
         rank: 1-indexed rank of this event (1 = worst)
         savepath: path to save figure (None to display)
+
+    Note: Energy values are displayed in MeV (multiplied by 1000 from internal GeV).
+          Loss is also scaled by 1000x for display consistency.
     """
     npho = event_data.get("input_npho")
     time = event_data.get("input_time")
@@ -641,7 +646,30 @@ def plot_worst_case_event(event_data, rank=1, savepath=None):
     # Build title with metadata
     run_id = event_data.get("run", "?")
     evt_id = event_data.get("event", "?")
-    title_base = f"Worst Case #{rank} | Run {run_id} Event {evt_id} | Loss: {total_loss:.4f}"
+
+    # Get truth energy (convert to MeV)
+    energy_truth = event_data.get("energy_truth")
+    if energy_truth is not None:
+        energy_truth_mev = float(energy_truth) * 1000  # GeV -> MeV
+        energy_str = f"E_true={energy_truth_mev:.1f} MeV"
+    else:
+        energy_str = ""
+
+    # Get first interaction point (uvw)
+    uvw_truth = event_data.get("uvw_truth")
+    if uvw_truth is not None:
+        uvw_str = f"FI=({uvw_truth[0]:.1f}, {uvw_truth[1]:.1f}, {uvw_truth[2]:.1f}) cm"
+    else:
+        uvw_str = ""
+
+    # Loss displayed in MeV-equivalent units (x1000, with note)
+    loss_mev = total_loss * 1000
+    title_base = f"Worst Case #{rank} | Run {run_id} Event {evt_id} | Loss: {loss_mev:.2f} (x1000)"
+
+    # Add energy and position to title
+    extra_info_parts = [p for p in [energy_str, uvw_str] if p]
+    if extra_info_parts:
+        title_base += f" | {' | '.join(extra_info_parts)}"
 
     # Build prediction/truth summary
     info_lines = []
@@ -650,14 +678,18 @@ def plot_worst_case_event(event_data, rank=1, savepath=None):
         pred_ang = event_data["pred_angle"]
         true_ang = event_data["true_angle"]
         info_lines.append(
-            f"Angle: pred=({pred_ang[0]:.2f}°, {pred_ang[1]:.2f}°) "
-            f"true=({true_ang[0]:.2f}°, {true_ang[1]:.2f}°)"
+            f"Angle: pred=({pred_ang[0]:.2f}, {pred_ang[1]:.2f}) deg "
+            f"true=({true_ang[0]:.2f}, {true_ang[1]:.2f}) deg"
         )
 
     if "pred_energy" in event_data:
         pred_e = event_data["pred_energy"]
         pred_val = pred_e[0] if hasattr(pred_e, '__len__') and len(pred_e) > 0 else pred_e
-        info_lines.append(f"Energy: pred={float(pred_val):.4f}")
+        pred_mev = float(pred_val) * 1000  # GeV -> MeV
+        if energy_truth is not None:
+            info_lines.append(f"Energy: pred={pred_mev:.1f} MeV, true={energy_truth_mev:.1f} MeV")
+        else:
+            info_lines.append(f"Energy: pred={pred_mev:.1f} MeV")
 
     if "pred_timing" in event_data:
         pred_t = event_data["pred_timing"]
@@ -668,8 +700,8 @@ def plot_worst_case_event(event_data, rank=1, savepath=None):
         pred_pos = event_data["pred_uvwFI"]
         true_pos = event_data["true_uvwFI"]
         info_lines.append(
-            f"Position: pred=({pred_pos[0]:.2f}, {pred_pos[1]:.2f}, {pred_pos[2]:.2f}) "
-            f"true=({true_pos[0]:.2f}, {true_pos[1]:.2f}, {true_pos[2]:.2f})"
+            f"Position: pred=({pred_pos[0]:.1f}, {pred_pos[1]:.1f}, {pred_pos[2]:.1f}) cm "
+            f"true=({true_pos[0]:.1f}, {true_pos[1]:.1f}, {true_pos[2]:.1f}) cm"
         )
 
     info_text = " | ".join(info_lines) if info_lines else ""

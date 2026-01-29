@@ -100,6 +100,7 @@ class CheckpointConfig:
     resume_from: Optional[str] = None
     save_dir: str = "artifacts"
     save_artifacts: bool = True  # Save plots, CSVs, worst case displays (disable for quick testing)
+    refresh_lr: bool = False  # Reset learning rate scheduler when resuming (use new lr from config)
 
 
 @dataclass
