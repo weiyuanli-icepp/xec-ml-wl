@@ -422,9 +422,11 @@ def prepare_model_input(npho: np.ndarray, relative_time: np.ndarray,
                                np.log1p(npho_clipped / npho_scale) / npho_scale2,
                                sentinel)
 
-    # Time: time / time_scale + time_shift
+    # Time: time / time_scale - time_shift (matching dataset.py normalization)
+    # Note: The formula in geom_defs.py is: time_norm = (raw_time / TIME_SCALE) - TIME_SHIFT
+    # With TIME_SHIFT = -0.46, this becomes: time_norm = raw_time / TIME_SCALE + 0.46
     time_normalized = np.where(time_valid,
-                               time_clean / time_scale + time_shift,
+                               time_clean / time_scale - time_shift,
                                sentinel)
 
     # Stack into (N, 4760, 2)
@@ -577,10 +579,10 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
         return (np.expm1(npho_norm * npho_scale2)) * npho_scale
 
     def denorm_time(time_norm):
-        """Denormalize time: inverse of time/scale + shift"""
-        # time_norm = time / time_scale + time_shift
-        # => time = (time_norm - time_shift) * time_scale
-        return (time_norm - time_shift) * time_scale
+        """Denormalize time: inverse of time/scale - shift (matching dataset.py)"""
+        # time_norm = time / time_scale - time_shift (from dataset.py)
+        # => time = (time_norm + time_shift) * time_scale
+        return (time_norm + time_shift) * time_scale
 
     # Determine face for each sensor
     sensor_to_face = {}
@@ -696,8 +698,10 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
         return (np.expm1(npho_norm * npho_scale2)) * npho_scale
 
     def denorm_time(time_norm):
-        """Denormalize time: inverse of time/scale + shift"""
-        return (time_norm - time_shift) * time_scale
+        """Denormalize time: inverse of time/scale - shift (matching dataset.py)"""
+        # time_norm = time / time_scale - time_shift (from dataset.py)
+        # => time = (time_norm + time_shift) * time_scale
+        return (time_norm + time_shift) * time_scale
 
     for batch in predictions:
         start_idx = batch['batch_start']
@@ -952,6 +956,10 @@ def main():
 
     # Prepare model input
     print("[INFO] Preparing model input...")
+    print(f"[INFO] Normalization parameters:")
+    print(f"       npho_scale={args.npho_scale}, npho_scale2={args.npho_scale2}")
+    print(f"       time_scale={args.time_scale}, time_shift={args.time_shift}")
+    print(f"       (IMPORTANT: These must match the values used during training!)")
     x_input = prepare_model_input(
         data['npho'], data['relative_time'],
         npho_scale=args.npho_scale,
@@ -959,6 +967,12 @@ def main():
         time_scale=args.time_scale,
         time_shift=args.time_shift
     )
+
+    # Diagnostic: Show input data statistics
+    npho_valid = data['npho'][data['npho'] < 1e9]
+    print(f"[INFO] Input npho statistics (raw, before normalization):")
+    print(f"       min={npho_valid.min():.1f}, max={npho_valid.max():.1f}, "
+          f"mean={npho_valid.mean():.1f}, median={np.median(npho_valid):.1f}")
 
     # Store original values before masking
     x_original = x_input.copy()
@@ -1044,6 +1058,19 @@ def main():
             time_scale=args.time_scale,
             time_shift=args.time_shift
         )
+
+    # Diagnostic: Quick statistics on predictions (for debugging)
+    artificial_preds = [p for p in pred_list if p['mask_type'] == 0 and p['truth_npho'] > 0]
+    if artificial_preds:
+        truth_npho_vals = np.array([p['truth_npho'] for p in artificial_preds])
+        pred_npho_vals = np.array([p['pred_npho'] for p in artificial_preds])
+        ratio = pred_npho_vals / np.maximum(truth_npho_vals, 1e-6)
+        print(f"\n[DEBUG] Artificial mask prediction diagnostics (npho):")
+        print(f"        truth_npho: mean={truth_npho_vals.mean():.1f}, median={np.median(truth_npho_vals):.1f}")
+        print(f"        pred_npho:  mean={pred_npho_vals.mean():.1f}, median={np.median(pred_npho_vals):.1f}")
+        print(f"        pred/truth ratio: mean={ratio.mean():.3f}, median={np.median(ratio):.3f}")
+        if abs(np.median(ratio) - 1.0) > 0.1:
+            print(f"        [WARNING] Median ratio deviates from 1.0! Check normalization parameters match training.")
 
     # Save to ROOT
     output_file = os.path.join(args.output, "real_data_predictions.root")
