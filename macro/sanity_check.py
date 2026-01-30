@@ -4,6 +4,7 @@ Sanity check script for MAE, Inpainter, and Regressor training pipelines.
 
 Usage:
     python macro/sanity_check.py --data /path/to/test.root
+    python macro/sanity_check.py --data /path/to/directory/
     python macro/sanity_check.py --data /path/to/test.root --pipeline mae
     python macro/sanity_check.py --data /path/to/test.root --pipeline all --device cuda
 """
@@ -15,6 +16,8 @@ import numpy as np
 
 # Add parent directory to path for imports
 sys.path.insert(0, ".")
+
+from lib.dataset import expand_path
 
 
 def check_metrics(metrics, pipeline_name):
@@ -50,9 +53,13 @@ def test_mae(data_path, device, num_batches=5):
     from lib.geom_defs import DEFAULT_SENTINEL_VALUE
     import uproot
 
-    # Debug: Check available branches first
+    # Expand path to handle directories
+    all_files = expand_path(data_path)
+    print(f"Found {len(all_files)} ROOT file(s) in {data_path}")
+
+    # Debug: Check available branches first (using first file)
     print("Checking available branches in ROOT file...")
-    with uproot.open(data_path) as f:
+    with uproot.open(all_files[0]) as f:
         tree = f["tree"]
         branches = list(tree.keys())
         print(f"  Available branches: {[b for b in branches if 'npho' in b.lower() or 'time' in b.lower()]}")
@@ -60,7 +67,7 @@ def test_mae(data_path, device, num_batches=5):
     # Debug: Check data loading (defaults now use npho_branch="npho")
     print("\nChecking data loading...")
     debug_dataset = XECStreamingDataset(
-        root_files=data_path,
+        root_files=all_files,
         tree_name="tree",
         batch_size=256,
         step_size=256,
@@ -88,14 +95,14 @@ def test_mae(data_path, device, num_batches=5):
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     scaler = torch.amp.GradScaler('cuda', enabled=(device == 'cuda'))
 
-    # Run training (defaults now use geom_defs constants and npho_branch="npho")
-    print(f"\nRunning training on {data_path}...")
+    # Run training (using all_files from earlier expand_path)
+    print(f"\nRunning training on {len(all_files)} file(s)...")
     try:
         metrics = run_epoch_mae(
             model=model,
             optimizer=optimizer,
             device=device,
-            root_files=data_path,
+            root_files=all_files,
             tree_name="tree",
             batch_size=256,
             step_size=num_batches * 256,  # Limit data
@@ -154,14 +161,15 @@ def test_inpainter(data_path, device, num_batches=5):
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     scaler = torch.amp.GradScaler('cuda', enabled=(device == 'cuda'))
 
-    # Run training (defaults now use geom_defs constants)
-    print(f"Running training on {data_path}...")
+    # Expand path to handle directories
+    train_files = expand_path(data_path)
+    print(f"Running training on {len(train_files)} file(s) from {data_path}...")
     try:
         metrics = run_epoch_inpainter(
             model=model,
             optimizer=optimizer,
             device=device,
-            train_files=[data_path],  # Must be a list
+            train_files=train_files,
             tree_name="tree",
             batch_size=256,
             step_size=num_batches * 256,
