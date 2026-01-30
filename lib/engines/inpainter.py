@@ -15,6 +15,123 @@ from ..geom_defs import (
 from ..utils import SimpleProfiler
 
 
+def compute_inpainting_loss_flat(
+    pred_all: torch.Tensor,
+    original_values: torch.Tensor,
+    mask: torch.Tensor,
+    loss_fn: str = "smooth_l1",
+    npho_weight: float = 1.0,
+    time_weight: float = 1.0,
+    npho_threshold: float = None,
+    npho_scale: float = DEFAULT_NPHO_SCALE,
+    npho_scale2: float = DEFAULT_NPHO_SCALE2,
+    use_npho_time_weight: bool = True,
+    track_metrics: bool = True,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    """
+    Compute inpainting loss from FLAT predictions (from forward_training).
+
+    This is a simplified, faster loss computation that works directly on flat tensors
+    without per-face iteration. All masked positions are treated uniformly.
+
+    Args:
+        pred_all: (B, 4760, 2) - predictions for all sensors
+        original_values: (B, 4760, 2) - ground truth sensor values (normalized)
+        mask: (B, 4760) - binary mask of randomly-masked positions (1 = masked)
+        loss_fn: "smooth_l1", "mse", or "l1"
+        npho_weight: weight for npho channel loss
+        time_weight: weight for time channel loss
+        npho_threshold: raw npho threshold for conditional time loss
+        npho_scale, npho_scale2: normalization params for npho
+        use_npho_time_weight: whether to weight time loss by sqrt(npho)
+        track_metrics: whether to compute MAE/RMSE metrics
+
+    Returns:
+        total_loss: scalar loss for backprop
+        metrics: dict of losses and optional MAE/RMSE
+    """
+    device = pred_all.device
+
+    # Threshold for valid time (in normalized space)
+    if npho_threshold is None:
+        npho_threshold = DEFAULT_NPHO_THRESHOLD
+    npho_threshold_norm = np.log1p(npho_threshold / npho_scale) / npho_scale2
+
+    # Select loss function
+    if loss_fn == "mse":
+        loss_func = lambda p, t: F.mse_loss(p, t, reduction="none")
+    elif loss_fn == "l1":
+        loss_func = lambda p, t: F.l1_loss(p, t, reduction="none")
+    else:  # smooth_l1 / huber
+        loss_func = lambda p, t: F.smooth_l1_loss(p, t, reduction="none")
+
+    # Get masked positions
+    mask_bool = mask.bool()  # (B, N)
+    num_masked = mask_bool.sum()
+
+    if num_masked == 0:
+        return torch.tensor(0.0, device=device), {"total_loss": 0.0}
+
+    # Gather predictions and targets at masked positions
+    pred_masked = pred_all[mask_bool]  # (num_masked, 2)
+    gt_masked = original_values[mask_bool]  # (num_masked, 2)
+
+    # Compute npho loss (all masked positions)
+    loss_npho = loss_func(pred_masked[:, 0], gt_masked[:, 0])  # (num_masked,)
+
+    # Compute time loss (only for sensors with sufficient npho)
+    npho_gt_norm = gt_masked[:, 0]
+    time_valid = npho_gt_norm > npho_threshold_norm  # (num_masked,)
+
+    if time_valid.sum() > 0:
+        pred_time_valid = pred_masked[time_valid, 1]
+        gt_time_valid = gt_masked[time_valid, 1]
+        loss_time = loss_func(pred_time_valid, gt_time_valid)  # (num_time_valid,)
+
+        # Optional: weight by sqrt(npho) for chi-square-like weighting
+        if use_npho_time_weight:
+            # Denormalize npho to get raw values for weighting
+            npho_norm_valid = gt_masked[time_valid, 0]
+            raw_npho = npho_scale * (torch.exp(npho_norm_valid * npho_scale2) - 1.0)
+            time_weights = torch.sqrt(raw_npho.clamp(min=1.0))
+            time_weights = time_weights / time_weights.mean()  # Normalize weights
+            loss_time = loss_time * time_weights
+
+        avg_time_loss = loss_time.mean()
+    else:
+        avg_time_loss = torch.tensor(0.0, device=device)
+
+    avg_npho_loss = loss_npho.mean()
+
+    # Total loss
+    total_loss = npho_weight * avg_npho_loss + time_weight * avg_time_loss
+
+    metrics = {
+        "total_loss": total_loss.item(),
+        "loss_npho": avg_npho_loss.item(),
+        "loss_time": avg_time_loss.item(),
+    }
+
+    # Optional MAE/RMSE metrics
+    if track_metrics:
+        with torch.no_grad():
+            # MAE
+            mae_npho = torch.abs(pred_masked[:, 0] - gt_masked[:, 0]).mean().item()
+            metrics["mae_npho"] = mae_npho
+
+            if time_valid.sum() > 0:
+                mae_time = torch.abs(pred_masked[time_valid, 1] - gt_masked[time_valid, 1]).mean().item()
+                metrics["mae_time"] = mae_time
+
+                # RMSE
+                rmse_npho = torch.sqrt(((pred_masked[:, 0] - gt_masked[:, 0]) ** 2).mean()).item()
+                rmse_time = torch.sqrt(((pred_masked[time_valid, 1] - gt_masked[time_valid, 1]) ** 2).mean()).item()
+                metrics["rmse_npho"] = rmse_npho
+                metrics["rmse_time"] = rmse_time
+
+    return total_loss, metrics
+
+
 def compute_inpainting_loss(
     results: Dict,
     original_values: torch.Tensor,
@@ -432,9 +549,16 @@ def run_epoch_inpainter(
     use_npho_time_weight: bool = True,
     profile: bool = False,
     log_invalid_npho: bool = True,
+    use_fast_forward: bool = True,
 ) -> Dict[str, float]:
     """
     Run one training epoch for inpainter.
+
+    Args:
+        ...
+        use_fast_forward: If True (default), use optimized forward_training() which
+                         returns fixed-size outputs. This is faster because it avoids
+                         dynamic indexing and per-face iteration in loss computation.
 
     Returns:
         metrics: dict of averaged metrics
@@ -524,7 +648,16 @@ def run_epoch_inpainter(
             # Forward with AMP (pass npho_threshold_norm for stratified masking)
             profiler.start("forward")
             with torch.amp.autocast('cuda', enabled=(scaler is not None)):
-                results, original_values, mask = model(x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm)
+                if use_fast_forward:
+                    # Fast path: fixed-size outputs, simpler loss computation
+                    pred_all, original_values, mask = model.forward_training(
+                        x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
+                    )
+                else:
+                    # Original path: variable-size outputs, per-face loss
+                    results, original_values, mask = model(
+                        x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
+                    )
             profiler.stop()
 
             # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
@@ -535,21 +668,36 @@ def run_epoch_inpainter(
 
             profiler.start("loss_compute")
             with torch.amp.autocast('cuda', enabled=(scaler is not None)):
-                loss, metrics = compute_inpainting_loss(
-                    results, original_values, mask,
-                    face_index_maps,
-                    loss_fn=loss_fn,
-                    npho_weight=npho_weight,
-                    time_weight=time_weight,
-                    outer_fine=outer_fine,
-                    outer_fine_pool=outer_fine_pool,
-                    track_mae_rmse=track_mae_rmse,
-                    track_metrics=track_metrics,
-                    npho_threshold=npho_threshold,
-                    npho_scale=npho_scale,
-                    npho_scale2=npho_scale2,
-                    use_npho_time_weight=use_npho_time_weight,
-                )
+                if use_fast_forward:
+                    # Fast path: simple flat loss computation
+                    loss, metrics = compute_inpainting_loss_flat(
+                        pred_all, original_values, mask,
+                        loss_fn=loss_fn,
+                        npho_weight=npho_weight,
+                        time_weight=time_weight,
+                        npho_threshold=npho_threshold,
+                        npho_scale=npho_scale,
+                        npho_scale2=npho_scale2,
+                        use_npho_time_weight=use_npho_time_weight,
+                        track_metrics=track_metrics,
+                    )
+                else:
+                    # Original path: per-face loss computation
+                    loss, metrics = compute_inpainting_loss(
+                        results, original_values, mask,
+                        face_index_maps,
+                        loss_fn=loss_fn,
+                        npho_weight=npho_weight,
+                        time_weight=time_weight,
+                        outer_fine=outer_fine,
+                        outer_fine_pool=outer_fine_pool,
+                        track_mae_rmse=track_mae_rmse,
+                        track_metrics=track_metrics,
+                        npho_threshold=npho_threshold,
+                        npho_scale=npho_scale,
+                        npho_scale2=npho_scale2,
+                        use_npho_time_weight=use_npho_time_weight,
+                    )
             profiler.stop()
 
             # Backward
@@ -667,6 +815,7 @@ def run_eval_inpainter(
     use_npho_time_weight: bool = True,
     profile: bool = False,
     log_invalid_npho: bool = True,
+    use_fast_forward: bool = True,
 ) -> Dict[str, float]:
     """
     Run evaluation for inpainter.
@@ -674,6 +823,7 @@ def run_eval_inpainter(
     Args:
         collect_predictions: If True, collect per-sensor predictions for ROOT output
         prediction_writer: optional callable to stream predictions per batch (avoids keeping everything in memory)
+        use_fast_forward: If True (default), use optimized forward_training() for faster evaluation.
 
     Returns:
         metrics: dict of averaged metrics
@@ -784,8 +934,17 @@ def run_eval_inpainter(
                 event_numbers_np = event_numbers.cpu().numpy() if event_numbers is not None else None
 
                 profiler.start("forward")
+                # Use fast path only if not collecting predictions (which needs the results dict)
+                use_fast = use_fast_forward and not collect_predictions
                 with torch.amp.autocast('cuda', enabled=True):
-                    results, original_values, mask = model(x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm)
+                    if use_fast:
+                        pred_all, original_values, mask = model.forward_training(
+                            x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
+                        )
+                    else:
+                        results, original_values, mask = model(
+                            x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
+                        )
                 profiler.stop()
 
                 # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
@@ -795,21 +954,34 @@ def run_eval_inpainter(
 
                 profiler.start("loss_compute")
                 with torch.amp.autocast('cuda', enabled=True):
-                    _, metrics = compute_inpainting_loss(
-                        results, original_values, mask,
-                        face_index_maps,
-                        loss_fn=loss_fn,
-                        npho_weight=npho_weight,
-                        time_weight=time_weight,
-                        outer_fine=outer_fine,
-                        outer_fine_pool=outer_fine_pool,
-                        track_mae_rmse=track_mae_rmse,
-                        track_metrics=True,
-                        npho_threshold=npho_threshold,
-                        npho_scale=npho_scale,
-                        npho_scale2=npho_scale2,
-                        use_npho_time_weight=use_npho_time_weight,
-                    )
+                    if use_fast:
+                        _, metrics = compute_inpainting_loss_flat(
+                            pred_all, original_values, mask,
+                            loss_fn=loss_fn,
+                            npho_weight=npho_weight,
+                            time_weight=time_weight,
+                            npho_threshold=npho_threshold,
+                            npho_scale=npho_scale,
+                            npho_scale2=npho_scale2,
+                            use_npho_time_weight=use_npho_time_weight,
+                            track_metrics=True,
+                        )
+                    else:
+                        _, metrics = compute_inpainting_loss(
+                            results, original_values, mask,
+                            face_index_maps,
+                            loss_fn=loss_fn,
+                            npho_weight=npho_weight,
+                            time_weight=time_weight,
+                            outer_fine=outer_fine,
+                            outer_fine_pool=outer_fine_pool,
+                            track_mae_rmse=track_mae_rmse,
+                            track_metrics=True,
+                            npho_threshold=npho_threshold,
+                            npho_scale=npho_scale,
+                            npho_scale2=npho_scale2,
+                            use_npho_time_weight=use_npho_time_weight,
+                        )
                     if not track_mae_rmse:
                         metrics = {k: v for k, v in metrics.items() if not (k.startswith("mae_") or k.startswith("rmse_"))}
                 profiler.stop()  # loss_compute

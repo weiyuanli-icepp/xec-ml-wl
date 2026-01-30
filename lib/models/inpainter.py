@@ -339,7 +339,7 @@ class OuterSensorInpaintingHead(nn.Module):
 
     Architecture:
     1. Local CNN processes finegrid input with latent conditioning
-    2. For each sensor, learnable attention pools features from its finegrid region
+    2. For each sensor, learnable attention pools features from its finegrid region (VECTORIZED)
     3. MLP predicts (npho, time) for each sensor
 
     Args:
@@ -352,6 +352,7 @@ class OuterSensorInpaintingHead(nn.Module):
         super().__init__()
         self.pool_kernel = pool_kernel
         self.use_local_context = use_local_context
+        self.hidden_dim = hidden_dim
 
         # Compute actual finegrid size after pooling
         if pool_kernel:
@@ -381,8 +382,7 @@ class OuterSensorInpaintingHead(nn.Module):
                 ConvNeXtV2Block(dim=hidden_dim, drop_path=0.0),
             )
 
-            # Attention pooling for coarse regions (5×3 = 15 positions after pool adjustment)
-            # and center regions (3×2 = 6 positions after pool adjustment)
+            # Attention pooling weight (applied to each position in region)
             self.attn_weight = nn.Sequential(
                 nn.Linear(hidden_dim, 1),  # Produces attention logits per position
             )
@@ -408,18 +408,16 @@ class OuterSensorInpaintingHead(nn.Module):
                 nn.Linear(hidden_dim // 2, 2),  # (npho, time)
             )
 
-        # Build lookup tables for sensor regions
-        # Precompute region bounds adjusted for pooling
+        # Build vectorized lookup tables for sensor regions
         self._build_region_lookup()
 
     def _build_region_lookup(self):
-        """Build precomputed lookup tables for sensor->finegrid region mapping."""
-        # Sort sensor IDs for consistent ordering
+        """Build precomputed lookup tables for VECTORIZED sensor->finegrid region mapping."""
         sensor_ids = OUTER_ALL_SENSOR_IDS.tolist()
         n_sensors = len(sensor_ids)
 
-        # Store region bounds: (h_start, h_end, w_start, w_end) for each sensor
-        region_bounds = []
+        # Collect all region positions and find max region size
+        all_region_indices = []  # List of lists of flat indices
         for sid in sensor_ids:
             h0, h1, w0, w1 = OUTER_SENSOR_TO_FINEGRID[sid]
             # Adjust for pooling if needed
@@ -430,14 +428,108 @@ class OuterSensorInpaintingHead(nn.Module):
                     ph, pw = self.pool_kernel
                 h0, h1 = h0 // ph, h1 // ph
                 w0, w1 = w0 // pw, w1 // pw
-            region_bounds.append((h0, h1, w0, w1))
 
-        # Store as buffer for device transfer
+            # Generate flat indices for all positions in this region
+            positions = []
+            for h in range(h0, h1):
+                for w in range(w0, w1):
+                    positions.append(h * self.grid_w + w)
+            all_region_indices.append(positions)
+
+        # Find max region size for padding
+        max_region_size = max(len(pos) for pos in all_region_indices)
+
+        # Build padded gather indices and valid mask
+        gather_indices = torch.zeros(n_sensors, max_region_size, dtype=torch.long)
+        valid_positions = torch.zeros(n_sensors, max_region_size, dtype=torch.bool)
+
+        for i, positions in enumerate(all_region_indices):
+            n_pos = len(positions)
+            if n_pos > 0:
+                gather_indices[i, :n_pos] = torch.tensor(positions, dtype=torch.long)
+                valid_positions[i, :n_pos] = True
+
+        # Register as buffers for device transfer
         self.register_buffer("sensor_ids", torch.tensor(sensor_ids, dtype=torch.long))
+        self.register_buffer("gather_indices", gather_indices)
+        self.register_buffer("valid_positions", valid_positions)
         self.n_sensors = n_sensors
+        self.max_region_size = max_region_size
 
-        # Store region bounds
-        self.region_bounds = region_bounds
+    def _compute_all_sensor_preds_vectorized(self, finegrid_tensor, latent_token):
+        """
+        VECTORIZED computation of predictions for all 234 sensors.
+
+        Replaces the for-loop over sensors with batched gather + attention pooling.
+
+        Args:
+            finegrid_tensor: (B, 2, H, W) finegrid values
+            latent_token: (B, latent_dim) global context from encoder
+
+        Returns:
+            all_preds: (B, n_sensors, 2) predictions for all sensors
+        """
+        B, C, H, W = finegrid_tensor.shape
+        device = finegrid_tensor.device
+
+        # Project latent to conditioning
+        latent_cond = self.latent_proj(latent_token)  # (B, hidden_dim)
+
+        if self.use_local_context:
+            # Spatial conditioning for CNN
+            latent_cond_spatial = latent_cond.view(B, -1, 1, 1).expand(-1, -1, H, W)
+
+            # Concatenate input with latent conditioning
+            x = torch.cat([finegrid_tensor, latent_cond_spatial], dim=1)  # (B, 2 + hidden_dim, H, W)
+
+            # Local encoding
+            features = self.local_encoder(x)  # (B, hidden_dim, H, W)
+
+            # VECTORIZED attention pooling for all sensors at once
+            # Flatten features to (B, H*W, hidden_dim)
+            features_flat = features.view(B, self.hidden_dim, -1).permute(0, 2, 1)  # (B, H*W, hidden_dim)
+
+            # Gather all region positions for all sensors at once
+            # gather_indices: (n_sensors, max_region_size) -> expand to (B, n_sensors, max_region_size)
+            idx = self.gather_indices.unsqueeze(0).expand(B, -1, -1)  # (B, n_sensors, max_region_size)
+
+            # Flatten to (B, n_sensors * max_region_size) for gather
+            idx_flat = idx.reshape(B, -1)  # (B, n_sensors * max_region_size)
+
+            # Gather features: (B, n_sensors * max_region_size, hidden_dim)
+            gathered = torch.gather(
+                features_flat,
+                dim=1,
+                index=idx_flat.unsqueeze(-1).expand(-1, -1, self.hidden_dim)
+            )
+            # Reshape to (B, n_sensors, max_region_size, hidden_dim)
+            gathered = gathered.view(B, self.n_sensors, self.max_region_size, self.hidden_dim)
+
+            # Compute attention weights
+            attn_logits = self.attn_weight(gathered).squeeze(-1)  # (B, n_sensors, max_region_size)
+
+            # Mask out invalid positions (padded regions)
+            # valid_positions: (n_sensors, max_region_size) -> expand to (B, n_sensors, max_region_size)
+            valid_mask = self.valid_positions.unsqueeze(0).expand(B, -1, -1)
+            attn_logits = attn_logits.masked_fill(~valid_mask, float('-inf'))
+
+            # Softmax over valid positions only
+            attn_weights = F.softmax(attn_logits, dim=-1).unsqueeze(-1)  # (B, n_sensors, max_region_size, 1)
+
+            # Weighted sum (attention pooling)
+            all_sensor_features = (gathered * attn_weights).sum(dim=2)  # (B, n_sensors, hidden_dim)
+
+            # Concatenate with latent and predict
+            latent_expanded = latent_cond.unsqueeze(1).expand(-1, self.n_sensors, -1)  # (B, n_sensors, hidden_dim)
+            combined = torch.cat([all_sensor_features, latent_expanded], dim=-1)  # (B, n_sensors, 2*hidden_dim)
+            all_preds = self.pred_head(combined)  # (B, n_sensors, 2)
+        else:
+            # Global-only: decode from latent without local context
+            x = self.global_decoder(latent_cond)  # (B, hidden_dim)
+            x = x.unsqueeze(1).expand(-1, self.n_sensors, -1)  # (B, n_sensors, hidden_dim)
+            all_preds = self.pred_head(x)  # (B, n_sensors, 2)
+
+        return all_preds
 
     def forward(self, finegrid_tensor, latent_token, sensor_mask):
         """
@@ -451,56 +543,11 @@ class OuterSensorInpaintingHead(nn.Module):
             sensor_ids_masked: (B, max_masked) flat sensor IDs
             valid: (B, max_masked) boolean mask for valid positions
         """
-        B, C, H, W = finegrid_tensor.shape
+        B = finegrid_tensor.shape[0]
         device = finegrid_tensor.device
 
-        # Project latent to conditioning
-        latent_cond = self.latent_proj(latent_token)  # (B, hidden_dim)
-        hidden_dim = latent_cond.shape[1]
-
-        if self.use_local_context:
-            # Spatial conditioning for CNN
-            latent_cond_spatial = latent_cond.view(B, -1, 1, 1).expand(-1, -1, H, W)
-
-            # Concatenate input with latent conditioning
-            x = torch.cat([finegrid_tensor, latent_cond_spatial], dim=1)  # (B, 2 + hidden_dim, H, W)
-
-            # Local encoding
-            features = self.local_encoder(x)  # (B, hidden_dim, H, W)
-
-            # Predict for all sensors using attention pooling over their regions
-            all_sensor_features = []
-
-            for i, (h0, h1, w0, w1) in enumerate(self.region_bounds):
-                # Extract region features
-                region_h = h1 - h0
-                region_w = w1 - w0
-
-                if region_h <= 0 or region_w <= 0:
-                    # Degenerate region (shouldn't happen, but handle gracefully)
-                    all_sensor_features.append(torch.zeros(B, hidden_dim, device=device))
-                    continue
-
-                region = features[:, :, h0:h1, w0:w1]  # (B, hidden_dim, region_h, region_w)
-
-                # Attention pooling
-                region_flat = region.permute(0, 2, 3, 1).reshape(B, -1, hidden_dim)  # (B, region_h*region_w, hidden_dim)
-                attn_logits = self.attn_weight(region_flat).squeeze(-1)  # (B, region_h*region_w)
-                attn_weights = F.softmax(attn_logits, dim=-1).unsqueeze(-1)  # (B, region_h*region_w, 1)
-                pooled = (region_flat * attn_weights).sum(dim=1)  # (B, hidden_dim)
-                all_sensor_features.append(pooled)
-
-            all_sensor_features = torch.stack(all_sensor_features, dim=1)  # (B, n_sensors, hidden_dim)
-
-            # Concatenate with latent and predict
-            latent_expanded = latent_cond.unsqueeze(1).expand(-1, self.n_sensors, -1)  # (B, n_sensors, hidden_dim)
-            combined = torch.cat([all_sensor_features, latent_expanded], dim=-1)  # (B, n_sensors, 2*hidden_dim)
-            all_preds = self.pred_head(combined)  # (B, n_sensors, 2)
-        else:
-            # Global-only: decode from latent without local context
-            x = self.global_decoder(latent_cond)  # (B, hidden_dim)
-            x = x.unsqueeze(1).expand(-1, self.n_sensors, -1)  # (B, n_sensors, hidden_dim)
-            all_preds = self.pred_head(x)  # (B, n_sensors, 2)
+        # Compute predictions for all sensors (VECTORIZED)
+        all_preds = self._compute_all_sensor_preds_vectorized(finegrid_tensor, latent_token)
 
         # Extract only masked positions
         num_masked_per_sample = sensor_mask.sum(dim=1).int()  # (B,)
@@ -551,56 +598,7 @@ class OuterSensorInpaintingHead(nn.Module):
             all_preds: (B, n_sensors, 2) predictions for all 234 outer sensors
             sensor_ids: (n_sensors,) tensor of sensor IDs (constant across batch)
         """
-        B, C, H, W = finegrid_tensor.shape
-        device = finegrid_tensor.device
-
-        # Project latent to conditioning
-        latent_cond = self.latent_proj(latent_token)  # (B, hidden_dim)
-        hidden_dim = latent_cond.shape[1]
-
-        if self.use_local_context:
-            # Spatial conditioning for CNN
-            latent_cond_spatial = latent_cond.view(B, -1, 1, 1).expand(-1, -1, H, W)
-
-            # Concatenate input with latent conditioning
-            x = torch.cat([finegrid_tensor, latent_cond_spatial], dim=1)  # (B, 2 + hidden_dim, H, W)
-
-            # Local encoding
-            features = self.local_encoder(x)  # (B, hidden_dim, H, W)
-
-            # Predict for all sensors using attention pooling over their regions
-            all_sensor_features = []
-
-            for i, (h0, h1, w0, w1) in enumerate(self.region_bounds):
-                # Extract region features
-                region_h = h1 - h0
-                region_w = w1 - w0
-
-                if region_h <= 0 or region_w <= 0:
-                    all_sensor_features.append(torch.zeros(B, hidden_dim, device=device))
-                    continue
-
-                region = features[:, :, h0:h1, w0:w1]  # (B, hidden_dim, region_h, region_w)
-
-                # Attention pooling
-                region_flat = region.permute(0, 2, 3, 1).reshape(B, -1, hidden_dim)  # (B, region_h*region_w, hidden_dim)
-                attn_logits = self.attn_weight(region_flat).squeeze(-1)  # (B, region_h*region_w)
-                attn_weights = F.softmax(attn_logits, dim=-1).unsqueeze(-1)  # (B, region_h*region_w, 1)
-                pooled = (region_flat * attn_weights).sum(dim=1)  # (B, hidden_dim)
-                all_sensor_features.append(pooled)
-
-            all_sensor_features = torch.stack(all_sensor_features, dim=1)  # (B, n_sensors, hidden_dim)
-
-            # Concatenate with latent and predict
-            latent_expanded = latent_cond.unsqueeze(1).expand(-1, self.n_sensors, -1)  # (B, n_sensors, hidden_dim)
-            combined = torch.cat([all_sensor_features, latent_expanded], dim=-1)  # (B, n_sensors, 2*hidden_dim)
-            all_preds = self.pred_head(combined)  # (B, n_sensors, 2)
-        else:
-            # Global-only: decode from latent without local context
-            x = self.global_decoder(latent_cond)  # (B, hidden_dim)
-            x = x.unsqueeze(1).expand(-1, self.n_sensors, -1)  # (B, n_sensors, hidden_dim)
-            all_preds = self.pred_head(x)  # (B, n_sensors, 2)
-
+        all_preds = self._compute_all_sensor_preds_vectorized(finegrid_tensor, latent_token)
         return all_preds, self.sensor_ids
 
 
@@ -992,3 +990,45 @@ class XEC_Inpainter(nn.Module):
         pred_all[:, self.bottom_hex_indices, :] = bot_pred
 
         return pred_all
+
+    def forward_training(self, x_batch, mask_ratio=0.05, npho_threshold_norm=None):
+        """
+        Forward pass optimized for training with fixed-size outputs.
+
+        This method is faster than forward() because:
+        1. Uses forward_full_output() which avoids dynamic indexing
+        2. Returns fixed-size tensors that are better for GPU parallelization
+        3. Loss computation can use simple masked indexing
+
+        Args:
+            x_batch: (B, 4760, 2) or (B, N, 2) - sensor values
+            mask_ratio: fraction of valid sensors to mask
+            npho_threshold_norm: threshold in normalized npho space for stratified masking
+
+        Returns:
+            pred_all: (B, 4760, 2) - predictions for all sensor positions
+            original_values: (B, 4760, 2) - original values (for loss computation)
+            mask: (B, 4760) - binary mask of randomly-masked positions (1 = masked)
+                  Loss should only be computed at masked positions.
+        """
+        B = x_batch.shape[0]
+
+        # Flatten if needed
+        x_flat = x_batch if x_batch.dim() == 3 else x_batch.view(B, -1, 2)
+        original_values = x_flat.clone()
+
+        # Apply random masking
+        x_masked, mask = self.random_masking(x_flat, mask_ratio, npho_threshold_norm=npho_threshold_norm)
+
+        # Get predictions for all sensors using fixed-size forward
+        pred_all = self.forward_full_output(x_masked, mask)
+
+        return pred_all, original_values, mask
+
+    def get_num_trainable_params(self):
+        """Returns number of trainable parameters."""
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def get_num_total_params(self):
+        """Returns total number of parameters."""
+        return sum(p.numel() for p in self.parameters())
