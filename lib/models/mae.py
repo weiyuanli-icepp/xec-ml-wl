@@ -6,7 +6,8 @@ from .regressor import XECEncoder
 from .blocks import HexNeXtBlock
 from ..geom_defs import (
     TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
-    HEX_EDGE_INDEX_NP, OUTER_FINE_H, OUTER_FINE_W, flatten_hex_rows
+    HEX_EDGE_INDEX_NP, OUTER_FINE_H, OUTER_FINE_W, flatten_hex_rows,
+    DEFAULT_SENTINEL_VALUE
 )
 
 class FaceDecoder(nn.Module):
@@ -78,7 +79,7 @@ class GraphFaceDecoder(nn.Module):
     
 class XEC_MAE(nn.Module):
     def __init__(self, encoder: XECEncoder, mask_ratio=0.6, learn_channel_logvars: bool = False,
-                 sentinel_value: float = -5.0, time_mask_ratio_scale: float = 1.0):
+                 sentinel_value: float = DEFAULT_SENTINEL_VALUE, time_mask_ratio_scale: float = 1.0):
         super().__init__()
         self.encoder = encoder
         self.mask_ratio = mask_ratio

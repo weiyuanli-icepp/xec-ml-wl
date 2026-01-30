@@ -8,6 +8,12 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
+from .geom_defs import (
+    DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
+    DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT,
+    DEFAULT_SENTINEL_VALUE
+)
+
 
 @dataclass
 class TaskConfig:
@@ -37,11 +43,11 @@ class DataConfig:
 @dataclass
 class NormalizationConfig:
     """Input normalization parameters."""
-    npho_scale: float = 0.58
-    npho_scale2: float = 1.0
-    time_scale: float = 6.5e-8  # Fixed: was 6.5e8
-    time_shift: float = 0.5
-    sentinel_value: float = -5.0
+    npho_scale: float = DEFAULT_NPHO_SCALE
+    npho_scale2: float = DEFAULT_NPHO_SCALE2
+    time_scale: float = DEFAULT_TIME_SCALE
+    time_shift: float = DEFAULT_TIME_SHIFT
+    sentinel_value: float = DEFAULT_SENTINEL_VALUE
 
 
 @dataclass

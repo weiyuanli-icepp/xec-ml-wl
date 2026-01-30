@@ -10,7 +10,9 @@ from ..geom_defs import (
     OUTER_COARSE_FULL_INDEX_MAP, OUTER_CENTER_INDEX_MAP,
     OUTER_FINE_COARSE_SCALE, OUTER_FINE_CENTER_SCALE, OUTER_FINE_CENTER_START,
     TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows,
-    DEFAULT_NPHO_THRESHOLD
+    DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
+    DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT,
+    DEFAULT_SENTINEL_VALUE, DEFAULT_NPHO_THRESHOLD
 )
 
 
@@ -18,7 +20,9 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                   batch_size=8192, step_size=4000,
                   amp=True,
                   npho_branch="relative_npho", time_branch="relative_time",
-                  npho_scale=1e5, npho_scale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0,
+                  npho_scale=DEFAULT_NPHO_SCALE, npho_scale2=DEFAULT_NPHO_SCALE2,
+                  time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT,
+                  sentinel_value=DEFAULT_SENTINEL_VALUE,
                   channel_dropout_rate=0.1,
                   loss_fn="mse",
                   npho_weight=1.0,
@@ -406,7 +410,9 @@ def run_eval_mae(model, device, root_files, tree_name,
                  batch_size=8192, step_size=4000,
                  amp=True,
                  npho_branch="relative_npho", time_branch="relative_time",
-                 npho_scale=1e5, npho_scale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0,
+                 npho_scale=DEFAULT_NPHO_SCALE, npho_scale2=DEFAULT_NPHO_SCALE2,
+                 time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT,
+                 sentinel_value=DEFAULT_SENTINEL_VALUE,
                  loss_fn="mse",
                  npho_weight=1.0,
                  time_weight=1.0,

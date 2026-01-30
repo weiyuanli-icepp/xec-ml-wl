@@ -19,7 +19,7 @@ from ..geom_defs import (
     TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
     HEX_EDGE_INDEX_NP, OUTER_FINE_H, OUTER_FINE_W, flatten_hex_rows,
     OUTER_SENSOR_TO_FINEGRID, OUTER_ALL_SENSOR_IDS, OUTER_SENSOR_ID_TO_IDX,
-    CENTRAL_COARSE_IDS
+    CENTRAL_COARSE_IDS, DEFAULT_SENTINEL_VALUE
 )
 from ..geom_utils import gather_face, build_outer_fine_grid_tensor, gather_hex_nodes
 
@@ -620,7 +620,7 @@ class XEC_Inpainter(nn.Module):
                           in addition to global latent. If False, only global latent is used
                           (similar to MAE decoder). Set to False for ablation studies.
     """
-    def __init__(self, encoder: XECEncoder, freeze_encoder: bool = True, sentinel_value: float = -5.0,
+    def __init__(self, encoder: XECEncoder, freeze_encoder: bool = True, sentinel_value: float = DEFAULT_SENTINEL_VALUE,
                  time_mask_ratio_scale: float = 1.0, use_local_context: bool = True):
         super().__init__()
         self.encoder = encoder

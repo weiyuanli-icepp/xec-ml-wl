@@ -7,7 +7,11 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Dict, Optional, Tuple, List, Callable
 from ..dataset import XECStreamingDataset
-from ..geom_defs import DEFAULT_NPHO_THRESHOLD
+from ..geom_defs import (
+    DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
+    DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT,
+    DEFAULT_SENTINEL_VALUE, DEFAULT_NPHO_THRESHOLD
+)
 from ..utils import SimpleProfiler
 
 
@@ -24,8 +28,8 @@ def compute_inpainting_loss(
     track_mae_rmse: bool = True,
     track_metrics: bool = True,
     npho_threshold: float = None,
-    npho_scale: float = 0.58,
-    npho_scale2: float = 1.0,
+    npho_scale: float = DEFAULT_NPHO_SCALE,
+    npho_scale2: float = DEFAULT_NPHO_SCALE2,
     use_npho_time_weight: bool = True,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
@@ -409,11 +413,11 @@ def run_epoch_inpainter(
     mask_ratio: float = 0.05,
     npho_branch: str = "relative_npho",
     time_branch: str = "relative_time",
-    npho_scale: float = 0.58,
-    npho_scale2: float = 1.0,
-    time_scale: float = 5e-7,
-    time_shift: float = 0.1,
-    sentinel_value: float = -5.0,
+    npho_scale: float = DEFAULT_NPHO_SCALE,
+    npho_scale2: float = DEFAULT_NPHO_SCALE2,
+    time_scale: float = DEFAULT_TIME_SCALE,
+    time_shift: float = DEFAULT_TIME_SHIFT,
+    sentinel_value: float = DEFAULT_SENTINEL_VALUE,
     loss_fn: str = "smooth_l1",
     npho_weight: float = 1.0,
     time_weight: float = 1.0,
@@ -639,11 +643,11 @@ def run_eval_inpainter(
     mask_ratio: float = 0.05,
     npho_branch: str = "relative_npho",
     time_branch: str = "relative_time",
-    npho_scale: float = 0.58,
-    npho_scale2: float = 1.0,
-    time_scale: float = 5e-7,
-    time_shift: float = 0.1,
-    sentinel_value: float = -5.0,
+    npho_scale: float = DEFAULT_NPHO_SCALE,
+    npho_scale2: float = DEFAULT_NPHO_SCALE2,
+    time_scale: float = DEFAULT_TIME_SCALE,
+    time_shift: float = DEFAULT_TIME_SHIFT,
+    sentinel_value: float = DEFAULT_SENTINEL_VALUE,
     loss_fn: str = "smooth_l1",
     npho_weight: float = 1.0,
     time_weight: float = 1.0,
