@@ -934,15 +934,16 @@ class XEC_Inpainter(nn.Module):
             top_idx = len(cnn_names)
         bot_idx = top_idx + 1
 
-        # Initialize output tensor
-        pred_all = torch.zeros(B, 4760, 2, device=device, dtype=x_flat.dtype)
-
         # Process each face and scatter back to flat indices
 
-        # Inner face (93×44 = 4092 sensors)
+        # Inner face (93×44 = 4092 sensors) - compute first to get dtype for output tensor
         inner_tensor = gather_face(x_masked, INNER_INDEX_MAP)  # (B, 2, 93, 44)
         inner_latent = latent_seq[:, name_to_idx["inner"]]
         inner_pred = self.head_inner.forward_full(inner_tensor, inner_latent)  # (B, 93, 44, 2)
+
+        # Initialize output tensor with same dtype as predictions (important for AMP)
+        pred_all = torch.zeros(B, 4760, 2, device=device, dtype=inner_pred.dtype)
+
         # Scatter back to flat indices
         inner_flat_idx = self.inner_idx.flatten()  # (93*44,)
         pred_all[:, inner_flat_idx, :] = inner_pred.reshape(B, -1, 2)

@@ -261,14 +261,10 @@ def test_regressor(data_path, device, num_batches=5):
         return False
 
     # Print metrics
+    # Note: smooth_l1, l1, mse are only computed in validation mode, not training
     print("\nMetrics:")
-    print(f"  Total Loss: {metrics.get('total_opt', 'N/A')}")
-    if 'smooth_l1' in metrics:
-        print(f"  Smooth L1:  {metrics['smooth_l1']:.6f}")
-    if 'l1' in metrics:
-        print(f"  L1 Loss:    {metrics['l1']:.6f}")
-    if 'mse' in metrics:
-        print(f"  MSE Loss:   {metrics['mse']:.6f}")
+    total_opt = metrics.get('total_opt', None)
+    print(f"  Total Loss: {total_opt:.6f}" if total_opt is not None else "  Total Loss: N/A")
 
     # Check metrics (use total_opt as the main loss)
     check_dict = {"total_loss": metrics.get("total_opt", None)}
