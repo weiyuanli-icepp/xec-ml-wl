@@ -205,29 +205,24 @@ def test_regressor(data_path, device, num_batches=5):
     print("Testing Regressor Pipeline")
     print("="*60)
 
-    from lib.models.regressor import XECMultiHeadModel
+    from lib.models.regressor import XECEncoder, XECMultiHeadModel
     from lib.engines.regressor import run_epoch_stream
     from lib.dataset import get_dataloader
-    from lib.tasks import TASK_REGISTRY
 
     # Create model with angle task only (simplest)
     print("Creating Regressor model...")
-
-    # Get task config
-    task_config = {"angle": {"enabled": True, "loss_fn": "smooth_l1", "weight": 1.0}}
-    active_tasks = {name: TASK_REGISTRY[name] for name in task_config if task_config[name].get("enabled", True)}
 
     # Task weights for training
     task_weights = {
         "angle": {"loss_fn": "smooth_l1", "weight": 1.0, "loss_beta": 1.0}
     }
 
+    # Create backbone encoder and multi-head model
+    backbone = XECEncoder(outer_mode="finegrid", outer_fine_pool=(2, 2))
     model = XECMultiHeadModel(
-        active_tasks=active_tasks,
-        task_config=task_config,
-        embed_dim=1024,
-        encoder_depth=2,
-        encoder_heads=8,
+        backbone=backbone,
+        active_tasks=["angle"],  # List of task names
+        hidden_dim=256,
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
