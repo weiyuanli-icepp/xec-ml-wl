@@ -46,9 +46,34 @@ def test_mae(data_path, device, num_batches=5):
     from lib.models.mae import XEC_MAE
     from lib.models.regressor import XECEncoder
     from lib.engines.mae import run_epoch_mae
+    from lib.dataset import XECStreamingDataset
+    from lib.geom_defs import DEFAULT_SENTINEL_VALUE
+
+    # Debug: Check data loading first
+    print("Checking data loading...")
+    debug_dataset = XECStreamingDataset(
+        root_files=data_path,
+        tree_name="tree",
+        batch_size=256,
+        step_size=256,
+        load_truth_branches=False,
+        shuffle=False,
+    )
+    for x_batch, _ in debug_dataset:
+        npho = x_batch[:, :, 0]
+        time = x_batch[:, :, 1]
+        sentinel_count = (time == DEFAULT_SENTINEL_VALUE).sum().item()
+        total_count = time.numel()
+        print(f"  Batch shape: {x_batch.shape}")
+        print(f"  Npho range: [{npho.min():.4f}, {npho.max():.4f}]")
+        print(f"  Time range: [{time.min():.4f}, {time.max():.4f}]")
+        print(f"  Sentinel value: {DEFAULT_SENTINEL_VALUE}")
+        print(f"  Sensors with sentinel time: {sentinel_count}/{total_count} ({100*sentinel_count/total_count:.1f}%)")
+        break
+    debug_dataset.shutdown()
 
     # Create model (defaults now use geom_defs constants)
-    print("Creating MAE model...")
+    print("\nCreating MAE model...")
     encoder = XECEncoder(outer_mode="finegrid", outer_fine_pool=(2, 2))
     model = XEC_MAE(encoder, mask_ratio=0.15).to(device)
 
