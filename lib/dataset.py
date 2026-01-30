@@ -1,6 +1,7 @@
 import os
 import glob
 import logging
+import warnings
 import torch
 import numpy as np
 import uproot
@@ -8,6 +9,9 @@ from torch.utils.data import IterableDataset, DataLoader
 from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
+
+# Track if deprecation warning has been shown (avoid spamming)
+_RELATIVE_NPHO_WARNING_SHOWN = False
 from .utils import iterate_chunks
 from .geom_defs import (
     DEFAULT_NPHO_SCALE,
@@ -42,7 +46,7 @@ class XECStreamingDataset(IterableDataset):
     """
     def __init__(self, root_files, tree_name="tree",
                  batch_size=1024, step_size=256000,
-                 npho_branch="relative_npho", time_branch="relative_time",
+                 npho_branch="npho", time_branch="relative_time",
                  npho_scale=DEFAULT_NPHO_SCALE,
                  npho_scale2=DEFAULT_NPHO_SCALE2,
                  time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT,
@@ -53,6 +57,19 @@ class XECStreamingDataset(IterableDataset):
                  load_truth_branches=True,
                  shuffle=False):
         super().__init__()
+
+        # Warn if using deprecated branch name
+        global _RELATIVE_NPHO_WARNING_SHOWN
+        if npho_branch == "relative_npho" and not _RELATIVE_NPHO_WARNING_SHOWN:
+            warnings.warn(
+                "Using npho_branch='relative_npho' which is deprecated. "
+                "Most data now uses 'npho' branch. Is this intended? "
+                "Set npho_branch='npho' if using newer data format.",
+                UserWarning,
+                stacklevel=2
+            )
+            _RELATIVE_NPHO_WARNING_SHOWN = True
+
         self.root_files = root_files if isinstance(root_files, list) else [root_files]
         self.tree_name = tree_name
         self.batch_size = batch_size
