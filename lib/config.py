@@ -31,6 +31,7 @@ class DataConfig:
     num_threads: int = 4
     npho_branch: str = "relative_npho"  # Input branch for photon counts
     time_branch: str = "relative_time"  # Input branch for timing
+    log_invalid_npho: bool = True  # Log warning when invalid npho values detected
 
 
 @dataclass
@@ -309,6 +310,7 @@ class MAEDataConfig:
     num_threads: int = 4
     npho_branch: str = "relative_npho"  # Input branch for photon counts
     time_branch: str = "relative_time"  # Input branch for timing
+    log_invalid_npho: bool = True  # Log warning when invalid npho values detected
 
 
 @dataclass
@@ -443,6 +445,7 @@ class InpainterDataConfig:
     num_threads: int = 4
     npho_branch: str = "relative_npho"  # Input branch for photon counts
     time_branch: str = "relative_time"  # Input branch for timing
+    log_invalid_npho: bool = True  # Log warning when invalid npho values detected
 
 
 @dataclass
