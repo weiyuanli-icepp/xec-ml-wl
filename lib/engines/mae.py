@@ -117,7 +117,6 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
         num_workers=dataset_workers,
         log_invalid_npho=log_invalid_npho,
         load_truth_branches=False,  # MAE doesn't need truth branches
-        shuffle=True,  # Shuffle within chunks for training
     )
 
     loader = DataLoader(
@@ -578,7 +577,6 @@ def run_eval_mae(model, device, root_files, tree_name,
         num_workers=dataset_workers,
         log_invalid_npho=log_invalid_npho,
         load_truth_branches=False,  # MAE doesn't need truth branches
-        shuffle=False,  # No shuffle for evaluation
     )
 
     loader = DataLoader(

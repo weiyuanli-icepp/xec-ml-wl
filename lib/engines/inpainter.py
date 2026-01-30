@@ -499,7 +499,6 @@ def run_epoch_inpainter(
             num_workers=dataset_workers,
             log_invalid_npho=log_invalid_npho,
             load_truth_branches=False,  # Inpainter doesn't need truth branches
-            shuffle=True,  # Shuffle within chunks for training
         )
 
         loader = torch.utils.data.DataLoader(
@@ -738,7 +737,6 @@ def run_eval_inpainter(
                 num_workers=dataset_workers,
                 log_invalid_npho=log_invalid_npho,
                 load_truth_branches=False,  # Inpainter doesn't need truth branches
-                shuffle=False,  # No shuffle for evaluation
             )
 
             loader = torch.utils.data.DataLoader(
