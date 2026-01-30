@@ -44,16 +44,13 @@ def test_mae(data_path, device, num_batches=5):
     print("="*60)
 
     from lib.models.mae import XEC_MAE
+    from lib.models.regressor import XECEncoder
     from lib.engines.mae import run_epoch_mae
 
     # Create model
     print("Creating MAE model...")
-    model = XEC_MAE(
-        mask_ratio=0.15,
-        embed_dim=1024,
-        encoder_depth=2,
-        encoder_heads=8,
-    ).to(device)
+    encoder = XECEncoder(outer_mode="finegrid", outer_fine_pool=(2, 2))
+    model = XEC_MAE(encoder, mask_ratio=0.15).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     scaler = torch.amp.GradScaler('cuda', enabled=(device == 'cuda'))
@@ -113,16 +110,13 @@ def test_inpainter(data_path, device, num_batches=5):
     print("="*60)
 
     from lib.models.inpainter import XEC_Inpainter
+    from lib.models.regressor import XECEncoder
     from lib.engines.inpainter import run_epoch_inpainter
 
     # Create model
     print("Creating Inpainter model...")
-    model = XEC_Inpainter(
-        embed_dim=1024,
-        encoder_depth=2,
-        encoder_heads=8,
-        drop_path_rate=0.0,
-    ).to(device)
+    encoder = XECEncoder(outer_mode="finegrid", outer_fine_pool=(2, 2))
+    model = XEC_Inpainter(encoder, freeze_encoder=False).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     scaler = torch.amp.GradScaler('cuda', enabled=(device == 'cuda'))
