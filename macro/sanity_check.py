@@ -46,11 +46,16 @@ def test_mae(data_path, device, num_batches=5):
     from lib.models.mae import XEC_MAE
     from lib.models.regressor import XECEncoder
     from lib.engines.mae import run_epoch_mae
+    from lib.geom_defs import (
+        DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
+        DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT,
+        DEFAULT_SENTINEL_VALUE, DEFAULT_NPHO_THRESHOLD
+    )
 
-    # Create model
+    # Create model with correct sentinel value
     print("Creating MAE model...")
     encoder = XECEncoder(outer_mode="finegrid", outer_fine_pool=(2, 2))
-    model = XEC_MAE(encoder, mask_ratio=0.15).to(device)
+    model = XEC_MAE(encoder, mask_ratio=0.15, sentinel_value=DEFAULT_SENTINEL_VALUE).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     scaler = torch.amp.GradScaler('cuda', enabled=(device == 'cuda'))
@@ -68,6 +73,13 @@ def test_mae(data_path, device, num_batches=5):
             step_size=num_batches * 256,  # Limit data
             amp=(device == 'cuda'),
             scaler=scaler,
+            # Use correct normalization parameters from geom_defs
+            npho_scale=DEFAULT_NPHO_SCALE,
+            npho_scale2=DEFAULT_NPHO_SCALE2,
+            time_scale=DEFAULT_TIME_SCALE,
+            time_shift=DEFAULT_TIME_SHIFT,
+            sentinel_value=DEFAULT_SENTINEL_VALUE,
+            npho_threshold=DEFAULT_NPHO_THRESHOLD,
             dataloader_workers=0,
             dataset_workers=2,
             track_mae_rmse=True,
@@ -112,11 +124,16 @@ def test_inpainter(data_path, device, num_batches=5):
     from lib.models.inpainter import XEC_Inpainter
     from lib.models.regressor import XECEncoder
     from lib.engines.inpainter import run_epoch_inpainter
+    from lib.geom_defs import (
+        DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
+        DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT,
+        DEFAULT_SENTINEL_VALUE, DEFAULT_NPHO_THRESHOLD
+    )
 
-    # Create model
+    # Create model with correct sentinel value
     print("Creating Inpainter model...")
     encoder = XECEncoder(outer_mode="finegrid", outer_fine_pool=(2, 2))
-    model = XEC_Inpainter(encoder, freeze_encoder=False).to(device)
+    model = XEC_Inpainter(encoder, freeze_encoder=False, sentinel_value=DEFAULT_SENTINEL_VALUE).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     scaler = torch.amp.GradScaler('cuda', enabled=(device == 'cuda'))
@@ -134,6 +151,13 @@ def test_inpainter(data_path, device, num_batches=5):
             step_size=num_batches * 256,
             amp=(device == 'cuda'),
             scaler=scaler,
+            # Use correct normalization parameters from geom_defs
+            npho_scale=DEFAULT_NPHO_SCALE,
+            npho_scale2=DEFAULT_NPHO_SCALE2,
+            time_scale=DEFAULT_TIME_SCALE,
+            time_shift=DEFAULT_TIME_SHIFT,
+            sentinel_value=DEFAULT_SENTINEL_VALUE,
+            npho_threshold=DEFAULT_NPHO_THRESHOLD,
             dataloader_workers=0,
             dataset_workers=2,
             dropout_rate=0.1,
