@@ -53,6 +53,13 @@ __pycache__/
 .idea/
 *.code-workspace
 
+# --- OS-specific ---
+.DS_Store
+Thumbs.db
+
+# --- Linter configs (local) ---
+.markdownlint.json
+
 # --- Secrets (set actual names if you have them) ---
 *.pem
 *.key
