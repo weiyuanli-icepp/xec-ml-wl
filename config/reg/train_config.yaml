@@ -11,8 +11,9 @@ data:
   chunksize: 256000
   num_workers: 8                    # DataLoader workers
   num_threads: 4                    # CPU preprocessing threads
-  npho_branch: "relative_npho"      # Input branch for photon counts (or "npho")
+  npho_branch: "npho"      # Input branch for photon counts (or "npho")
   time_branch: "relative_time"      # Input branch for timing (or "time")
+  log_invalid_npho: true  # or false to disable
 
 # === Input Normalization ===
 normalization:
