@@ -1,9 +1,9 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
-import uproot
-from torch.utils.data import TensorDataset, DataLoader
-from ..utils import iterate_chunks, get_pointwise_loss_fn, SimpleProfiler
+from torch.utils.data import DataLoader
+from ..dataset import XECStreamingDataset
+from ..utils import get_pointwise_loss_fn, SimpleProfiler
 from ..geom_utils import build_outer_fine_grid_tensor, gather_face, gather_hex_nodes
 from ..geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
@@ -14,11 +14,11 @@ from ..geom_defs import (
 )
 
 
-def run_epoch_mae(model, optimizer, device, root, tree,
+def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                   batch_size=8192, step_size=4000,
                   amp=True,
                   npho_branch="relative_npho", time_branch="relative_time",
-                  NphoScale=1e5, NphoScale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0,
+                  npho_scale=1e5, npho_scale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0,
                   channel_dropout_rate=0.1,
                   loss_fn="mse",
                   npho_weight=1.0,
@@ -27,12 +27,14 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                   grad_clip=1.0,
                   grad_accum_steps=1,
                   scaler=None,
-                  num_workers=8,
+                  dataloader_workers=0,
+                  dataset_workers=8,
                   npho_threshold=None,
                   use_npho_time_weight=True,
                   track_mae_rmse=True,
                   track_train_metrics=True,
-                  profile=False):
+                  profile=False,
+                  log_invalid_npho=True):
     model.train()
     if scaler is None:
         scaler = torch.amp.GradScaler('cuda', enabled=amp)
@@ -43,8 +45,8 @@ def run_epoch_mae(model, optimizer, device, root, tree,
     if npho_threshold is None:
         npho_threshold = DEFAULT_NPHO_THRESHOLD
 
-    # Convert to normalized space for stratified masking
-    npho_threshold_norm = np.log1p(npho_threshold / NphoScale) / NphoScale2
+    # Convert to normalized space for stratified masking and threshold checks
+    npho_threshold_norm = np.log1p(npho_threshold / npho_scale) / npho_scale2
 
     # Per-face total losses
     face_loss_sums = {
@@ -87,96 +89,60 @@ def run_epoch_mae(model, optimizer, device, root, tree,
     # Track time-valid sensors (sensors with npho > threshold)
     total_time_valid_masked = torch.tensor(0.0, dtype=torch.float32, device=device)
 
-    branches = [npho_branch, time_branch]
-
     top_indices = torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long()
     bot_indices = torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long()
 
     # Initialize profiler
     profiler = SimpleProfiler(enabled=profile, sync_cuda=True)
 
-    debug_printed = True
-    for arr in iterate_chunks(root, tree, branches, step_size):
-        profiler.start("data_load_cpu")
+    # Create dataset - data is pre-normalized by XECStreamingDataset
+    root_files_list = root_files if isinstance(root_files, list) else [root_files]
+    dataset = XECStreamingDataset(
+        root_files=root_files_list,
+        tree_name=tree_name,
+        batch_size=batch_size,
+        step_size=step_size,
+        npho_branch=npho_branch,
+        time_branch=time_branch,
+        npho_scale=npho_scale,
+        npho_scale2=npho_scale2,
+        time_scale=time_scale,
+        time_shift=time_shift,
+        sentinel_value=sentinel_value,
+        npho_threshold=npho_threshold,
+        num_workers=dataset_workers,
+        log_invalid_npho=log_invalid_npho,
+        load_truth_branches=False,  # MAE doesn't need truth branches
+        shuffle=True,  # Shuffle within chunks for training
+    )
 
-        # --- Preprocessing (CPU) ---
-        Npho = np.maximum(arr[npho_branch].astype("float32"), 0.0)
-        Time = arr[time_branch].astype("float32")
+    loader = DataLoader(
+        dataset,
+        batch_size=None,  # Dataset yields pre-batched tensors
+        num_workers=dataloader_workers,
+        pin_memory=True,
+        persistent_workers=(dataloader_workers > 0),
+        prefetch_factor=2 if dataloader_workers > 0 else None,
+    )
 
-        if not debug_printed:
-            print("\n" + "-"*40)
-            print("[DEBUG] Sample Data Stats (Pre-Normalization):")
-            print(f"Npho: Min={Npho.min():.4f}, Max={Npho.max():.4f}, Mean={Npho.mean():.4f}")
-            print(f"Time: Min={Time.min():.4f}, Max={Time.max():.4f}, Mean={Time.mean():.4f}")
-            
-            median_val = np.median(Time)
-            print(f"Time Median: {median_val:.4e}")
-            valid_mask = Time < 9e9
-            if np.any(valid_mask):
-                clean_time = Time[valid_mask]
-                print(f"Clean Time Mean: {clean_time.mean():.4e}")
-                print(f"Clean Time Std : {clean_time.std():.4e}")
-                print(f"Valid Events: {len(clean_time)}/{len(Time)}")
-            else:
-                print("No valid Time entries found.")
-                
-        X_raw = np.stack([Npho, Time], axis=-1).astype("float32")
-        loader = DataLoader(TensorDataset(torch.from_numpy(X_raw)),
-                            batch_size=batch_size, shuffle=True, drop_last=False,
-                            num_workers=num_workers, pin_memory=True,
-                            persistent_workers=True, prefetch_factor=2)
-        profiler.stop()  # data_load_cpu
+    for x_batch, _ in loader:
+        profiler.start("gpu_transfer")
+        x_in = x_batch.to(device, non_blocking=True)  # Already normalized: (B, 4760, 2)
+        profiler.stop()
 
-        for (X_b,) in loader:
-            profiler.start("gpu_transfer")
-            X_b = X_b.to(device, non_blocking=True)
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
+            # 1. Forward Pass (pass npho_threshold_norm for stratified masking)
+            profiler.start("forward")
+            recons, mask = model(x_in, npho_threshold_norm=npho_threshold_norm)
             profiler.stop()
 
-            profiler.start("preprocess")
-            # --- Normalize (GPU) ---
-            raw_n = X_b[:,:,0]
-            raw_t = X_b[:,:,1]
-            
-            time_norm = (raw_t / time_scale) - time_shift
-            npho_norm = torch.log1p(raw_n / NphoScale) / NphoScale2
-            
-            mask_npho_bad = (raw_n <= 0.0) | (raw_n > 9e9) | torch.isnan(raw_n)
-            mask_time_bad = mask_npho_bad | (torch.abs(raw_t) > 9e9) | torch.isnan(raw_t)
-            
-            # Channel Dropout
-            # if channel_dropout_rate > 0.0:
-            if False: # No Channel Dropout for MAE
-                dropout_mask = (torch.rand_like(npho_norm) < channel_dropout_rate)
-                mask_npho_bad = mask_npho_bad | dropout_mask
-                mask_time_bad = mask_time_bad | dropout_mask
-                
-            npho_norm[mask_npho_bad] = 0.0
-            time_norm[mask_time_bad] = sentinel_value
-            x_in = torch.stack([npho_norm, time_norm], dim=-1) # (B, 4760, 2)
-                        
-            if not debug_printed:
-                print("[DEBUG] Sample Data Stats (Post-Normalization):")
-                print(f"Input Npho: Min={x_in[...,0].min():.4e}, Max={x_in[...,0].max():.4e}, Mean={x_in[...,0].mean():.4e}")
-                print(f"Input Time: Min={x_in[...,1].min():.4e}, Max={x_in[...,1].max():.4e}, Mean={x_in[...,1].mean():.4e}")
-                if x_in.abs().max() < 1e-5:
-                    print("[WARNING] INPUTS ARE ZERO! Check your scale factors.")
-            
-            profiler.stop()  # preprocess
+            # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
+            # Already-invalid sensors have time == sentinel_value and are NOT in mask
+            already_invalid = (x_in[:, :, 1] == sentinel_value)  # (B, N)
+            total_valid_sensors += (~already_invalid).sum()
+            total_randomly_masked += mask.sum().long()
 
-            # with torch.amp.autocast('cuda', enabled=amp):
-            with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
-                # 1. Forward Pass (pass npho_threshold_norm for stratified masking)
-                profiler.start("forward")
-                recons, mask = model(x_in, npho_threshold_norm=npho_threshold_norm)
-                profiler.stop()
-
-                # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
-                # Already-invalid sensors have time == sentinel_value and are NOT in mask
-                already_invalid = (x_in[:, :, 1] == sentinel_value)  # (B, N)
-                total_valid_sensors += (~already_invalid).sum()
-                total_randomly_masked += mask.sum().long()
-
-                profiler.start("loss_compute")
+            profiler.start("loss_compute")
                 # 2. Gather Truth Targets
                 if hasattr(model, "encoder") and getattr(model.encoder, "outer_fine", False):
                     outer_target = build_outer_fine_grid_tensor(
@@ -197,26 +163,6 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                 
                 # 3. Calculate Loss
                 loss = 0.0
-                
-                if not debug_printed:
-                    print("\n" + "="*40)
-                    print("[DEBUG] DIAGNOSING ZERO LOSS")
-                    print("="*40)
-                    print(f"Batch Size: {X_b.shape[0]}")
-                    print(f"Raw Npho Stats: Min={raw_n.min().item():.4f}, Max={raw_n.max().item():.4f}, Mean={raw_n.mean().item():.4f}")
-                    print(f"Model Input Stats: Min={x_in.min().item():.4f}, Max={x_in.max().item():.4f}, Mean={x_in.mean().item():.4f}")
-                    
-                    # Check Dictionary Keys
-                    t_keys = set(targets.keys())
-                    r_keys = set(recons.keys())
-                    print(f"Target Keys: {t_keys}")
-                    print(f"Recons Keys: {r_keys}")
-                    print(f"Intersection: {t_keys & r_keys}")
-                    print(f"[DEBUG] Top Masked Pixels: {mask[:, top_indices].sum().item()}")
-                    print(f"[DEBUG] Bot Masked Pixels: {mask[:, bot_indices].sum().item()}")
-                    
-                    if len(t_keys & r_keys) == 0:
-                        print("[CRITICAL ERROR] No common keys! Loss loop is skipped.")
 
                 face_to_sensor_indices = {
                     "inner": INNER_INDEX_MAP,
@@ -267,19 +213,20 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                         npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum_safe
 
                         # Conditional time loss: only compute where npho > threshold
-                        # Get raw npho values for this face to check threshold
+                        # Get normalized npho values for this face
+                        npho_norm_all = x_in[:, :, 0]  # (B, 4760) - normalized npho
                         if isinstance(indices, torch.Tensor):
-                            raw_npho_face = raw_n[:, indices]  # (B, num_sensors)
+                            npho_norm_face = npho_norm_all[:, indices]  # (B, num_sensors)
                         else:
-                            raw_npho_face = raw_n[:, indices.flatten()].view(raw_n.size(0), *indices.shape)
+                            npho_norm_face = npho_norm_all[:, indices.flatten()].view(x_in.size(0), *indices.shape)
 
-                        # Create time_valid_mask at the same shape as mask_expanded
+                        # Create time_valid_mask using normalized threshold
                         if name in ["top", "bot"]:
-                            time_valid_base = (raw_npho_face > npho_threshold).unsqueeze(1).float()  # (B, 1, N)
+                            time_valid_base = (npho_norm_face > npho_threshold_norm).unsqueeze(1).float()  # (B, 1, N)
                         elif name == "outer" and getattr(model.encoder, "outer_fine", False):
                             # For outer fine grid: use coarse-level threshold check, then upsample
-                            time_valid_coarse = (raw_npho_face > npho_threshold).float()  # (B, H_coarse, W_coarse)
-                            time_valid_coarse = time_valid_coarse.view(raw_n.size(0), 1, *indices.shape)
+                            time_valid_coarse = (npho_norm_face > npho_threshold_norm).float()  # (B, H_coarse, W_coarse)
+                            time_valid_coarse = time_valid_coarse.view(x_in.size(0), 1, *indices.shape)
                             time_valid_base = F.interpolate(time_valid_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
                             if pool_kernel:
                                 # Pool and convert back to binary (any valid → valid, be permissive)
@@ -287,24 +234,27 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                                 time_valid_base = (time_valid_base > 0).float()
                         else:
                             H, W = pred.shape[-2], pred.shape[-1]
-                            time_valid_base = (raw_npho_face > npho_threshold).view(raw_n.size(0), 1, H, W).float()
+                            time_valid_base = (npho_norm_face > npho_threshold_norm).view(x_in.size(0), 1, H, W).float()
 
                         # Combined mask for time: randomly masked AND time-valid (npho > threshold)
                         time_mask_expanded = mask_expanded * time_valid_base
 
                         # Npho weighting for time loss (chi-square-like: weight ~ sqrt(npho))
                         if use_npho_time_weight and time_mask_expanded.sum() > 0:
+                            # De-normalize to get approximate raw npho for weighting
+                            # raw_npho = npho_scale * (exp(npho_norm * npho_scale2) - 1)
+                            raw_npho_face = npho_scale * (torch.exp(npho_norm_face * npho_scale2) - 1)
                             if name in ["top", "bot"]:
                                 npho_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
                             elif name == "outer" and getattr(model.encoder, "outer_fine", False):
-                                npho_coarse = raw_npho_face.view(raw_n.size(0), 1, *indices.shape)
+                                npho_coarse = raw_npho_face.view(x_in.size(0), 1, *indices.shape)
                                 npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
                                 if pool_kernel:
                                     npho_fine = F.avg_pool2d(npho_fine, kernel_size=(ph, pw), stride=(ph, pw))
                                 npho_weight_map = torch.sqrt(npho_fine.clamp(min=npho_threshold))
                             else:
                                 H, W = pred.shape[-2], pred.shape[-1]
-                                npho_weight_map = torch.sqrt(raw_npho_face.view(raw_n.size(0), 1, H, W).clamp(min=npho_threshold))
+                                npho_weight_map = torch.sqrt(raw_npho_face.view(x_in.size(0), 1, H, W).clamp(min=npho_threshold))
                             # Normalize weight so mean is ~1 for stable training
                             npho_weight_map = npho_weight_map / (npho_weight_map[time_mask_expanded.bool()].mean() + 1e-8)
                             weighted_time_loss = (loss_map_time * time_mask_expanded * npho_weight_map).sum()
@@ -353,14 +303,6 @@ def run_epoch_mae(model, optimizer, device, root, tree,
                             face_loss_sums[name] += face_loss.item()
                             face_npho_loss_sums[name] += npho_loss.item()
                             face_time_loss_sums[name] += time_loss.item()
-
-                        if not debug_printed:
-                            print(f"[DEBUG] Loss Component '{name}': {face_loss.item():.6e} (npho: {npho_loss.item():.6e}, time: {time_loss.item():.6e})")
-                        
-                if not debug_printed:
-                    print(f"[DEBUG] Total Loss: {loss.item():.6e}")
-                    print("-"*40 + "\n")
-                    debug_printed = True
 
                 profiler.stop()  # loss_compute
 
@@ -460,21 +402,23 @@ def run_epoch_mae(model, optimizer, device, root, tree,
 
     return metrics
 
-def run_eval_mae(model, device, root, tree,
+def run_eval_mae(model, device, root_files, tree_name,
                  batch_size=8192, step_size=4000,
                  amp=True,
                  npho_branch="relative_npho", time_branch="relative_time",
-                 NphoScale=1e5, NphoScale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0,
+                 npho_scale=1e5, npho_scale2=13, time_scale=2.32e6, time_shift=-0.29, sentinel_value=-5.0,
                  loss_fn="mse",
                  npho_weight=1.0,
                  time_weight=1.0,
                  auto_channel_weight=False,
                  collect_predictions=False, max_events=1000,
-                 num_workers=8,
+                 dataloader_workers=0,
+                 dataset_workers=8,
                  npho_threshold=None,
                  use_npho_time_weight=True,
                  track_mae_rmse=True,
-                 profile=False):
+                 profile=False,
+                 log_invalid_npho=True):
     """
     Evaluate MAE model on validation data.
 
@@ -494,8 +438,8 @@ def run_eval_mae(model, device, root, tree,
     if npho_threshold is None:
         npho_threshold = DEFAULT_NPHO_THRESHOLD
 
-    # Convert to normalized space for stratified masking
-    npho_threshold_norm = np.log1p(npho_threshold / NphoScale) / NphoScale2
+    # Convert to normalized space for stratified masking and threshold checks
+    npho_threshold_norm = np.log1p(npho_threshold / npho_scale) / npho_scale2
 
     # Loss tracking
     face_loss_sums = {"inner": 0.0, "us": 0.0, "ds": 0.0, "outer": 0.0, "top": 0.0, "bot": 0.0}
@@ -529,8 +473,6 @@ def run_eval_mae(model, device, root, tree,
     total_valid_sensors = torch.tensor(0, dtype=torch.long, device=device)
     # Track time-valid sensors (sensors with npho > threshold)
     total_time_valid_masked = torch.tensor(0.0, dtype=torch.float32, device=device)
-
-    branches = [npho_branch, time_branch]
 
     top_indices = torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long()
     bot_indices = torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long()
@@ -612,40 +554,43 @@ def run_eval_mae(model, device, root, tree,
         scatter_hex_face(full, recons_dict["bot"], bot_indices)
         return full
     
-    for arr in iterate_chunks(root, tree, branches, step_size):
-        profiler.start("data_load_cpu")
-        Npho = np.maximum(arr[npho_branch].astype("float32"), 0.0)
-        Time = arr[time_branch].astype("float32")
+    # Create dataset - data is pre-normalized by XECStreamingDataset
+    root_files_list = root_files if isinstance(root_files, list) else [root_files]
+    dataset = XECStreamingDataset(
+        root_files=root_files_list,
+        tree_name=tree_name,
+        batch_size=batch_size,
+        step_size=step_size,
+        npho_branch=npho_branch,
+        time_branch=time_branch,
+        npho_scale=npho_scale,
+        npho_scale2=npho_scale2,
+        time_scale=time_scale,
+        time_shift=time_shift,
+        sentinel_value=sentinel_value,
+        npho_threshold=npho_threshold,
+        num_workers=dataset_workers,
+        log_invalid_npho=log_invalid_npho,
+        load_truth_branches=False,  # MAE doesn't need truth branches
+        shuffle=False,  # No shuffle for evaluation
+    )
 
-        X_raw = np.stack([Npho, Time], axis=-1).astype("float32")
-        loader = DataLoader(TensorDataset(torch.from_numpy(X_raw)),
-                            batch_size=batch_size, shuffle=False, drop_last=False,
-                            num_workers=num_workers, pin_memory=True)
+    loader = DataLoader(
+        dataset,
+        batch_size=None,  # Dataset yields pre-batched tensors
+        num_workers=dataloader_workers,
+        pin_memory=True,
+        persistent_workers=(dataloader_workers > 0),
+        prefetch_factor=2 if dataloader_workers > 0 else None,
+    )
+
+    for x_batch, _ in loader:
+        profiler.start("gpu_transfer")
+        x_in = x_batch.to(device, non_blocking=True)  # Already normalized: (B, 4760, 2)
         profiler.stop()
 
-        for (X_b,) in loader:
-            profiler.start("gpu_transfer")
-            X_b = X_b.to(device, non_blocking=True)
-            profiler.stop()
-
-            profiler.start("preprocess")
-            raw_n = X_b[:,:,0]
-            raw_t = X_b[:,:,1]
-
-            npho_norm = torch.log1p(raw_n / NphoScale) / NphoScale2
-            time_norm = (raw_t / time_scale) - time_shift
-
-            mask_npho_bad = (raw_n <= 0.0) | (raw_n > 9e9) | torch.isnan(raw_n)
-            mask_time_bad = mask_npho_bad | (torch.abs(raw_t) > 9e9) | torch.isnan(raw_t)
-
-            npho_norm[mask_npho_bad] = 0.0
-            time_norm[mask_time_bad] = sentinel_value
-
-            x_in = torch.stack([npho_norm, time_norm], dim=-1)
-            profiler.stop()
-
-            with torch.no_grad():
-                with torch.amp.autocast('cuda', enabled=amp):
+        with torch.no_grad():
+            with torch.amp.autocast('cuda', enabled=amp):
                     # Get masked input for visualization (pass npho_threshold_norm for stratified masking)
                     profiler.start("forward")
                     x_masked, mask = model.random_masking(x_in, npho_threshold_norm=npho_threshold_norm)
@@ -725,40 +670,44 @@ def run_eval_mae(model, device, root, tree,
                             npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum_safe
 
                             # Conditional time loss: only compute where npho > threshold
+                            # Get normalized npho values for this face
+                            npho_norm_all = x_in[:, :, 0]  # (B, 4760) - normalized npho
                             if isinstance(indices, torch.Tensor):
-                                raw_npho_face = raw_n[:, indices]
+                                npho_norm_face = npho_norm_all[:, indices]
                             else:
-                                raw_npho_face = raw_n[:, indices.flatten()].view(raw_n.size(0), *indices.shape)
+                                npho_norm_face = npho_norm_all[:, indices.flatten()].view(x_in.size(0), *indices.shape)
 
-                            # Create time_valid_mask at the same shape as mask_expanded
+                            # Create time_valid_mask using normalized threshold
                             if name in ["top", "bot"]:
-                                time_valid_base = (raw_npho_face > npho_threshold).unsqueeze(1).float()
+                                time_valid_base = (npho_norm_face > npho_threshold_norm).unsqueeze(1).float()
                             elif name == "outer" and getattr(model.encoder, "outer_fine", False):
-                                time_valid_coarse = (raw_npho_face > npho_threshold).float()
-                                time_valid_coarse = time_valid_coarse.view(raw_n.size(0), 1, *indices.shape)
+                                time_valid_coarse = (npho_norm_face > npho_threshold_norm).float()
+                                time_valid_coarse = time_valid_coarse.view(x_in.size(0), 1, *indices.shape)
                                 time_valid_base = F.interpolate(time_valid_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
                                 if pool_kernel:
                                     time_valid_base = F.avg_pool2d(time_valid_base, kernel_size=(ph, pw), stride=(ph, pw))
                                     time_valid_base = (time_valid_base > 0).float()
                             else:
                                 H, W = pred.shape[-2], pred.shape[-1]
-                                time_valid_base = (raw_npho_face > npho_threshold).view(raw_n.size(0), 1, H, W).float()
+                                time_valid_base = (npho_norm_face > npho_threshold_norm).view(x_in.size(0), 1, H, W).float()
 
                             time_mask_expanded = mask_expanded * time_valid_base
 
                             # Npho weighting for time loss
                             if use_npho_time_weight and time_mask_expanded.sum() > 0:
+                                # De-normalize to get approximate raw npho for weighting
+                                raw_npho_face = npho_scale * (torch.exp(npho_norm_face * npho_scale2) - 1)
                                 if name in ["top", "bot"]:
                                     npho_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
                                 elif name == "outer" and getattr(model.encoder, "outer_fine", False):
-                                    npho_coarse = raw_npho_face.view(raw_n.size(0), 1, *indices.shape)
+                                    npho_coarse = raw_npho_face.view(x_in.size(0), 1, *indices.shape)
                                     npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
                                     if pool_kernel:
                                         npho_fine = F.avg_pool2d(npho_fine, kernel_size=(ph, pw), stride=(ph, pw))
                                     npho_weight_map = torch.sqrt(npho_fine.clamp(min=npho_threshold))
                                 else:
                                     H, W = pred.shape[-2], pred.shape[-1]
-                                    npho_weight_map = torch.sqrt(raw_npho_face.view(raw_n.size(0), 1, H, W).clamp(min=npho_threshold))
+                                    npho_weight_map = torch.sqrt(raw_npho_face.view(x_in.size(0), 1, H, W).clamp(min=npho_threshold))
                                 npho_weight_map = npho_weight_map / (npho_weight_map[time_mask_expanded.bool()].mean() + 1e-8)
                                 weighted_time_loss = (loss_map_time * time_mask_expanded * npho_weight_map).sum()
                             else:

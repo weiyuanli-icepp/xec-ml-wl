@@ -190,6 +190,7 @@ Examples:
         num_threads = args.num_threads if args.num_threads is not None else getattr(cfg.data, 'num_threads', 4)
         npho_branch = args.npho_branch or getattr(cfg.data, "npho_branch", "relative_npho")
         time_branch = args.time_branch or getattr(cfg.data, "time_branch", "relative_time")
+        log_invalid_npho = getattr(cfg.data, "log_invalid_npho", True)
         npho_scale = float(args.npho_scale if args.npho_scale is not None else cfg.normalization.npho_scale)
         npho_scale2 = float(args.npho_scale2 if args.npho_scale2 is not None else cfg.normalization.npho_scale2)
         time_scale = float(args.time_scale if args.time_scale is not None else cfg.normalization.time_scale)
@@ -239,6 +240,7 @@ Examples:
         num_threads = args.num_threads or 4
         npho_branch = args.npho_branch or "relative_npho"
         time_branch = args.time_branch or "relative_time"
+        log_invalid_npho = True  # Default: enabled
         npho_scale = args.npho_scale or DEFAULT_NPHO_SCALE
         npho_scale2 = args.npho_scale2 or DEFAULT_NPHO_SCALE2
         time_scale = args.time_scale or DEFAULT_TIME_SCALE
@@ -532,8 +534,8 @@ Examples:
                 step_size=chunksize,
                 npho_branch=npho_branch,
                 time_branch=time_branch,
-                NphoScale=npho_scale,
-                NphoScale2=npho_scale2,
+                npho_scale=npho_scale,
+                npho_scale2=npho_scale2,
                 time_scale=time_scale,
                 time_shift=time_shift,
                 sentinel_value=sentinel_value,
@@ -545,12 +547,14 @@ Examples:
                 grad_clip=grad_clip,
                 grad_accum_steps=grad_accum_steps,
                 scaler=scaler,
-                num_workers=num_workers,
+                dataloader_workers=0,  # Dataset handles batching internally
+                dataset_workers=num_threads,
                 npho_threshold=npho_threshold,
                 use_npho_time_weight=use_npho_time_weight,
                 track_mae_rmse=track_mae_rmse,
                 track_train_metrics=track_train_metrics,
                 profile=profile,
+                log_invalid_npho=log_invalid_npho,
             )
 
             # Update EMA model
@@ -572,8 +576,8 @@ Examples:
                     step_size=chunksize,
                     npho_branch=npho_branch,
                     time_branch=time_branch,
-                    NphoScale=npho_scale,
-                    NphoScale2=npho_scale2,
+                    npho_scale=npho_scale,
+                    npho_scale2=npho_scale2,
                     time_scale=time_scale,
                     time_shift=time_shift,
                     sentinel_value=sentinel_value,
@@ -583,11 +587,13 @@ Examples:
                     auto_channel_weight=auto_channel_weight,
                     collect_predictions=collect_preds,
                     max_events=1000,
-                    num_workers=num_workers,
+                    dataloader_workers=0,  # Dataset handles batching internally
+                    dataset_workers=num_threads,
                     npho_threshold=npho_threshold,
                     use_npho_time_weight=use_npho_time_weight,
                     track_mae_rmse=track_mae_rmse,
                     profile=profile,
+                    log_invalid_npho=log_invalid_npho,
                 )
 
                 if collect_preds:
