@@ -7,11 +7,12 @@ from torch.utils.data import IterableDataset, DataLoader
 from concurrent.futures import ThreadPoolExecutor
 from .utils import iterate_chunks
 from .geom_defs import (
-    DEFAULT_NPHO_SCALE, 
+    DEFAULT_NPHO_SCALE,
     DEFAULT_NPHO_SCALE2,
-    DEFAULT_TIME_SCALE, 
+    DEFAULT_TIME_SCALE,
     DEFAULT_TIME_SHIFT,
-    DEFAULT_SENTINEL_VALUE
+    DEFAULT_SENTINEL_VALUE,
+    DEFAULT_NPHO_THRESHOLD
 )
 
 class XECStreamingDataset(IterableDataset):
@@ -22,20 +23,21 @@ class XECStreamingDataset(IterableDataset):
     2. Normalizes Npho and Time branches in parallel using ThreadPoolExecutor.
     3. Yields individual samples for DataLoader batching.
     """
-    def __init__(self, root_files, tree_name="tree", 
+    def __init__(self, root_files, tree_name="tree",
                  batch_size=1024, step_size=256000,
                  npho_branch="relative_npho", time_branch="relative_time",
-                 npho_scale=DEFAULT_NPHO_SCALE, 
+                 npho_scale=DEFAULT_NPHO_SCALE,
                  npho_scale2=DEFAULT_NPHO_SCALE2,
-                 time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT, 
+                 time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT,
                  sentinel_value=DEFAULT_SENTINEL_VALUE,
+                 npho_threshold=DEFAULT_NPHO_THRESHOLD,
                  num_workers=8):
         super().__init__()
         self.root_files = root_files if isinstance(root_files, list) else [root_files]
         self.tree_name = tree_name
         self.batch_size = batch_size
         self.step_size = step_size
-        
+
         # Input and Truth branches
         self.input_branches = [npho_branch, time_branch]
         self.truth_branches = [
@@ -50,15 +52,11 @@ class XECStreamingDataset(IterableDataset):
             "event",         # Event number (for analysis)
         ]
         self.all_branches = self.input_branches + self.truth_branches
-        
-        # Scales
-        # self.npho_scale = npho_scale
-        # self.npho_scale2 = npho_scale2
-        # self.time_scale = time_scale
-        # self.time_shift = time_shift
-        # self.sentinel_value = sentinel_value
-        self.scales = (npho_scale, npho_scale2, time_scale, time_shift, sentinel_value)
-        
+
+        # Normalization parameters
+        # npho_threshold: sensors with raw_npho < threshold have valid npho but invalid time
+        self.scales = (npho_scale, npho_scale2, time_scale, time_shift, sentinel_value, npho_threshold)
+
         # ThreadPool for CPU-bound normalization
         self.num_threads = num_workers
         self.executor = ThreadPoolExecutor(max_workers=num_workers)
@@ -76,25 +74,45 @@ class XECStreamingDataset(IterableDataset):
     def _process_sub_chunk(self, arr_subset):
         """
         Normalize a subset of the chunk in a separate thread.
+
+        Normalization scheme:
+        - npho > 9e9 or npho < -npho_scale or isnan: invalid (sentinel for both)
+        - npho < npho_threshold: npho valid, time set to sentinel (timing unreliable)
+        - otherwise: normal normalization for both
+
+        The log1p transform requires raw_npho/npho_scale > -1, i.e., raw_npho > -npho_scale.
+        Sensors with npho < npho_threshold have unreliable timing (uncertainty ~ 1/sqrt(npho)).
         """
-        n_sc, n_sc2, t_sc, t_sh, sent = self.scales
-        
+        n_sc, n_sc2, t_sc, t_sh, sent, npho_thresh = self.scales
+
         # Input Normalization
         raw_n = arr_subset[self.input_branches[0]].astype("float32")
         raw_t = arr_subset[self.input_branches[1]].astype("float32")
-        
-        # Identify bad values
-        mask_npho_bad = (raw_n <= 0.0) | (raw_n > 9e9) | np.isnan(raw_n)
-        mask_time_bad = mask_npho_bad | (np.abs(raw_t) > 9e9) | np.isnan(raw_t)
 
-        # Normalize (replace bad values with 0 before log1p to avoid warning)
-        raw_n_safe = np.where(mask_npho_bad, 0.0, raw_n)
+        # Identify invalid npho values:
+        # - raw_npho > 9e9: sentinel in data (missing/dead sensor)
+        # - raw_npho < -npho_scale: would break log1p (log of negative)
+        # - isnan: corrupted data
+        mask_npho_invalid = (raw_n > 9e9) | (raw_n < -n_sc) | np.isnan(raw_n)
+
+        # Identify invalid time values:
+        # - npho is invalid: can't trust timing either
+        # - raw_npho < threshold: timing unreliable (uncertainty ~ 1/sqrt(npho))
+        # - raw_time > 9e9: sentinel in data
+        # - isnan: corrupted data
+        mask_time_invalid = mask_npho_invalid | (raw_n < npho_thresh) | (np.abs(raw_t) > 9e9) | np.isnan(raw_t)
+
+        # Normalize npho: log1p transform
+        # For invalid npho, use 0 temporarily to avoid log1p warnings, then set to sentinel
+        raw_n_safe = np.where(mask_npho_invalid, 0.0, np.maximum(raw_n, 0.0))  # Also clamp small negatives
         n_norm = np.log1p(raw_n_safe / n_sc) / n_sc2
+        n_norm[mask_npho_invalid] = sent
+
+        # Normalize time: linear transform
         t_norm = (raw_t / t_sc) - t_sh
-        n_norm[mask_npho_bad] = 0.0
-        t_norm[mask_time_bad] = sent
-        
-        x_in = np.stack([n_norm, t_norm], axis=-1) # (SubBatch, 4760, 2)
+        t_norm[mask_time_invalid] = sent
+
+        x_in = np.stack([n_norm, t_norm], axis=-1)  # (SubBatch, 4760, 2)
         
         target_dict = {
             # Targets for training

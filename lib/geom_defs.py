@@ -163,5 +163,6 @@ DEFAULT_SENTINEL_VALUE = -1.0
 # Time loss is only computed for sensors where npho > threshold (raw scale).
 # Based on conventional timing reconstruction (MEGTXECTimeFit.cpp), sensors with
 # nphe < threshold are rejected because timing uncertainty ~ 1/sqrt(nphe) diverges.
-# Default of 10 is a reasonable starting point; can be tuned via config.
-DEFAULT_NPHO_THRESHOLD = 10.0
+# Default of 100 is a conservative threshold; can be tuned via config.
+# Sensors with npho < threshold will have valid npho but invalid (sentinel) time.
+DEFAULT_NPHO_THRESHOLD = 100.0

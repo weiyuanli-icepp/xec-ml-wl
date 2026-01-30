@@ -88,17 +88,36 @@ Sensors are marked as **invalid** based on these conditions:
 
 ```python
 # Npho invalid if:
-mask_npho_bad = (raw_npho <= 0.0) | (raw_npho > 9e9) | isnan(raw_npho)
+# - raw_npho > 9e9: sentinel in data (missing/dead sensor)
+# - raw_npho < -npho_scale: would break log1p (log of negative)
+# - isnan: corrupted data
+mask_npho_invalid = (raw_npho > 9e9) | (raw_npho < -npho_scale) | isnan(raw_npho)
 
-# Time invalid if npho is bad OR time itself is bad:
-mask_time_bad = mask_npho_bad | (abs(raw_time) > 9e9) | isnan(raw_time)
+# Time invalid if:
+# - npho is invalid: can't trust timing either
+# - raw_npho < npho_threshold: timing unreliable (uncertainty ~ 1/sqrt(npho))
+# - raw_time > 9e9: sentinel in data
+# - isnan: corrupted data
+mask_time_invalid = mask_npho_invalid | (raw_npho < npho_threshold) | (abs(raw_time) > 9e9) | isnan(raw_time)
 ```
+
+**Why this scheme?**
+- The `log1p(x)` function requires `x > -1`, so `raw_npho > -npho_scale`
+- Small negative npho values (e.g., -10) are physically possible due to baseline subtraction and are handled correctly by `log1p`
+- Timing uncertainty scales as `1/sqrt(npho)`, so low-npho sensors have unreliable timing
+- The `npho_threshold` (default: 100) determines when timing becomes unreliable
 
 **Invalid Sensor Handling:**
 | Channel | Invalid Value | Reason |
 |---------|---------------|--------|
-| Npho | `0.0` | Zero photons is physically valid, acts as "no signal" |
+| Npho | `sentinel_value` | Invalid sensors marked distinctively |
 | Time | `sentinel_value` | Distinctive value far from valid range (~0 after normalization) |
+
+**Low-Npho Sensors (0 < npho < threshold):**
+| Channel | Treatment | Reason |
+|---------|-----------|--------|
+| Npho | Normalized normally | Npho measurement is still valid |
+| Time | `sentinel_value` | Timing unreliable at low photon counts |
 
 ### 4. Sentinel Value System
 
@@ -147,8 +166,11 @@ After normalization with the **new scheme** (npho_scale=1000):
 | `time_scale` | `normalization.time_scale` | 6.5e-8 | 1.14e-7 | Time scale (seconds) |
 | `time_shift` | `normalization.time_shift` | 0.5 | -0.46 | Time offset after scaling |
 | `sentinel_value` | `normalization.sentinel_value` | -5.0 | -1.0 | Invalid sensor marker |
+| `npho_threshold` | `normalization.npho_threshold` | - | 100 | Min npho for valid timing |
 
 **Important:** All training paths (Regressor, MAE, Inpainter) must use the **same normalization parameters** for the encoder to work correctly. The inpainter must match the MAE's normalization.
+
+**Note on `npho_threshold`:** Sensors with `raw_npho < npho_threshold` will have valid npho values but their time channel will be set to sentinel. This is because timing precision degrades as `1/sqrt(npho)`, making low-npho timing measurements unreliable. The default of 100 is conservative; can be adjusted based on physics requirements.
 
 ### 7. Inverse Transform (for Inference)
 
