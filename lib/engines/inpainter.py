@@ -144,55 +144,52 @@ def compute_inpainting_loss(
 
         pr_all = pred[batch_idx, pos_idx, :]  # (total, 2)
 
-        # Per-element losses
-        loss_npho_elem = loss_func(pr_all[:, 0], gt_all[:, 0], reduction="none")
-        loss_time_elem = loss_func(pr_all[:, 1], gt_all[:, 1], reduction="none")
-
-        # Conditional time loss: only compute where npho > threshold (in normalized space)
+        # Conditional time loss threshold check (needed for both loss and MAE/RMSE)
         npho_gt_norm = gt_all[:, 0]  # (total,) - normalized npho values
         time_valid = npho_gt_norm > npho_threshold_norm  # (total,) - sensors with valid time
-
-        # Apply npho weighting to time loss if enabled
-        if use_npho_time_weight and time_valid.any():
-            # De-normalize to get approximate raw npho for weighting
-            # raw_n = npho_scale * (exp(npho_norm * npho_scale2) - 1)
-            raw_npho_approx = npho_scale * (torch.exp(npho_gt_norm * npho_scale2) - 1)
-            npho_weights = torch.sqrt(raw_npho_approx.clamp(min=npho_threshold))
-            # Normalize weights so mean is ~1 for valid sensors
-            npho_weights = npho_weights / (npho_weights[time_valid].mean() + 1e-8)
-            loss_time_elem_weighted = loss_time_elem * npho_weights
-        else:
-            loss_time_elem_weighted = loss_time_elem
-
-        # Zero out time loss for sensors with npho below threshold
-        loss_time_elem_valid = loss_time_elem_weighted.clone()
-        loss_time_elem_valid[~time_valid] = 0.0
 
         counts_per_batch = valid.sum(dim=1)  # (B,)
         nonzero_mask = counts_per_batch > 0
         safe_counts = counts_per_batch.clamp_min(1)
 
-        # Count time-valid sensors per batch
+        # Count time-valid sensors per batch (needed for time loss averaging)
         time_valid_per_elem = time_valid.float()
         time_counts_per_batch = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, time_valid_per_elem)
-        time_safe_counts = time_counts_per_batch.clamp_min(1)
 
-        # Sum losses per batch
-        loss_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_npho_elem)
-        loss_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_time_elem_valid)
+        # Compute losses only for channels with non-zero weights
+        avg_npho = torch.tensor(0.0, device=device)
+        avg_time = torch.tensor(0.0, device=device)
 
-        # Mean per batch then average over batches with masks
-        loss_npho_means = loss_npho_sum / safe_counts
-        loss_time_means = loss_time_sum / time_safe_counts  # Use time-valid counts for time loss
-
-        if nonzero_mask.any():
+        if npho_weight > 0 and nonzero_mask.any():
+            loss_npho_elem = loss_func(pr_all[:, 0], gt_all[:, 0], reduction="none")
+            loss_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_npho_elem)
+            loss_npho_means = loss_npho_sum / safe_counts
             avg_npho = loss_npho_means[nonzero_mask].mean()
-            # Only include batches that have time-valid sensors in time loss average
+
+        if time_weight > 0 and nonzero_mask.any():
+            loss_time_elem = loss_func(pr_all[:, 1], gt_all[:, 1], reduction="none")
+
+            # Apply npho weighting to time loss if enabled
+            if use_npho_time_weight and time_valid.any():
+                # De-normalize to get approximate raw npho for weighting
+                raw_npho_approx = npho_scale * (torch.exp(npho_gt_norm * npho_scale2) - 1)
+                npho_weights = torch.sqrt(raw_npho_approx.clamp(min=npho_threshold))
+                npho_weights = npho_weights / (npho_weights[time_valid].mean() + 1e-8)
+                loss_time_elem = loss_time_elem * npho_weights
+
+            # Zero out time loss for sensors with npho below threshold
+            loss_time_elem_valid = loss_time_elem.clone()
+            loss_time_elem_valid[~time_valid] = 0.0
+
+            time_safe_counts = time_counts_per_batch.clamp_min(1)
+            loss_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_time_elem_valid)
+            loss_time_means = loss_time_sum / time_safe_counts
+
             time_nonzero_mask = time_counts_per_batch > 0
             if time_nonzero_mask.any():
                 avg_time = loss_time_means[time_nonzero_mask].mean()
-            else:
-                avg_time = torch.tensor(0.0, device=device)
+
+        if nonzero_mask.any():
             face_loss = npho_weight * avg_npho + time_weight * avg_time
             total_loss = total_loss + face_loss
 
@@ -285,48 +282,51 @@ def compute_inpainting_loss(
         pr_all = pred[batch_idx, pos_idx, :]
         gt_all = original_values[batch_idx, flat_idx_all, :]
 
-        # Per-element losses
-        loss_npho_elem = loss_func(pr_all[:, 0], gt_all[:, 0], reduction="none")
-        loss_time_elem = loss_func(pr_all[:, 1], gt_all[:, 1], reduction="none")
-
-        # Conditional time loss: only compute where npho > threshold (in normalized space)
+        # Conditional time loss threshold check (needed for both loss and MAE/RMSE)
         npho_gt_norm = gt_all[:, 0]  # (total,) - normalized npho values
         time_valid = npho_gt_norm > npho_threshold_norm  # (total,) - sensors with valid time
-
-        # Apply npho weighting to time loss if enabled
-        if use_npho_time_weight and time_valid.any():
-            raw_npho_approx = npho_scale * (torch.exp(npho_gt_norm * npho_scale2) - 1)
-            npho_weights = torch.sqrt(raw_npho_approx.clamp(min=npho_threshold))
-            npho_weights = npho_weights / (npho_weights[time_valid].mean() + 1e-8)
-            loss_time_elem_weighted = loss_time_elem * npho_weights
-        else:
-            loss_time_elem_weighted = loss_time_elem
-
-        loss_time_elem_valid = loss_time_elem_weighted.clone()
-        loss_time_elem_valid[~time_valid] = 0.0
 
         counts_per_batch = valid.sum(dim=1)
         nonzero_mask = counts_per_batch > 0
         safe_counts = counts_per_batch.clamp_min(1)
 
-        # Count time-valid sensors per batch
+        # Count time-valid sensors per batch (needed for time loss averaging)
         time_valid_per_elem = time_valid.float()
         time_counts_per_batch = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, time_valid_per_elem)
-        time_safe_counts = time_counts_per_batch.clamp_min(1)
 
-        loss_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_npho_elem)
-        loss_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_time_elem_valid)
+        # Compute losses only for channels with non-zero weights
+        avg_npho = torch.tensor(0.0, device=device)
+        avg_time = torch.tensor(0.0, device=device)
 
-        loss_npho_means = loss_npho_sum / safe_counts
-        loss_time_means = loss_time_sum / time_safe_counts
-
-        if nonzero_mask.any():
+        if npho_weight > 0 and nonzero_mask.any():
+            loss_npho_elem = loss_func(pr_all[:, 0], gt_all[:, 0], reduction="none")
+            loss_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_npho_elem)
+            loss_npho_means = loss_npho_sum / safe_counts
             avg_npho = loss_npho_means[nonzero_mask].mean()
+
+        if time_weight > 0 and nonzero_mask.any():
+            loss_time_elem = loss_func(pr_all[:, 1], gt_all[:, 1], reduction="none")
+
+            # Apply npho weighting to time loss if enabled
+            if use_npho_time_weight and time_valid.any():
+                raw_npho_approx = npho_scale * (torch.exp(npho_gt_norm * npho_scale2) - 1)
+                npho_weights = torch.sqrt(raw_npho_approx.clamp(min=npho_threshold))
+                npho_weights = npho_weights / (npho_weights[time_valid].mean() + 1e-8)
+                loss_time_elem = loss_time_elem * npho_weights
+
+            # Zero out time loss for sensors with npho below threshold
+            loss_time_elem_valid = loss_time_elem.clone()
+            loss_time_elem_valid[~time_valid] = 0.0
+
+            time_safe_counts = time_counts_per_batch.clamp_min(1)
+            loss_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_time_elem_valid)
+            loss_time_means = loss_time_sum / time_safe_counts
+
             time_nonzero_mask = time_counts_per_batch > 0
             if time_nonzero_mask.any():
                 avg_time = loss_time_means[time_nonzero_mask].mean()
-            else:
-                avg_time = torch.tensor(0.0, device=device)
+
+        if nonzero_mask.any():
             face_loss = npho_weight * avg_npho + time_weight * avg_time
             total_loss = total_loss + face_loss
 
@@ -427,6 +427,7 @@ def run_epoch_inpainter(
     npho_threshold: float = None,
     use_npho_time_weight: bool = True,
     profile: bool = False,
+    log_invalid_npho: bool = True,
 ) -> Dict[str, float]:
     """
     Run one training epoch for inpainter.
@@ -491,6 +492,7 @@ def run_epoch_inpainter(
             time_shift=time_shift,
             sentinel_value=sentinel_value,
             num_workers=dataset_workers,
+            log_invalid_npho=log_invalid_npho,
         )
 
         loader = torch.utils.data.DataLoader(
@@ -653,6 +655,7 @@ def run_eval_inpainter(
     npho_threshold: float = None,
     use_npho_time_weight: bool = True,
     profile: bool = False,
+    log_invalid_npho: bool = True,
 ) -> Dict[str, float]:
     """
     Run evaluation for inpainter.
@@ -726,6 +729,7 @@ def run_eval_inpainter(
                 time_shift=time_shift,
                 sentinel_value=sentinel_value,
                 num_workers=dataset_workers,
+                log_invalid_npho=log_invalid_npho,
             )
 
             loader = torch.utils.data.DataLoader(
