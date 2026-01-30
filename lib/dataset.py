@@ -1,10 +1,13 @@
 import os
 import glob
+import logging
 import torch
 import numpy as np
 import uproot
 from torch.utils.data import IterableDataset, DataLoader
 from concurrent.futures import ThreadPoolExecutor
+
+logger = logging.getLogger(__name__)
 from .utils import iterate_chunks
 from .geom_defs import (
     DEFAULT_NPHO_SCALE,
@@ -22,6 +25,20 @@ class XECStreamingDataset(IterableDataset):
     1. Reads ROOT files in chunks using uproot.
     2. Normalizes Npho and Time branches in parallel using ThreadPoolExecutor.
     3. Yields individual samples for DataLoader batching.
+
+    Args:
+        root_files: List of ROOT file paths or single path.
+        tree_name: Name of the TTree in ROOT files.
+        batch_size: Batch size for yielded tensors.
+        step_size: Number of events to load per chunk from ROOT file.
+        npho_branch: Branch name for photon counts.
+        time_branch: Branch name for timing.
+        npho_scale, npho_scale2, time_scale, time_shift, sentinel_value: Normalization params.
+        npho_threshold: Minimum npho for valid timing (sensors below have sentinel time).
+        num_workers: Number of threads for parallel CPU preprocessing.
+        log_invalid_npho: Log warning when invalid npho values detected.
+        load_truth_branches: If True, load truth branches for regression. If False, only load inputs.
+        shuffle: If True, shuffle samples within each chunk.
     """
     def __init__(self, root_files, tree_name="tree",
                  batch_size=1024, step_size=256000,
@@ -31,31 +48,46 @@ class XECStreamingDataset(IterableDataset):
                  time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT,
                  sentinel_value=DEFAULT_SENTINEL_VALUE,
                  npho_threshold=DEFAULT_NPHO_THRESHOLD,
-                 num_workers=8):
+                 num_workers=8,
+                 log_invalid_npho=True,
+                 load_truth_branches=True,
+                 shuffle=False):
         super().__init__()
         self.root_files = root_files if isinstance(root_files, list) else [root_files]
         self.tree_name = tree_name
         self.batch_size = batch_size
         self.step_size = step_size
+        self.shuffle = shuffle
+        self.load_truth_branches = load_truth_branches
 
-        # Input and Truth branches
+        # Input branches (always loaded)
         self.input_branches = [npho_branch, time_branch]
-        self.truth_branches = [
-            "energyTruth",   # Energy target
-            "timeTruth",     # Timing target
-            "uvwTruth",      # Position target (uvw) - first interaction point
-            "xyzTruth",      # Position target (xyz) - first interaction point
-            "emiAng",        # Emission angle target (theta, phi)
-            "emiVec",        # Emission vector (for metric calculation)
-            "xyzVTX",        # Vertex position (gamma-ray shooting point)
-            "run",           # Run number (for analysis)
-            "event",         # Event number (for analysis)
-        ]
+
+        # Truth branches (optional, for regression tasks)
+        if load_truth_branches:
+            self.truth_branches = [
+                "energyTruth",   # Energy target
+                "timeTruth",     # Timing target
+                "uvwTruth",      # Position target (uvw) - first interaction point
+                "xyzTruth",      # Position target (xyz) - first interaction point
+                "emiAng",        # Emission angle target (theta, phi)
+                "emiVec",        # Emission vector (for metric calculation)
+                "xyzVTX",        # Vertex position (gamma-ray shooting point)
+                "run",           # Run number (for analysis)
+                "event",         # Event number (for analysis)
+            ]
+        else:
+            # Minimal branches for MAE/Inpainter (only need run/event for logging)
+            self.truth_branches = ["run", "event"]
+
         self.all_branches = self.input_branches + self.truth_branches
 
         # Normalization parameters
         # npho_threshold: sensors with raw_npho < threshold have valid npho but invalid time
         self.scales = (npho_scale, npho_scale2, time_scale, time_shift, sentinel_value, npho_threshold)
+
+        # Logging for invalid npho values (unexpected data issues)
+        self.log_invalid_npho = log_invalid_npho
 
         # ThreadPool for CPU-bound normalization
         self.num_threads = num_workers
@@ -71,7 +103,7 @@ class XECStreamingDataset(IterableDataset):
         """Cleanup executor on garbage collection."""
         self.shutdown()
 
-    def _process_sub_chunk(self, arr_subset):
+    def _process_sub_chunk(self, arr_subset, log_invalid=True):
         """
         Normalize a subset of the chunk in a separate thread.
 
@@ -95,6 +127,24 @@ class XECStreamingDataset(IterableDataset):
         # - isnan: corrupted data
         mask_npho_invalid = (raw_n > 9e9) | (raw_n < -n_sc) | np.isnan(raw_n)
 
+        # Log unexpected invalid npho values (these indicate data issues)
+        if log_invalid and np.any(mask_npho_invalid):
+            run_arr = arr_subset["run"].flatten()
+            event_arr = arr_subset["event"].flatten()
+            event_idx, sensor_idx = np.where(mask_npho_invalid)
+            # Limit logging to first 10 invalid entries to avoid log flooding
+            n_invalid = len(event_idx)
+            n_to_log = min(n_invalid, 10)
+            for i in range(n_to_log):
+                ev_i, sens_i = event_idx[i], sensor_idx[i]
+                val = raw_n[ev_i, sens_i]
+                logger.warning(
+                    f"Invalid npho detected: run={run_arr[ev_i]}, event={event_arr[ev_i]}, "
+                    f"sensor_idx={sens_i}, value={val:.2e}"
+                )
+            if n_invalid > n_to_log:
+                logger.warning(f"  ... and {n_invalid - n_to_log} more invalid npho values in this chunk")
+
         # Identify invalid time values:
         # - npho is invalid: can't trust timing either
         # - raw_npho < threshold: timing unreliable (uncertainty ~ 1/sqrt(npho))
@@ -113,21 +163,29 @@ class XECStreamingDataset(IterableDataset):
         t_norm[mask_time_invalid] = sent
 
         x_in = np.stack([n_norm, t_norm], axis=-1)  # (SubBatch, 4760, 2)
-        
-        target_dict = {
-            # Targets for training
-            "energy":  arr_subset["energyTruth"].astype("float32"),
-            "timing":  arr_subset["timeTruth"].astype("float32"),
-            "uvwFI":   arr_subset["uvwTruth"].astype("float32"),
-            "angle":   arr_subset["emiAng"].astype("float32"),
-            # For metric calculation (not prediction targets)
-            "emiVec":  arr_subset["emiVec"].astype("float32"),
-            "xyzTruth": arr_subset["xyzTruth"].astype("float32"),
-            "xyzVTX":  arr_subset["xyzVTX"].astype("float32"),
-            # For analysis / event identification
-            "run":     arr_subset["run"].astype("int64"),
-            "event":   arr_subset["event"].astype("int64"),
-        }
+
+        # Build target dict based on which branches are loaded
+        if self.load_truth_branches:
+            target_dict = {
+                # Targets for training
+                "energy":  arr_subset["energyTruth"].astype("float32"),
+                "timing":  arr_subset["timeTruth"].astype("float32"),
+                "uvwFI":   arr_subset["uvwTruth"].astype("float32"),
+                "angle":   arr_subset["emiAng"].astype("float32"),
+                # For metric calculation (not prediction targets)
+                "emiVec":  arr_subset["emiVec"].astype("float32"),
+                "xyzTruth": arr_subset["xyzTruth"].astype("float32"),
+                "xyzVTX":  arr_subset["xyzVTX"].astype("float32"),
+                # For analysis / event identification
+                "run":     arr_subset["run"].astype("int64"),
+                "event":   arr_subset["event"].astype("int64"),
+            }
+        else:
+            # Minimal target dict for MAE/Inpainter (only run/event for logging)
+            target_dict = {
+                "run":     arr_subset["run"].astype("int64"),
+                "event":   arr_subset["event"].astype("int64"),
+            }
         return x_in, target_dict
 
     def __iter__(self):
@@ -152,28 +210,38 @@ class XECStreamingDataset(IterableDataset):
 
             for i in range(self.num_threads):
                 sub = {key: chunk[key][indices[i]:indices[i+1]] for key in self.all_branches}
-                futures.append(self.executor.submit(self._process_sub_chunk, sub))
+                futures.append(self.executor.submit(self._process_sub_chunk, sub, self.log_invalid_npho))
 
             # Collect all processed sub-chunks
             x_parts = []
-            t_parts = {k: [] for k in ["energy", "timing", "uvwFI", "angle", "emiVec", "xyzTruth", "xyzVTX", "run", "event"]}
+            # Determine target keys from first result
+            first_result = futures[0].result()
+            x_parts.append(first_result[0])
+            target_keys = list(first_result[1].keys())
+            t_parts = {k: [first_result[1][k]] for k in target_keys}
 
-            for f in futures:
+            for f in futures[1:]:
                 x_sub, t_sub = f.result()
                 x_parts.append(x_sub)
-                for k in t_parts:
+                for k in target_keys:
                     t_parts[k].append(t_sub[k])
 
             # Concatenate all sub-chunks
             x_all = np.concatenate(x_parts, axis=0)
             t_all = {k: np.concatenate(v, axis=0) for k, v in t_parts.items()}
 
-            # Yield batches directly
+            # Shuffle within chunk if enabled
             num_samples = len(x_all)
+            if self.shuffle:
+                perm = np.random.permutation(num_samples)
+                x_all = x_all[perm]
+                t_all = {k: v[perm] for k, v in t_all.items()}
+
+            # Yield batches directly
             for start in range(0, num_samples, self.batch_size):
                 end = min(start + self.batch_size, num_samples)
-                x_batch = torch.from_numpy(x_all[start:end])
-                t_batch = {k: torch.from_numpy(v[start:end]) for k, v in t_all.items()}
+                x_batch = torch.from_numpy(x_all[start:end].copy())
+                t_batch = {k: torch.from_numpy(v[start:end].copy()) for k, v in t_all.items()}
                 yield x_batch, t_batch
 
 def expand_path(path):
