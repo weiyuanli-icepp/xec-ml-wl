@@ -484,6 +484,7 @@ def run_epoch_inpainter(
 
     for root_file in train_files:
         profiler.start("data_load")
+        # Note: dataset I/O profiling requires dataloader_workers=0 for accurate stats
         dataset = XECStreamingDataset(
             root_files=root_file,
             tree_name=tree_name,
@@ -499,6 +500,7 @@ def run_epoch_inpainter(
             num_workers=dataset_workers,
             log_invalid_npho=log_invalid_npho,
             load_truth_branches=False,  # Inpainter doesn't need truth branches
+            profile=profile,
         )
 
         loader = torch.utils.data.DataLoader(
@@ -597,6 +599,10 @@ def run_epoch_inpainter(
     # Print profiler report if enabled
     if profile:
         print(profiler.report())
+        # Print dataset I/O breakdown (only accurate when dataloader_workers=0)
+        # Note: shows stats from last file only when looping over multiple files
+        if dataloader_workers == 0:
+            print(dataset.get_profile_report())
 
     # Final optimizer step if grads remain
     if (accum_step % grad_accum_steps) != 0:
@@ -722,6 +728,7 @@ def run_eval_inpainter(
     with torch.no_grad():
         for root_file in val_files:
             profiler.start("data_load")
+            # Note: dataset I/O profiling requires dataloader_workers=0 for accurate stats
             dataset = XECStreamingDataset(
                 root_files=root_file,
                 tree_name=tree_name,
@@ -737,6 +744,7 @@ def run_eval_inpainter(
                 num_workers=dataset_workers,
                 log_invalid_npho=log_invalid_npho,
                 load_truth_branches=False,  # Inpainter doesn't need truth branches
+                profile=profile,
             )
 
             loader = torch.utils.data.DataLoader(
@@ -956,6 +964,10 @@ def run_eval_inpainter(
     # Print profiler report if enabled
     if profile:
         print(profiler.report("Validation timing breakdown"))
+        # Print dataset I/O breakdown (only accurate when dataloader_workers=0)
+        # Note: shows stats from last file only when looping over multiple files
+        if dataloader_workers == 0:
+            print(dataset.get_profile_report())
 
     avg_metrics = {k: v / max(1, num_batches) for k, v in metric_sums.items()}
 

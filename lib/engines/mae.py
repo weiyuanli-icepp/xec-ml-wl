@@ -100,6 +100,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
     profiler = SimpleProfiler(enabled=profile, sync_cuda=True)
 
     # Create dataset - data is pre-normalized by XECStreamingDataset
+    # Note: dataset I/O profiling requires dataloader_workers=0 for accurate stats
     root_files_list = root_files if isinstance(root_files, list) else [root_files]
     dataset = XECStreamingDataset(
         root_files=root_files_list,
@@ -117,6 +118,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
         num_workers=dataset_workers,
         log_invalid_npho=log_invalid_npho,
         load_truth_branches=False,  # MAE doesn't need truth branches
+        profile=profile,
     )
 
     loader = DataLoader(
@@ -350,6 +352,9 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
     # Print profiler report if enabled
     if profile:
         print(profiler.report())
+        # Print dataset I/O breakdown (only accurate when dataloader_workers=0)
+        if dataloader_workers == 0:
+            print(dataset.get_profile_report())
 
     # Return averaged losses with detailed breakdown
     metrics = {}
@@ -558,8 +563,9 @@ def run_eval_mae(model, device, root_files, tree_name,
         scatter_hex_face(full, recons_dict["top"], top_indices)
         scatter_hex_face(full, recons_dict["bot"], bot_indices)
         return full
-    
+
     # Create dataset - data is pre-normalized by XECStreamingDataset
+    # Note: dataset I/O profiling requires dataloader_workers=0 for accurate stats
     root_files_list = root_files if isinstance(root_files, list) else [root_files]
     dataset = XECStreamingDataset(
         root_files=root_files_list,
@@ -577,6 +583,7 @@ def run_eval_mae(model, device, root_files, tree_name,
         num_workers=dataset_workers,
         log_invalid_npho=log_invalid_npho,
         load_truth_branches=False,  # MAE doesn't need truth branches
+        profile=profile,
     )
 
     loader = DataLoader(
@@ -781,6 +788,9 @@ def run_eval_mae(model, device, root_files, tree_name,
     # Print profiler report if enabled
     if profile:
         print(profiler.report("Validation timing breakdown"))
+        # Print dataset I/O breakdown (only accurate when dataloader_workers=0)
+        if dataloader_workers == 0:
+            print(dataset.get_profile_report())
 
     # Build metrics dict
     metrics = {}

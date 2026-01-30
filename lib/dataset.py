@@ -2,6 +2,7 @@ import os
 import glob
 import logging
 import warnings
+import time
 import torch
 import numpy as np
 import uproot
@@ -55,8 +56,13 @@ class XECStreamingDataset(IterableDataset):
                  num_workers=8,
                  log_invalid_npho=True,
                  load_truth_branches=True,
-                 shuffle=False):
+                 shuffle=False,
+                 profile=False):
         super().__init__()
+
+        # I/O profiling
+        self.profile = profile
+        self._reset_profile_stats()
 
         # Warn if using deprecated branch name
         global _RELATIVE_NPHO_WARNING_SHOWN
@@ -109,6 +115,48 @@ class XECStreamingDataset(IterableDataset):
         # ThreadPool for CPU-bound normalization
         self.num_threads = num_workers
         self.executor = ThreadPoolExecutor(max_workers=num_workers)
+
+    def _reset_profile_stats(self):
+        """Reset profiling statistics."""
+        self._profile_stats = {
+            "io_time": 0.0,        # Time waiting for uproot.iterate (file I/O)
+            "process_time": 0.0,   # Time in CPU normalization
+            "batch_time": 0.0,     # Time creating/yielding batches
+            "chunk_count": 0,      # Number of chunks processed
+            "event_count": 0,      # Total events processed
+            "file_count": 0,       # Number of files (set at start)
+        }
+
+    def get_profile_stats(self):
+        """Get profiling statistics dictionary."""
+        return self._profile_stats.copy()
+
+    def get_profile_report(self):
+        """Get a formatted profiling report string."""
+        stats = self._profile_stats
+        total_time = stats["io_time"] + stats["process_time"] + stats["batch_time"]
+        if total_time == 0:
+            return "[Dataset Profile] No profiling data collected (profile=False or no data processed)"
+
+        lines = ["[Dataset Profile] I/O breakdown:"]
+        lines.append(f"  Files: {stats['file_count']}, Chunks: {stats['chunk_count']}, Events: {stats['event_count']}")
+
+        for name, key in [("I/O (uproot)", "io_time"), ("CPU (normalize)", "process_time"), ("Batch (numpy→torch)", "batch_time")]:
+            t = stats[key]
+            pct = 100 * t / total_time if total_time > 0 else 0
+            lines.append(f"  {name}: {t:.2f}s ({pct:.1f}%)")
+
+        lines.append(f"  TOTAL: {total_time:.2f}s")
+
+        if stats["event_count"] > 0 and total_time > 0:
+            throughput = stats["event_count"] / total_time
+            lines.append(f"  Throughput: {throughput:.0f} events/s")
+
+        if stats["file_count"] > 0:
+            avg_events_per_file = stats["event_count"] / stats["file_count"]
+            lines.append(f"  Avg events/file: {avg_events_per_file:.0f}")
+
+        return "\n".join(lines)
 
     def shutdown(self):
         """Explicitly shutdown the thread pool executor."""
@@ -209,6 +257,10 @@ class XECStreamingDataset(IterableDataset):
         """
         Iterates over chunks and yields pre-batched tensors.
         """
+        # Reset profiling stats at start of iteration
+        if self.profile:
+            self._reset_profile_stats()
+
         # DistributedDataParallel (DDP)
         worker_info = torch.utils.data.get_worker_info()
         files = self.root_files
@@ -219,7 +271,19 @@ class XECStreamingDataset(IterableDataset):
             if len(files) == 0:
                 return
 
+        if self.profile:
+            self._profile_stats["file_count"] = len(files)
+
+        # Start I/O timer for first chunk
+        io_start = time.perf_counter() if self.profile else 0
+
         for chunk in iterate_chunks(files, self.tree_name, self.all_branches, self.step_size):
+            # Record I/O time (time waiting for this chunk)
+            if self.profile:
+                self._profile_stats["io_time"] += time.perf_counter() - io_start
+                self._profile_stats["chunk_count"] += 1
+                process_start = time.perf_counter()
+
             num_events = len(chunk[self.input_branches[0]])
 
             indices = np.linspace(0, num_events, self.num_threads + 1, dtype=int)
@@ -254,12 +318,22 @@ class XECStreamingDataset(IterableDataset):
                 x_all = x_all[perm]
                 t_all = {k: v[perm] for k, v in t_all.items()}
 
+            if self.profile:
+                self._profile_stats["process_time"] += time.perf_counter() - process_start
+                self._profile_stats["event_count"] += num_samples
+                batch_start = time.perf_counter()
+
             # Yield batches directly
             for start in range(0, num_samples, self.batch_size):
                 end = min(start + self.batch_size, num_samples)
                 x_batch = torch.from_numpy(x_all[start:end].copy())
                 t_batch = {k: torch.from_numpy(v[start:end].copy()) for k, v in t_all.items()}
                 yield x_batch, t_batch
+
+            if self.profile:
+                self._profile_stats["batch_time"] += time.perf_counter() - batch_start
+                # Start I/O timer for next chunk
+                io_start = time.perf_counter()
 
 def expand_path(path):
     """
