@@ -169,6 +169,8 @@ Examples:
     parser.add_argument("--mask_ratio", type=float, default=None, help="Mask ratio for training (default 0.05)")
     parser.add_argument("--freeze_encoder", action="store_true", help="Freeze encoder (default)")
     parser.add_argument("--finetune_encoder", action="store_true", help="Fine-tune encoder (not frozen)")
+    parser.add_argument("--global_only", action="store_true",
+                        help="Disable local context in inpainting heads (ablation: global latent only, like MAE decoder)")
 
     # Optimizer
     parser.add_argument("--lr", type=float, default=None)
@@ -217,6 +219,7 @@ Examples:
         num_threads = args.num_threads if args.num_threads is not None else cfg.data.num_threads
         npho_branch = args.npho_branch or getattr(cfg.data, "npho_branch", "relative_npho")
         time_branch = args.time_branch or getattr(cfg.data, "time_branch", "relative_time")
+        log_invalid_npho = getattr(cfg.data, "log_invalid_npho", True)
 
         npho_scale = float(args.npho_scale if args.npho_scale is not None else cfg.normalization.npho_scale)
         npho_scale2 = float(args.npho_scale2 if args.npho_scale2 is not None else cfg.normalization.npho_scale2)
@@ -229,6 +232,8 @@ Examples:
         mask_ratio = args.mask_ratio if args.mask_ratio is not None else cfg.model.mask_ratio
         time_mask_ratio_scale = args.time_mask_ratio_scale if args.time_mask_ratio_scale is not None else getattr(cfg.model, "time_mask_ratio_scale", 1.0)
         freeze_encoder = cfg.model.freeze_encoder if not args.finetune_encoder else False
+        # --global_only disables local context (ablation study)
+        use_local_context = not args.global_only and getattr(cfg.model, "use_local_context", True)
 
         lr = args.lr if args.lr is not None else cfg.training.lr
         lr_scheduler = args.lr_scheduler or getattr(cfg.training, "lr_scheduler", None)
@@ -275,6 +280,7 @@ Examples:
         num_threads = args.num_threads or 4
         npho_branch = args.npho_branch or "relative_npho"
         time_branch = args.time_branch or "relative_time"
+        log_invalid_npho = True  # Default: enabled
 
         npho_scale = args.npho_scale or DEFAULT_NPHO_SCALE
         npho_scale2 = args.npho_scale2 or DEFAULT_NPHO_SCALE2
@@ -287,6 +293,7 @@ Examples:
         mask_ratio = args.mask_ratio or 0.05
         time_mask_ratio_scale = args.time_mask_ratio_scale or 1.0
         freeze_encoder = not args.finetune_encoder  # Default: frozen
+        use_local_context = not args.global_only  # Default: True (use local context)
 
         lr = args.lr or 1e-4
         lr_scheduler = args.lr_scheduler
@@ -367,13 +374,15 @@ Examples:
     # Create inpainter model
     model = XEC_Inpainter(
         encoder, freeze_encoder=freeze_encoder, sentinel_value=sentinel_value,
-        time_mask_ratio_scale=time_mask_ratio_scale
+        time_mask_ratio_scale=time_mask_ratio_scale,
+        use_local_context=use_local_context
     ).to(device)
 
     print(f"[INFO] Inpainter created:")
     print(f"  - Total params: {model.get_num_total_params():,}")
     print(f"  - Trainable params: {model.get_num_trainable_params():,}")
     print(f"  - Encoder frozen: {freeze_encoder}")
+    print(f"  - Use local context: {use_local_context}")
 
     # Optimizer (only trainable params)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -532,6 +541,7 @@ Examples:
                 npho_threshold=npho_threshold,
                 use_npho_time_weight=use_npho_time_weight,
                 profile=profile,
+                log_invalid_npho=log_invalid_npho,
             )
 
             # Validation
@@ -559,6 +569,7 @@ Examples:
                     npho_threshold=npho_threshold,
                     use_npho_time_weight=use_npho_time_weight,
                     profile=profile,
+                    log_invalid_npho=log_invalid_npho,
                 )
 
             dt = time.time() - t0
@@ -679,6 +690,7 @@ Examples:
                         npho_threshold=npho_threshold,
                         use_npho_time_weight=use_npho_time_weight,
                         profile=profile,
+                        log_invalid_npho=log_invalid_npho,
                     )
                 root_path = writer.filepath if writer.count > 0 else None
                 t_root_elapsed = time.time() - t_root_start
