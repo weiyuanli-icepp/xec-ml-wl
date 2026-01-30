@@ -48,14 +48,25 @@ def test_mae(data_path, device, num_batches=5):
     from lib.engines.mae import run_epoch_mae
     from lib.dataset import XECStreamingDataset
     from lib.geom_defs import DEFAULT_SENTINEL_VALUE
+    import uproot
 
-    # Debug: Check data loading first
-    print("Checking data loading...")
+    # Debug: Check available branches first
+    print("Checking available branches in ROOT file...")
+    with uproot.open(data_path) as f:
+        tree = f["tree"]
+        branches = list(tree.keys())
+        print(f"  Available branches: {[b for b in branches if 'npho' in b.lower() or 'time' in b.lower()]}")
+
+    # Debug: Check data loading
+    # Note: mae_config.yaml uses npho_branch="npho", not "relative_npho"
+    print("\nChecking data loading with npho_branch='npho'...")
     debug_dataset = XECStreamingDataset(
         root_files=data_path,
         tree_name="tree",
         batch_size=256,
         step_size=256,
+        npho_branch="npho",  # Use "npho" as per config
+        time_branch="relative_time",
         load_truth_branches=False,
         shuffle=False,
     )
@@ -81,7 +92,8 @@ def test_mae(data_path, device, num_batches=5):
     scaler = torch.amp.GradScaler('cuda', enabled=(device == 'cuda'))
 
     # Run training (defaults now use geom_defs constants)
-    print(f"Running training on {data_path}...")
+    # Note: Use npho_branch="npho" as per mae_config.yaml
+    print(f"\nRunning training on {data_path}...")
     try:
         metrics = run_epoch_mae(
             model=model,
@@ -93,6 +105,8 @@ def test_mae(data_path, device, num_batches=5):
             step_size=num_batches * 256,  # Limit data
             amp=(device == 'cuda'),
             scaler=scaler,
+            npho_branch="npho",  # Use "npho" as per config
+            time_branch="relative_time",
             dataloader_workers=0,
             dataset_workers=2,
             track_mae_rmse=True,
