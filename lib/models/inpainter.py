@@ -28,11 +28,17 @@ class FaceInpaintingHead(nn.Module):
     """
     Inpainting head for rectangular faces (Inner, US, DS, Outer).
     Uses local CNN + global latent conditioning to predict masked sensor values.
+
+    Args:
+        use_local_context: If True (default), uses face_tensor (local neighbor values)
+                          concatenated with latent. If False, uses only global latent
+                          (similar to MAE decoder) for ablation studies.
     """
-    def __init__(self, face_h, face_w, latent_dim=1024, hidden_dim=64):
+    def __init__(self, face_h, face_w, latent_dim=1024, hidden_dim=64, use_local_context=True):
         super().__init__()
         self.face_h = face_h
         self.face_w = face_w
+        self.use_local_context = use_local_context
 
         # Project latent token to conditioning vector
         self.latent_proj = nn.Sequential(
@@ -40,15 +46,26 @@ class FaceInpaintingHead(nn.Module):
             nn.GELU(),
         )
 
-        # Local CNN for neighborhood context
-        # Input: 2 channels (npho, time) + hidden_dim (latent conditioning)
-        self.local_encoder = nn.Sequential(
-            nn.Conv2d(2 + hidden_dim, hidden_dim, kernel_size=3, padding=1),
-            nn.GroupNorm(8, hidden_dim),
-            nn.GELU(),
-            ConvNeXtV2Block(dim=hidden_dim, drop_path=0.0),
-            ConvNeXtV2Block(dim=hidden_dim, drop_path=0.0),
-        )
+        if use_local_context:
+            # Local CNN for neighborhood context
+            # Input: 2 channels (npho, time) + hidden_dim (latent conditioning)
+            self.local_encoder = nn.Sequential(
+                nn.Conv2d(2 + hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                nn.GroupNorm(8, hidden_dim),
+                nn.GELU(),
+                ConvNeXtV2Block(dim=hidden_dim, drop_path=0.0),
+                ConvNeXtV2Block(dim=hidden_dim, drop_path=0.0),
+            )
+        else:
+            # Global-only decoder (like MAE): no local face_tensor input
+            # Uses transposed convolutions to generate spatial predictions from latent
+            self.global_decoder = nn.Sequential(
+                nn.ConvTranspose2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                nn.GroupNorm(8, hidden_dim),
+                nn.GELU(),
+                nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                nn.GELU(),
+            )
 
         # Prediction head: predicts (npho, time) at each position
         self.pred_head = nn.Sequential(
@@ -75,11 +92,14 @@ class FaceInpaintingHead(nn.Module):
         latent_cond = self.latent_proj(latent_token)  # (B, hidden_dim)
         latent_cond = latent_cond.view(B, -1, 1, 1).expand(-1, -1, H, W)  # (B, hidden_dim, H, W)
 
-        # Concatenate input with latent conditioning
-        x = torch.cat([face_tensor, latent_cond], dim=1)  # (B, 2 + hidden_dim, H, W)
-
-        # Local encoding
-        features = self.local_encoder(x)  # (B, hidden_dim, H, W)
+        if self.use_local_context:
+            # Concatenate input with latent conditioning
+            x = torch.cat([face_tensor, latent_cond], dim=1)  # (B, 2 + hidden_dim, H, W)
+            # Local encoding
+            features = self.local_encoder(x)  # (B, hidden_dim, H, W)
+        else:
+            # Global-only: decode from latent without local face_tensor
+            features = self.global_decoder(latent_cond)  # (B, hidden_dim, H, W)
 
         # Predict all positions
         pred_all = self.pred_head(features)  # (B, 2, H, W)
@@ -139,11 +159,14 @@ class FaceInpaintingHead(nn.Module):
         latent_cond = self.latent_proj(latent_token)  # (B, hidden_dim)
         latent_cond = latent_cond.view(B, -1, 1, 1).expand(-1, -1, H, W)  # (B, hidden_dim, H, W)
 
-        # Concatenate input with latent conditioning
-        x = torch.cat([face_tensor, latent_cond], dim=1)  # (B, 2 + hidden_dim, H, W)
-
-        # Local encoding
-        features = self.local_encoder(x)  # (B, hidden_dim, H, W)
+        if self.use_local_context:
+            # Concatenate input with latent conditioning
+            x = torch.cat([face_tensor, latent_cond], dim=1)  # (B, 2 + hidden_dim, H, W)
+            # Local encoding
+            features = self.local_encoder(x)  # (B, hidden_dim, H, W)
+        else:
+            # Global-only: decode from latent without local face_tensor
+            features = self.global_decoder(latent_cond)  # (B, hidden_dim, H, W)
 
         # Predict all positions
         pred_all = self.pred_head(features)  # (B, 2, H, W)
@@ -156,10 +179,16 @@ class HexInpaintingHead(nn.Module):
     """
     Inpainting head for hexagonal faces (Top, Bottom PMTs).
     Uses local GNN + global latent conditioning to predict masked sensor values.
+
+    Args:
+        use_local_context: If True (default), uses node_features (local neighbor values)
+                          with GNN message passing. If False, uses only global latent
+                          (similar to MAE decoder) for ablation studies.
     """
-    def __init__(self, num_nodes, edge_index, latent_dim=1024, hidden_dim=96):
+    def __init__(self, num_nodes, edge_index, latent_dim=1024, hidden_dim=96, use_local_context=True):
         super().__init__()
         self.num_nodes = num_nodes
+        self.use_local_context = use_local_context
 
         if not torch.is_tensor(edge_index):
             edge_index = torch.from_numpy(edge_index)
@@ -171,14 +200,23 @@ class HexInpaintingHead(nn.Module):
             nn.GELU(),
         )
 
-        # Input projection (2 channels + hidden_dim conditioning)
-        self.input_proj = nn.Linear(2 + hidden_dim, hidden_dim)
+        if use_local_context:
+            # Input projection (2 channels + hidden_dim conditioning)
+            self.input_proj = nn.Linear(2 + hidden_dim, hidden_dim)
 
-        # Local GNN for neighborhood context
-        self.gnn_layers = nn.ModuleList([
-            HexNeXtBlock(dim=hidden_dim, drop_path=0.0)
-            for _ in range(3)
-        ])
+            # Local GNN for neighborhood context
+            self.gnn_layers = nn.ModuleList([
+                HexNeXtBlock(dim=hidden_dim, drop_path=0.0)
+                for _ in range(3)
+            ])
+        else:
+            # Global-only decoder: MLP to expand latent to per-node predictions
+            self.global_decoder = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.GELU(),
+            )
 
         # Prediction head
         self.pred_head = nn.Sequential(
@@ -205,15 +243,19 @@ class HexInpaintingHead(nn.Module):
 
         # Project latent to per-node conditioning
         latent_cond = self.latent_proj(latent_token)  # (B, hidden_dim)
-        latent_cond = latent_cond.unsqueeze(1).expand(-1, N, -1)  # (B, N, hidden_dim)
 
-        # Concatenate input with conditioning
-        x = torch.cat([node_features, latent_cond], dim=-1)  # (B, N, 2 + hidden_dim)
-        x = self.input_proj(x)  # (B, N, hidden_dim)
-
-        # GNN layers
-        for layer in self.gnn_layers:
-            x = layer(x, self.edge_index)
+        if self.use_local_context:
+            latent_cond = latent_cond.unsqueeze(1).expand(-1, N, -1)  # (B, N, hidden_dim)
+            # Concatenate input with conditioning
+            x = torch.cat([node_features, latent_cond], dim=-1)  # (B, N, 2 + hidden_dim)
+            x = self.input_proj(x)  # (B, N, hidden_dim)
+            # GNN layers
+            for layer in self.gnn_layers:
+                x = layer(x, self.edge_index)
+        else:
+            # Global-only: expand latent to all nodes without local context
+            x = self.global_decoder(latent_cond)  # (B, hidden_dim)
+            x = x.unsqueeze(1).expand(-1, N, -1)  # (B, N, hidden_dim)
 
         # Predict all nodes
         pred_all = self.pred_head(x)  # (B, N, 2)
@@ -268,15 +310,19 @@ class HexInpaintingHead(nn.Module):
 
         # Project latent to per-node conditioning
         latent_cond = self.latent_proj(latent_token)  # (B, hidden_dim)
-        latent_cond = latent_cond.unsqueeze(1).expand(-1, N, -1)  # (B, N, hidden_dim)
 
-        # Concatenate input with conditioning
-        x = torch.cat([node_features, latent_cond], dim=-1)  # (B, N, 2 + hidden_dim)
-        x = self.input_proj(x)  # (B, N, hidden_dim)
-
-        # GNN layers
-        for layer in self.gnn_layers:
-            x = layer(x, self.edge_index)
+        if self.use_local_context:
+            latent_cond = latent_cond.unsqueeze(1).expand(-1, N, -1)  # (B, N, hidden_dim)
+            # Concatenate input with conditioning
+            x = torch.cat([node_features, latent_cond], dim=-1)  # (B, N, 2 + hidden_dim)
+            x = self.input_proj(x)  # (B, N, hidden_dim)
+            # GNN layers
+            for layer in self.gnn_layers:
+                x = layer(x, self.edge_index)
+        else:
+            # Global-only: expand latent to all nodes without local context
+            x = self.global_decoder(latent_cond)  # (B, hidden_dim)
+            x = x.unsqueeze(1).expand(-1, N, -1)  # (B, N, hidden_dim)
 
         # Predict all nodes
         pred_all = self.pred_head(x)  # (B, N, 2)
@@ -295,11 +341,17 @@ class OuterSensorInpaintingHead(nn.Module):
     1. Local CNN processes finegrid input with latent conditioning
     2. For each sensor, learnable attention pools features from its finegrid region
     3. MLP predicts (npho, time) for each sensor
+
+    Args:
+        use_local_context: If True (default), uses finegrid features (local spatial context)
+                          with attention pooling. If False, uses only global latent
+                          for ablation studies.
     """
 
-    def __init__(self, latent_dim=1024, hidden_dim=64, pool_kernel=None):
+    def __init__(self, latent_dim=1024, hidden_dim=64, pool_kernel=None, use_local_context=True):
         super().__init__()
         self.pool_kernel = pool_kernel
+        self.use_local_context = use_local_context
 
         # Compute actual finegrid size after pooling
         if pool_kernel:
@@ -319,27 +371,42 @@ class OuterSensorInpaintingHead(nn.Module):
             nn.GELU(),
         )
 
-        # Local CNN for neighborhood context
-        self.local_encoder = nn.Sequential(
-            nn.Conv2d(2 + hidden_dim, hidden_dim, kernel_size=3, padding=1),
-            nn.GroupNorm(8, hidden_dim),
-            nn.GELU(),
-            ConvNeXtV2Block(dim=hidden_dim, drop_path=0.0),
-            ConvNeXtV2Block(dim=hidden_dim, drop_path=0.0),
-        )
+        if use_local_context:
+            # Local CNN for neighborhood context
+            self.local_encoder = nn.Sequential(
+                nn.Conv2d(2 + hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                nn.GroupNorm(8, hidden_dim),
+                nn.GELU(),
+                ConvNeXtV2Block(dim=hidden_dim, drop_path=0.0),
+                ConvNeXtV2Block(dim=hidden_dim, drop_path=0.0),
+            )
 
-        # Attention pooling for coarse regions (5×3 = 15 positions after pool adjustment)
-        # and center regions (3×2 = 6 positions after pool adjustment)
-        self.attn_weight = nn.Sequential(
-            nn.Linear(hidden_dim, 1),  # Produces attention logits per position
-        )
+            # Attention pooling for coarse regions (5×3 = 15 positions after pool adjustment)
+            # and center regions (3×2 = 6 positions after pool adjustment)
+            self.attn_weight = nn.Sequential(
+                nn.Linear(hidden_dim, 1),  # Produces attention logits per position
+            )
 
-        # Prediction head
-        self.pred_head = nn.Sequential(
-            nn.Linear(hidden_dim + hidden_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, 2),  # (npho, time)
-        )
+            # Prediction head (with local features)
+            self.pred_head = nn.Sequential(
+                nn.Linear(hidden_dim + hidden_dim, hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, 2),  # (npho, time)
+            )
+        else:
+            # Global-only decoder: MLP from latent to per-sensor predictions
+            self.global_decoder = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.GELU(),
+            )
+            # Prediction head (global-only, no local features)
+            self.pred_head = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim // 2),
+                nn.GELU(),
+                nn.Linear(hidden_dim // 2, 2),  # (npho, time)
+            )
 
         # Build lookup tables for sensor regions
         # Precompute region bounds adjusted for pooling
@@ -387,46 +454,53 @@ class OuterSensorInpaintingHead(nn.Module):
         B, C, H, W = finegrid_tensor.shape
         device = finegrid_tensor.device
 
-        # Project latent to spatial conditioning
+        # Project latent to conditioning
         latent_cond = self.latent_proj(latent_token)  # (B, hidden_dim)
-        latent_cond_spatial = latent_cond.view(B, -1, 1, 1).expand(-1, -1, H, W)
+        hidden_dim = latent_cond.shape[1]
 
-        # Concatenate input with latent conditioning
-        x = torch.cat([finegrid_tensor, latent_cond_spatial], dim=1)  # (B, 2 + hidden_dim, H, W)
+        if self.use_local_context:
+            # Spatial conditioning for CNN
+            latent_cond_spatial = latent_cond.view(B, -1, 1, 1).expand(-1, -1, H, W)
 
-        # Local encoding
-        features = self.local_encoder(x)  # (B, hidden_dim, H, W)
-        hidden_dim = features.shape[1]
+            # Concatenate input with latent conditioning
+            x = torch.cat([finegrid_tensor, latent_cond_spatial], dim=1)  # (B, 2 + hidden_dim, H, W)
 
-        # Predict for all sensors using attention pooling over their regions
-        # To avoid loops, we'll predict for all sensors then gather masked ones
-        all_sensor_features = []
+            # Local encoding
+            features = self.local_encoder(x)  # (B, hidden_dim, H, W)
 
-        for i, (h0, h1, w0, w1) in enumerate(self.region_bounds):
-            # Extract region features
-            region_h = h1 - h0
-            region_w = w1 - w0
+            # Predict for all sensors using attention pooling over their regions
+            all_sensor_features = []
 
-            if region_h <= 0 or region_w <= 0:
-                # Degenerate region (shouldn't happen, but handle gracefully)
-                all_sensor_features.append(torch.zeros(B, hidden_dim, device=device))
-                continue
+            for i, (h0, h1, w0, w1) in enumerate(self.region_bounds):
+                # Extract region features
+                region_h = h1 - h0
+                region_w = w1 - w0
 
-            region = features[:, :, h0:h1, w0:w1]  # (B, hidden_dim, region_h, region_w)
+                if region_h <= 0 or region_w <= 0:
+                    # Degenerate region (shouldn't happen, but handle gracefully)
+                    all_sensor_features.append(torch.zeros(B, hidden_dim, device=device))
+                    continue
 
-            # Attention pooling
-            region_flat = region.permute(0, 2, 3, 1).reshape(B, -1, hidden_dim)  # (B, region_h*region_w, hidden_dim)
-            attn_logits = self.attn_weight(region_flat).squeeze(-1)  # (B, region_h*region_w)
-            attn_weights = F.softmax(attn_logits, dim=-1).unsqueeze(-1)  # (B, region_h*region_w, 1)
-            pooled = (region_flat * attn_weights).sum(dim=1)  # (B, hidden_dim)
-            all_sensor_features.append(pooled)
+                region = features[:, :, h0:h1, w0:w1]  # (B, hidden_dim, region_h, region_w)
 
-        all_sensor_features = torch.stack(all_sensor_features, dim=1)  # (B, n_sensors, hidden_dim)
+                # Attention pooling
+                region_flat = region.permute(0, 2, 3, 1).reshape(B, -1, hidden_dim)  # (B, region_h*region_w, hidden_dim)
+                attn_logits = self.attn_weight(region_flat).squeeze(-1)  # (B, region_h*region_w)
+                attn_weights = F.softmax(attn_logits, dim=-1).unsqueeze(-1)  # (B, region_h*region_w, 1)
+                pooled = (region_flat * attn_weights).sum(dim=1)  # (B, hidden_dim)
+                all_sensor_features.append(pooled)
 
-        # Concatenate with latent and predict
-        latent_expanded = latent_cond.unsqueeze(1).expand(-1, self.n_sensors, -1)  # (B, n_sensors, hidden_dim)
-        combined = torch.cat([all_sensor_features, latent_expanded], dim=-1)  # (B, n_sensors, 2*hidden_dim)
-        all_preds = self.pred_head(combined)  # (B, n_sensors, 2)
+            all_sensor_features = torch.stack(all_sensor_features, dim=1)  # (B, n_sensors, hidden_dim)
+
+            # Concatenate with latent and predict
+            latent_expanded = latent_cond.unsqueeze(1).expand(-1, self.n_sensors, -1)  # (B, n_sensors, hidden_dim)
+            combined = torch.cat([all_sensor_features, latent_expanded], dim=-1)  # (B, n_sensors, 2*hidden_dim)
+            all_preds = self.pred_head(combined)  # (B, n_sensors, 2)
+        else:
+            # Global-only: decode from latent without local context
+            x = self.global_decoder(latent_cond)  # (B, hidden_dim)
+            x = x.unsqueeze(1).expand(-1, self.n_sensors, -1)  # (B, n_sensors, hidden_dim)
+            all_preds = self.pred_head(x)  # (B, n_sensors, 2)
 
         # Extract only masked positions
         num_masked_per_sample = sensor_mask.sum(dim=1).int()  # (B,)
@@ -480,44 +554,52 @@ class OuterSensorInpaintingHead(nn.Module):
         B, C, H, W = finegrid_tensor.shape
         device = finegrid_tensor.device
 
-        # Project latent to spatial conditioning
+        # Project latent to conditioning
         latent_cond = self.latent_proj(latent_token)  # (B, hidden_dim)
-        latent_cond_spatial = latent_cond.view(B, -1, 1, 1).expand(-1, -1, H, W)
+        hidden_dim = latent_cond.shape[1]
 
-        # Concatenate input with latent conditioning
-        x = torch.cat([finegrid_tensor, latent_cond_spatial], dim=1)  # (B, 2 + hidden_dim, H, W)
+        if self.use_local_context:
+            # Spatial conditioning for CNN
+            latent_cond_spatial = latent_cond.view(B, -1, 1, 1).expand(-1, -1, H, W)
 
-        # Local encoding
-        features = self.local_encoder(x)  # (B, hidden_dim, H, W)
-        hidden_dim = features.shape[1]
+            # Concatenate input with latent conditioning
+            x = torch.cat([finegrid_tensor, latent_cond_spatial], dim=1)  # (B, 2 + hidden_dim, H, W)
 
-        # Predict for all sensors using attention pooling over their regions
-        all_sensor_features = []
+            # Local encoding
+            features = self.local_encoder(x)  # (B, hidden_dim, H, W)
 
-        for i, (h0, h1, w0, w1) in enumerate(self.region_bounds):
-            # Extract region features
-            region_h = h1 - h0
-            region_w = w1 - w0
+            # Predict for all sensors using attention pooling over their regions
+            all_sensor_features = []
 
-            if region_h <= 0 or region_w <= 0:
-                all_sensor_features.append(torch.zeros(B, hidden_dim, device=device))
-                continue
+            for i, (h0, h1, w0, w1) in enumerate(self.region_bounds):
+                # Extract region features
+                region_h = h1 - h0
+                region_w = w1 - w0
 
-            region = features[:, :, h0:h1, w0:w1]  # (B, hidden_dim, region_h, region_w)
+                if region_h <= 0 or region_w <= 0:
+                    all_sensor_features.append(torch.zeros(B, hidden_dim, device=device))
+                    continue
 
-            # Attention pooling
-            region_flat = region.permute(0, 2, 3, 1).reshape(B, -1, hidden_dim)  # (B, region_h*region_w, hidden_dim)
-            attn_logits = self.attn_weight(region_flat).squeeze(-1)  # (B, region_h*region_w)
-            attn_weights = F.softmax(attn_logits, dim=-1).unsqueeze(-1)  # (B, region_h*region_w, 1)
-            pooled = (region_flat * attn_weights).sum(dim=1)  # (B, hidden_dim)
-            all_sensor_features.append(pooled)
+                region = features[:, :, h0:h1, w0:w1]  # (B, hidden_dim, region_h, region_w)
 
-        all_sensor_features = torch.stack(all_sensor_features, dim=1)  # (B, n_sensors, hidden_dim)
+                # Attention pooling
+                region_flat = region.permute(0, 2, 3, 1).reshape(B, -1, hidden_dim)  # (B, region_h*region_w, hidden_dim)
+                attn_logits = self.attn_weight(region_flat).squeeze(-1)  # (B, region_h*region_w)
+                attn_weights = F.softmax(attn_logits, dim=-1).unsqueeze(-1)  # (B, region_h*region_w, 1)
+                pooled = (region_flat * attn_weights).sum(dim=1)  # (B, hidden_dim)
+                all_sensor_features.append(pooled)
 
-        # Concatenate with latent and predict
-        latent_expanded = latent_cond.unsqueeze(1).expand(-1, self.n_sensors, -1)  # (B, n_sensors, hidden_dim)
-        combined = torch.cat([all_sensor_features, latent_expanded], dim=-1)  # (B, n_sensors, 2*hidden_dim)
-        all_preds = self.pred_head(combined)  # (B, n_sensors, 2)
+            all_sensor_features = torch.stack(all_sensor_features, dim=1)  # (B, n_sensors, hidden_dim)
+
+            # Concatenate with latent and predict
+            latent_expanded = latent_cond.unsqueeze(1).expand(-1, self.n_sensors, -1)  # (B, n_sensors, hidden_dim)
+            combined = torch.cat([all_sensor_features, latent_expanded], dim=-1)  # (B, n_sensors, 2*hidden_dim)
+            all_preds = self.pred_head(combined)  # (B, n_sensors, 2)
+        else:
+            # Global-only: decode from latent without local context
+            x = self.global_decoder(latent_cond)  # (B, hidden_dim)
+            x = x.unsqueeze(1).expand(-1, self.n_sensors, -1)  # (B, n_sensors, hidden_dim)
+            all_preds = self.pred_head(x)  # (B, n_sensors, 2)
 
         return all_preds, self.sensor_ids
 
@@ -528,14 +610,24 @@ class XEC_Inpainter(nn.Module):
 
     Uses a frozen encoder from MAE pretraining and lightweight inpainting heads
     to predict sensor values at masked (dead) positions.
+
+    Args:
+        encoder: Pre-trained XECEncoder to extract global features.
+        freeze_encoder: If True, encoder weights are frozen during training.
+        sentinel_value: Value used to mark invalid/masked sensors.
+        time_mask_ratio_scale: Scaling factor for stratified masking of valid-time sensors.
+        use_local_context: If True (default), inpainting heads use local neighbor values
+                          in addition to global latent. If False, only global latent is used
+                          (similar to MAE decoder). Set to False for ablation studies.
     """
     def __init__(self, encoder: XECEncoder, freeze_encoder: bool = True, sentinel_value: float = -5.0,
-                 time_mask_ratio_scale: float = 1.0):
+                 time_mask_ratio_scale: float = 1.0, use_local_context: bool = True):
         super().__init__()
         self.encoder = encoder
         self.freeze_encoder = freeze_encoder
         self.sentinel_value = sentinel_value
         self.time_mask_ratio_scale = time_mask_ratio_scale
+        self.use_local_context = use_local_context
 
         if freeze_encoder:
             for param in self.encoder.parameters():
@@ -545,9 +637,9 @@ class XEC_Inpainter(nn.Module):
         latent_dim = encoder.face_embed_dim  # 1024
 
         # Inpainting heads for each face
-        self.head_inner = FaceInpaintingHead(93, 44, latent_dim=latent_dim)
-        self.head_us = FaceInpaintingHead(24, 6, latent_dim=latent_dim)
-        self.head_ds = FaceInpaintingHead(24, 6, latent_dim=latent_dim)
+        self.head_inner = FaceInpaintingHead(93, 44, latent_dim=latent_dim, use_local_context=use_local_context)
+        self.head_us = FaceInpaintingHead(24, 6, latent_dim=latent_dim, use_local_context=use_local_context)
+        self.head_ds = FaceInpaintingHead(24, 6, latent_dim=latent_dim, use_local_context=use_local_context)
 
         # Outer face head - sensor-level for finegrid mode, grid-level otherwise
         if encoder.outer_fine:
@@ -555,12 +647,13 @@ class XEC_Inpainter(nn.Module):
             self.head_outer_sensor = OuterSensorInpaintingHead(
                 latent_dim=latent_dim,
                 hidden_dim=64,
-                pool_kernel=encoder.outer_fine_pool
+                pool_kernel=encoder.outer_fine_pool,
+                use_local_context=use_local_context
             )
             self.head_outer = None  # Not used in finegrid mode
         else:
             # Use grid-level head for split/coarse mode
-            self.head_outer = FaceInpaintingHead(9, 24, latent_dim=latent_dim)
+            self.head_outer = FaceInpaintingHead(9, 24, latent_dim=latent_dim, use_local_context=use_local_context)
             self.head_outer_sensor = None
 
         # Hex face heads
@@ -568,8 +661,8 @@ class XEC_Inpainter(nn.Module):
         num_hex_bot = len(flatten_hex_rows(BOTTOM_HEX_ROWS))
         edge_index = torch.from_numpy(HEX_EDGE_INDEX_NP).long()
 
-        self.head_top = HexInpaintingHead(num_hex_top, edge_index, latent_dim=latent_dim)
-        self.head_bot = HexInpaintingHead(num_hex_bot, edge_index, latent_dim=latent_dim)
+        self.head_top = HexInpaintingHead(num_hex_top, edge_index, latent_dim=latent_dim, use_local_context=use_local_context)
+        self.head_bot = HexInpaintingHead(num_hex_bot, edge_index, latent_dim=latent_dim, use_local_context=use_local_context)
 
         # Store face index maps for gathering
         self.register_buffer("inner_idx", torch.from_numpy(INNER_INDEX_MAP).long())
