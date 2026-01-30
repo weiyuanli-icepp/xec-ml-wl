@@ -487,6 +487,7 @@ def run_epoch_inpainter(
         dataset = XECStreamingDataset(
             root_files=root_file,
             tree_name=tree_name,
+            batch_size=batch_size,  # Pre-batch in dataset
             step_size=step_size,
             npho_branch=npho_branch,
             time_branch=time_branch,
@@ -497,12 +498,13 @@ def run_epoch_inpainter(
             sentinel_value=sentinel_value,
             num_workers=dataset_workers,
             log_invalid_npho=log_invalid_npho,
+            load_truth_branches=False,  # Inpainter doesn't need truth branches
+            shuffle=True,  # Shuffle within chunks for training
         )
 
         loader = torch.utils.data.DataLoader(
             dataset,
-            batch_size=batch_size,
-            shuffle=False,  # Streaming, shuffle within chunks handled by dataset
+            batch_size=None,  # Dataset yields pre-batched tensors
             num_workers=dataloader_workers,
             pin_memory=True,
         )
@@ -724,6 +726,7 @@ def run_eval_inpainter(
             dataset = XECStreamingDataset(
                 root_files=root_file,
                 tree_name=tree_name,
+                batch_size=batch_size,  # Pre-batch in dataset
                 step_size=step_size,
                 npho_branch=npho_branch,
                 time_branch=time_branch,
@@ -734,12 +737,13 @@ def run_eval_inpainter(
                 sentinel_value=sentinel_value,
                 num_workers=dataset_workers,
                 log_invalid_npho=log_invalid_npho,
+                load_truth_branches=False,  # Inpainter doesn't need truth branches
+                shuffle=False,  # No shuffle for evaluation
             )
 
             loader = torch.utils.data.DataLoader(
                 dataset,
-                batch_size=batch_size,
-                shuffle=False,
+                batch_size=None,  # Dataset yields pre-batched tensors
                 num_workers=dataloader_workers,
                 pin_memory=True,
             )
