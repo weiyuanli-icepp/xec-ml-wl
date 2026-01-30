@@ -165,11 +165,10 @@ def test_inpainter(data_path, device, num_batches=5):
             tree_name="tree",
             batch_size=256,
             step_size=num_batches * 256,
-            amp=(device == 'cuda'),
+            mask_ratio=0.1,  # Fraction of sensors to mask
             scaler=scaler,
             dataloader_workers=0,
             dataset_workers=2,
-            dropout_rate=0.1,
             profile=True,  # Enable time profiling
             log_invalid_npho=False,
         )
