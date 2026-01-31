@@ -557,21 +557,20 @@ def run_epoch_inpainter(
     Args:
         ...
         use_fast_forward: If True, use forward_training() which returns fixed-size outputs.
-                         If False, use forward() which only computes masked sensors.
-                         If None (default), auto-select based on mask_ratio:
-                           - mask_ratio >= 0.3: use fast forward (overhead ~3x acceptable)
-                           - mask_ratio < 0.3: use standard forward (less computation)
+                         If False, use forward() with per-face results (slower due to extraction overhead).
+                         If None (default), auto-selects True since vectorized OuterSensorInpaintingHead
+                         computes all sensors regardless of path.
 
     Returns:
         metrics: dict of averaged metrics
     """
     model.train()
 
-    # Auto-select fast forward based on mask ratio
-    # At 30%+ mask ratio, the overhead of computing all sensors (~3x) is offset by
-    # better GPU parallelism and avoiding dynamic indexing
+    # Auto-select fast forward: always True because the vectorized OuterSensorInpaintingHead
+    # computes all sensors regardless of path (forward() calls _compute_all_sensor_preds_vectorized
+    # then extracts masked, so it's actually slower than forward_full which skips extraction)
     if use_fast_forward is None:
-        use_fast_forward = mask_ratio >= 0.3
+        use_fast_forward = True
 
     # Build face index maps
     from ..geom_defs import INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP, OUTER_COARSE_FULL_INDEX_MAP
@@ -832,9 +831,8 @@ def run_eval_inpainter(
         collect_predictions: If True, collect per-sensor predictions for ROOT output
         prediction_writer: optional callable to stream predictions per batch (avoids keeping everything in memory)
         use_fast_forward: If True, use forward_training() which returns fixed-size outputs.
-                         If False, use forward() which only computes masked sensors.
-                         If None (default), auto-select based on mask_ratio (>= 0.3 uses fast).
-                         Note: collect_predictions requires use_fast_forward=False.
+                         If False, use forward() with per-face results (needed for collect_predictions).
+                         If None (default), auto-selects True unless collect_predictions is True.
 
     Returns:
         metrics: dict of averaged metrics
@@ -842,9 +840,10 @@ def run_eval_inpainter(
     """
     model.eval()
 
-    # Auto-select fast forward based on mask ratio
+    # Auto-select fast forward: always True (see run_epoch_inpainter comment)
+    # Exception: collect_predictions requires the results dict from standard forward
     if use_fast_forward is None:
-        use_fast_forward = mask_ratio >= 0.3
+        use_fast_forward = not collect_predictions
 
     from ..geom_defs import INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP, OUTER_COARSE_FULL_INDEX_MAP
     from ..geom_defs import TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows
