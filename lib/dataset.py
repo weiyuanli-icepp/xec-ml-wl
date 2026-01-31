@@ -321,17 +321,21 @@ class XECStreamingDataset(IterableDataset):
             if self.profile:
                 self._profile_stats["process_time"] += time.perf_counter() - process_start
                 self._profile_stats["event_count"] += num_samples
-                batch_start = time.perf_counter()
 
             # Yield batches directly
+            # Note: batch_time is measured per-batch to exclude yield suspension time
+            # (otherwise training loop time would be incorrectly included)
             for start in range(0, num_samples, self.batch_size):
+                if self.profile:
+                    batch_start = time.perf_counter()
                 end = min(start + self.batch_size, num_samples)
                 x_batch = torch.from_numpy(x_all[start:end].copy())
                 t_batch = {k: torch.from_numpy(v[start:end].copy()) for k, v in t_all.items()}
+                if self.profile:
+                    self._profile_stats["batch_time"] += time.perf_counter() - batch_start
                 yield x_batch, t_batch
 
             if self.profile:
-                self._profile_stats["batch_time"] += time.perf_counter() - batch_start
                 # Start I/O timer for next chunk
                 io_start = time.perf_counter()
 

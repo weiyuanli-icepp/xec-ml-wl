@@ -549,21 +549,29 @@ def run_epoch_inpainter(
     use_npho_time_weight: bool = True,
     profile: bool = False,
     log_invalid_npho: bool = True,
-    use_fast_forward: bool = True,
+    use_fast_forward: Optional[bool] = None,
 ) -> Dict[str, float]:
     """
     Run one training epoch for inpainter.
 
     Args:
         ...
-        use_fast_forward: If True (default), use optimized forward_training() which
-                         returns fixed-size outputs. This is faster because it avoids
-                         dynamic indexing and per-face iteration in loss computation.
+        use_fast_forward: If True, use forward_training() which returns fixed-size outputs.
+                         If False, use forward() which only computes masked sensors.
+                         If None (default), auto-select based on mask_ratio:
+                           - mask_ratio >= 0.3: use fast forward (overhead ~3x acceptable)
+                           - mask_ratio < 0.3: use standard forward (less computation)
 
     Returns:
         metrics: dict of averaged metrics
     """
     model.train()
+
+    # Auto-select fast forward based on mask ratio
+    # At 30%+ mask ratio, the overhead of computing all sensors (~3x) is offset by
+    # better GPU parallelism and avoiding dynamic indexing
+    if use_fast_forward is None:
+        use_fast_forward = mask_ratio >= 0.3
 
     # Build face index maps
     from ..geom_defs import INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP, OUTER_COARSE_FULL_INDEX_MAP
@@ -815,7 +823,7 @@ def run_eval_inpainter(
     use_npho_time_weight: bool = True,
     profile: bool = False,
     log_invalid_npho: bool = True,
-    use_fast_forward: bool = True,
+    use_fast_forward: Optional[bool] = None,
 ) -> Dict[str, float]:
     """
     Run evaluation for inpainter.
@@ -823,13 +831,20 @@ def run_eval_inpainter(
     Args:
         collect_predictions: If True, collect per-sensor predictions for ROOT output
         prediction_writer: optional callable to stream predictions per batch (avoids keeping everything in memory)
-        use_fast_forward: If True (default), use optimized forward_training() for faster evaluation.
+        use_fast_forward: If True, use forward_training() which returns fixed-size outputs.
+                         If False, use forward() which only computes masked sensors.
+                         If None (default), auto-select based on mask_ratio (>= 0.3 uses fast).
+                         Note: collect_predictions requires use_fast_forward=False.
 
     Returns:
         metrics: dict of averaged metrics
         predictions: (optional) list of prediction dicts if collect_predictions=True
     """
     model.eval()
+
+    # Auto-select fast forward based on mask ratio
+    if use_fast_forward is None:
+        use_fast_forward = mask_ratio >= 0.3
 
     from ..geom_defs import INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP, OUTER_COARSE_FULL_INDEX_MAP
     from ..geom_defs import TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows

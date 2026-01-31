@@ -40,7 +40,7 @@ def check_metrics(metrics, pipeline_name):
     return issues
 
 
-def test_mae(data_path, device, num_batches=5):
+def test_mae(data_path, device, num_batches=5, profile=False):
     """Test MAE training pipeline."""
     print("\n" + "="*60)
     print("Testing MAE Pipeline")
@@ -112,7 +112,7 @@ def test_mae(data_path, device, num_batches=5):
             dataset_workers=2,
             track_mae_rmse=True,
             track_train_metrics=True,
-            profile=True,  # Enable time profiling
+            profile=profile,
             log_invalid_npho=False,  # Suppress warnings for test
         )
     except Exception as e:
@@ -143,7 +143,7 @@ def test_mae(data_path, device, num_batches=5):
     return True
 
 
-def test_inpainter(data_path, device, num_batches=5):
+def test_inpainter(data_path, device, num_batches=5, profile=False):
     """Test Inpainter training pipeline."""
     print("\n" + "="*60)
     print("Testing Inpainter Pipeline")
@@ -177,7 +177,7 @@ def test_inpainter(data_path, device, num_batches=5):
             scaler=scaler,
             dataloader_workers=0,
             dataset_workers=2,
-            profile=True,  # Enable time profiling
+            profile=profile,
             log_invalid_npho=False,
         )
     except Exception as e:
@@ -206,7 +206,7 @@ def test_inpainter(data_path, device, num_batches=5):
     return True
 
 
-def test_regressor(data_path, device, num_batches=5):
+def test_regressor(data_path, device, num_batches=5, profile=False):
     """Test Regressor training pipeline."""
     print("\n" + "="*60)
     print("Testing Regressor Pipeline")
@@ -260,7 +260,7 @@ def test_regressor(data_path, device, num_batches=5):
             scaler=scaler,
             task_weights=task_weights,
             grad_clip=1.0,
-            profile=True,  # Enable time profiling
+            profile=profile,
         )
     except Exception as e:
         print(f"FAILED: {e}")
@@ -296,22 +296,25 @@ def main():
                         help="Device to use (cuda/cpu)")
     parser.add_argument("--num-batches", type=int, default=5,
                         help="Number of batches to process")
+    parser.add_argument("--profile", action="store_true",
+                        help="Enable time profiling (adds CUDA syncs, slows down training)")
     args = parser.parse_args()
 
     print(f"Device: {args.device}")
     print(f"Data: {args.data}")
     print(f"Num batches: {args.num_batches}")
+    print(f"Profiling: {args.profile}")
 
     results = {}
 
     if args.pipeline in ["mae", "all"]:
-        results["MAE"] = test_mae(args.data, args.device, args.num_batches)
+        results["MAE"] = test_mae(args.data, args.device, args.num_batches, args.profile)
 
     if args.pipeline in ["inpainter", "all"]:
-        results["Inpainter"] = test_inpainter(args.data, args.device, args.num_batches)
+        results["Inpainter"] = test_inpainter(args.data, args.device, args.num_batches, args.profile)
 
     if args.pipeline in ["regressor", "all"]:
-        results["Regressor"] = test_regressor(args.data, args.device, args.num_batches)
+        results["Regressor"] = test_regressor(args.data, args.device, args.num_batches, args.profile)
 
     # Summary
     print("\n" + "="*60)
