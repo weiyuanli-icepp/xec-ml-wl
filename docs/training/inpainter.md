@@ -272,6 +272,32 @@ pred_all = model.forward_full_output(x_batch, mask)  # (B, 4760, 2)
 - Predictions at unmasked positions are computed but meaningless (use original values instead)
 - The export wrapper automatically combines: predictions at masked positions, originals elsewhere
 
+#### Internal Implementation: Vectorized Outer Face Head
+
+The `OuterSensorInpaintingHead` (for outer face with finegrid mode) uses **vectorized attention pooling** to compute predictions for all 234 outer sensors in a single batched operation:
+
+```python
+# Vectorized: single batched gather + attention pooling
+gathered = torch.gather(features_flat, dim=1, index=idx.expand(...))  # All sensors at once
+attn_weights = F.softmax(attn_logits.masked_fill(~valid_mask, -inf), dim=-1)
+all_sensor_features = (gathered * attn_weights).sum(dim=2)  # (B, 234, hidden_dim)
+```
+
+**Why both forward paths compute all sensors:**
+
+Both `forward()` and `forward_full()` call the same `_compute_all_sensor_preds_vectorized()` internally:
+
+| Method | Internal computation | Post-processing |
+|--------|---------------------|-----------------|
+| `forward()` | All 234 sensors | Extract masked → scatter to variable output |
+| `forward_full()` | All 234 sensors | Return directly |
+
+This means `forward()` is actually **slower** than `forward_full()` due to the extraction overhead, regardless of mask ratio.
+
+**Performance implication:** The training engine (`run_epoch_inpainter`) auto-selects `use_fast_forward=True` by default since both paths do the same computation but `forward_full()` avoids the extraction overhead.
+
+**Historical note:** Before vectorization, `forward()` used a Python for-loop over 234 sensors, making it slower for computing all sensors but theoretically faster at low mask ratios. The vectorization eliminated this distinction—batched GPU operations are faster than selective computation with Python loop overhead.
+
 ### 8.5 TorchScript Export Workflow
 
 ```bash
