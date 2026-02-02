@@ -2,6 +2,113 @@
 
 This section documents potential improvements and experimental ideas for future development.
 
+---
+
+## Architecture Review
+
+### Current Design Summary
+
+The model processes 4760 photon sensors arranged on 6 detector faces:
+
+- **4 Rectangular faces** (Inner, Outer, Upstream, Downstream) → ConvNeXt V2 backbone
+- **2 Hexagonal faces** (Top, Bottom PMTs) → HexNeXt graph attention backbone
+- **Fusion**: 6 tokens (1024-dim each) → 2-layer Transformer → Task heads
+
+### Strengths of Current Architecture
+
+1. **Geometry-Aware Processing**
+   - ConvNeXt for regular grids exploits spatial locality efficiently
+   - HexNeXt respects the hexagonal PMT adjacency structure
+   - This is fundamentally sound—treating sensor topology correctly
+
+2. **Multi-Scale Feature Extraction**
+   - Downsampling in ConvNeXt (32→64 dim) captures both fine and coarse patterns
+   - 4-block HexNeXt builds sufficient receptive field for 334-sensor arrays
+
+3. **Flexible Fusion**
+   - Transformer self-attention allows cross-face communication without hardcoded dependencies
+   - 8 heads can learn diverse face relationships (e.g., opposite faces for timing, adjacent for angles)
+
+4. **Practical Engineering**
+   - EMA, gradient clipping, mixed precision all implemented
+   - Streaming dataset handles large ROOT files efficiently
+   - Multi-task learning with configurable loss weighting
+
+### Potential Weaknesses
+
+1. **Information Bottleneck at Global Pooling**
+
+   Each face is compressed to a single 1024-dim vector before fusion. For a 93×44 inner face (4092 values → 1024), this is aggressive compression. Spatial information about *where* photons arrived is lost before cross-face reasoning.
+
+   *Impact*: May hurt position (uvwFI) and angle regression where spatial patterns matter.
+
+2. **No Explicit Physics Priors**
+
+   The model learns from scratch without encoding known physics:
+   - Light propagation speed (timing correlations)
+   - Inverse-square law for intensity
+   - Geometric optics constraints
+
+   *Impact*: Requires more data to learn what could be encoded structurally.
+
+3. **Fixed Token Count = 6**
+
+   Faces of vastly different sizes (Inner: 4092 sensors vs Downstream: 144) get equal representation. The transformer sees them as equally important tokens.
+
+   *Impact*: Small faces may be over-represented, large faces under-represented.
+
+4. **No Cross-Scale Attention**
+
+   Fusion happens only at the final (coarsest) scale. Early/mid-level features from different faces never interact.
+
+   *Impact*: Fine-grained cross-face correlations (e.g., photon shower edges spanning faces) may be missed.
+
+### Alternative Approaches Worth Considering
+
+| Approach | Benefit | Trade-off |
+|----------|---------|-----------|
+| **Multi-scale fusion** (FPN-style) | Preserves spatial info at multiple resolutions | More parameters, complexity |
+| **Positional encoding in transformer** | Encode face identity/geometry | Already partially there via separate tokens |
+| **Physics-informed loss terms** | Faster convergence, better generalization | Requires physics expertise to formulate |
+| **Hierarchical attention** | Coarse→fine refinement | Training stability concerns |
+| **Variable token count** | More tokens for larger faces | Breaks batch uniformity |
+
+### Assessment by Task
+
+| Task | Current Fit | Concern |
+|------|-------------|---------|
+| **Angle (θ,φ)** | Good | Benefits from cross-face timing patterns |
+| **Energy** | Good | Global sum of photons, fusion appropriate |
+| **Timing** | Moderate | May need finer spatial resolution |
+| **Position (uvwFI)** | Moderate | Spatial info loss at pooling may hurt |
+
+### Verdict
+
+**The current architecture is well-suited for the problem**, with these qualifications:
+
+1. **For angle/energy regression**: The design is appropriate. Global pooling + transformer fusion captures the event-level patterns needed.
+
+2. **For position/timing regression**: Consider architectural variants:
+   - Multi-scale fusion to preserve spatial information
+   - Skip connections from early layers to task heads
+   - Larger token count for the inner face
+
+3. **The HexNeXt approach is particularly elegant**—it correctly handles the irregular PMT geometry that would be awkward with standard convolutions.
+
+4. **Main bottleneck is likely data, not architecture**. The model has sufficient capacity (~25 layers, millions of parameters). Improvements would come from:
+   - More training data (diverse energy/position ranges)
+   - Data augmentation (rotation, reflection where physics allows)
+   - Curriculum learning (easy→hard samples)
+
+### Recommended Next Steps
+
+1. **Ablation study**: Compare current vs. multi-scale fusion for position task
+2. **Attention visualization**: Examine which faces attend to which for different tasks
+3. **Per-face analysis**: Check if certain faces contribute disproportionately to errors
+4. **Physics loss terms**: Add soft constraints (e.g., timing consistency with light speed)
+
+---
+
 ## A. Architecture Improvements
 
 ### 1. Positional Encoding Alternatives
