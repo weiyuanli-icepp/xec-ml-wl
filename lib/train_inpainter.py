@@ -241,11 +241,11 @@ Examples:
         # --global_only disables local context (ablation study)
         use_local_context = not args.global_only and getattr(cfg.model, "use_local_context", True)
 
-        lr = args.lr if args.lr is not None else cfg.training.lr
+        lr = float(args.lr if args.lr is not None else cfg.training.lr)
         lr_scheduler = args.lr_scheduler or getattr(cfg.training, "lr_scheduler", None)
-        lr_min = args.lr_min if args.lr_min is not None else getattr(cfg.training, "lr_min", 1e-6)
+        lr_min = float(args.lr_min if args.lr_min is not None else getattr(cfg.training, "lr_min", 1e-6))
         warmup_epochs = args.warmup_epochs if args.warmup_epochs is not None else getattr(cfg.training, "warmup_epochs", 0)
-        weight_decay = args.weight_decay if args.weight_decay is not None else cfg.training.weight_decay
+        weight_decay = float(args.weight_decay if args.weight_decay is not None else cfg.training.weight_decay)
 
         loss_fn = args.loss_fn or cfg.training.loss_fn
         npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight

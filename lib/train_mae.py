@@ -203,11 +203,11 @@ Examples:
         outer_fine_pool = args.outer_fine_pool or cfg.model.outer_fine_pool
         mask_ratio = args.mask_ratio if args.mask_ratio is not None else cfg.model.mask_ratio
         time_mask_ratio_scale = args.time_mask_ratio_scale if args.time_mask_ratio_scale is not None else getattr(cfg.model, "time_mask_ratio_scale", 1.0)
-        lr = args.lr if args.lr is not None else cfg.training.lr
+        lr = float(args.lr if args.lr is not None else cfg.training.lr)
         lr_scheduler = args.lr_scheduler or getattr(cfg.training, "lr_scheduler", None)
-        lr_min = args.lr_min if args.lr_min is not None else getattr(cfg.training, "lr_min", 1e-6)
+        lr_min = float(args.lr_min if args.lr_min is not None else getattr(cfg.training, "lr_min", 1e-6))
         warmup_epochs = args.warmup_epochs if args.warmup_epochs is not None else getattr(cfg.training, "warmup_epochs", 0)
-        weight_decay = args.weight_decay if args.weight_decay is not None else cfg.training.weight_decay
+        weight_decay = float(args.weight_decay if args.weight_decay is not None else cfg.training.weight_decay)
         loss_fn = args.loss_fn or cfg.training.loss_fn
         npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight
         time_weight = args.time_weight if args.time_weight is not None else cfg.training.time_weight
