@@ -938,6 +938,11 @@ def apply_cli_overrides(cfg, args):
         cfg.data.chunksize = args.chunksize
     if args.num_workers is not None:
         cfg.data.num_workers = args.num_workers
+    # Auto-limit num_workers on ARM/GH nodes (multiprocessing issues)
+    import platform
+    if platform.machine() in ("aarch64", "arm64") and cfg.data.num_workers > 1:
+        print(f"[INFO] ARM/GH node detected - limiting num_workers from {cfg.data.num_workers} to 1")
+        cfg.data.num_workers = 1
     if args.num_threads is not None:
         cfg.data.num_threads = args.num_threads
 

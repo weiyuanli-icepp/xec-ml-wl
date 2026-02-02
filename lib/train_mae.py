@@ -190,6 +190,10 @@ Examples:
         batch_size = args.batch_size if args.batch_size is not None else cfg.data.batch_size
         chunksize = args.chunksize if args.chunksize is not None else cfg.data.chunksize
         num_workers = args.num_workers if args.num_workers is not None else cfg.data.num_workers
+        # Auto-limit num_workers on ARM/GH nodes (multiprocessing issues)
+        if platform.machine() in ("aarch64", "arm64") and num_workers > 1:
+            print(f"[INFO] ARM/GH node detected - limiting num_workers from {num_workers} to 1")
+            num_workers = 1
         num_threads = args.num_threads if args.num_threads is not None else getattr(cfg.data, 'num_threads', 4)
         prefetch_factor = int(getattr(cfg.data, 'prefetch_factor', 2))
         npho_branch = args.npho_branch or getattr(cfg.data, "npho_branch", "npho")
@@ -248,6 +252,10 @@ Examples:
         batch_size = args.batch_size or 1024
         chunksize = args.chunksize or 256000
         num_workers = args.num_workers or 8
+        # Auto-limit num_workers on ARM/GH nodes (multiprocessing issues)
+        if platform.machine() in ("aarch64", "arm64") and num_workers > 1:
+            print(f"[INFO] ARM/GH node detected - limiting num_workers from {num_workers} to 1")
+            num_workers = 1
         num_threads = args.num_threads or 4
         prefetch_factor = 2  # Default
         npho_branch = args.npho_branch or "npho"
