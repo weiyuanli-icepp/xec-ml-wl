@@ -381,7 +381,7 @@ Since `forward_full_output()` returns predictions for ALL 4760 sensors, we could
 3. Detect data quality issues (large pred-truth mismatch on "valid" sensors)
 4. Study model behavior across the full detector
 
-**TODO:** Update `validate_inpainter_real.py` and `analyze_inpainter.py` to support full predictions output mode.
+**Note:** The unified `validate_inpainter.py` and `analyze_inpainter.py` macros now support both MC and real data validation with consistent output formats.
 
 ---
 
@@ -454,6 +454,8 @@ Use `macro/PrepareRealData.C` to generate input ROOT files:
 
 ### 9.3 Running Validation
 
+Use the unified `validate_inpainter.py` macro with `--real-data` flag:
+
 **Recommended workflow (TorchScript - faster):**
 
 ```bash
@@ -464,47 +466,44 @@ python macro/export_onnx_inpainter.py \
     --output artifacts/inpainter/inpainter.pt
 
 # Step 2: Run validation with TorchScript model
-python macro/validate_inpainter_real.py \
+python macro/validate_inpainter.py \
     --torchscript artifacts/inpainter/inpainter.pt \
     --input DataGammaAngle_430000-431000.root \
     --run 430000 \
+    --real-data \
+    --n-artificial 50 \
     --output validation_real/
 ```
 
 **Alternative: Using checkpoint directly (slower, for debugging):**
 
 ```bash
-python macro/validate_inpainter_real.py \
+python macro/validate_inpainter.py \
     --checkpoint artifacts/inpainter/inpainter_checkpoint_best.pth \
     --input DataGammaAngle_430000-431000.root \
     --run 430000 \
+    --real-data \
     --output validation_real/
 ```
 
 **Other options:**
 
 ```bash
-# Using ONNX model
-python macro/validate_inpainter_real.py \
-    --onnx artifacts/inpainter/inpainter.onnx \
-    --input real_data.root \
-    --run 430000 \
-    --output validation_real/
-
 # Using pre-saved dead channel list (instead of database)
-python macro/validate_inpainter_real.py \
+python macro/validate_inpainter.py \
     --torchscript inpainter.pt \
     --input real_data.root \
     --dead-channel-file dead_channels_430000.txt \
+    --real-data \
     --output validation_real/
 
-# Customize artificial masking
-python macro/validate_inpainter_real.py \
+# Customize artificial masking count
+python macro/validate_inpainter.py \
     --torchscript inpainter.pt \
     --input real_data.root \
     --run 430000 \
-    --n-mask-inner 10 \
-    --n-mask-other 1 \
+    --real-data \
+    --n-artificial 100 \
     --seed 42 \
     --output validation_real/
 ```
@@ -749,30 +748,41 @@ This provides a performance baseline for dead channel recovery.
 
 ### 11.2 Usage
 
+Use the unified `validate_inpainter.py` macro (without `--real-data` flag for MC mode):
+
 ```bash
-# Basic usage
-python macro/pseudo_experiment_mc.py \
+# Basic usage (MC mode - no --real-data flag)
+python macro/validate_inpainter.py \
     --checkpoint artifacts/inpainter/checkpoint_best.pth \
     --input mc_validation.root \
     --run 430000 \
-    --output pseudo_experiment/
+    --output validation_mc/
+
+# With TorchScript model (faster)
+python macro/validate_inpainter.py \
+    --torchscript artifacts/inpainter/inpainter.pt \
+    --input mc_validation.root \
+    --run 430000 \
+    --output validation_mc/
 
 # With dead channel file instead of database
-python macro/pseudo_experiment_mc.py \
+python macro/validate_inpainter.py \
     --checkpoint checkpoint.pth \
     --input mc_validation.root \
     --dead-channel-file dead_channels_430000.txt \
-    --output pseudo_experiment/
+    --output validation_mc/
 
 # Compare multiple runs
 for run in 430000 431000 432000; do
-    python macro/pseudo_experiment_mc.py \
+    python macro/validate_inpainter.py \
         --checkpoint checkpoint.pth \
         --input mc_validation.root \
         --run $run \
-        --output pseudo_experiment_run${run}/
+        --output validation_mc_run${run}/
 done
 ```
+
+**Note:** The legacy `pseudo_experiment_mc.py` is also available with similar interface.
 
 ### 11.3 Output
 
@@ -819,29 +829,30 @@ Per-Face Metrics:
 
 ### 11.4 Comparison Workflow
 
-To compare inpainter performance on real data vs MC:
+To compare inpainter performance on real data vs MC using the unified `validate_inpainter.py`:
 
 ```bash
-# 1. Run real data validation
-python macro/validate_inpainter_real.py \
+# 1. Run real data validation (--real-data flag)
+python macro/validate_inpainter.py \
     --checkpoint checkpoint.pth \
     --input real_data.root --run 430000 \
+    --real-data --n-artificial 50 \
     --output validation_real/
 
-# 2. Run MC pseudo-experiment with same dead pattern
-python macro/pseudo_experiment_mc.py \
+# 2. Run MC pseudo-experiment with same dead pattern (no --real-data flag)
+python macro/validate_inpainter.py \
     --checkpoint checkpoint.pth \
     --input mc_validation.root --run 430000 \
     --output validation_mc/
 
 # 3. Analyze both
-python macro/analyze_inpainter.py validation_real/real_data_predictions.root \
+python macro/analyze_inpainter.py validation_real/predictions_real_run430000.root \
     --output validation_real/analysis/
-python macro/analyze_inpainter.py validation_mc/pseudo_experiment_run430000.root \
+python macro/analyze_inpainter.py validation_mc/predictions_mc_run430000.root \
     --output validation_mc/analysis/
 
 # 4. Compare metrics (real vs MC)
-# - Real data: metrics only for artificial masks (Section 8)
+# - Real data: metrics only for artificial masks (mask_type=0)
 # - MC pseudo: metrics for all dead channels (full picture)
 ```
 
