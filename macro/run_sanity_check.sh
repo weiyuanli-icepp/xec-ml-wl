@@ -17,16 +17,39 @@ HOSTNAME_SHORT="$(hostname -s 2>/dev/null || hostname)"
 if [[ "$HOSTNAME_SHORT" =~ ^gpu00[1-9]$ ]]; then
     # GH nodes (gpu001-gpu009) - use miniforge with ARM environment
     ENV_NAME="xec-ml-wl-gh"
-    CONDA_BASE="/data/user/${USER}/miniforge-arm"
+
+    # Try multiple possible miniforge locations
+    CONDA_PATHS=(
+        "/data/user/${USER}/miniforge3"
+        "/data/user/${USER}/miniforge-arm"
+        "/data/user/${USER}/mambaforge"
+        "$HOME/miniforge3"
+        "$HOME/mambaforge"
+    )
+
+    CONDA_BASE=""
+    for path in "${CONDA_PATHS[@]}"; do
+        if [ -f "$path/bin/activate" ]; then
+            CONDA_BASE="$path"
+            break
+        fi
+    done
 
     if [ "${CONDA_DEFAULT_ENV:-}" != "$ENV_NAME" ]; then
-        if [ -f "$CONDA_BASE/bin/activate" ]; then
+        if [ -n "$CONDA_BASE" ]; then
+            echo "[INFO] Found conda at $CONDA_BASE"
             echo "[INFO] Activating $ENV_NAME for GH node..."
             source "$CONDA_BASE/bin/activate"
             conda activate "$ENV_NAME"
         else
-            echo "[ERROR] Conda not found at $CONDA_BASE" >&2
-            echo "Please install miniforge or set up the environment manually." >&2
+            echo "[ERROR] Miniforge/mambaforge not found. Searched:" >&2
+            for path in "${CONDA_PATHS[@]}"; do
+                echo "  - $path" >&2
+            done
+            echo "" >&2
+            echo "Please install miniforge for ARM64:" >&2
+            echo "  wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh" >&2
+            echo "  bash Miniforge3-Linux-aarch64.sh -b -p /data/user/\${USER}/miniforge3" >&2
             exit 1
         fi
     fi
