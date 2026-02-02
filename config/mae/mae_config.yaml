@@ -13,6 +13,7 @@ data:
   num_threads: 4                    # CPU preprocessing threads
   npho_branch: "npho"      # Input branch for photon counts (or "npho")
   time_branch: "relative_time"      # Input branch for timing (or "time")
+  log_invalid_npho: true            # Log warning when invalid npho values are detected
 
 # === Input Normalization ===
 # Same as regressor training to ensure consistency
@@ -57,13 +58,15 @@ training:
   use_npho_time_weight: true        # Weight time loss by sqrt(npho) for chi-square-like weighting
   track_mae_rmse: false             # Compute/log MAE/RMSE metrics (slower, set true for detailed analysis)
   track_train_metrics: false        # Track per-face loss during training (slower, set true for debugging)
+  profile: false                    # Enable training profiler to identify bottlenecks
 
 # === Checkpointing ===
 checkpoint:
   resume_from: null                 # Path to checkpoint to resume from
   save_dir: "artifacts"             # Directory to save checkpoints
   save_interval: 10                 # Save checkpoint every N epochs
-  save_predictions: false            # Save sensor-level predictions to ROOT file
+  save_predictions: false           # Save sensor-level predictions to ROOT file
+  new_mlflow_run: false             # Create new MLflow run when resuming (vs continue existing)
 
 # === MLflow ===
 mlflow:

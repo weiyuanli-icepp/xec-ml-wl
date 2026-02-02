@@ -13,6 +13,7 @@ data:
   num_threads: 4
   npho_branch: "npho"        # Input branch for photon counts (or "npho")
   time_branch: "relative_time"        # Input branch for timing (or "time")
+  log_invalid_npho: true              # Log warning when invalid npho values are detected
 
 # === Input Normalization ===
 # Must match MAE pretraining normalization
@@ -29,7 +30,8 @@ model:
   outer_fine_pool: [3, 3]           # Must match MAE encoder config
   mask_ratio: 0.05                  # Realistic dead channel density (1-10%)
   time_mask_ratio_scale: 1.0        # Scale factor for masking valid-time sensors (>1.0 to prefer masking valid-time)
-  freeze_encoder: false              # Freeze encoder, train only inpainting heads
+  freeze_encoder: false             # Freeze encoder, train only inpainting heads
+  use_local_context: true           # Use local neighbor context for inpainting (disable for ablation)
 
 # === Training Configuration ===
 training:
@@ -57,6 +59,8 @@ training:
   track_train_metrics: false         # Track per-face metrics during training (set false to log only total_loss)
   npho_threshold: 100              # Npho threshold for conditional time loss (null uses default 10.0)
   use_npho_time_weight: true        # Weight time loss by sqrt(npho) for chi-square-like weighting
+  ema_decay: null                   # EMA decay rate (null to disable, 0.999 typical)
+  profile: false                    # Enable training profiler to identify bottlenecks
 
 # === Checkpointing ===
 checkpoint:
@@ -64,6 +68,7 @@ checkpoint:
   save_dir: "artifacts/inpainter"   # Directory to save checkpoints
   save_interval: 10                 # Save checkpoint every N epochs
   save_predictions: true            # Write ROOT outputs during validation
+  new_mlflow_run: false             # Create new MLflow run when resuming (vs continue existing)
 
 # === MLflow ===
 mlflow:

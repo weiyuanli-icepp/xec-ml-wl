@@ -36,6 +36,7 @@ import mlflow
 import numpy as np
 
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 
 from .models import XECEncoder, XEC_Inpainter
 from .engines.inpainter import (
@@ -195,6 +196,7 @@ Examples:
     parser.add_argument("--compile", type=str, default=None,
                         choices=["max-autotune", "reduce-overhead", "default", "false", "none"],
                         help="torch.compile mode (default: reduce-overhead, use 'false' to disable)")
+    parser.add_argument("--ema_decay", type=float, default=None, help="EMA decay rate (None to disable, 0.999 typical)")
 
     # MLflow
     parser.add_argument("--mlflow_experiment", type=str, default=None)
@@ -259,7 +261,7 @@ Examples:
             save_root_predictions = getattr(cfg.training, "save_root_predictions", True)
         grad_accum_steps = args.grad_accum_steps if args.grad_accum_steps is not None else getattr(cfg.training, "grad_accum_steps", 1)
         track_train_metrics = getattr(cfg.training, "track_train_metrics", True)
-        profile = args.profile
+        profile = args.profile or getattr(cfg.training, 'profile', False)
         # Handle compile option: can be string mode or boolean (for backward compat)
         compile_cfg = getattr(cfg.training, 'compile', 'reduce-overhead')
         if isinstance(compile_cfg, bool):
@@ -268,6 +270,7 @@ Examples:
             compile_mode = compile_cfg if compile_cfg else 'reduce-overhead'
         if args.compile is not None:
             compile_mode = args.compile
+        ema_decay = args.ema_decay if args.ema_decay is not None else getattr(cfg.training, 'ema_decay', None)
 
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
@@ -325,6 +328,7 @@ Examples:
         track_train_metrics = True
         profile = args.profile
         compile_mode = args.compile if args.compile is not None else 'reduce-overhead'
+        ema_decay = args.ema_decay  # None by default
 
         mlflow_experiment = args.mlflow_experiment or "inpainting"
         mlflow_run_name = args.mlflow_run_name
@@ -425,6 +429,12 @@ Examples:
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay)
 
+    # Initialize EMA model if enabled
+    ema_model = None
+    if ema_decay is not None and ema_decay > 0:
+        print(f"[INFO] EMA enabled with decay={ema_decay}")
+        ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
+
     # Detect resume to auto-disable warmup
     # When resuming from a checkpoint, warmup is not needed since the model
     # is already past the initial training phase.
@@ -480,6 +490,9 @@ Examples:
             # configuring new epochs/lr_max/lr_min on resume
             if "scaler_state_dict" in checkpoint:
                 scaler.load_state_dict(checkpoint['scaler_state_dict'])
+            if "ema_state_dict" in checkpoint and ema_model is not None:
+                ema_model.load_state_dict(checkpoint['ema_state_dict'])
+                print("[INFO] Loaded EMA state from checkpoint")
             start_epoch = checkpoint.get('epoch', 0) + 1
             best_val_loss = checkpoint.get('best_val_loss', float('inf'))
             mlflow_run_id = checkpoint.get('mlflow_run_id', None)
@@ -581,11 +594,16 @@ Examples:
                 log_invalid_npho=log_invalid_npho,
             )
 
-            # Validation
+            # Update EMA model
+            if ema_model is not None:
+                ema_model.update_parameters(model)
+
+            # Validation (use EMA model if available)
+            eval_model = ema_model if ema_model is not None else model
             val_metrics = {}
             if val_files:
                 val_metrics = run_eval_inpainter(
-                    model, device,
+                    eval_model, device,
                     val_files, "tree",
                     batch_size=batch_size,
                     step_size=chunksize,
@@ -675,6 +693,8 @@ Examples:
                 }
                 if scheduler is not None:
                     checkpoint_dict['scheduler_state_dict'] = scheduler.state_dict()
+                if ema_model is not None:
+                    checkpoint_dict['ema_state_dict'] = ema_model.state_dict()
 
                 # Save last
                 ckpt_path = os.path.join(save_path, "inpainter_checkpoint_last.pth")
@@ -703,8 +723,10 @@ Examples:
                     time_shift=float(time_shift),
                     sentinel_value=float(sentinel_value),
                 ) as writer:
+                    # Use EMA model for predictions if available
+                    pred_model = ema_model if ema_model is not None else model
                     val_metrics_with_pred, _ = run_eval_inpainter(
-                        model, device,
+                        pred_model, device,
                         val_files, "tree",
                         batch_size=batch_size,
                         step_size=chunksize,

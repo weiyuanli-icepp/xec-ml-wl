@@ -215,7 +215,7 @@ Examples:
         use_npho_time_weight = not args.no_npho_time_weight and getattr(cfg.training, "use_npho_time_weight", True)
         track_mae_rmse = not args.no_track_mae_rmse and getattr(cfg.training, "track_mae_rmse", False)
         track_train_metrics = not args.no_track_train_metrics and getattr(cfg.training, "track_train_metrics", False)
-        profile = args.profile
+        profile = args.profile or getattr(cfg.training, 'profile', False)
         auto_channel_weight = args.auto_channel_weight or cfg.training.auto_channel_weight
         channel_dropout_rate = args.channel_dropout_rate if args.channel_dropout_rate is not None else cfg.training.channel_dropout_rate
         grad_clip = args.grad_clip if args.grad_clip is not None else getattr(cfg.training, 'grad_clip', 1.0)

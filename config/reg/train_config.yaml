@@ -64,9 +64,12 @@ training:
   lr: 3.0e-4
   weight_decay: 1.0e-4
   warmup_epochs: 2
-  use_scheduler: true
-  # Scheduler options: "cosine", "onecycle", "plateau", "none"
-  scheduler: "cosine"
+  # Learning rate scheduler options: "cosine", "onecycle", "plateau", null (disable)
+  # You can use either lr_scheduler (preferred) or legacy use_scheduler+scheduler
+  lr_scheduler: "cosine"
+  # Legacy scheduler config (use lr_scheduler instead):
+  # use_scheduler: true
+  # scheduler: "cosine"
   # Minimum LR (used by "cosine" and "plateau" schedulers)
   lr_min: 1.0e-6
   # OneCycleLR specific (only used when scheduler: "onecycle")
@@ -119,6 +122,9 @@ checkpoint:
   save_dir: "artifacts"
   save_interval: 10                 # Save checkpoint every N epochs (in addition to best/last)
   save_artifacts: true              # Save plots, CSVs, worst case displays (disable for quick testing)
+  new_mlflow_run: false             # Create new MLflow run when resuming (vs continue existing)
+  reset_epoch: false                # Reset epoch counter to 0 when resuming
+  refresh_lr: false                 # Reset learning rate scheduler when resuming
 
 # === MLflow ===
 mlflow:

@@ -348,8 +348,15 @@ def train_with_config(config_path: str, profile: bool = None):
             pass  # Will be handled later in the full resume logic
 
     # --- Scheduler ---
+    # Support both naming conventions: lr_scheduler (new) or use_scheduler+scheduler (legacy)
     scheduler = None
-    scheduler_type = getattr(cfg.training, 'scheduler', 'cosine') if cfg.training.use_scheduler else 'none'
+    lr_scheduler_cfg = getattr(cfg.training, 'lr_scheduler', None)
+    if lr_scheduler_cfg is not None:
+        # New style: lr_scheduler directly specifies the type (or null/none to disable)
+        scheduler_type = lr_scheduler_cfg if lr_scheduler_cfg not in (None, 'none', 'null') else 'none'
+    else:
+        # Legacy style: use_scheduler bool + scheduler type
+        scheduler_type = getattr(cfg.training, 'scheduler', 'cosine') if getattr(cfg.training, 'use_scheduler', True) else 'none'
 
     if scheduler_type == 'cosine':
         print(f"[INFO] Using Cosine Annealing with {warmup_epochs} warmup epochs.")
