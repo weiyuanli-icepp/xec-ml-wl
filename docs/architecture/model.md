@@ -499,6 +499,79 @@ tokens = self.fusion_transformer(tokens)  # 2-layer Transformer
 2. Learns which face correlations matter (via attention weights)
 3. Handles variable importance dynamically (e.g., events near corners)
 
+### 6. Network Depth Summary
+
+This section summarizes the total number of layers in the architecture, confirming it qualifies as **deep learning** (typically defined as neural networks with 3+ hidden layers).
+
+#### Layer Count by Component
+
+**Rectangular Face Path (FaceBackbone):**
+
+| Component | Layers | Details |
+|-----------|--------|---------|
+| Stem | 1 Conv | Conv2d(2→32, k=4) |
+| Stage 1 | 2 blocks | 2× ConvNeXtV2Block (1 dwconv + 2 linear each) |
+| Downsample | 1 Conv | Conv2d(32→64, k=2, s=2) |
+| Stage 2 | 3 blocks | 3× ConvNeXtV2Block (1 dwconv + 2 linear each) |
+| **Subtotal** | **~17 layers** | 7 conv + 10 linear |
+
+**Hexagonal Face Path (DeepHexEncoder):**
+
+| Component | Layers | Details |
+|-----------|--------|---------|
+| Stem | 1 Linear | Linear(2→96) |
+| HexNeXt Stack | 4 blocks | 4× HexNeXtBlock (2 linear in HexDepthwise + 2 linear each) |
+| Projection | 1 Linear | Linear(96→1024) |
+| **Subtotal** | **~18 layers** | 18 linear |
+
+**Transformer Fusion:**
+
+| Component | Layers | Details |
+|-----------|--------|---------|
+| TransformerEncoder | 2 layers | Each: Multi-head attention + FFN (2 linear) |
+| **Subtotal** | **~6 layers** | 2 attention + 4 linear |
+
+**Regression Head:**
+
+| Component | Layers | Details |
+|-----------|--------|---------|
+| MLP | 2 Linear | Linear(6144→256→output) |
+
+#### Understanding the Transformer Configuration
+
+The transformer uses **self-attention** (not cross-attention):
+
+- **6 tokens**: The face representations [inner, us, ds, outer, top, bot]
+- **8 heads**: Parallel attention mechanisms within each layer (splits 1024 dim into 8×128)
+- **FFN**: Feed-Forward Network (the MLP inside each transformer layer): Linear(1024→4096) → GELU → Linear(4096→1024)
+
+Each token attends to all 6 tokens (including itself), enabling cross-face communication:
+
+```
+        inner  outer  us   ds   top   bot
+inner   [✓      ✓     ✓    ✓    ✓     ✓ ]  ← inner attends to all
+outer   [✓      ✓     ✓    ✓    ✓     ✓ ]  ← outer attends to all
+us      [✓      ✓     ✓    ✓    ✓     ✓ ]
+ds      [✓      ✓     ✓    ✓    ✓     ✓ ]
+top     [✓      ✓     ✓    ✓    ✓     ✓ ]
+bot     [✓      ✓     ✓    ✓    ✓     ✓ ]
+```
+
+#### Total Network Depth
+
+| Path | Total Layers |
+|------|--------------|
+| Rectangular face → Transformer → Head | 17 + 6 + 2 = **~25 layers** |
+| Hexagonal face → Transformer → Head | 18 + 6 + 2 = **~26 layers** |
+
+With ~25-26 layers from input to output, this architecture clearly qualifies as **deep learning**. The threshold for "deep" is typically considered 3+ hidden layers.
+
+#### Design Notes
+
+- **Similar depth across paths**: Rectangular (~17) and hexagonal (~18) paths have comparable depth, ensuring balanced feature extraction before fusion.
+- **Simple regression head**: Only 2 linear layers in the head is sufficient because the encoder does the heavy lifting. The head simply maps the fused 6144-dim features to the output dimension.
+- **8 heads vs 6 tokens**: Having more attention heads than tokens is acceptable. Each head (128-dim) can learn different relationship patterns among the 6 faces. With only 6 tokens, using 4-8 heads would all perform similarly.
+
 ---
 
 ## C. HexNeXt: Comparison with Related Work
