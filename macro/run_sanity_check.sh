@@ -11,6 +11,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# Save arguments before conda activation (source can pass $@ to sourced script)
+SAVED_ARGS=("$@")
+set --
+
 # Detect node type and activate appropriate environment
 HOSTNAME_SHORT="$(hostname -s 2>/dev/null || hostname)"
 
@@ -76,6 +80,9 @@ fi
 if [ -n "${CONDA_PREFIX:-}" ]; then
     export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
 fi
+
+# Restore arguments
+set -- "${SAVED_ARGS[@]}"
 
 # Run the sanity check
 cd "$REPO_ROOT"
