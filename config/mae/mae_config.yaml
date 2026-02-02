@@ -47,7 +47,12 @@ training:
   grad_accum_steps: 1               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
   ema_decay: null                   # EMA decay rate (null to disable, 0.999 typical)
   amp: true                         # Automatic Mixed Precision
-  compile: false                    # torch.compile (can cause LLVM errors with multiprocessing)
+  # torch.compile mode options:
+  #   "max-autotune" - Maximum optimization, benchmarks many kernel configs (highest memory)
+  #   "reduce-overhead" - Lower compilation overhead and memory, good balance
+  #   "default" - Basic compilation with minimal overhead
+  #   "false" or "none" - Disable compilation, use eager mode (no extra memory)
+  compile: "reduce-overhead"
   npho_threshold: 100              # Npho threshold for conditional time loss (null uses default 10.0)
   use_npho_time_weight: true        # Weight time loss by sqrt(npho) for chi-square-like weighting
   track_mae_rmse: false             # Compute/log MAE/RMSE metrics (slower, set true for detailed analysis)

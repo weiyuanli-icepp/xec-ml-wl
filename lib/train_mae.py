@@ -166,6 +166,9 @@ Examples:
     parser.add_argument("--track_train_metrics", action="store_true", help="Enable per-face train metrics tracking")
     parser.add_argument("--no_track_train_metrics", action="store_true", help="Disable per-face train metrics (faster)")
     parser.add_argument("--profile", action="store_true", help="Enable training profiler to identify bottlenecks")
+    parser.add_argument("--compile", type=str, default=None,
+                        choices=["max-autotune", "reduce-overhead", "default", "false", "none"],
+                        help="torch.compile mode (default: reduce-overhead, use 'false' to disable)")
 
     parser.add_argument("--mlflow_experiment", type=str, default=None)
     parser.add_argument("--mlflow_run_name",   type=str, default=None)
@@ -224,7 +227,14 @@ Examples:
         resume_from = args.resume_from or cfg.checkpoint.resume_from
         save_predictions = args.save_predictions or getattr(cfg.checkpoint, 'save_predictions', False)
         save_interval = getattr(cfg.checkpoint, 'save_interval', 10)
-        use_compile = getattr(cfg.training, 'compile', True)  # Default True for backward compat
+        # Handle compile option: can be string mode or boolean (for backward compat)
+        compile_cfg = getattr(cfg.training, 'compile', 'reduce-overhead')
+        if isinstance(compile_cfg, bool):
+            compile_mode = 'reduce-overhead' if compile_cfg else 'none'
+        else:
+            compile_mode = compile_cfg if compile_cfg else 'reduce-overhead'
+        if args.compile is not None:
+            compile_mode = args.compile
     else:
         # Pure CLI mode (legacy) - require train_root
         if not args.train_root:
@@ -274,7 +284,7 @@ Examples:
         resume_from = args.resume_from
         save_predictions = args.save_predictions
         save_interval = 10
-        use_compile = True  # Default for CLI mode
+        compile_mode = args.compile if args.compile is not None else 'reduce-overhead'
 
     if lr_scheduler == "none":
         lr_scheduler = None
@@ -329,29 +339,29 @@ Examples:
     print(f"  - Total params: {total_params:,}")
     print(f"  - Trainable params: {trainable_params:,}")
 
-    # torch.compile requires triton, which is only available on x86_64
-    # Can be disabled via config to avoid LLVM/multiprocessing conflicts
+    # torch.compile - auto-detect ARM architecture and disable (Triton not supported)
     is_arm = platform.machine() in ("aarch64", "arm64")
-    if not use_compile:
-        print("[INFO] torch.compile disabled via config.")
-    elif device.type == "cuda" and not is_arm:
-        try:
-            import triton  # Check if triton is available
-            # Suppress verbose Triton autotuning logs
-            import logging
-            logging.getLogger("torch._inductor.autotune_process").setLevel(logging.WARNING)
-            print("[INFO] Attempting torch.compile...")
-            # Use "reduce-overhead" mode for less verbose output (vs "max-autotune")
-            model = torch.compile(model, mode="reduce-overhead", dynamic=False)
-        except ImportError:
-            print("[INFO] Triton not available, skipping torch.compile.")
-        except Exception as e:
-            print(f"[WARN] torch.compile failed with error: {e}.")
-            print("[INFO] Proceeding with standard Eager mode.")
-    elif is_arm:
-        print("[INFO] ARM architecture detected: torch.compile disabled (triton not supported).")
+    if is_arm and compile_mode and compile_mode not in ('false', 'none'):
+        print(f"[INFO] ARM architecture detected - disabling torch.compile (Triton not supported)")
+        compile_mode = 'none'
+
+    if compile_mode and compile_mode not in ('false', 'none'):
+        if device.type == "cuda":
+            try:
+                import triton  # Check if triton is available
+                # Suppress verbose Triton autotuning logs
+                logging.getLogger("torch._inductor.autotune_process").setLevel(logging.WARNING)
+                print(f"[INFO] Compiling model with mode='{compile_mode}'")
+                model = torch.compile(model, mode=compile_mode, fullgraph=True, dynamic=False)
+            except ImportError:
+                print("[INFO] Triton not available, skipping torch.compile.")
+            except Exception as e:
+                print(f"[WARN] torch.compile failed with error: {e}.")
+                print("[INFO] Proceeding with standard Eager mode.")
+        else:
+            print("[INFO] Running on CPU: torch.compile is disabled for stability.")
     else:
-        print("[INFO] Running on CPU: torch.compile is disabled for stability.")
+        print("[INFO] torch.compile disabled via config.")
             
     optimizer = torch.optim.AdamW(
         model.parameters(),

@@ -31,6 +31,7 @@ import torch
 import argparse
 import time
 import glob
+import platform
 import mlflow
 import numpy as np
 
@@ -191,6 +192,9 @@ Examples:
     parser.add_argument("--use_npho_time_weight", action="store_true", help="Weight time loss by sqrt(npho)")
     parser.add_argument("--no_npho_time_weight", action="store_true", help="Disable npho time weighting")
     parser.add_argument("--profile", action="store_true", help="Enable training profiler to identify bottlenecks")
+    parser.add_argument("--compile", type=str, default=None,
+                        choices=["max-autotune", "reduce-overhead", "default", "false", "none"],
+                        help="torch.compile mode (default: reduce-overhead, use 'false' to disable)")
 
     # MLflow
     parser.add_argument("--mlflow_experiment", type=str, default=None)
@@ -256,6 +260,14 @@ Examples:
         grad_accum_steps = args.grad_accum_steps if args.grad_accum_steps is not None else getattr(cfg.training, "grad_accum_steps", 1)
         track_train_metrics = getattr(cfg.training, "track_train_metrics", True)
         profile = args.profile
+        # Handle compile option: can be string mode or boolean (for backward compat)
+        compile_cfg = getattr(cfg.training, 'compile', 'reduce-overhead')
+        if isinstance(compile_cfg, bool):
+            compile_mode = 'reduce-overhead' if compile_cfg else 'none'
+        else:
+            compile_mode = compile_cfg if compile_cfg else 'reduce-overhead'
+        if args.compile is not None:
+            compile_mode = args.compile
 
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
@@ -312,6 +324,7 @@ Examples:
         grad_accum_steps = args.grad_accum_steps or 1
         track_train_metrics = True
         profile = args.profile
+        compile_mode = args.compile if args.compile is not None else 'reduce-overhead'
 
         mlflow_experiment = args.mlflow_experiment or "inpainting"
         mlflow_run_name = args.mlflow_run_name
@@ -383,6 +396,30 @@ Examples:
     print(f"  - Trainable params: {model.get_num_trainable_params():,}")
     print(f"  - Encoder frozen: {freeze_encoder}")
     print(f"  - Use local context: {use_local_context}")
+
+    # torch.compile - auto-detect ARM architecture and disable (Triton not supported)
+    is_arm = platform.machine() in ("aarch64", "arm64")
+    if is_arm and compile_mode and compile_mode not in ('false', 'none'):
+        print(f"[INFO] ARM architecture detected - disabling torch.compile (Triton not supported)")
+        compile_mode = 'none'
+
+    if compile_mode and compile_mode not in ('false', 'none'):
+        if device.type == "cuda":
+            try:
+                import triton  # Check if triton is available
+                # Suppress verbose Triton autotuning logs
+                logging.getLogger("torch._inductor.autotune_process").setLevel(logging.WARNING)
+                print(f"[INFO] Compiling model with mode='{compile_mode}'")
+                model = torch.compile(model, mode=compile_mode, fullgraph=True, dynamic=False)
+            except ImportError:
+                print("[INFO] Triton not available, skipping torch.compile.")
+            except Exception as e:
+                print(f"[WARN] torch.compile failed with error: {e}.")
+                print("[INFO] Proceeding with standard Eager mode.")
+        else:
+            print("[INFO] Running on CPU: torch.compile is disabled for stability.")
+    else:
+        print("[INFO] torch.compile disabled via config.")
 
     # Optimizer (only trainable params)
     trainable_params = [p for p in model.parameters() if p.requires_grad]

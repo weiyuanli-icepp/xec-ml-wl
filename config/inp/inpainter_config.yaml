@@ -46,6 +46,12 @@ training:
   time_weight: 1.0                  # Weight for time channel loss
   grad_clip: 1.0                    # Gradient clipping (0 to disable)
   amp: true                         # Automatic Mixed Precision
+  # torch.compile mode options:
+  #   "max-autotune" - Maximum optimization, benchmarks many kernel configs (highest memory)
+  #   "reduce-overhead" - Lower compilation overhead and memory, good balance
+  #   "default" - Basic compilation with minimal overhead
+  #   "false" or "none" - Disable compilation, use eager mode (no extra memory)
+  compile: "reduce-overhead"
   track_mae_rmse: false              # Compute/log MAE/RMSE metrics (set false to skip)
   grad_accum_steps: 4               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
   track_train_metrics: false         # Track per-face metrics during training (set false to log only total_loss)
