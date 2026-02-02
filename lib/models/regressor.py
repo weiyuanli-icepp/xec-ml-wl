@@ -137,12 +137,18 @@ class FaceBackbone(nn.Module):
         return x.flatten(1)
 
 class XECEncoder(nn.Module):
-    def __init__(self, hidden_dim=256, out_dim=2, outer_mode="finegrid", outer_fine_pool=None, drop_path_rate=0.0):
+    """
+    Encoder backbone for the XEC detector.
+
+    Extracts face-level features and fuses them via transformer.
+    Use with XECMultiHeadModel for regression tasks.
+    """
+    def __init__(self, outer_mode="finegrid", outer_fine_pool=None, drop_path_rate=0.0):
         super().__init__()
         self.outer_mode = outer_mode
         self.outer_fine_pool = outer_fine_pool
-        
-        input_channels = 2 # Npho, Time
+
+        input_channels = 2  # Npho, Time
         
         # CNN Backbone
         self.backbone = FaceBackbone(
@@ -195,15 +201,6 @@ class XECEncoder(nn.Module):
         
         self.pos_embed = nn.Parameter(torch.zeros(1, total_tokens, self.face_embed_dim))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
-        
-        in_fc = self.face_embed_dim * total_tokens
-        self.head = nn.Sequential(
-            nn.Linear(in_fc, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim, out_dim)
-        )
         
     def forward_features(self, x_batch, mask=None):
         """
@@ -298,32 +295,7 @@ class XECEncoder(nn.Module):
         tokens = torch.stack(tokens, dim=1)
         tokens = tokens + self.pos_embed
         return self.fusion_transformer(tokens)
-    
-    def forward(self, x_batch):
-        latent_seq = self.forward_features(x_batch)
-        flat_feats = latent_seq.flatten(1)
-        return self.head(flat_feats)
 
-    def get_concatenated_weight_norms(self):
-        w = self.head[0].weight.detach().abs().mean(dim=0)
-        chunk_size = self.backbone.out_dim 
-        
-        norms = {}
-        current_idx = 0
-        
-        for name in self.cnn_face_names:
-            norms[name] = w[current_idx : current_idx + chunk_size].mean().item()
-            current_idx += chunk_size
-            
-        if self.outer_fine:
-            norms["outer_fine"] = w[current_idx : current_idx + chunk_size].mean().item()
-            current_idx += chunk_size
-            
-        norms["hex_top"] = w[current_idx : current_idx + chunk_size].mean().item()
-        current_idx += chunk_size
-        norms["hex_bottom"] = w[current_idx : current_idx + chunk_size].mean().item()
-        
-        return norms
 
 class XECMultiHeadModel(nn.Module):
     def __init__(self, backbone : XECEncoder, hidden_dim=256, active_tasks=["angle", "energy", "xyz"]):
@@ -358,12 +330,22 @@ class XECMultiHeadModel(nn.Module):
         )
         
     def forward(self, x):
+        """
+        Forward pass returning dict (for training) or tuple (for ONNX export).
+
+        Returns:
+            dict[str, Tensor]: Task name -> predictions when called normally
+            tuple[Tensor, ...]: Ordered predictions when exporting to ONNX
+        """
         latent = self.backbone.forward_features(x)
-        flat   = latent.flatten(1)
-        results = {}
-        for task in self.active_tasks:
-            results[task] = self.heads[task](flat)        
-        return results
+        flat = latent.flatten(1)
+
+        # Return tuple if exporting (ONNX requires tuple, not dict)
+        if torch.onnx.is_in_onnx_export():
+            return tuple(self.heads[task](flat) for task in self.active_tasks)
+
+        # Return dict for normal training/inference
+        return {task: self.heads[task](flat) for task in self.active_tasks}
     
 class AutomaticLossScaler(nn.Module):
     def __init__(self, tasks):
