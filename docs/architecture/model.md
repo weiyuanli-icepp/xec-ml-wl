@@ -270,19 +270,20 @@ Output
 Unlike standard Graph Attention Networks (GAT) which learn attention weights dynamically per input, our `HexDepthwiseConv` uses **learnable position-dependent weights** - more similar to a depthwise convolution kernel adapted for hexagonal grids.
 
 ```
-        ┌─────┐
-       /       \
-  ┌───┐    0    ┌───┐
-  │ 5 │         │ 1 │     Hexagonal neighborhood:
-  └───┘         └───┘     - Center node (0)
- /     \       /     \    - 6 neighbors (1-6)
-┌───┐   ┌─────┐   ┌───┐   - Each position has a learned weight
-│ 4 │   │  c  │   │ 2 │
-└───┘   └─────┘   └───┘
-       \       /
-        ┌───┐
-        │ 3 │
-        └───┘
+Hexagonal neighborhood (each PMT has 6 neighbors):
+
+            [5]   [6]
+              \   /
+               \ /
+          [4]--[0]--[1]
+               /\
+              /  \
+            [3]  [2]
+
+    [0] = center node (self-weight w₀)
+    [1-6] = neighbors (position-dependent weights w₁...w₆)
+
+    Weight tensor shape: (1, 7, C)
 ```
 
 **How it works** (`lib/models/blocks.py:172`):
@@ -346,7 +347,7 @@ Input x ────────────────────────
     │                                    │
     ▼                                    │
 ┌─────────────────┐                      │
-│ GRN             │  Same GRN as Conv!   │
+│ GRN             │  Same GRN as Conv    │
 └─────────────────┘                      │
     │                                    │
     ▼                                    │
@@ -424,34 +425,34 @@ Each branch produces a **1024-dimensional token** representing its face:
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                    TOKEN GENERATION                             │
+│                    TOKEN GENERATION                            │
 ├────────────────────────────────────────────────────────────────┤
-│                                                                 │
+│                                                                │
 │  RECTANGULAR FACES (via FaceBackbone):                         │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
-│  │ Inner       │    │ Conv Stages │    │ Pool to 4×4 │        │
-│  │ (93×44×2)   │ →  │ → (H',W',64)│ →  │ → Flatten   │ → 1024 │
-│  └─────────────┘    └─────────────┘    └─────────────┘        │
-│                                                                 │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐         │
+│  │ Inner       │    │ Conv Stages │    │ Pool to 4×4 │         │
+│  │ (93×44×2)   │ →  │ → (H',W',64)│ →  │ → Flatten   │ → 1024  │
+│  └─────────────┘    └─────────────┘    └─────────────┘         │
+│                                                                │
 │  HEXAGONAL FACES (via DeepHexEncoder):                         │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
-│  │ Top PMTs    │    │ HexNeXt     │    │ Global Mean │        │
-│  │ (334×2)     │ →  │ → (334,96)  │ →  │ + Project   │ → 1024 │
-│  └─────────────┘    └─────────────┘    └─────────────┘        │
-│                                                                 │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐         │
+│  │ Top PMTs    │    │ HexNeXt     │    │ Global Mean │         │
+│  │ (334×2)     │ →  │ → (334,96)  │ →  │ + Project   │ → 1024  │
+│  └─────────────┘    └─────────────┘    └─────────────┘         │
+│                                                                │
 └────────────────────────────────────────────────────────────────┘
 
                               ▼
 
 ┌────────────────────────────────────────────────────────────────┐
-│                    TOKEN STACKING                               │
+│                    TOKEN STACKING                              │
 ├────────────────────────────────────────────────────────────────┤
-│                                                                 │
+│                                                                │
 │   Face Tokens:        Token 0    Token 1    ...    Token 5     │
-│                      ┌──────┐   ┌──────┐         ┌──────┐     │
-│                      │Inner │   │  US  │   ...   │Bottom│     │
-│                      │1024  │   │ 1024 │         │ 1024 │     │
-│                      └──────┘   └──────┘         └──────┘     │
+│                      ┌──────┐   ┌──────┐         ┌──────┐      │
+│                      │Inner │   │  US  │   ...   │Bottom│      │
+│                      │1024  │   │ 1024 │         │ 1024 │      │
+│                      └──────┘   └──────┘         └──────┘      │
 │                          │          │                │         │
 │                          ▼          ▼                ▼         │
 │                      ┌────────────────────────────────┐        │
@@ -470,7 +471,7 @@ Each branch produces a **1024-dimensional token** representing its face:
 │                      ┌────────────────────────────────┐        │
 │   Output:            │ (B, 6, 1024) → Flatten → 6144  │        │
 │                      └────────────────────────────────┘        │
-│                                                                 │
+│                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```
 
