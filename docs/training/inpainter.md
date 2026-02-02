@@ -5,6 +5,165 @@ The library includes a **dead channel inpainting** module for recovering sensor 
 - **Robustness training**: Train models to handle incomplete detector data
 - **Preprocessing**: Clean up data before regression tasks
 
+---
+
+## Summary Workflow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         INPAINTER TRAINING PIPELINE                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+                              ┌─────────────────┐
+                              │  MC ROOT Files  │
+                              │  (clean data)   │
+                              └────────┬────────┘
+                                       │
+                    ┌──────────────────┴──────────────────┐
+                    ▼                                     ▼
+         ┌──────────────────┐                  ┌──────────────────┐
+         │   MAE Training   │                  │ Direct Training  │
+         │  (Optional but   │                  │  (From scratch)  │
+         │   recommended)   │                  │                  │
+         └────────┬─────────┘                  └────────┬─────────┘
+                  │                                     │
+                  │  Pretrained encoder                 │
+                  ▼                                     │
+         ┌──────────────────┐                          │
+         │    Inpainter     │◄─────────────────────────┘
+         │    Training      │
+         │                  │
+         │  • Random mask   │
+         │  • Predict npho, │
+         │    time at mask  │
+         └────────┬─────────┘
+                  │
+                  ▼
+         ┌──────────────────┐
+         │   Checkpoint     │
+         │   (.pth file)    │
+         └────────┬─────────┘
+                  │
+                  ▼
+         ┌──────────────────┐
+         │  TorchScript     │  (macro/export_onnx_inpainter.py)
+         │  Export (.pt)    │
+         └────────┬─────────┘
+                  │
+      ┌───────────┴───────────┐
+      │                       │
+      ▼                       ▼
+┌─────────────┐        ┌─────────────┐
+│ MC Pseudo-  │        │  Real Data  │
+│ Experiment  │        │ Validation  │
+└──────┬──────┘        └──────┬──────┘
+       │                      │
+       ▼                      ▼
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          VALIDATION WORKFLOWS                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────┐   ┌─────────────────────────────────┐
+│      MC PSEUDO-EXPERIMENT       │   │       REAL DATA VALIDATION      │
+│         (Section 11)            │   │          (Section 9)            │
+├─────────────────────────────────┤   ├─────────────────────────────────┤
+│                                 │   │                                 │
+│  MC Data (all sensors valid)    │   │  Real Data (has dead channels)  │
+│            │                    │   │            │                    │
+│            ▼                    │   │            ▼                    │
+│  ┌─────────────────────┐        │   │  ┌─────────────────────┐        │
+│  │ Apply dead channel  │        │   │  │ Detect dead from DB │        │
+│  │ pattern from real   │        │   │  │ + sentinel values   │        │
+│  │ run (e.g., 430000)  │        │   │  └──────────┬──────────┘        │
+│  └──────────┬──────────┘        │   │            │                    │
+│             │                   │   │            ▼                    │
+│             ▼                   │   │  ┌─────────────────────┐        │
+│  ┌─────────────────────┐        │   │  │ Artificially mask   │        │
+│  │ Mask = dead pattern │        │   │  │ some healthy sensors│        │
+│  │ (full ground truth) │        │   │  │ (for evaluation)    │        │
+│  └──────────┬──────────┘        │   │  └──────────┬──────────┘        │
+│             │                   │   │            │                    │
+│             ▼                   │   │            ▼                    │
+│  ┌─────────────────────┐        │   │  ┌─────────────────────┐        │
+│  │    Run Inpainter    │        │   │  │    Run Inpainter    │        │
+│  └──────────┬──────────┘        │   │  └──────────┬──────────┘        │
+│             │                   │   │            │                    │
+│             ▼                   │   │            ▼                    │
+│  ┌─────────────────────┐        │   │  ┌─────────────────────┐        │
+│  │  Compare pred vs    │        │   │  │ Output with mask_type│       │
+│  │  truth at ALL dead  │        │   │  │ 0=artificial (truth) │       │
+│  │  channel positions  │        │   │  │ 1=dead (no truth)    │       │
+│  └─────────────────────┘        │   │  └─────────────────────┘        │
+│                                 │   │                                 │
+│  OUTPUT:                        │   │  OUTPUT:                        │
+│  • Full metrics for dead        │   │  • Metrics only for artificial  │
+│    channel recovery             │   │  • Plausibility for dead        │
+│  • Baseline performance         │   │  • Event displays               │
+│                                 │   │                                 │
+└─────────────────────────────────┘   └─────────────────────────────────┘
+
+                    ┌─────────────────────────────────────┐
+                    │         ANALYSIS PIPELINE           │
+                    │    (macro/analyze_inpainter.py)     │
+                    ├─────────────────────────────────────┤
+                    │                                     │
+                    │  Input: predictions ROOT file       │
+                    │            │                        │
+                    │            ▼                        │
+                    │  ┌───────────────────┐              │
+                    │  │ Compute metrics   │              │
+                    │  │ • MAE, RMSE, bias │              │
+                    │  │ • Per-face        │              │
+                    │  │ • Percentiles     │              │
+                    │  └─────────┬─────────┘              │
+                    │            │                        │
+                    │            ▼                        │
+                    │  ┌───────────────────┐              │
+                    │  │ Generate plots    │              │
+                    │  │ • Residuals       │              │
+                    │  │ • Scatter         │              │
+                    │  │ • Resolution      │              │
+                    │  └─────────┬─────────┘              │
+                    │            │                        │
+                    │            ▼                        │
+                    │  OUTPUT:                            │
+                    │  • global_metrics.csv               │
+                    │  • face_metrics.csv                 │
+                    │  • residual_distributions.pdf       │
+                    │  • scatter_truth_vs_pred.pdf        │
+                    │  • resolution_vs_signal.pdf         │
+                    │                                     │
+                    └─────────────────────────────────────┘
+
+
+QUICK REFERENCE - Command Summary:
+──────────────────────────────────────────────────────────────────────────────
+
+# 1. Train MAE (optional, recommended)
+python -m lib.train_mae --config config/mae_config.yaml
+
+# 2. Train Inpainter
+python -m lib.train_inpainter --config config/inpainter_config.yaml \
+    --mae_checkpoint artifacts/mae/mae_checkpoint_best.pth
+
+# 3. Export to TorchScript
+python macro/export_onnx_inpainter.py checkpoint.pth --output inpainter.pt
+
+# 4a. MC Pseudo-Experiment (full metrics)
+python macro/validate_inpainter.py --torchscript inpainter.pt \
+    --input mc_data.root --run 430000 --output validation_mc/
+
+# 4b. Real Data Validation (--real-data flag)
+python macro/validate_inpainter.py --torchscript inpainter.pt \
+    --input real_data.root --run 430000 --real-data --output validation_real/
+
+# 5. Analyze Results
+python macro/analyze_inpainter.py validation_mc/predictions.root --output analysis/
+```
+
+---
+
 ## 1. Architecture Overview
 
 The inpainter (`XEC_Inpainter`) uses a frozen encoder from MAE pretraining combined with lightweight inpainting heads:
