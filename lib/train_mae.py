@@ -240,6 +240,7 @@ Examples:
             compile_mode = compile_cfg if compile_cfg else 'reduce-overhead'
         if args.compile is not None:
             compile_mode = args.compile
+        compile_fullgraph = getattr(cfg.training, 'compile_fullgraph', False)
     else:
         # Pure CLI mode (legacy) - require train_root
         if not args.train_root:
@@ -295,6 +296,7 @@ Examples:
         save_predictions = args.save_predictions
         save_interval = 10
         compile_mode = args.compile if args.compile is not None else 'reduce-overhead'
+        compile_fullgraph = False  # Default for CLI mode
 
     if lr_scheduler == "none":
         lr_scheduler = None
@@ -364,9 +366,9 @@ Examples:
                 # Increase dynamo cache limit to avoid CacheLimitExceeded errors
                 # when batch sizes vary (e.g., last batch of epoch)
                 torch._dynamo.config.cache_size_limit = 64
-                print(f"[INFO] Compiling model with mode='{compile_mode}' (this may take a few minutes...)")
-                # fullgraph=False allows partial compilation, much faster startup
-                model = torch.compile(model, mode=compile_mode, fullgraph=False, dynamic=False)
+                fg_str = "fullgraph" if compile_fullgraph else "partial"
+                print(f"[INFO] Compiling model with mode='{compile_mode}', {fg_str} (this may take a few minutes...)")
+                model = torch.compile(model, mode=compile_mode, fullgraph=compile_fullgraph, dynamic=False)
             except ImportError:
                 print("[INFO] Triton not available, skipping torch.compile.")
             except Exception as e:

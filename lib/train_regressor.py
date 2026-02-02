@@ -284,6 +284,7 @@ def train_with_config(config_path: str, profile: bool = None):
     import platform
     is_arm = platform.machine() in ('aarch64', 'arm64')
     compile_mode = getattr(cfg.training, 'compile', 'max-autotune')
+    compile_fullgraph = getattr(cfg.training, 'compile_fullgraph', False)
 
     if is_arm and compile_mode and compile_mode not in ('false', 'none'):
         print(f"[INFO] ARM architecture detected - disabling torch.compile (Triton not supported)")
@@ -292,9 +293,9 @@ def train_with_config(config_path: str, profile: bool = None):
     if compile_mode and compile_mode != 'false' and compile_mode != 'none':
         # Increase dynamo cache limit to avoid CacheLimitExceeded errors
         torch._dynamo.config.cache_size_limit = 64
-        print(f"[INFO] Compiling model with mode='{compile_mode}' (this may take a few minutes...)")
-        # fullgraph=False allows partial compilation, much faster startup
-        model = torch.compile(model, mode=compile_mode, fullgraph=False, dynamic=False)
+        fg_str = "fullgraph" if compile_fullgraph else "partial"
+        print(f"[INFO] Compiling model with mode='{compile_mode}', {fg_str} (this may take a few minutes...)")
+        model = torch.compile(model, mode=compile_mode, fullgraph=compile_fullgraph, dynamic=False)
     else:
         print("[INFO] Model compilation disabled (eager mode)")
 

@@ -86,7 +86,10 @@ class TrainingConfig:
     grad_clip: float = 1.0
     grad_accum_steps: int = 1
     profile: bool = False  # Enable training profiler to identify bottlenecks
-    compile: str = "max-autotune"  # torch.compile mode: "max-autotune", "reduce-overhead", "default", or "false"/"none" to disable
+    # torch.compile mode: "max-autotune" (best perf, slow compile), "reduce-overhead", "default", or "false"/"none" to disable
+    compile: str = "max-autotune"
+    # Compile entire model as single graph (True=slower compile but better perf, False=faster compile)
+    compile_fullgraph: bool = False
 
 
 @dataclass
@@ -366,7 +369,10 @@ class MAETrainingConfig:
     grad_accum_steps: int = 1  # Gradient accumulation steps
     ema_decay: Optional[float] = None  # None = disabled, 0.999 = typical value
     amp: bool = True
-    compile: str = "reduce-overhead"  # torch.compile mode
+    # torch.compile mode: "max-autotune" (best perf, slow compile), "reduce-overhead", "default", or "false"/"none" to disable
+    compile: str = "reduce-overhead"
+    # Compile entire model as single graph (True=slower compile but better perf, False=faster compile)
+    compile_fullgraph: bool = False
     # Conditional time loss: only compute where npho > threshold
     npho_threshold: Optional[float] = None  # None uses DEFAULT_NPHO_THRESHOLD (10.0)
     use_npho_time_weight: bool = True  # Weight time loss by sqrt(npho)
@@ -519,7 +525,10 @@ class InpainterTrainingConfig:
     time_weight: float = 1.0
     grad_clip: float = 1.0
     amp: bool = True
-    compile: str = "reduce-overhead"  # torch.compile mode
+    # torch.compile mode: "max-autotune" (best perf, slow compile), "reduce-overhead", "default", or "false"/"none" to disable
+    compile: str = "reduce-overhead"
+    # Compile entire model as single graph (True=slower compile but better perf, False=faster compile)
+    compile_fullgraph: bool = False
     track_mae_rmse: bool = True
     save_root_predictions: bool = True
     grad_accum_steps: int = 1

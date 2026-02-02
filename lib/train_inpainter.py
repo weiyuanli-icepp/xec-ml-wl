@@ -275,6 +275,7 @@ Examples:
             compile_mode = compile_cfg if compile_cfg else 'reduce-overhead'
         if args.compile is not None:
             compile_mode = args.compile
+        compile_fullgraph = getattr(cfg.training, 'compile_fullgraph', False)
         ema_decay = args.ema_decay if args.ema_decay is not None else getattr(cfg.training, 'ema_decay', None)
 
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
@@ -338,6 +339,7 @@ Examples:
         track_train_metrics = True
         profile = args.profile
         compile_mode = args.compile if args.compile is not None else 'reduce-overhead'
+        compile_fullgraph = False  # Default for CLI mode
         ema_decay = args.ema_decay  # None by default
 
         mlflow_experiment = args.mlflow_experiment or "inpainting"
@@ -425,9 +427,9 @@ Examples:
                 logging.getLogger("torch._inductor.autotune_process").setLevel(logging.WARNING)
                 # Increase dynamo cache limit to avoid CacheLimitExceeded errors
                 torch._dynamo.config.cache_size_limit = 64
-                print(f"[INFO] Compiling model with mode='{compile_mode}' (this may take a few minutes...)")
-                # fullgraph=False allows partial compilation, much faster startup
-                model = torch.compile(model, mode=compile_mode, fullgraph=False, dynamic=False)
+                fg_str = "fullgraph" if compile_fullgraph else "partial"
+                print(f"[INFO] Compiling model with mode='{compile_mode}', {fg_str} (this may take a few minutes...)")
+                model = torch.compile(model, mode=compile_mode, fullgraph=compile_fullgraph, dynamic=False)
             except ImportError:
                 print("[INFO] Triton not available, skipping torch.compile.")
             except Exception as e:
