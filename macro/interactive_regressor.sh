@@ -9,11 +9,11 @@
 HOSTNAME_SHORT="$(hostname -s 2>/dev/null || hostname)"
 if [[ "$HOSTNAME_SHORT" =~ ^gpu00[1-9]$ ]]; then
     if [ "${CONDA_DEFAULT_ENV:-}" != "xec-ml-wl-gh" ]; then
-        if [ -f "/data/user/ext-li_w1/miniforge-arm/bin/activate" ]; then
-            source /data/user/ext-li_w1/miniforge-arm/bin/activate
+        if [ -f "${HOME}/miniforge-arm/bin/activate" ]; then
+            source ${HOME}/miniforge-arm/bin/activate
             conda activate xec-ml-wl-gh
         else
-            echo "Conda activate script not found at /data/user/ext-li_w1/miniforge-arm/bin/activate" >&2
+            echo "Conda activate script not found at ${HOME}/miniforge-arm/bin/activate" >&2
             exit 1
         fi
     fi
