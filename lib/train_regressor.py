@@ -290,6 +290,8 @@ def train_with_config(config_path: str, profile: bool = None):
         compile_mode = 'none'
 
     if compile_mode and compile_mode != 'false' and compile_mode != 'none':
+        # Increase dynamo cache limit to avoid CacheLimitExceeded errors
+        torch._dynamo.config.cache_size_limit = 64
         print(f"[INFO] Compiling model with mode='{compile_mode}'")
         model = torch.compile(model, mode=compile_mode, fullgraph=True, dynamic=False)
     else:
