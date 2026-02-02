@@ -425,8 +425,9 @@ Examples:
                 logging.getLogger("torch._inductor.autotune_process").setLevel(logging.WARNING)
                 # Increase dynamo cache limit to avoid CacheLimitExceeded errors
                 torch._dynamo.config.cache_size_limit = 64
-                print(f"[INFO] Compiling model with mode='{compile_mode}'")
-                model = torch.compile(model, mode=compile_mode, fullgraph=True, dynamic=False)
+                print(f"[INFO] Compiling model with mode='{compile_mode}' (this may take a few minutes...)")
+                # fullgraph=False allows partial compilation, much faster startup
+                model = torch.compile(model, mode=compile_mode, fullgraph=False, dynamic=False)
             except ImportError:
                 print("[INFO] Triton not available, skipping torch.compile.")
             except Exception as e:
