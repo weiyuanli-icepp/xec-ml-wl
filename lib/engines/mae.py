@@ -33,6 +33,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                   scaler=None,
                   dataloader_workers=0,
                   dataset_workers=8,
+                  prefetch_factor=2,
                   npho_threshold=None,
                   use_npho_time_weight=True,
                   track_mae_rmse=True,
@@ -127,7 +128,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
         num_workers=dataloader_workers,
         pin_memory=True,
         persistent_workers=(dataloader_workers > 0),
-        prefetch_factor=2 if dataloader_workers > 0 else None,
+        prefetch_factor=prefetch_factor if dataloader_workers > 0 else None,
     )
 
     for x_batch, _ in loader:
@@ -424,6 +425,7 @@ def run_eval_mae(model, device, root_files, tree_name,
                  collect_predictions=False, max_events=1000,
                  dataloader_workers=0,
                  dataset_workers=8,
+                 prefetch_factor=2,
                  npho_threshold=None,
                  use_npho_time_weight=True,
                  track_mae_rmse=True,
@@ -592,7 +594,7 @@ def run_eval_mae(model, device, root_files, tree_name,
         num_workers=dataloader_workers,
         pin_memory=True,
         persistent_workers=(dataloader_workers > 0),
-        prefetch_factor=2 if dataloader_workers > 0 else None,
+        prefetch_factor=prefetch_factor if dataloader_workers > 0 else None,
     )
 
     for x_batch, _ in loader:

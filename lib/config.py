@@ -35,6 +35,7 @@ class DataConfig:
     chunksize: int = 256000
     num_workers: int = 8
     num_threads: int = 4
+    prefetch_factor: int = 2  # DataLoader prefetch factor (batches per worker)
     npho_branch: str = "npho"  # Input branch for photon counts
     time_branch: str = "relative_time"  # Input branch for timing
     log_invalid_npho: bool = True  # Log warning when invalid npho values detected
@@ -332,6 +333,7 @@ class MAEDataConfig:
     chunksize: int = 256000
     num_workers: int = 4
     num_threads: int = 4
+    prefetch_factor: int = 2  # DataLoader prefetch factor (batches per worker)
     npho_branch: str = "npho"  # Input branch for photon counts
     time_branch: str = "relative_time"  # Input branch for timing
     log_invalid_npho: bool = True  # Log warning when invalid npho values detected
@@ -485,6 +487,7 @@ class InpainterDataConfig:
     chunksize: int = 256000
     num_workers: int = 4
     num_threads: int = 4
+    prefetch_factor: int = 2  # DataLoader prefetch factor (batches per worker)
     npho_branch: str = "npho"  # Input branch for photon counts
     time_branch: str = "relative_time"  # Input branch for timing
     log_invalid_npho: bool = True  # Log warning when invalid npho values detected
