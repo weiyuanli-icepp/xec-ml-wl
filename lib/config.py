@@ -145,14 +145,15 @@ class XECConfig:
     export: ExportConfig = field(default_factory=ExportConfig)
 
 
-def load_config(config_path: str, warn_missing: bool = True, auto_update: bool = False) -> XECConfig:
+def load_config(config_path: str, warn_missing: bool = True, auto_update: bool = True) -> XECConfig:
     """
     Load configuration from YAML file.
 
     Args:
         config_path: Path to YAML config file.
         warn_missing: If True, print warnings about missing config options.
-        auto_update: If True, automatically add missing options to the config file.
+        auto_update: If True, automatically add missing options to the config file
+                     and exit so user can review the changes.
 
     Returns:
         XECConfig object with all settings.
@@ -234,8 +235,14 @@ def load_config(config_path: str, warn_missing: bool = True, auto_update: bool =
 
     # Validate and optionally update config
     if warn_missing or auto_update:
-        validate_config(config_path, config_type="regressor",
-                       auto_update=auto_update, verbose=warn_missing)
+        missing = validate_config(config_path, config_type="regressor",
+                                  auto_update=auto_update, verbose=warn_missing)
+        if missing and auto_update:
+            print("\n[INFO] Config file has been updated with missing options.")
+            print("[INFO] Please review the changes and re-run the script.")
+            print(f"[INFO] Config file: {config_path}")
+            import sys
+            sys.exit(0)
 
     return config
 
@@ -394,14 +401,15 @@ class MAEConfig:
     mlflow: MAEMLflowConfig = field(default_factory=MAEMLflowConfig)
 
 
-def load_mae_config(config_path: str, warn_missing: bool = True, auto_update: bool = False) -> MAEConfig:
+def load_mae_config(config_path: str, warn_missing: bool = True, auto_update: bool = True) -> MAEConfig:
     """
     Load MAE configuration from YAML file.
 
     Args:
         config_path: Path to YAML config file.
         warn_missing: If True, print warnings about missing config options.
-        auto_update: If True, automatically add missing options to the config file.
+        auto_update: If True, automatically add missing options to the config file
+                     and exit so user can review the changes.
 
     Returns:
         MAEConfig object with all settings.
@@ -452,8 +460,14 @@ def load_mae_config(config_path: str, warn_missing: bool = True, auto_update: bo
 
     # Validate and optionally update config
     if warn_missing or auto_update:
-        validate_config(config_path, config_type="mae",
-                       auto_update=auto_update, verbose=warn_missing)
+        missing = validate_config(config_path, config_type="mae",
+                                  auto_update=auto_update, verbose=warn_missing)
+        if missing and auto_update:
+            print("\n[INFO] Config file has been updated with missing options.")
+            print("[INFO] Please review the changes and re-run the script.")
+            print(f"[INFO] Config file: {config_path}")
+            import sys
+            sys.exit(0)
 
     return config
 
@@ -542,14 +556,15 @@ class InpainterConfig:
     mlflow: InpainterMLflowConfig = field(default_factory=InpainterMLflowConfig)
 
 
-def load_inpainter_config(config_path: str, warn_missing: bool = True, auto_update: bool = False) -> InpainterConfig:
+def load_inpainter_config(config_path: str, warn_missing: bool = True, auto_update: bool = True) -> InpainterConfig:
     """
     Load inpainter configuration from YAML file.
 
     Args:
         config_path: Path to YAML config file.
         warn_missing: If True, print warnings about missing config options.
-        auto_update: If True, automatically add missing options to the config file.
+        auto_update: If True, automatically add missing options to the config file
+                     and exit so user can review the changes.
 
     Returns:
         InpainterConfig object with all settings.
@@ -600,8 +615,14 @@ def load_inpainter_config(config_path: str, warn_missing: bool = True, auto_upda
 
     # Validate and optionally update config
     if warn_missing or auto_update:
-        validate_config(config_path, config_type="inpainter",
-                       auto_update=auto_update, verbose=warn_missing)
+        missing = validate_config(config_path, config_type="inpainter",
+                                  auto_update=auto_update, verbose=warn_missing)
+        if missing and auto_update:
+            print("\n[INFO] Config file has been updated with missing options.")
+            print("[INFO] Please review the changes and re-run the script.")
+            print(f"[INFO] Config file: {config_path}")
+            import sys
+            sys.exit(0)
 
     return config
 
