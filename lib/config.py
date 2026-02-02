@@ -66,6 +66,9 @@ class TrainingConfig:
     lr: float = 3e-4
     weight_decay: float = 1e-4
     warmup_epochs: int = 2
+    # New unified scheduler naming (preferred)
+    lr_scheduler: Optional[str] = None  # "cosine", "onecycle", "plateau", or null to disable
+    # Legacy scheduler config (for backward compatibility)
     use_scheduler: bool = True
     scheduler: str = "cosine"  # "cosine", "onecycle", "plateau", or "none"
     # OneCycleLR specific
@@ -107,6 +110,7 @@ class CheckpointConfig:
     """Checkpoint and saving configuration."""
     resume_from: Optional[str] = None
     save_dir: str = "artifacts"
+    save_interval: int = 10  # Save checkpoint every N epochs
     save_artifacts: bool = True  # Save plots, CSVs, worst case displays (disable for quick testing)
     refresh_lr: bool = False  # Reset LR scheduler when resuming (schedule runs from current epoch to end)
     reset_epoch: bool = False  # Start from epoch 1 when resuming (only load model weights)
@@ -141,12 +145,14 @@ class XECConfig:
     export: ExportConfig = field(default_factory=ExportConfig)
 
 
-def load_config(config_path: str) -> XECConfig:
+def load_config(config_path: str, warn_missing: bool = True, auto_update: bool = False) -> XECConfig:
     """
     Load configuration from YAML file.
 
     Args:
         config_path: Path to YAML config file.
+        warn_missing: If True, print warnings about missing config options.
+        auto_update: If True, automatically add missing options to the config file.
 
     Returns:
         XECConfig object with all settings.
@@ -225,6 +231,11 @@ def load_config(config_path: str) -> XECConfig:
         for k, v in raw_config['export'].items():
             if hasattr(config.export, k):
                 setattr(config.export, k, v)
+
+    # Validate and optionally update config
+    if warn_missing or auto_update:
+        validate_config(config_path, config_type="regressor",
+                       auto_update=auto_update, verbose=warn_missing)
 
     return config
 
@@ -346,9 +357,13 @@ class MAETrainingConfig:
     grad_accum_steps: int = 1  # Gradient accumulation steps
     ema_decay: Optional[float] = None  # None = disabled, 0.999 = typical value
     amp: bool = True
+    compile: str = "reduce-overhead"  # torch.compile mode
     # Conditional time loss: only compute where npho > threshold
     npho_threshold: Optional[float] = None  # None uses DEFAULT_NPHO_THRESHOLD (10.0)
     use_npho_time_weight: bool = True  # Weight time loss by sqrt(npho)
+    track_mae_rmse: bool = False  # Compute/log MAE/RMSE metrics
+    track_train_metrics: bool = False  # Track per-face loss during training
+    profile: bool = False  # Enable training profiler
 
 
 @dataclass
@@ -379,12 +394,14 @@ class MAEConfig:
     mlflow: MAEMLflowConfig = field(default_factory=MAEMLflowConfig)
 
 
-def load_mae_config(config_path: str) -> MAEConfig:
+def load_mae_config(config_path: str, warn_missing: bool = True, auto_update: bool = False) -> MAEConfig:
     """
     Load MAE configuration from YAML file.
 
     Args:
         config_path: Path to YAML config file.
+        warn_missing: If True, print warnings about missing config options.
+        auto_update: If True, automatically add missing options to the config file.
 
     Returns:
         MAEConfig object with all settings.
@@ -433,6 +450,11 @@ def load_mae_config(config_path: str) -> MAEConfig:
             if hasattr(config.mlflow, k):
                 setattr(config.mlflow, k, v)
 
+    # Validate and optionally update config
+    if warn_missing or auto_update:
+        validate_config(config_path, config_type="mae",
+                       auto_update=auto_update, verbose=warn_missing)
+
     return config
 
 
@@ -462,12 +484,13 @@ class InpainterModelConfig:
     mask_ratio: float = 0.05  # Default 5% for realistic dead channel density
     time_mask_ratio_scale: float = 1.0  # Scale factor for masking valid-time sensors (1.0 = uniform)
     freeze_encoder: bool = True  # Freeze encoder from MAE
+    use_local_context: bool = True  # Use local neighbor context for inpainting
 
 
 @dataclass
 class InpainterTrainingConfig:
     """Training configuration for inpainter."""
-    mae_checkpoint: str = ""  # Path to MAE checkpoint for encoder initialization
+    mae_checkpoint: Optional[str] = None  # Path to MAE checkpoint for encoder initialization
     epochs: int = 50
     lr: float = 1e-4
     lr_scheduler: Optional[str] = None  # "cosine" or None
@@ -479,6 +502,7 @@ class InpainterTrainingConfig:
     time_weight: float = 1.0
     grad_clip: float = 1.0
     amp: bool = True
+    compile: str = "reduce-overhead"  # torch.compile mode
     track_mae_rmse: bool = True
     save_root_predictions: bool = True
     grad_accum_steps: int = 1
@@ -486,6 +510,8 @@ class InpainterTrainingConfig:
     # Conditional time loss: only compute where npho > threshold
     npho_threshold: Optional[float] = None  # None uses DEFAULT_NPHO_THRESHOLD (10.0)
     use_npho_time_weight: bool = True  # Weight time loss by sqrt(npho)
+    ema_decay: Optional[float] = None  # None = disabled, 0.999 = typical value
+    profile: bool = False  # Enable training profiler
 
 
 @dataclass
@@ -494,6 +520,7 @@ class InpainterCheckpointConfig:
     resume_from: Optional[str] = None
     save_dir: str = "artifacts"
     save_interval: int = 10
+    save_predictions: bool = True  # Save ROOT file with sensor predictions
     new_mlflow_run: bool = False  # Force new MLflow run even when resuming from checkpoint
 
 
@@ -515,12 +542,14 @@ class InpainterConfig:
     mlflow: InpainterMLflowConfig = field(default_factory=InpainterMLflowConfig)
 
 
-def load_inpainter_config(config_path: str) -> InpainterConfig:
+def load_inpainter_config(config_path: str, warn_missing: bool = True, auto_update: bool = False) -> InpainterConfig:
     """
     Load inpainter configuration from YAML file.
 
     Args:
         config_path: Path to YAML config file.
+        warn_missing: If True, print warnings about missing config options.
+        auto_update: If True, automatically add missing options to the config file.
 
     Returns:
         InpainterConfig object with all settings.
@@ -569,4 +598,220 @@ def load_inpainter_config(config_path: str) -> InpainterConfig:
             if hasattr(config.mlflow, k):
                 setattr(config.mlflow, k, v)
 
+    # Validate and optionally update config
+    if warn_missing or auto_update:
+        validate_config(config_path, config_type="inpainter",
+                       auto_update=auto_update, verbose=warn_missing)
+
     return config
+
+
+# ------------------------------------------------------------
+#  Config Validation and Auto-Update
+# ------------------------------------------------------------
+
+def _get_dataclass_defaults(cls) -> Dict[str, Any]:
+    """Get default values from a dataclass."""
+    import dataclasses
+    defaults = {}
+    for f in dataclasses.fields(cls):
+        if f.default is not dataclasses.MISSING:
+            defaults[f.name] = f.default
+        elif f.default_factory is not dataclasses.MISSING:
+            defaults[f.name] = f.default_factory()
+        else:
+            defaults[f.name] = None
+    return defaults
+
+
+def _check_missing_keys(raw_section: Dict, dataclass_cls, section_name: str) -> List[tuple]:
+    """
+    Check for missing keys in a config section.
+
+    Returns:
+        List of (key, default_value) tuples for missing keys.
+    """
+    if raw_section is None:
+        raw_section = {}
+
+    defaults = _get_dataclass_defaults(dataclass_cls)
+    missing = []
+
+    for key, default_val in defaults.items():
+        if key not in raw_section:
+            missing.append((key, default_val))
+
+    return missing
+
+
+def validate_config(config_path: str, config_type: str = "auto",
+                   auto_update: bool = False, verbose: bool = True) -> Dict[str, List[tuple]]:
+    """
+    Validate a config file and optionally auto-update with missing options.
+
+    Args:
+        config_path: Path to YAML config file.
+        config_type: One of "regressor", "mae", "inpainter", or "auto" (detect from path/content).
+        auto_update: If True, update the config file with missing options.
+        verbose: If True, print warnings about missing options.
+
+    Returns:
+        Dict mapping section names to lists of (key, default_value) tuples for missing keys.
+    """
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    with open(config_path, 'r') as f:
+        raw_config = yaml.safe_load(f)
+
+    if raw_config is None:
+        raw_config = {}
+
+    # Auto-detect config type
+    if config_type == "auto":
+        if "mae" in config_path.lower() or raw_config.get('mlflow', {}).get('experiment', '').startswith('mae'):
+            config_type = "mae"
+        elif "inp" in config_path.lower() or "inpainter" in config_path.lower() or \
+             raw_config.get('mlflow', {}).get('experiment', '') == 'inpainting':
+            config_type = "inpainter"
+        else:
+            config_type = "regressor"
+
+    # Define section -> dataclass mapping for each config type
+    if config_type == "regressor":
+        section_map = {
+            'data': DataConfig,
+            'normalization': NormalizationConfig,
+            'model': ModelConfig,
+            'training': TrainingConfig,
+            'checkpoint': CheckpointConfig,
+            'mlflow': MLflowConfig,
+            'export': ExportConfig,
+        }
+    elif config_type == "mae":
+        section_map = {
+            'data': MAEDataConfig,
+            'normalization': NormalizationConfig,
+            'model': MAEModelConfig,
+            'training': MAETrainingConfig,
+            'checkpoint': MAECheckpointConfig,
+            'mlflow': MAEMLflowConfig,
+        }
+    elif config_type == "inpainter":
+        section_map = {
+            'data': InpainterDataConfig,
+            'normalization': NormalizationConfig,
+            'model': InpainterModelConfig,
+            'training': InpainterTrainingConfig,
+            'checkpoint': InpainterCheckpointConfig,
+            'mlflow': InpainterMLflowConfig,
+        }
+    else:
+        raise ValueError(f"Unknown config type: {config_type}")
+
+    all_missing = {}
+
+    for section_name, dataclass_cls in section_map.items():
+        raw_section = raw_config.get(section_name, {})
+        missing = _check_missing_keys(raw_section, dataclass_cls, section_name)
+        if missing:
+            all_missing[section_name] = missing
+
+    # Print warnings
+    if verbose and all_missing:
+        print(f"\n[WARN] Config file '{config_path}' is missing the following options:")
+        for section, missing_list in all_missing.items():
+            for key, default_val in missing_list:
+                val_str = repr(default_val) if not isinstance(default_val, str) else f'"{default_val}"'
+                print(f"  {section}.{key}: {val_str} (default)")
+        print()
+
+    # Auto-update the config file
+    if auto_update and all_missing:
+        _update_config_file(config_path, raw_config, all_missing, verbose)
+
+    return all_missing
+
+
+def _update_config_file(config_path: str, raw_config: Dict,
+                        missing: Dict[str, List[tuple]], verbose: bool = True):
+    """
+    Update a config file with missing options.
+
+    Preserves comments and formatting by appending missing options to each section.
+    """
+    # Read original file content
+    with open(config_path, 'r') as f:
+        lines = f.readlines()
+
+    # For each section with missing keys, find the section and add missing keys
+    for section_name, missing_list in missing.items():
+        if not missing_list:
+            continue
+
+        # Find the section in the file
+        section_start = -1
+        section_end = len(lines)
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith(f'{section_name}:'):
+                section_start = i
+            elif section_start >= 0 and stripped and not stripped.startswith('#') and \
+                 not stripped.startswith('-') and ':' in stripped and \
+                 not line.startswith(' ') and not line.startswith('\t'):
+                # Found next top-level section
+                section_end = i
+                break
+
+        if section_start < 0:
+            # Section doesn't exist, create it
+            insert_lines = [f"\n{section_name}:\n"]
+            for key, default_val in missing_list:
+                val_str = _format_yaml_value(default_val)
+                insert_lines.append(f"  {key}: {val_str}\n")
+            lines.extend(insert_lines)
+        else:
+            # Find last line of section content (before next section or end)
+            insert_pos = section_end
+            for i in range(section_end - 1, section_start, -1):
+                if lines[i].strip() and not lines[i].strip().startswith('#'):
+                    insert_pos = i + 1
+                    break
+
+            # Insert missing keys
+            insert_lines = []
+            for key, default_val in missing_list:
+                val_str = _format_yaml_value(default_val)
+                insert_lines.append(f"  {key}: {val_str}  # (auto-added)\n")
+
+            for j, line in enumerate(insert_lines):
+                lines.insert(insert_pos + j, line)
+
+    # Write updated file
+    with open(config_path, 'w') as f:
+        f.writelines(lines)
+
+    if verbose:
+        print(f"[INFO] Updated config file with missing options: {config_path}")
+
+
+def _format_yaml_value(value) -> str:
+    """Format a Python value for YAML output."""
+    if value is None:
+        return "null"
+    elif isinstance(value, bool):
+        return "true" if value else "false"
+    elif isinstance(value, str):
+        if value == "":
+            return '""'
+        return f'"{value}"' if ' ' in value or ':' in value else value
+    elif isinstance(value, (list, tuple)):
+        return '[' + ', '.join(_format_yaml_value(v) for v in value) + ']'
+    elif isinstance(value, float):
+        # Use scientific notation for very small/large numbers
+        if value != 0 and (abs(value) < 1e-4 or abs(value) > 1e6):
+            return f"{value:.2e}"
+        return str(value)
+    else:
+        return str(value)
