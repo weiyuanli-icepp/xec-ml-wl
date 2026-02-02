@@ -107,6 +107,268 @@ The model processes 4760 photon sensors arranged on 6 detector faces:
 3. **Per-face analysis**: Check if certain faces contribute disproportionately to errors
 4. **Physics loss terms**: Add soft constraints (e.g., timing consistency with light speed)
 
+### Detailed Analysis of Alternative Approaches
+
+#### 1. Multi-Scale Fusion (FPN-style)
+
+**Problem it solves:** Current architecture pools each face to a single 1024-dim vector, losing spatial information before cross-face reasoning.
+
+**Core Idea:** Extract features at multiple resolutions and fuse them, preserving both fine-grained and global information.
+
+**Mathematical Formulation:**
+
+For a face with feature maps at different scales:
+- F₁ ∈ ℝ^(H × W × C₁) (high resolution, early layer)
+- F₂ ∈ ℝ^(H/2 × W/2 × C₂) (medium resolution)
+- F₃ ∈ ℝ^(H/4 × W/4 × C₃) (low resolution, deep layer)
+
+**Top-down pathway with lateral connections:**
+
+```
+P₃ = Conv₁ₓ₁(F₃)
+P₂ = Upsample(P₃) + Conv₁ₓ₁(F₂)
+P₁ = Upsample(P₂) + Conv₁ₓ₁(F₁)
+```
+
+**For XEC application:**
+- Extract intermediate features from ConvNeXt blocks (after block 2 and block 5)
+- Create multiple tokens per face: T_inner = [t_coarse, t_fine]
+- Transformer receives 12 tokens (2 per face) instead of 6
+
+**References:**
+
+| Paper | Year | Key Contribution |
+|-------|------|------------------|
+| Feature Pyramid Networks (Lin et al.) | 2017 | Original FPN for object detection |
+| PANet (Liu et al.) | 2018 | Bottom-up path augmentation |
+| BiFPN (Tan et al., EfficientDet) | 2020 | Weighted bi-directional FPN |
+| HRNet (Sun et al.) | 2019 | Maintains high-resolution throughout |
+
+#### 2. Positional Encoding in Transformer
+
+**Problem it solves:** Transformer doesn't know the geometric relationship between faces (which are adjacent, opposite, etc.).
+
+**Current state:** Uses learnable embeddings—works but doesn't encode physics.
+
+**Option A: Sinusoidal Encoding (Vaswani et al., 2017)**
+
+```
+PE(pos, 2i)   = sin(pos / 10000^(2i/d))
+PE(pos, 2i+1) = cos(pos / 10000^(2i/d))
+```
+
+For XEC: Assign each face a position index (0-5) and use standard sinusoidal.
+
+**Option B: 3D Geometric Encoding**
+
+Encode actual detector geometry. For face f with center position (r_f, φ_f, z_f):
+
+```
+PE_f = MLP([r_f, sin(φ_f), cos(φ_f), z_f, 𝟙_SiPM, 𝟙_PMT])
+```
+
+This tells the transformer that inner/outer are radially related, upstream/downstream are axially opposite, etc.
+
+**Option C: Rotary Position Embedding (RoPE)**
+
+Encodes relative positions directly in attention:
+
+```
+q_m^T k_n = (R_θ,m W_q x_m)^T (R_θ,n W_k x_n)
+```
+
+where R_θ,m is a rotation matrix depending on position m. The dot product naturally encodes relative position m-n.
+
+**For XEC:** Define "distance" between faces (e.g., inner-outer = 1, inner-upstream = 0.5, based on light travel time).
+
+**References:**
+
+| Paper | Year | Key Contribution |
+|-------|------|------------------|
+| Attention Is All You Need (Vaswani et al.) | 2017 | Sinusoidal PE |
+| RoFormer (Su et al.) | 2021 | Rotary position embedding |
+| On Position Embeddings in BERT (Wang & Chen) | 2020 | Analysis of PE choices |
+| Geometric Transformers (Fuchs et al.) | 2020 | SE(3)-equivariant attention |
+
+#### 3. Physics-Informed Loss Terms
+
+**Problem it solves:** Model learns physics from scratch; adding soft constraints can improve convergence and generalization.
+
+**Constraint A: Timing Consistency**
+
+Light travels at c_LXe ≈ 1.7 × 10⁸ m/s in liquid xenon. For sensors i, j with positions x_i, x_j:
+
+```
+|t_i - t_j| ≲ |x_i - x_j| / c_LXe
+```
+
+**Loss term:**
+
+```
+ℒ_timing = Σ_{i,j} max(0, |t_i^pred - t_j^pred| - d_ij/c_LXe - ε)²
+```
+
+**Constraint B: Energy Conservation**
+
+Total predicted photon count should correlate with energy:
+
+```
+ℒ_energy = (E_pred - α Σ_i N_pho,i)²
+```
+
+where α is the photon-to-energy conversion factor.
+
+**Constraint C: Angular Consistency**
+
+The emission angle (θ, φ) defines a direction vector. If we also predict position, the direction should be consistent:
+
+```
+d_from_angle    = (sinθ cosφ, sinθ sinφ, cosθ)
+d_from_position = (x_FI - x_VTX) / |x_FI - x_VTX|
+```
+
+**Loss term:**
+
+```
+ℒ_consistency = 1 - d_angle · d_position
+```
+
+**Constraint D: Solid Angle Weighting**
+
+Sensors farther from the interaction point receive fewer photons (inverse square law):
+
+```
+N_pho,i ∝ cos(θ_i) / r_i²
+```
+
+Can be used as a soft regularization on inpainter predictions.
+
+**References:**
+
+| Paper | Year | Key Contribution |
+|-------|------|------------------|
+| Physics-Informed Neural Networks (Raissi et al.) | 2019 | PDE constraints in loss |
+| Lagrangian Neural Networks (Cranmer et al.) | 2020 | Conservation law encoding |
+| Hamiltonian Neural Networks (Greydanus et al.) | 2019 | Energy conservation |
+| Geometric Deep Learning (Bronstein et al.) | 2021 | Symmetry and invariance |
+
+#### 4. Hierarchical Attention
+
+**Problem it solves:** Single-level attention may miss multi-scale correlations; coarse patterns (which face lit up) vs fine patterns (where on face).
+
+**Core Idea:** Process at multiple granularities, attending coarse-to-fine.
+
+**Option A: Pooling → Attention → Unpooling**
+
+1. Pool face features to coarse tokens → Transformer → Get global context
+2. Broadcast global context back to spatial features
+3. Local refinement with global conditioning
+
+```
+z_global = Transformer([pool(F₁), ..., pool(F₆)])
+F_i' = F_i + MLP(z_global)   # broadcast and add
+```
+
+**Option B: Set Transformer / Perceiver Style**
+
+Use a small set of learnable latent tokens that cross-attend to all spatial features:
+
+```
+L' = CrossAttention(L, concat(F₁, ..., F₆))
+```
+
+where L ∈ ℝ^(K × D) are K latent tokens.
+
+This avoids the O(N²) attention over all 4760 sensors by using K ≪ N latents.
+
+**Option C: Swin-style Shifted Windows**
+
+For large faces (inner: 93×44), apply attention in local windows first, then shift windows to enable cross-window communication.
+
+```
+Window Attention: O(W² · HW/W²) = O(HW)
+Full Attention:   O((HW)²)
+```
+
+**References:**
+
+| Paper | Year | Key Contribution |
+|-------|------|------------------|
+| Perceiver (Jaegle et al.) | 2021 | Cross-attention to latents |
+| Perceiver IO (Jaegle et al.) | 2022 | Flexible output queries |
+| Set Transformer (Lee et al.) | 2019 | Induced Set Attention Block |
+| Swin Transformer (Liu et al.) | 2021 | Shifted window attention |
+| Multiscale Vision Transformers (Fan et al.) | 2021 | Pooling attention for video |
+
+#### 5. Variable Token Count
+
+**Problem it solves:** Inner face (4092 sensors) and downstream face (144 sensors) get the same representation capacity (1 token each).
+
+**Core Idea:** Allocate tokens proportional to face importance or size.
+
+**Option A: Multiple Tokens per Large Face**
+
+Partition the inner face into regions, each becoming a token:
+
+```
+Inner face: 93 × 44 → 4 regions of 47 × 22 → 4 tokens
+```
+
+Token count: Inner(4) + Outer(2) + US(1) + DS(1) + Top(1) + Bottom(1) = 10 tokens
+
+**Option B: Adaptive Token Merging (ToMe)**
+
+Start with many tokens, progressively merge similar ones:
+
+```
+similarity(t_i, t_j) = (t_i · t_j) / (|t_i| |t_j|)
+```
+
+Merge top-k most similar pairs each layer. Larger faces naturally retain more tokens.
+
+**Option C: Learnable Pooling with Multiple Queries**
+
+Use K learnable query vectors per face to extract K tokens:
+
+```
+T_face = softmax(QK^T / √d) V
+```
+
+where Q ∈ ℝ^(K × D) are learnable queries, K, V come from spatial features.
+
+**Mathematical consideration:**
+
+Information capacity scales with token count. If inner face has 28× more sensors than downstream:
+- Equal tokens: inner is 28× more compressed
+- Proportional tokens: √28 ≈ 5 tokens for inner vs 1 for downstream (geometric mean)
+
+**References:**
+
+| Paper | Year | Key Contribution |
+|-------|------|------------------|
+| Token Merging (ToMe) (Bolya et al.) | 2023 | Efficient token reduction |
+| Dynamic ViT (Rao et al.) | 2021 | Learnable token pruning |
+| TokenLearner (Ryoo et al.) | 2021 | Learnable spatial-to-token |
+| Adaptive Token Sampling (Fayyaz et al.) | 2022 | Content-aware sampling |
+
+#### Summary: Implementation Complexity vs Expected Gain
+
+| Approach | Complexity | Expected Gain | Best For |
+|----------|------------|---------------|----------|
+| **Multi-scale fusion** | Medium | High for position/timing | When spatial precision matters |
+| **Geometric PE** | Low | Medium | When face relationships matter |
+| **Physics losses** | Low-Medium | Medium-High | When data is limited |
+| **Hierarchical attention** | High | Medium | Very large sensor counts |
+| **Variable tokens** | Medium | Medium | Imbalanced face sizes |
+
+**Recommended priority:**
+
+1. **Physics losses** — Low effort, directly encodes domain knowledge
+2. **Geometric PE** — Low effort, adds meaningful inductive bias
+3. **Multi-scale fusion** — Medium effort, addresses the main bottleneck
+4. **Variable tokens** — Try after multi-scale if inner face still underperforms
+5. **Hierarchical attention** — Only if scaling to more sensors
+
 ---
 
 ## A. Architecture Improvements
@@ -280,4 +542,4 @@ with uproot.recreate("predictions.root") as f:
 
 ---
 
-*Last updated: January 2026*
+*Last updated: February 2026*
