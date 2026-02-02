@@ -36,7 +36,17 @@ def check_file(filepath, tree_name="tree"):
             print(f"  [INFO] Range: Run {first_run} Evt {first_evt}  ->  Run {last_run} Evt {last_evt}")
 
             # --- Check Data Quality ---
-            branches = ["relative_npho", "relative_time"]
+            # Try 'npho' first (new format), fall back to 'relative_npho' (deprecated)
+            available = set(tree.keys())
+            if "npho" in available:
+                npho_branch = "npho"
+            elif "relative_npho" in available:
+                npho_branch = "relative_npho"
+                print("  [WARN] Using deprecated 'relative_npho' branch. Consider updating data format.")
+            else:
+                print("  [ERROR] Neither 'npho' nor 'relative_npho' branch found!")
+                return False
+            branches = [npho_branch, "relative_time"]
             chunk_idx = 0
             has_error = False
             
@@ -46,7 +56,7 @@ def check_file(filepath, tree_name="tree"):
 
             for arrays in tree.iterate(branches, step_size=10000, library="np"):
                 chunk_idx += 1
-                npho = arrays["relative_npho"]
+                npho = arrays[npho_branch]
                 time = arrays["relative_time"]
                 
                 # Check NaNs

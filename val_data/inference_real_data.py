@@ -1,5 +1,26 @@
 #!/usr/bin/env python3
+"""
+Run inference on real data using ONNX model (single-task or multi-task).
+
+Supports both:
+- Legacy single-task angle model (XECEncoder)
+- Multi-task model (XECMultiHeadModel) with angle, energy, timing, uvwFI
+
+Usage:
+    # Single-task angle model
+    python val_data/inference_real_data.py \\
+        --onnx model.onnx \\
+        --input DataGammaAngle_RunXXXX.root \\
+        --output Output_RunXXXX.root
+
+    # Multi-task model (auto-detects outputs from ONNX)
+    python val_data/inference_real_data.py \\
+        --onnx model_multitask.onnx \\
+        --input DataGammaAngle_RunXXXX.root \\
+        --output Output_RunXXXX.root
+"""
 import os
+import sys
 import argparse
 import numpy as np
 import uproot
@@ -7,30 +28,30 @@ import onnxruntime as ort
 import time
 import re
 
-### Key Features of this Script
-# 1.  **Opening Angle Calculation:** I implemented `get_opening_angle_deg` using the standard MEG II coordinate definition ($z = \cos\theta$).
-# 2.  **Missing Branch Handling:** The script checks if branches like `emiAng` or `xyzRecoFI` exist. If your "Real Data" file is actually *unlabelled* data (no truth info), it will fill those columns with zeros instead of crashing.
-# 3.  **Strict Type Output:** It creates a `val_tree` with explicit types (`int32` for IDs, `float32` for physics vars) to match your training output format perfectly.
-# 4.  **Memory Efficient:** It processes in chunks (`10000` events) but accumulates the *results* in memory. Since the results are just a few floats per event (not 4760-pixel images), this fits easily in RAM even for millions of events.
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-### Usage
-# $ python inference_real_data.py \
-#     --onnx onnx/meg2ang.onnx \
-#     --input DataGammaAngle_RunXXXX.root \
-#     --output Output_RunXXXX.root \
-#     --NphoScale 1.0 --time_scale 2.32e6
+from lib.geom_defs import (
+    DEFAULT_NPHO_SCALE,
+    DEFAULT_NPHO_SCALE2,
+    DEFAULT_TIME_SCALE,
+    DEFAULT_TIME_SHIFT,
+    DEFAULT_SENTINEL_VALUE,
+    DEFAULT_NPHO_THRESHOLD,
+)
+
 
 def get_opening_angle_deg(theta1, phi1, theta2, phi2):
     """
     Calculates the opening angle (in degrees) between two vectors defined by (theta, phi).
+    Uses MEG II coordinate convention: z = cos(theta), with theta measured from +z axis.
     """
-    # Convert to radians
     t1 = np.deg2rad(theta1)
     p1 = np.deg2rad(phi1)
     t2 = np.deg2rad(theta2)
     p2 = np.deg2rad(phi2)
 
-    # Convert to unit vectors
+    # Convert to unit vectors (MEG II convention)
     x1 = -np.sin(t1) * np.cos(p1)
     y1 = np.sin(t1) * np.sin(p1)
     z1 = np.cos(t1)
@@ -39,36 +60,86 @@ def get_opening_angle_deg(theta1, phi1, theta2, phi2):
     y2 = np.sin(t2) * np.sin(p2)
     z2 = np.cos(t2)
 
-    # Dot product
     dot = x1*x2 + y1*y2 + z1*z2
     dot = np.clip(dot, -1.0, 1.0)
-    
+
     return np.rad2deg(np.arccos(dot))
 
+
+def normalize_input(npho_raw, time_raw,
+                    npho_scale, npho_scale2, time_scale, time_shift,
+                    sentinel_value, npho_threshold):
+    """
+    Normalize input data matching the training preprocessing in dataset.py.
+
+    Normalization scheme:
+    - npho > 9e9 or npho < 0 or isnan: invalid (sentinel for both)
+    - npho < npho_threshold: npho valid, time set to sentinel (timing unreliable)
+    - otherwise: normal normalization for both
+
+    npho_norm = log1p(npho / npho_scale) / npho_scale2
+    time_norm = time / time_scale - time_shift
+    """
+    # Identify invalid npho values
+    mask_npho_invalid = (npho_raw > 9e9) | (npho_raw < 0) | np.isnan(npho_raw)
+
+    # Identify invalid time values
+    mask_time_invalid = mask_npho_invalid | (npho_raw < npho_threshold) | (np.abs(time_raw) > 9e9) | np.isnan(time_raw)
+
+    # Normalize npho: log1p transform
+    npho_safe = np.where(mask_npho_invalid, 0.0, np.maximum(npho_raw, 0.0))
+    npho_norm = np.log1p(npho_safe / npho_scale) / npho_scale2
+    npho_norm[mask_npho_invalid] = sentinel_value
+
+    # Normalize time: linear transform
+    time_norm = (time_raw / time_scale) - time_shift
+    time_norm[mask_time_invalid] = sentinel_value
+
+    return np.stack([npho_norm, time_norm], axis=-1).astype(np.float32)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Run Inference on Real Data (ONNX)")
+    parser = argparse.ArgumentParser(
+        description="Run Inference on Real Data (ONNX)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
     parser.add_argument("--onnx", type=str, required=True, help="Path to .onnx model")
     parser.add_argument("--input", type=str, required=True, help="Input ROOT file (Real Data)")
     parser.add_argument("--output", type=str, default=None, help="Output ROOT file")
     parser.add_argument("--tree", type=str, default="tree", help="TTree name")
     parser.add_argument("--chunksize", type=int, default=1024, help="Inference chunk size")
-    
+
+    # Input branch names
+    parser.add_argument("--npho_branch", type=str, default="npho",
+                        help="Branch name for photon counts (default: npho)")
+    parser.add_argument("--time_branch", type=str, default="relative_time",
+                        help="Branch name for timing (default: relative_time)")
+
     # Preprocessing Params (MUST MATCH TRAINING!)
-    parser.add_argument("--npho_branch", type=str, default="relative_npho")
-    parser.add_argument("--time_branch", type=str, default="relative_time")
-    parser.add_argument("--NphoScale", type=float, default=1.0)
-    parser.add_argument("--time_scale", type=float, default=2.32e6)
-    parser.add_argument("--time_shift", type=float, default=0.0)
-    
+    parser.add_argument("--npho_scale", type=float, default=DEFAULT_NPHO_SCALE,
+                        help=f"Npho scale for log1p (default: {DEFAULT_NPHO_SCALE})")
+    parser.add_argument("--npho_scale2", type=float, default=DEFAULT_NPHO_SCALE2,
+                        help=f"Npho scale2 for log1p divisor (default: {DEFAULT_NPHO_SCALE2})")
+    parser.add_argument("--time_scale", type=float, default=DEFAULT_TIME_SCALE,
+                        help=f"Time scale (default: {DEFAULT_TIME_SCALE})")
+    parser.add_argument("--time_shift", type=float, default=DEFAULT_TIME_SHIFT,
+                        help=f"Time shift (default: {DEFAULT_TIME_SHIFT})")
+    parser.add_argument("--sentinel_value", type=float, default=DEFAULT_SENTINEL_VALUE,
+                        help=f"Sentinel value for invalid channels (default: {DEFAULT_SENTINEL_VALUE})")
+    parser.add_argument("--npho_threshold", type=float, default=DEFAULT_NPHO_THRESHOLD,
+                        help=f"Npho threshold for valid timing (default: {DEFAULT_NPHO_THRESHOLD})")
+
     args = parser.parse_args()
-    
+
+    # Auto-generate output filename if not provided
     if args.output is None:
         m = re.match(r".*_(\d{6}-\d{6})\.root$", os.path.basename(args.input))
         if m:
-            run_range = m.group(1)  # e.g. "460027-462448"
+            run_range = m.group(1)
             args.output = f"inference_results_Run{run_range}.root"
         else:
-            raise ValueError("Input file name does not match expected pattern and no output file name provided.")  
+            args.output = "inference_results.root"
 
     # 1. Load ONNX Model
     print(f"[INFO] Loading Model: {args.onnx}")
@@ -78,36 +149,81 @@ def main():
     except Exception as e:
         print(f"[WARN] Failed to load CUDA provider: {e}")
         session = ort.InferenceSession(args.onnx, providers=['CPUExecutionProvider'])
-        
+
+    # Detect model outputs
     input_name = session.get_inputs()[0].name
-    output_name = session.get_outputs()[0].name
+    output_names = [out.name for out in session.get_outputs()]
+    print(f"[INFO] Model outputs: {output_names}")
+
+    # Determine if multi-task model
+    is_multi_task = len(output_names) > 1 or any("output_" in name for name in output_names)
+
+    # Map output names to task names
+    task_outputs = {}
+    for name in output_names:
+        if name.startswith("output_"):
+            task_name = name.replace("output_", "")
+            task_outputs[task_name] = name
+        elif name == "output":
+            task_outputs["angle"] = name
+        else:
+            task_outputs[name] = name
+
+    print(f"[INFO] Detected tasks: {list(task_outputs.keys())}")
 
     # 2. Open Input File
     if not os.path.exists(args.input):
         raise FileNotFoundError(f"Input file not found: {args.input}")
 
     print(f"[INFO] Processing: {args.input}")
-    
+    print(f"[INFO] Normalization params: npho_scale={args.npho_scale}, npho_scale2={args.npho_scale2}, "
+          f"time_scale={args.time_scale}, time_shift={args.time_shift}")
+
     model_branches = [args.npho_branch, args.time_branch]
     meta_branches = [
-        "run", "event", 
+        "run", "event",
         "emiAng",      # For true_theta/phi
-        "energyReco",  # For energy_truth
-        "xyzRecoFI",   # For x_truth, y_truth, z_truth
-        "xyzVTX"       # For x_vtx, y_vtx, z_vtx
+        "energyReco",  # For energy comparison
+        "timeTruth",   # For timing comparison
+        "xyzRecoFI",   # For position comparison
+        "uvwRecoFI",   # For uvw position
+        "xyzVTX",      # Vertex position
     ]
-    
+
     read_branches = model_branches + meta_branches
-    
+
+    # Initialize results dictionary based on detected tasks
     results = {
         "run_id": [], "event_id": [],
-        "pred_theta": [], "pred_phi": [],
-        "true_theta": [], "true_phi": [],
-        "opening_angle": [],
-        "energy_truth": [],
-        "x_truth": [], "y_truth": [], "z_truth": [],
-        "x_vtx": [], "y_vtx": [], "z_vtx": []
     }
+
+    # Add task-specific output columns
+    if "angle" in task_outputs:
+        results.update({
+            "pred_theta": [], "pred_phi": [],
+            "true_theta": [], "true_phi": [],
+            "opening_angle": [],
+        })
+    if "energy" in task_outputs:
+        results.update({
+            "pred_energy": [],
+            "true_energy": [],
+        })
+    if "timing" in task_outputs:
+        results.update({
+            "pred_timing": [],
+            "true_timing": [],
+        })
+    if "uvwFI" in task_outputs:
+        results.update({
+            "pred_u": [], "pred_v": [], "pred_w": [],
+            "true_u": [], "true_v": [], "true_w": [],
+        })
+
+    # Additional metadata columns
+    results.update({
+        "x_vtx": [], "y_vtx": [], "z_vtx": [],
+    })
 
     # 3. Inference Loop
     total_events = 0
@@ -117,110 +233,138 @@ def main():
         if args.tree not in f:
             print(f"[ERROR] Tree '{args.tree}' not found in file.")
             return
-            
+
         tree = f[args.tree]
         num_entries = tree.num_entries
-        
-        # Iterate
+
+        # Filter to only existing branches
+        available_branches = set(tree.keys())
+        read_branches = [b for b in read_branches if b in available_branches]
+
         for arrays in tree.iterate(read_branches, step_size=args.chunksize, library="np"):
-            
+
             # --- A. Preprocessing (Model Input) ---
-            Npho = arrays[args.npho_branch].astype("float32")
-            Time = arrays[args.time_branch].astype("float32")
-            
-            # Masking
-            Npho = np.maximum(Npho, 0.0)
-            mask_garbage = (np.abs(Time) > 1.0) | np.isnan(Time)
-            mask_invalid = (Npho <= 0.0) | mask_garbage
-            Time[mask_invalid] = 0.0
-            
-            # Scaling
-            Npho_norm = np.log1p(Npho / args.NphoScale).astype("float32")
-            Time_norm = (Time - args.time_shift) / args.time_scale
-            Time_norm = Time_norm.astype("float32")
-            
-            # Input Tensor: (B, 4760, 2)
-            X_batch = np.stack([Npho_norm, Time_norm], axis=-1)
-            
+            npho_raw = arrays[args.npho_branch].astype("float32")
+            time_raw = arrays[args.time_branch].astype("float32")
+
+            X_batch = normalize_input(
+                npho_raw, time_raw,
+                args.npho_scale, args.npho_scale2,
+                args.time_scale, args.time_shift,
+                args.sentinel_value, args.npho_threshold
+            )
+
             # --- B. Inference ---
-            outputs = session.run([output_name], {input_name: X_batch})
-            preds = outputs[0] # (B, 2) -> [Theta, Phi]
-            
+            ort_inputs = {input_name: X_batch}
+            outputs = session.run(output_names, ort_inputs)
+
+            # Map outputs to task names
+            output_dict = {name: out for name, out in zip(output_names, outputs)}
+
+            batch_size = len(X_batch)
+
             # --- C. Extract Metadata/Truth ---
-            # emiAng is (N, 2) -> [theta, phi]
-            # If emiAng doesn't exist (real blind data), fill with NaN or 0
-            if "emiAng" in arrays:
-                true_ang = arrays["emiAng"]
-                t_theta = true_ang[:, 0]
-                t_phi   = true_ang[:, 1]
-            else:
-                t_theta = np.zeros(len(preds))
-                t_phi   = np.zeros(len(preds))
-
-            # Opening Angle
-            oa = get_opening_angle_deg(preds[:,0], preds[:,1], t_theta, t_phi)
-            
-            # xyzRecoFI (N, 3)
-            if "xyzRecoFI" in arrays:
-                xyz = arrays["xyzRecoFI"]
-                tx, ty, tz = xyz[:,0], xyz[:,1], xyz[:,2]
-            else:
-                tx, ty, tz = np.zeros(len(preds)), np.zeros(len(preds)), np.zeros(len(preds))
-
-            # xyzVTX (N, 3)
-            if "xyzVTX" in arrays:
-                vtx = arrays["xyzVTX"]
-                vx, vy, vz = vtx[:,0], vtx[:,1], vtx[:,2]
-            else:
-                vx, vy, vz = np.zeros(len(preds)), np.zeros(len(preds)), np.zeros(len(preds))
-                
-            # Energy
-            if "energyReco" in arrays:
-                en = arrays["energyReco"]
-            else:
-                en = np.zeros(len(preds))
-
-            # --- D. Store ---
             results["run_id"].append(arrays["run"])
             results["event_id"].append(arrays["event"])
-            results["pred_theta"].append(preds[:, 0])
-            results["pred_phi"].append(preds[:, 1])
-            results["true_theta"].append(t_theta)
-            results["true_phi"].append(t_phi)
-            results["opening_angle"].append(oa)
-            results["energy_truth"].append(en)
-            results["x_truth"].append(tx)
-            results["y_truth"].append(ty)
-            results["z_truth"].append(tz)
+
+            # Angle task
+            if "angle" in task_outputs:
+                preds = output_dict[task_outputs["angle"]]  # (B, 2)
+
+                if "emiAng" in arrays:
+                    true_ang = arrays["emiAng"]
+                    t_theta = true_ang[:, 0]
+                    t_phi = true_ang[:, 1]
+                else:
+                    t_theta = np.zeros(batch_size)
+                    t_phi = np.zeros(batch_size)
+
+                oa = get_opening_angle_deg(preds[:, 0], preds[:, 1], t_theta, t_phi)
+
+                results["pred_theta"].append(preds[:, 0])
+                results["pred_phi"].append(preds[:, 1])
+                results["true_theta"].append(t_theta)
+                results["true_phi"].append(t_phi)
+                results["opening_angle"].append(oa)
+
+            # Energy task
+            if "energy" in task_outputs:
+                preds = output_dict[task_outputs["energy"]]  # (B, 1)
+                if "energyReco" in arrays:
+                    true_energy = arrays["energyReco"]
+                else:
+                    true_energy = np.zeros(batch_size)
+
+                results["pred_energy"].append(preds.flatten())
+                results["true_energy"].append(true_energy.flatten() if true_energy.ndim > 1 else true_energy)
+
+            # Timing task
+            if "timing" in task_outputs:
+                preds = output_dict[task_outputs["timing"]]  # (B, 1)
+                if "timeTruth" in arrays:
+                    true_timing = arrays["timeTruth"]
+                else:
+                    true_timing = np.zeros(batch_size)
+
+                results["pred_timing"].append(preds.flatten())
+                results["true_timing"].append(true_timing.flatten() if true_timing.ndim > 1 else true_timing)
+
+            # Position (uvwFI) task
+            if "uvwFI" in task_outputs:
+                preds = output_dict[task_outputs["uvwFI"]]  # (B, 3)
+                if "uvwRecoFI" in arrays:
+                    true_uvw = arrays["uvwRecoFI"]
+                    tu, tv, tw = true_uvw[:, 0], true_uvw[:, 1], true_uvw[:, 2]
+                else:
+                    tu, tv, tw = np.zeros(batch_size), np.zeros(batch_size), np.zeros(batch_size)
+
+                results["pred_u"].append(preds[:, 0])
+                results["pred_v"].append(preds[:, 1])
+                results["pred_w"].append(preds[:, 2])
+                results["true_u"].append(tu)
+                results["true_v"].append(tv)
+                results["true_w"].append(tw)
+
+            # Vertex position
+            if "xyzVTX" in arrays:
+                vtx = arrays["xyzVTX"]
+                vx, vy, vz = vtx[:, 0], vtx[:, 1], vtx[:, 2]
+            else:
+                vx, vy, vz = np.zeros(batch_size), np.zeros(batch_size), np.zeros(batch_size)
+
             results["x_vtx"].append(vx)
             results["y_vtx"].append(vy)
             results["z_vtx"].append(vz)
-            
-            total_events += len(preds)
+
+            total_events += batch_size
             if total_events % 50000 == 0:
                 print(f"   Processed {total_events}/{num_entries} events...")
 
     # 4. Save Output
     print(f"[INFO] Saving results to: {args.output}")
-    
+
     # Concatenate all lists
-    final_data = {k: np.concatenate(v) for k, v in results.items()}
-    
+    final_data = {}
+    for k, v in results.items():
+        if v:  # Only include non-empty lists
+            final_data[k] = np.concatenate(v)
+
     with uproot.recreate(args.output) as f_out:
         branch_types = {
-            "run_id": np.int32, 
+            "run_id": np.int32,
             "event_id": np.int32
         }
-        # Floats for everything else
         for k in final_data.keys():
             if k not in branch_types:
                 branch_types[k] = np.float32
-                
+
         f_out.mktree("val_tree", branch_types)
         f_out["val_tree"].extend(final_data)
-        
+
     duration = time.time() - start_time
     print(f"[DONE] Processed {total_events} events in {duration:.1f}s ({total_events/duration:.1f} evt/s)")
+    print(f"[INFO] Output branches: {list(final_data.keys())}")
+
 
 if __name__ == "__main__":
     main()
