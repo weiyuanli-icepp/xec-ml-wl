@@ -192,13 +192,13 @@ The streaming data loader uses a multi-level parallelism strategy to efficiently
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         ROOT File (millions of events)                   │
+│                         ROOT File (millions of events)                  │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    chunksize (step_size) = 256000                        │
-│         Load 256k events at a time from disk into CPU memory             │
+│                    chunksize (step_size) = 256000                       │
+│         Load 256k events at a time from disk into CPU memory            │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
           ┌─────────────────────────┼─────────────────────────┐
@@ -214,15 +214,15 @@ The streaming data loader uses a multi-level parallelism strategy to efficiently
          │                         │                         │
          ▼                         ▼                         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                   num_threads=4 (within each worker)                     │
-│        ThreadPool splits chunk into 4 parts for normalization            │
-│        (log transform, scaling, sentinel values, etc.)                   │
+│                   num_threads=4 (within each worker)                    │
+│        ThreadPool splits chunk into 4 parts for normalization           │
+│        (log transform, scaling, sentinel values, etc.)                  │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         batch_size = 4096                                │
-│              DataLoader collects samples into GPU batches                │
+│                         batch_size = 4096                               │
+│              DataLoader collects samples into GPU batches               │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
