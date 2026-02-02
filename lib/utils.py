@@ -363,11 +363,18 @@ class SimpleProfiler:
             return ""
         lines = [f"[Profiler] {title}:"]
         total = sum(self.timings.values())
-        for name, t in sorted(self.timings.items(), key=lambda x: -x[1]):
+
+        # Calculate column widths for alignment
+        sorted_items = sorted(self.timings.items(), key=lambda x: -x[1])
+        max_name_len = max(len(name) for name, _ in sorted_items)
+
+        for name, t in sorted_items:
             pct = 100 * t / total if total > 0 else 0
             avg = t / self.counts[name] if self.counts[name] > 0 else 0
-            lines.append(f"  {name}: {t:.2f}s ({pct:.1f}%) | {avg*1000:.2f}ms avg")
-        lines.append(f"  TOTAL: {total:.2f}s")
+            # Aligned format: name (padded) | time | percentage | avg
+            lines.append(f"  {name:<{max_name_len}}  {t:>7.2f}s  ({pct:>5.1f}%)  {avg*1000:>7.2f}ms avg")
+
+        lines.append(f"  {'TOTAL':<{max_name_len}}  {total:>7.2f}s")
         return "\n".join(lines)
 
     def reset(self):

@@ -139,22 +139,29 @@ class XECStreamingDataset(IterableDataset):
             return "[Dataset Profile] No profiling data collected (profile=False or no data processed)"
 
         lines = ["[Dataset Profile] I/O breakdown:"]
-        lines.append(f"  Files: {stats['file_count']}, Chunks: {stats['chunk_count']}, Events: {stats['event_count']}")
+        lines.append(f"  Files: {stats['file_count']}, Chunks: {stats['chunk_count']}, Events: {stats['event_count']:,}")
 
-        for name, key in [("I/O (uproot)", "io_time"), ("CPU (normalize)", "process_time"), ("Batch (numpy→torch)", "batch_time")]:
-            t = stats[key]
+        # Aligned format for timing breakdown
+        timing_items = [
+            ("I/O (uproot)", stats["io_time"]),
+            ("CPU (normalize)", stats["process_time"]),
+            ("Batch (numpy→torch)", stats["batch_time"]),
+        ]
+        max_name_len = max(len(name) for name, _ in timing_items)
+
+        for name, t in timing_items:
             pct = 100 * t / total_time if total_time > 0 else 0
-            lines.append(f"  {name}: {t:.2f}s ({pct:.1f}%)")
+            lines.append(f"  {name:<{max_name_len}}  {t:>7.2f}s  ({pct:>5.1f}%)")
 
-        lines.append(f"  TOTAL: {total_time:.2f}s")
+        lines.append(f"  {'TOTAL':<{max_name_len}}  {total_time:>7.2f}s")
 
         if stats["event_count"] > 0 and total_time > 0:
             throughput = stats["event_count"] / total_time
-            lines.append(f"  Throughput: {throughput:.0f} events/s")
+            lines.append(f"  Throughput: {throughput:,.0f} events/s")
 
         if stats["file_count"] > 0:
             avg_events_per_file = stats["event_count"] / stats["file_count"]
-            lines.append(f"  Avg events/file: {avg_events_per_file:.0f}")
+            lines.append(f"  Avg events/file: {avg_events_per_file:,.0f}")
 
         return "\n".join(lines)
 
