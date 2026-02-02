@@ -543,6 +543,7 @@ def run_epoch_inpainter(
     track_mae_rmse: bool = True,
     dataloader_workers: int = 0,
     dataset_workers: int = 8,
+    prefetch_factor: int = 2,
     grad_accum_steps: int = 1,
     track_metrics: bool = True,
     npho_threshold: float = None,
@@ -639,6 +640,8 @@ def run_epoch_inpainter(
             batch_size=None,  # Dataset yields pre-batched tensors
             num_workers=dataloader_workers,
             pin_memory=True,
+            persistent_workers=(dataloader_workers > 0),
+            prefetch_factor=prefetch_factor if dataloader_workers > 0 else None,
         )
 
         profiler.stop()  # data_load
@@ -818,6 +821,7 @@ def run_eval_inpainter(
     track_mae_rmse: bool = True,
     dataloader_workers: int = 0,
     dataset_workers: int = 8,
+    prefetch_factor: int = 2,
     npho_threshold: float = None,
     use_npho_time_weight: bool = True,
     profile: bool = False,
@@ -916,6 +920,8 @@ def run_eval_inpainter(
                 batch_size=None,  # Dataset yields pre-batched tensors
                 num_workers=dataloader_workers,
                 pin_memory=True,
+                persistent_workers=(dataloader_workers > 0),
+                prefetch_factor=prefetch_factor if dataloader_workers > 0 else None,
             )
             profiler.stop()  # data_load
 

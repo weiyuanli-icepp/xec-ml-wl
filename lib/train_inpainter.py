@@ -223,6 +223,7 @@ Examples:
         chunksize = args.chunksize if args.chunksize is not None else cfg.data.chunksize
         num_workers = args.num_workers if args.num_workers is not None else cfg.data.num_workers
         num_threads = args.num_threads if args.num_threads is not None else cfg.data.num_threads
+        prefetch_factor = int(getattr(cfg.data, 'prefetch_factor', 2))
         npho_branch = args.npho_branch or getattr(cfg.data, "npho_branch", "npho")
         time_branch = args.time_branch or getattr(cfg.data, "time_branch", "relative_time")
         log_invalid_npho = getattr(cfg.data, "log_invalid_npho", True)
@@ -293,6 +294,7 @@ Examples:
         chunksize = args.chunksize or 256000
         num_workers = args.num_workers or 1
         num_threads = args.num_threads or 4
+        prefetch_factor = 2  # Default
         npho_branch = args.npho_branch or "npho"
         time_branch = args.time_branch or "relative_time"
         log_invalid_npho = True  # Default: enabled
@@ -586,6 +588,7 @@ Examples:
                 track_mae_rmse=track_mae_rmse,
                 dataloader_workers=num_workers,
                 dataset_workers=num_threads,
+                prefetch_factor=prefetch_factor,
                 grad_accum_steps=grad_accum_steps,
                 track_metrics=track_train_metrics,
                 npho_threshold=npho_threshold,
@@ -621,6 +624,7 @@ Examples:
                     track_mae_rmse=track_mae_rmse,
                     dataloader_workers=num_workers,
                     dataset_workers=num_threads,
+                    prefetch_factor=prefetch_factor,
                     npho_threshold=npho_threshold,
                     use_npho_time_weight=use_npho_time_weight,
                     profile=profile,
@@ -746,6 +750,7 @@ Examples:
                         track_mae_rmse=track_mae_rmse,
                         dataloader_workers=num_workers,
                         dataset_workers=num_threads,
+                        prefetch_factor=prefetch_factor,
                         npho_threshold=npho_threshold,
                         use_npho_time_weight=use_npho_time_weight,
                         profile=profile,

@@ -369,7 +369,7 @@ def expand_path(path):
         return files
 
 
-def get_dataloader(file_path, batch_size=1024, num_workers=4, num_threads=4, **kwargs):
+def get_dataloader(file_path, batch_size=1024, num_workers=4, num_threads=4, prefetch_factor=2, **kwargs):
     """
     Helper to initialize the multi-threaded data pipeline.
 
@@ -378,6 +378,7 @@ def get_dataloader(file_path, batch_size=1024, num_workers=4, num_threads=4, **k
         batch_size: Batch size for DataLoader.
         num_workers: Number of DataLoader workers (for parallel file reading).
         num_threads: Number of threads for CPU preprocessing within each worker.
+        prefetch_factor: Number of batches to prefetch per worker (default 2).
         **kwargs: Additional arguments passed to XECStreamingDataset
                   (e.g., npho_scale, time_scale, sentinel_value, etc.)
 
@@ -402,5 +403,5 @@ def get_dataloader(file_path, batch_size=1024, num_workers=4, num_threads=4, **k
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=(num_workers > 0),
-        prefetch_factor=2 if num_workers > 0 else None
+        prefetch_factor=prefetch_factor if num_workers > 0 else None
     )

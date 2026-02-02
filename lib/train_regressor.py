@@ -249,6 +249,7 @@ def train_with_config(config_path: str, profile: bool = None):
         batch_size=cfg.data.batch_size,
         num_workers=cfg.data.num_workers,
         num_threads=cfg.data.num_threads,
+        prefetch_factor=getattr(cfg.data, 'prefetch_factor', 2),
         **norm_kwargs
     )
 
@@ -257,6 +258,7 @@ def train_with_config(config_path: str, profile: bool = None):
         batch_size=cfg.data.batch_size,
         num_workers=cfg.data.num_workers,
         num_threads=cfg.data.num_threads,
+        prefetch_factor=getattr(cfg.data, 'prefetch_factor', 2),
         **norm_kwargs
     )
 
