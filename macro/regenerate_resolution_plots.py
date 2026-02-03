@@ -134,8 +134,14 @@ Examples:
             elif task == "energy":
                 pred = df['pred_energy'].values
                 true = df['true_energy'].values
-                # Pass root_data for uvwFI profiled plots
-                plot_energy_resolution_profile(pred, true, root_data=root_data, outfile=outfile)
+                # Build root_data for position-profiled plots
+                # First try from uvwFI predictions, then from energy CSV itself
+                energy_root_data = dict(root_data)  # Copy from uvwFI if available
+                # Check if energy CSV has uvw columns (newer format)
+                for key in ['true_u', 'true_v', 'true_w']:
+                    if key in df.columns and key not in energy_root_data:
+                        energy_root_data[key] = df[key].values
+                plot_energy_resolution_profile(pred, true, root_data=energy_root_data, outfile=outfile)
                 print(f"[OK] Generated: {outfile}")
 
             elif task == "timing":

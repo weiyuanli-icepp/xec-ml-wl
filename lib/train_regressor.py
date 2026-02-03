@@ -139,10 +139,16 @@ def save_validation_artifacts(
         true_energy = root_data.get("true_energy", np.array([]))
         if pred_energy.size > 0 and true_energy.size > 0:
             csv_path = os.path.join(artifact_dir, f"predictions_energy_{run_name}{suffix}.csv")
-            pd.DataFrame({
+            # Include uvw truth for position-profiled resolution plots
+            energy_data = {
                 "true_energy": true_energy,
                 "pred_energy": pred_energy
-            }).to_csv(csv_path, index=False)
+            }
+            # Add position truth if available (for resolution vs position plots)
+            for key in ["true_u", "true_v", "true_w"]:
+                if key in root_data and len(root_data[key]) == len(true_energy):
+                    energy_data[key] = root_data[key]
+            pd.DataFrame(energy_data).to_csv(csv_path, index=False)
             _safe_log_artifact(csv_path)
 
             res_pdf = os.path.join(artifact_dir, f"resolution_energy_{run_name}{suffix}.pdf")
