@@ -408,13 +408,8 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
             axs[1, i].set_ylabel("68% |Residual| [GeV]")
             axs[1, i].set_title(f"Resolution vs {label}")
 
-        # Row 2, Col 4: Relative resolution vs U (or leave empty)
-        # Let's add relative resolution vs U as an additional insight
-        x, y = get_binned_stat(true_u, rel_residual, percentile_68, bins)
-        axs[1, 3].plot(x, y, 'o', color='tab:purple', markersize=5)
-        axs[1, 3].set_xlabel("True U [cm]")
-        axs[1, 3].set_ylabel("68% |Residual|/E")
-        axs[1, 3].set_title("Relative Resolution vs U")
+        # Row 2, Col 4: Hide unused subplot
+        axs[1, 3].axis('off')
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     if outfile:
