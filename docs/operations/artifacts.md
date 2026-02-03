@@ -278,13 +278,14 @@ python macro/validate_regressor.py artifacts/<RUN>/checkpoint_best.pth \
 
 The "Relative Resolution vs Energy" plot includes a fit to the standard calorimeter resolution formula:
 
-$$\frac{\sigma}{E} = \sqrt{\left(\frac{a}{\sqrt{E}}\right)^2 + b^2}$$
+$$\frac{\sigma}{E} = \sqrt{\left(\frac{a}{\sqrt{E}}\right)^2 + b^2 + \left(\frac{c}{E}\right)^2}$$
 
 Where:
 - **a** = stochastic term (statistical fluctuations, scales as $1/\sqrt{E}$)
 - **b** = constant term (systematic effects like calibration, leakage)
+- **c** = noise term (electronic noise, scales as $1/E$)
 
-Fit parameters are displayed in the plot title as percentages (e.g., `a=2.50%/√E, b=1.20%`).
+Fit parameters are displayed in the plot title as percentages (e.g., `a=2.50%/√E, b=1.20%, c=0.50%/E`).
 
 ---
 

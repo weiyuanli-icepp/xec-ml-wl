@@ -306,10 +306,10 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
                 y_vals.append(np.nan)
         return bin_centers, np.array(y_vals)
 
-    # Calorimeter resolution model: sigma/E = sqrt((a/sqrt(E))^2 + b^2)
-    # a = stochastic term, b = constant term
-    def resolution_model(E, a, b):
-        return np.sqrt((a / np.sqrt(E))**2 + b**2)
+    # Calorimeter resolution model: sigma/E = sqrt((a/sqrt(E))^2 + b^2 + (c/E)^2)
+    # a = stochastic term, b = constant term, c = noise term
+    def resolution_model(E, a, b, c):
+        return np.sqrt((a / np.sqrt(E))**2 + b**2 + (c / E)**2)
 
     percentile_68 = lambda x: np.percentile(x, 68)
 
@@ -353,15 +353,16 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
     try:
         # Filter out NaN values for fitting
         valid = ~np.isnan(y) & ~np.isnan(x) & (x > 0)
-        if np.sum(valid) >= 2:
+        if np.sum(valid) >= 3:  # Need at least 3 points for 3 parameters
             popt, pcov = curve_fit(resolution_model, x[valid], y[valid],
-                                   p0=[0.02, 0.01], bounds=([0, 0], [1, 1]))
-            a_fit, b_fit = popt
+                                   p0=[0.02, 0.01, 0.001],
+                                   bounds=([0, 0, 0], [1, 1, 1]))
+            a_fit, b_fit, c_fit = popt
             # Plot fit curve
             x_fit = np.linspace(x[valid].min(), x[valid].max(), 100)
-            y_fit = resolution_model(x_fit, a_fit, b_fit)
+            y_fit = resolution_model(x_fit, a_fit, b_fit, c_fit)
             axs[0, 2].plot(x_fit, y_fit, '-', color='tab:red', linewidth=1.5, label='Fit')
-            fit_label = f"\na={a_fit*100:.2f}%/√E, b={b_fit*100:.2f}%"
+            fit_label = f"\na={a_fit*100:.2f}%/√E, b={b_fit*100:.2f}%, c={c_fit*100:.2f}%/E"
     except Exception:
         pass  # Skip fit if it fails
 
