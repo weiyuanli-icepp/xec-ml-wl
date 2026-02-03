@@ -205,7 +205,30 @@ mlruns/                                  # MLflow experiment tracking
 
 ---
 
+## Controlling Artifact Generation
+
+Resolution plots and prediction CSVs are generated **automatically** after training. This behavior can be controlled via the config file:
+
+```yaml
+# config/train_config.yaml
+checkpoint:
+  save_artifacts: true  # Set to false to disable plot/CSV generation
+```
+
+Or via CLI:
+```bash
+python -m lib.train_regressor --config config.yaml --save_artifacts false
+```
+
+**When artifacts are saved:**
+- At best validation epoch (with `_ep{N}` suffix)
+- At end of training (without epoch suffix, using best model)
+
+---
+
 ## Visualization Tools
+
+### MLflow UI
 
 Real-time tracking is available with MLflow.
 
@@ -215,6 +238,53 @@ $ cd /path/to/xec-ml-wl
 $ (activate xec-ml-wl conda environment)
 $ mlflow ui --backend-store-uri sqlite:///$(pwd)/mlruns.db --host 127.0.0.1 --port 5000
 ```
+
+### Regenerating Plots from CSV
+
+If you need to regenerate resolution plots (e.g., after updating plotting code) without re-running inference, use the `regenerate_resolution_plots.py` macro:
+
+```bash
+# Regenerate all available plots
+python macro/regenerate_resolution_plots.py artifacts/<RUN_NAME>/
+
+# Regenerate only specific tasks
+python macro/regenerate_resolution_plots.py artifacts/<RUN_NAME>/ --tasks energy angle
+
+# Save to a different directory
+python macro/regenerate_resolution_plots.py artifacts/<RUN_NAME>/ --output_dir plots/
+
+# Custom suffix for output files
+python macro/regenerate_resolution_plots.py artifacts/<RUN_NAME>/ --suffix _v2
+```
+
+**Requirements:** The artifact directory must contain `predictions_*.csv` files from a previous training run.
+
+### Standalone Validation
+
+To run validation on a checkpoint without training (generates plots and predictions):
+
+```bash
+python macro/validate_regressor.py artifacts/<RUN>/checkpoint_best.pth \
+    --val_path data/val/ \
+    --tasks energy angle \
+    --output_dir artifacts/<RUN>/
+```
+
+---
+
+## Resolution Plot Details
+
+### Energy Resolution Fit
+
+The "Relative Resolution vs Energy" plot includes a fit to the standard calorimeter resolution formula:
+
+$$\frac{\sigma}{E} = \sqrt{\left(\frac{a}{\sqrt{E}}\right)^2 + b^2}$$
+
+Where:
+- **a** = stochastic term (statistical fluctuations, scales as $1/\sqrt{E}$)
+- **b** = constant term (systematic effects like calibration, leakage)
+
+Fit parameters are displayed in the plot title as percentages (e.g., `a=2.50%/√E, b=1.20%`).
 
 ---
 
