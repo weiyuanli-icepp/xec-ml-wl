@@ -317,36 +317,45 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
     has_uvw = (root_data is not None and
                'true_u' in root_data and len(root_data.get('true_u', [])) > 0)
 
-    # 2 rows x 4 cols if we have uvwFI data, otherwise 1 row x 4 cols
+    # 2x4 if we have uvwFI data, otherwise 2x2
     if has_uvw:
         fig, axs = plt.subplots(2, 4, figsize=(18, 9))
         fig.suptitle("Energy Resolution Profile", fontsize=14)
+        # Indices for the 4 main plots (first row)
+        idx_hist = (0, 0)
+        idx_res = (0, 1)
+        idx_rel = (0, 2)
+        idx_scatter = (0, 3)
     else:
-        fig, axs = plt.subplots(1, 4, figsize=(18, 4))
+        fig, axs = plt.subplots(2, 2, figsize=(10, 8))
         fig.suptitle("Energy Resolution Profile", fontsize=14)
-        axs = axs.reshape(1, -1)  # Make it 2D for consistent indexing
+        # Indices for 2x2 layout
+        idx_hist = (0, 0)
+        idx_res = (0, 1)
+        idx_rel = (1, 0)
+        idx_scatter = (1, 1)
 
-    # Row 1, Col 1: Residual histogram
-    axs[0, 0].hist(residual, bins=100, alpha=0.7, color='tab:blue')
-    axs[0, 0].axvline(0, color='red', linestyle='--', linewidth=1)
-    axs[0, 0].set_xlabel("Residual (Pred - True)")
-    axs[0, 0].set_ylabel("Count")
-    axs[0, 0].set_title(f"Residual Distribution\nBias={np.mean(residual):.4f}, 68%={np.percentile(abs_residual, 68):.4f}")
+    # Residual histogram
+    axs[idx_hist].hist(residual, bins=100, alpha=0.7, color='tab:blue')
+    axs[idx_hist].axvline(0, color='red', linestyle='--', linewidth=1)
+    axs[idx_hist].set_xlabel("Residual (Pred - True)")
+    axs[idx_hist].set_ylabel("Count")
+    axs[idx_hist].set_title(f"Residual Distribution\nBias={np.mean(residual):.4f}, 68%={np.percentile(abs_residual, 68):.4f}")
 
-    # Row 1, Col 2: Resolution vs True Energy
+    # Resolution vs True Energy
     x, y = get_binned_stat(true, abs_residual, percentile_68, bins)
-    axs[0, 1].plot(x, y, 'o', color='tab:orange', markersize=5)
-    axs[0, 1].set_xlabel("True Energy [GeV]")
-    axs[0, 1].set_ylabel("68% |Residual| [GeV]")
-    axs[0, 1].set_title("Resolution vs True Energy")
+    axs[idx_res].plot(x, y, 'o', color='tab:orange', markersize=5)
+    axs[idx_res].set_xlabel("True Energy [GeV]")
+    axs[idx_res].set_ylabel("68% |Residual| [GeV]")
+    axs[idx_res].set_title("Resolution vs True Energy")
 
-    # Row 1, Col 3: Normalized Resolution (sigma/E) vs True Energy with fit
+    # Normalized Resolution (sigma/E) vs True Energy with fit
     # Compute relative resolution: |residual| / true_energy
     # Use small epsilon to avoid division by zero
     safe_true = np.where(np.abs(true) > 1e-6, true, 1e-6)
     rel_residual = abs_residual / np.abs(safe_true)
     x, y = get_binned_stat(true, rel_residual, percentile_68, bins)
-    axs[0, 2].plot(x, y, 'o', color='tab:green', markersize=5, label='Data')
+    axs[idx_rel].plot(x, y, 'o', color='tab:green', markersize=5, label='Data')
 
     # Fit the resolution model
     fit_label = ""
@@ -361,27 +370,27 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
             # Plot fit curve
             x_fit = np.linspace(x[valid].min(), x[valid].max(), 100)
             y_fit = resolution_model(x_fit, a_fit, b_fit, c_fit)
-            axs[0, 2].plot(x_fit, y_fit, '-', color='tab:red', linewidth=1.5, label='Fit')
+            axs[idx_rel].plot(x_fit, y_fit, '-', color='tab:red', linewidth=1.5, label='Fit')
             fit_label = f"\na={a_fit*100:.2f}%/√E, b={b_fit*100:.2f}%, c={c_fit*100:.2f}%/E"
     except Exception:
         pass  # Skip fit if it fails
 
-    axs[0, 2].set_xlabel("True Energy [GeV]")
-    axs[0, 2].set_ylabel("68% |Residual|/E")
-    axs[0, 2].set_title(f"Relative Resolution vs Energy{fit_label}")
-    axs[0, 2].legend(loc='upper right')
+    axs[idx_rel].set_xlabel("True Energy [GeV]")
+    axs[idx_rel].set_ylabel("68% |Residual|/E")
+    axs[idx_rel].set_title(f"Relative Resolution vs Energy{fit_label}")
+    axs[idx_rel].legend(loc='upper right')
 
-    # Row 1, Col 4: Pred vs True scatter
+    # Pred vs True scatter
     vmin = min(true.min(), pred.min())
     vmax = max(true.max(), pred.max())
-    h = axs[0, 3].hist2d(true, pred, bins=50, range=[[vmin, vmax], [vmin, vmax]],
+    h = axs[idx_scatter].hist2d(true, pred, bins=50, range=[[vmin, vmax], [vmin, vmax]],
                   cmap='viridis', norm=LogNorm())
-    axs[0, 3].plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=1, label='y=x')
-    axs[0, 3].set_xlabel("True Energy [GeV]")
-    axs[0, 3].set_ylabel("Pred Energy [GeV]")
-    axs[0, 3].set_title("Pred vs True")
-    axs[0, 3].legend()
-    plt.colorbar(h[3], ax=axs[0, 3], label='Count')
+    axs[idx_scatter].plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=1, label='y=x')
+    axs[idx_scatter].set_xlabel("True Energy [GeV]")
+    axs[idx_scatter].set_ylabel("Pred Energy [GeV]")
+    axs[idx_scatter].set_title("Pred vs True")
+    axs[idx_scatter].legend()
+    plt.colorbar(h[3], ax=axs[idx_scatter], label='Count')
 
     if has_uvw:
         # Row 2: Resolution vs U, V, W (first interaction point)
