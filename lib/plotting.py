@@ -81,52 +81,46 @@ def plot_resolution_profile(pred, true, bins=20, outfile=None):
     # --- Row 1: Theta Dependence ---
     # 1. Theta Res vs Theta
     x, y = get_binned_stat(theta_true, d_theta, percentile_68, bins)
-    axs[0, 0].plot(x, y, 'o-', color='tab:blue')
+    axs[0, 0].plot(x, y, 'o', color='tab:blue', markersize=5)
     axs[0, 0].set_xlabel("True Theta [deg]")
     axs[0, 0].set_ylabel("68% |dTheta| [deg]")
     axs[0, 0].set_title("Theta Resolution vs Theta")
-    axs[0, 0].grid(True, alpha=0.3)
 
     # 2. Opening Angle Res vs Theta
     x, y = get_binned_stat(theta_true, psi_deg, percentile_68, bins)
-    axs[0, 1].plot(x, y, 's-', color='tab:orange')
+    axs[0, 1].plot(x, y, 's', color='tab:orange', markersize=5)
     axs[0, 1].set_xlabel("True Theta [deg]")
     axs[0, 1].set_ylabel("68% Opening Angle [deg]")
     axs[0, 1].set_title("Opening Angle Res vs Theta")
-    axs[0, 1].grid(True, alpha=0.3)
 
     # 3. Mean Opening Angle vs Theta
     x, y = get_binned_stat(theta_true, psi_deg, mean_func, bins)
-    axs[0, 2].plot(x, y, '^-', color='tab:green')
+    axs[0, 2].plot(x, y, '^', color='tab:green', markersize=5)
     axs[0, 2].set_xlabel("True Theta [deg]")
     axs[0, 2].set_ylabel("Mean Opening Angle [deg]")
     axs[0, 2].set_title("Mean Opening Angle vs Theta")
-    axs[0, 2].grid(True, alpha=0.3)
 
     # --- Row 2: Phi Dependence ---
     # 4. Phi Res vs Phi
     x, y = get_binned_stat(phi_true, d_phi, percentile_68, bins)
-    axs[1, 0].plot(x, y, 'o-', color='tab:blue')
+    axs[1, 0].plot(x, y, 'o', color='tab:blue', markersize=5)
     axs[1, 0].set_xlabel("True Phi [deg]")
     axs[1, 0].set_ylabel("68% |dPhi| [deg]")
     axs[1, 0].set_title("Phi Resolution vs Phi")
-    axs[1, 0].grid(True, alpha=0.3)
 
     # 5. Opening Angle Res vs Phi
     x, y = get_binned_stat(phi_true, psi_deg, percentile_68, bins)
-    axs[1, 1].plot(x, y, 's-', color='tab:orange')
+    axs[1, 1].plot(x, y, 's', color='tab:orange', markersize=5)
     axs[1, 1].set_xlabel("True Phi [deg]")
     axs[1, 1].set_ylabel("68% Opening Angle [deg]")
     axs[1, 1].set_title("Opening Angle Res vs Phi")
-    axs[1, 1].grid(True, alpha=0.3)
 
     # 6. Mean Opening Angle vs Phi
     x, y = get_binned_stat(phi_true, psi_deg, mean_func, bins)
-    axs[1, 2].plot(x, y, '^-', color='tab:green')
+    axs[1, 2].plot(x, y, '^', color='tab:green', markersize=5)
     axs[1, 2].set_xlabel("True Phi [deg]")
     axs[1, 2].set_ylabel("Mean Opening Angle [deg]")
     axs[1, 2].set_title("Mean Opening Angle vs Phi")
-    axs[1, 2].grid(True, alpha=0.3)
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     if outfile:
@@ -136,18 +130,21 @@ def plot_resolution_profile(pred, true, bins=20, outfile=None):
         plt.show()
 
 def plot_face_weights(model, outfile=None):
+    """Plot face importance weights. Silently skips if model doesn't support it."""
+    if not hasattr(model, 'get_concatenated_weight_norms'):
+        return  # Silently skip - model doesn't support this visualization
     try:
         norms = model.get_concatenated_weight_norms()
         names = list(norms.keys())
         values = list(norms.values())
-        
+
         plt.figure(figsize=(8, 5))
         plt.bar(names, values)
         plt.ylabel("Mean Abs Weight")
         plt.title("Face Importance (First Linear Layer)")
         plt.xticks(rotation=45)
         plt.tight_layout()
-        
+
         if outfile:
             plt.savefig(outfile, dpi=120)
             plt.close()
@@ -287,6 +284,7 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
         outfile: Output file path
     """
     from matplotlib.colors import LogNorm
+    from scipy.optimize import curve_fit
 
     residual = pred - true
     abs_residual = np.abs(residual)
@@ -307,6 +305,11 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
             else:
                 y_vals.append(np.nan)
         return bin_centers, np.array(y_vals)
+
+    # Calorimeter resolution model: sigma/E = sqrt((a/sqrt(E))^2 + b^2)
+    # a = stochastic term, b = constant term
+    def resolution_model(E, a, b):
+        return np.sqrt((a / np.sqrt(E))**2 + b**2)
 
     percentile_68 = lambda x: np.percentile(x, 68)
 
@@ -332,23 +335,40 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
 
     # Row 1, Col 2: Resolution vs True Energy
     x, y = get_binned_stat(true, abs_residual, percentile_68, bins)
-    axs[0, 1].plot(x, y, 'o-', color='tab:orange')
+    axs[0, 1].plot(x, y, 'o', color='tab:orange', markersize=5)
     axs[0, 1].set_xlabel("True Energy [GeV]")
     axs[0, 1].set_ylabel("68% |Residual| [GeV]")
     axs[0, 1].set_title("Resolution vs True Energy")
-    axs[0, 1].grid(True, alpha=0.3)
 
-    # Row 1, Col 3: Normalized Resolution (sigma/E) vs True Energy
+    # Row 1, Col 3: Normalized Resolution (sigma/E) vs True Energy with fit
     # Compute relative resolution: |residual| / true_energy
     # Use small epsilon to avoid division by zero
     safe_true = np.where(np.abs(true) > 1e-6, true, 1e-6)
     rel_residual = abs_residual / np.abs(safe_true)
     x, y = get_binned_stat(true, rel_residual, percentile_68, bins)
-    axs[0, 2].plot(x, y, 'o-', color='tab:green')
+    axs[0, 2].plot(x, y, 'o', color='tab:green', markersize=5, label='Data')
+
+    # Fit the resolution model
+    fit_label = ""
+    try:
+        # Filter out NaN values for fitting
+        valid = ~np.isnan(y) & ~np.isnan(x) & (x > 0)
+        if np.sum(valid) >= 2:
+            popt, pcov = curve_fit(resolution_model, x[valid], y[valid],
+                                   p0=[0.02, 0.01], bounds=([0, 0], [1, 1]))
+            a_fit, b_fit = popt
+            # Plot fit curve
+            x_fit = np.linspace(x[valid].min(), x[valid].max(), 100)
+            y_fit = resolution_model(x_fit, a_fit, b_fit)
+            axs[0, 2].plot(x_fit, y_fit, '-', color='tab:red', linewidth=1.5, label='Fit')
+            fit_label = f"\na={a_fit*100:.2f}%/√E, b={b_fit*100:.2f}%"
+    except Exception:
+        pass  # Skip fit if it fails
+
     axs[0, 2].set_xlabel("True Energy [GeV]")
     axs[0, 2].set_ylabel("68% |Residual|/E")
-    axs[0, 2].set_title("Relative Resolution (sigma/E) vs Energy")
-    axs[0, 2].grid(True, alpha=0.3)
+    axs[0, 2].set_title(f"Relative Resolution vs Energy{fit_label}")
+    axs[0, 2].legend(loc='upper right')
 
     # Row 1, Col 4: Pred vs True scatter
     vmin = min(true.min(), pred.min())
@@ -373,20 +393,18 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
 
         for i, (uvw_val, label, color) in enumerate(zip(uvw_data, uvw_labels, uvw_colors)):
             x, y = get_binned_stat(uvw_val, abs_residual, percentile_68, bins)
-            axs[1, i].plot(x, y, 'o-', color=color)
+            axs[1, i].plot(x, y, 'o', color=color, markersize=5)
             axs[1, i].set_xlabel(f"True {label} [cm]")
             axs[1, i].set_ylabel("68% |Residual| [GeV]")
             axs[1, i].set_title(f"Resolution vs {label}")
-            axs[1, i].grid(True, alpha=0.3)
 
         # Row 2, Col 4: Relative resolution vs U (or leave empty)
         # Let's add relative resolution vs U as an additional insight
         x, y = get_binned_stat(true_u, rel_residual, percentile_68, bins)
-        axs[1, 3].plot(x, y, 'o-', color='tab:purple')
+        axs[1, 3].plot(x, y, 'o', color='tab:purple', markersize=5)
         axs[1, 3].set_xlabel("True U [cm]")
         axs[1, 3].set_ylabel("68% |Residual|/E")
         axs[1, 3].set_title("Relative Resolution vs U")
-        axs[1, 3].grid(True, alpha=0.3)
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     if outfile:
@@ -437,11 +455,10 @@ def plot_timing_resolution_profile(pred, true, bins=20, outfile=None):
 
     # 2. Resolution vs True Timing
     x, y = get_binned_stat(true, abs_residual, percentile_68, bins)
-    axs[1].plot(x, y, 'o-', color='tab:orange')
+    axs[1].plot(x, y, 'o', color='tab:orange', markersize=5)
     axs[1].set_xlabel("True Timing")
     axs[1].set_ylabel("68% |Residual|")
     axs[1].set_title("Resolution vs True Timing")
-    axs[1].grid(True, alpha=0.3)
 
     # 3. Pred vs True scatter
     from matplotlib.colors import LogNorm
@@ -508,11 +525,10 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, bins=20, outfile=None):
 
         # Row 2: Resolution vs True
         x, y = get_binned_stat(true_val, abs_residual, percentile_68, bins)
-        axs[1, i].plot(x, y, 'o-', color=colors[i])
+        axs[1, i].plot(x, y, 'o', color=colors[i], markersize=5)
         axs[1, i].set_xlabel(f"True {labels[i]}")
         axs[1, i].set_ylabel("68% |Residual|")
         axs[1, i].set_title(f"{labels[i]} Resolution vs True")
-        axs[1, i].grid(True, alpha=0.3)
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     if outfile:
