@@ -15,9 +15,17 @@ Workflow:
 
 Usage:
     # MC pseudo-experiment: apply run 430000's dead pattern to MC
+    # --input supports: single file, directory, or glob pattern
     python macro/validate_inpainter.py \\
         --checkpoint artifacts/inpainter/checkpoint_best.pth \\
         --input mc_validation.root \\
+        --run 430000 \\
+        --output validation_mc/
+
+    # MC pseudo-experiment with directory of files
+    python macro/validate_inpainter.py \\
+        --checkpoint artifacts/inpainter/checkpoint_best.pth \\
+        --input data/mc_samples/single_run/ \\
         --run 430000 \\
         --output validation_mc/
 
@@ -60,6 +68,7 @@ from lib.geom_defs import (
     DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT,
     DEFAULT_SENTINEL_VALUE, DEFAULT_NPHO_THRESHOLD
 )
+from lib.dataset import expand_path
 
 # Constants
 N_CHANNELS = 4760
@@ -96,36 +105,84 @@ def load_data(input_path: str, tree_name: str = "tree",
               max_events: Optional[int] = None,
               npho_branch: str = "npho",
               time_branch: str = "relative_time") -> Dict[str, np.ndarray]:
-    """Load data from ROOT file."""
-    print(f"[INFO] Loading data from {input_path}")
+    """Load data from ROOT file(s).
 
-    with uproot.open(input_path) as f:
-        tree = f[tree_name]
+    Args:
+        input_path: Path to ROOT file, directory, or glob pattern.
+                   If directory, all .root files in it will be loaded.
+        tree_name: Name of the tree in ROOT files.
+        max_events: Maximum number of events to load (None = all).
+        npho_branch: Branch name for npho data.
+        time_branch: Branch name for time data.
 
-        # Try different branch names
-        if npho_branch not in tree.keys():
-            if "relative_npho" in tree.keys():
-                npho_branch = "relative_npho"
-            else:
-                raise ValueError(f"Cannot find npho branch. Available: {tree.keys()}")
+    Returns:
+        Dictionary with 'npho', 'time', and optional 'run', 'event' arrays.
+    """
+    # Expand path to list of files (handles directories, globs, single files)
+    file_list = expand_path(input_path)
+    print(f"[INFO] Loading data from {len(file_list)} file(s)")
+    if len(file_list) > 1:
+        for f in file_list[:5]:
+            print(f"  - {f}")
+        if len(file_list) > 5:
+            print(f"  ... and {len(file_list) - 5} more")
 
-        data = {
-            'npho': tree[npho_branch].array(library='np'),
-            'time': tree[time_branch].array(library='np'),
-        }
+    all_data = {'npho': [], 'time': [], 'run': [], 'event': []}
+    total_events = 0
 
-        # Optional branches
-        for branch in ['run', 'event']:
-            if branch in tree.keys():
-                data[branch] = tree[branch].array(library='np')
+    for file_path in file_list:
+        if max_events and total_events >= max_events:
+            break
 
-    n_events = len(data['npho'])
-    if max_events and max_events < n_events:
-        for key in data:
-            data[key] = data[key][:max_events]
-        n_events = max_events
+        with uproot.open(file_path) as f:
+            tree = f[tree_name]
 
-    print(f"[INFO] Loaded {n_events:,} events")
+            # Try different branch names (check on first file)
+            actual_npho_branch = npho_branch
+            if npho_branch not in tree.keys():
+                if "relative_npho" in tree.keys():
+                    actual_npho_branch = "relative_npho"
+                else:
+                    raise ValueError(f"Cannot find npho branch in {file_path}. Available: {tree.keys()}")
+
+            npho_arr = tree[actual_npho_branch].array(library='np')
+            time_arr = tree[time_branch].array(library='np')
+
+            # Limit events if needed
+            n_in_file = len(npho_arr)
+            if max_events:
+                remaining = max_events - total_events
+                if n_in_file > remaining:
+                    npho_arr = npho_arr[:remaining]
+                    time_arr = time_arr[:remaining]
+                    n_in_file = remaining
+
+            all_data['npho'].append(npho_arr)
+            all_data['time'].append(time_arr)
+
+            # Optional branches
+            for branch in ['run', 'event']:
+                if branch in tree.keys():
+                    arr = tree[branch].array(library='np')
+                    if max_events:
+                        arr = arr[:n_in_file]
+                    all_data[branch].append(arr)
+
+            total_events += n_in_file
+
+    # Concatenate all files
+    data = {
+        'npho': np.concatenate(all_data['npho']),
+        'time': np.concatenate(all_data['time']),
+    }
+
+    # Add optional branches if present
+    if all_data['run']:
+        data['run'] = np.concatenate(all_data['run'])
+    if all_data['event']:
+        data['event'] = np.concatenate(all_data['event'])
+
+    print(f"[INFO] Loaded {len(data['npho']):,} events total")
     return data
 
 
@@ -464,7 +521,7 @@ def main():
 
     # Data
     parser.add_argument("--input", "-i", required=True,
-                        help="Path to input ROOT file")
+                        help="Path to input ROOT file, directory, or glob pattern")
     parser.add_argument("--output", "-o", required=True,
                         help="Output directory")
 
