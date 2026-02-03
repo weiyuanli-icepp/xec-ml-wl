@@ -4,6 +4,13 @@
 #     --original data/large_val.root \
 #     --channel npho --save outputs/inpainter_event_0.pdf
 #
+# With directory as original (requires --run and --event):
+# python macro/show_inpainter_comparison.py \
+#     --predictions artifacts/inpainter/predictions_mc.root \
+#     --original data/mc_samples/single_run/ \
+#     --run 42 --event 1234 \
+#     --channel npho
+#
 # Note: event_idx in predictions file corresponds to entry index in original file
 # Note: Outer face predictions are included when using sensor-level mode (valid sensor IDs 4092-4759)
 # Note: Normalization factors are read from predictions file metadata (if available)
@@ -11,6 +18,7 @@
 import sys
 import os
 import argparse
+import glob
 import numpy as np
 import uproot
 
@@ -22,6 +30,7 @@ try:
         DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE,
         DEFAULT_NPHO_THRESHOLD, OUTER_ALL_SENSOR_IDS
     )
+    from lib.dataset import expand_path
 except ImportError as e:
     print(f"Error: Could not import required modules: {e}")
     print("Run from repo root (xec-ml-wl/) or set PYTHONPATH.")
@@ -79,22 +88,30 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # By event index (single file)
   python macro/show_inpainter_comparison.py 0 \\
       --predictions artifacts/inpainter/inpainter_predictions_epoch_50.root \\
       --original data/large_val.root \\
       --channel npho
 
-  python macro/show_inpainter_comparison.py 42 \\
-      --predictions artifacts/inpainter/inpainter_predictions_epoch_50.root \\
-      --original data/large_val.root \\
-      --channel time --save event_42.pdf
+  # By run and event number (directory of files)
+  python macro/show_inpainter_comparison.py \\
+      --predictions artifacts/inpainter/predictions_mc.root \\
+      --original data/mc_samples/single_run/ \\
+      --run 42 --event 1234 \\
+      --channel npho
         """
     )
-    parser.add_argument("event_idx", type=int, help="Event index (0-based, matches entry in original file)")
+    parser.add_argument("event_idx", type=int, nargs='?', default=None,
+                        help="Event index (0-based). Not needed if --run and --event are specified.")
     parser.add_argument("--predictions", type=str, required=True,
                         help="Path to inpainter predictions ROOT file")
     parser.add_argument("--original", type=str, required=True,
-                        help="Path to original validation ROOT file")
+                        help="Path to original ROOT file or directory")
+    parser.add_argument("--run", type=int, default=None,
+                        help="Run number (required when --original is a directory)")
+    parser.add_argument("--event", type=int, default=None,
+                        help="Event number (used with --run to find specific event)")
     parser.add_argument("--tree", type=str, default="tree", help="TTree name in original file")
     parser.add_argument("--channel", type=str, choices=["npho", "time", "both"], default="npho")
     parser.add_argument("--include_top_bottom", action="store_true",
@@ -128,8 +145,131 @@ Examples:
         print(f"Error: Predictions file not found: {args.predictions}")
         sys.exit(1)
     if not os.path.exists(args.original):
-        print(f"Error: Original file not found: {args.original}")
+        print(f"Error: Original file/directory not found: {args.original}")
         sys.exit(1)
+
+    # --- Handle directory vs single file for --original ---
+    is_directory = os.path.isdir(args.original)
+
+    if is_directory:
+        # Directory mode: require --run and --event
+        if args.run is None or args.event is None:
+            print("Error: When --original is a directory, --run and --event are required.")
+            sys.exit(1)
+
+        # Find ROOT files in directory
+        file_list = expand_path(args.original)
+        if not file_list:
+            print(f"Error: No ROOT files found in directory: {args.original}")
+            sys.exit(1)
+
+        print(f"Directory mode: searching {len(file_list)} files for run={args.run}, event={args.event}")
+
+        # Find the file containing the specified run number
+        original_file = None
+        event_idx_in_file = None
+
+        for fpath in file_list:
+            try:
+                with uproot.open(fpath) as f:
+                    if args.tree not in f:
+                        continue
+                    tree = f[args.tree]
+
+                    # Check if file has run/event branches
+                    available = tree.keys()
+                    run_branch = None
+                    event_branch = None
+                    for rb in ["run", "run_number", "runNumber", "Info.run"]:
+                        if rb in available:
+                            run_branch = rb
+                            break
+                    for eb in ["event", "event_number", "eventNumber", "Info.event"]:
+                        if eb in available:
+                            event_branch = eb
+                            break
+
+                    if run_branch is None or event_branch is None:
+                        # Try to infer run from filename (e.g., MCGamma_00042.root)
+                        import re
+                        match = re.search(r'(\d{5})\.root$', os.path.basename(fpath))
+                        if match:
+                            file_run = int(match.group(1))
+                            if file_run == args.run:
+                                # Found matching file, search by event only
+                                if event_branch:
+                                    events = tree[event_branch].array(library="np")
+                                    event_matches = np.where(events == args.event)[0]
+                                    if len(event_matches) > 0:
+                                        original_file = fpath
+                                        event_idx_in_file = int(event_matches[0])
+                                        break
+                        continue
+
+                    # Read run/event arrays
+                    runs = tree[run_branch].array(library="np")
+                    events = tree[event_branch].array(library="np")
+
+                    # Find matching entry
+                    matches = np.where((runs == args.run) & (events == args.event))[0]
+                    if len(matches) > 0:
+                        original_file = fpath
+                        event_idx_in_file = int(matches[0])
+                        break
+            except Exception as e:
+                print(f"  Warning: Could not read {fpath}: {e}")
+                continue
+
+        if original_file is None:
+            print(f"Error: Could not find run={args.run}, event={args.event} in any file")
+            sys.exit(1)
+
+        print(f"  Found in: {original_file} at index {event_idx_in_file}")
+        args.original = original_file
+        args.event_idx = event_idx_in_file
+    else:
+        # Single file mode: require event_idx
+        if args.event_idx is None:
+            if args.run is not None and args.event is not None:
+                # Try to find event by run/event in single file
+                print(f"Searching for run={args.run}, event={args.event} in {args.original}")
+                with uproot.open(args.original) as f:
+                    if args.tree not in f:
+                        print(f"Error: Tree '{args.tree}' not found.")
+                        sys.exit(1)
+                    tree = f[args.tree]
+                    available = tree.keys()
+
+                    run_branch = None
+                    event_branch = None
+                    for rb in ["run", "run_number", "runNumber", "Info.run"]:
+                        if rb in available:
+                            run_branch = rb
+                            break
+                    for eb in ["event", "event_number", "eventNumber", "Info.event"]:
+                        if eb in available:
+                            event_branch = eb
+                            break
+
+                    if run_branch is None or event_branch is None:
+                        print(f"Error: Could not find run/event branches in file")
+                        print(f"  Available branches: {available}")
+                        sys.exit(1)
+
+                    runs = tree[run_branch].array(library="np")
+                    events = tree[event_branch].array(library="np")
+                    matches = np.where((runs == args.run) & (events == args.event))[0]
+
+                    if len(matches) == 0:
+                        print(f"Error: Could not find run={args.run}, event={args.event}")
+                        sys.exit(1)
+
+                    args.event_idx = int(matches[0])
+                    print(f"  Found at index {args.event_idx}")
+            else:
+                print("Error: event_idx is required when --original is a single file.")
+                print("  Alternatively, provide both --run and --event to search by run/event number.")
+                sys.exit(1)
 
     # --- Load normalization metadata from predictions file ---
     print(f"Loading metadata from: {args.predictions}")
@@ -228,15 +368,25 @@ Examples:
 
         all_arrays = pred_tree.arrays(branches_to_load, library="np")
 
-        # Filter for this event
-        event_mask = all_arrays["event_idx"] == args.event_idx
+        # Filter for this event - prefer run/event matching if available
+        if args.run is not None and args.event is not None and has_run_event:
+            # Match by run/event numbers
+            event_mask = (all_arrays["run_number"] == args.run) & (all_arrays["event_number"] == args.event)
+            match_desc = f"run={args.run}, event={args.event}"
+        else:
+            # Match by event_idx
+            event_mask = all_arrays["event_idx"] == args.event_idx
+            match_desc = f"event_idx={args.event_idx}"
+
         n_total_masked = event_mask.sum()
 
         if n_total_masked == 0:
-            print(f"Warning: No predictions found for event_idx={args.event_idx}")
+            print(f"Warning: No predictions found for {match_desc}")
             print("This could mean:")
-            print("  - The event index doesn't exist in predictions file")
+            print("  - The event doesn't exist in predictions file")
             print("  - No sensors were masked for this event")
+            if args.run is not None and args.event is not None and not has_run_event:
+                print("  - Predictions file doesn't have run_number/event_number branches")
             sys.exit(1)
 
         # Extract run/event numbers if available (take first value for this event)
@@ -304,7 +454,10 @@ Examples:
             truth_time_pred = truth_time_pred[valid_idx_mask]
             n_masked = len(sensor_ids)
 
-    print(f"Event {args.event_idx}: {n_masked} valid masked sensors ({100*n_masked/num_sensors:.1f}%)")
+    if args.run is not None and args.event is not None:
+        print(f"Run {args.run} Event {args.event} (idx={args.event_idx}): {n_masked} valid masked sensors ({100*n_masked/num_sensors:.1f}%)")
+    else:
+        print(f"Event {args.event_idx}: {n_masked} valid masked sensors ({100*n_masked/num_sensors:.1f}%)")
 
     # Validate normalization consistency between original file and predictions file
     truth_from_original = x_truth[sensor_ids]
