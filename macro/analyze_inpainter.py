@@ -256,9 +256,11 @@ def plot_per_face_residuals(data: Dict[str, np.ndarray], output_dir: str,
 
 def plot_scatter_truth_vs_pred(data: Dict[str, np.ndarray], output_dir: str,
                                 has_mask_type: bool):
-    """Plot scatter of truth vs prediction."""
+    """Plot scatter of truth vs prediction with log-scale density."""
     if not HAS_MATPLOTLIB:
         return
+
+    from matplotlib.colors import LogNorm
 
     if has_mask_type:
         valid = (data['mask_type'] == 0) & (data['error_npho'] > -999)
@@ -268,34 +270,73 @@ def plot_scatter_truth_vs_pred(data: Dict[str, np.ndarray], output_dir: str,
     if valid.sum() == 0:
         return
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    truth_npho = data['truth_npho'][valid]
+    pred_npho = data['pred_npho'][valid]
+    truth_time = data['truth_time'][valid]
+    pred_time = data['pred_time'][valid]
 
-    # Npho
+    # --- Full range scatter (log scale density) ---
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Npho - log scale density
     ax = axes[0]
-    ax.hist2d(data['truth_npho'][valid], data['pred_npho'][valid],
-              bins=100, cmap='Blues', cmin=1)
-    lims = [data['truth_npho'][valid].min(), data['truth_npho'][valid].max()]
-    ax.plot(lims, lims, 'r--', alpha=0.5, label='y=x')
-    ax.set_xlabel('Truth Npho')
-    ax.set_ylabel('Pred Npho')
+    h = ax.hist2d(truth_npho, pred_npho, bins=100, cmap='Blues', norm=LogNorm(), cmin=1)
+    plt.colorbar(h[3], ax=ax, label='Count (log)')
+    lims = [min(truth_npho.min(), pred_npho.min()), max(truth_npho.max(), pred_npho.max())]
+    ax.plot(lims, lims, 'r--', alpha=0.7, linewidth=2, label='y=x')
+    ax.set_xlabel('Truth Npho (normalized)')
+    ax.set_ylabel('Pred Npho (normalized)')
     ax.set_title('Npho: Truth vs Prediction')
     ax.legend()
 
-    # Time
+    # Time - log scale density
     ax = axes[1]
-    ax.hist2d(data['truth_time'][valid], data['pred_time'][valid],
-              bins=100, cmap='Greens', cmin=1)
-    lims = [data['truth_time'][valid].min(), data['truth_time'][valid].max()]
-    ax.plot(lims, lims, 'r--', alpha=0.5, label='y=x')
-    ax.set_xlabel('Truth Time')
-    ax.set_ylabel('Pred Time')
+    h = ax.hist2d(truth_time, pred_time, bins=100, cmap='Greens', norm=LogNorm(), cmin=1)
+    plt.colorbar(h[3], ax=ax, label='Count (log)')
+    lims = [min(truth_time.min(), pred_time.min()), max(truth_time.max(), pred_time.max())]
+    ax.plot(lims, lims, 'r--', alpha=0.7, linewidth=2, label='y=x')
+    ax.set_xlabel('Truth Time (normalized)')
+    ax.set_ylabel('Pred Time (normalized)')
     ax.set_title('Time: Truth vs Prediction')
     ax.legend()
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'scatter_truth_vs_pred.pdf'))
     plt.close()
-    print("[INFO] Saved scatter_truth_vs_pred.pdf")
+
+    # --- Zoomed scatter for high-signal region (npho > 0.1) ---
+    high_signal = truth_npho > 0.1
+    if high_signal.sum() > 100:
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+        ax = axes[0]
+        h = ax.hist2d(truth_npho[high_signal], pred_npho[high_signal],
+                      bins=50, cmap='Blues', norm=LogNorm(), cmin=1)
+        plt.colorbar(h[3], ax=ax, label='Count (log)')
+        lims = [truth_npho[high_signal].min(), truth_npho[high_signal].max()]
+        ax.plot(lims, lims, 'r--', alpha=0.7, linewidth=2, label='y=x')
+        ax.set_xlabel('Truth Npho (normalized)')
+        ax.set_ylabel('Pred Npho (normalized)')
+        ax.set_title(f'Npho: High Signal (npho > 0.1, n={high_signal.sum():,})')
+        ax.legend()
+
+        ax = axes[1]
+        h = ax.hist2d(truth_time[high_signal], pred_time[high_signal],
+                      bins=50, cmap='Greens', norm=LogNorm(), cmin=1)
+        plt.colorbar(h[3], ax=ax, label='Count (log)')
+        lims = [truth_time[high_signal].min(), truth_time[high_signal].max()]
+        ax.plot(lims, lims, 'r--', alpha=0.7, linewidth=2, label='y=x')
+        ax.set_xlabel('Truth Time (normalized)')
+        ax.set_ylabel('Pred Time (normalized)')
+        ax.set_title(f'Time: High Signal (npho > 0.1)')
+        ax.legend()
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'scatter_truth_vs_pred_highsignal.pdf'))
+        plt.close()
+        print("[INFO] Saved scatter_truth_vs_pred.pdf and scatter_truth_vs_pred_highsignal.pdf")
+    else:
+        print("[INFO] Saved scatter_truth_vs_pred.pdf")
 
 
 def plot_metrics_summary(metrics: Dict, output_dir: str):
