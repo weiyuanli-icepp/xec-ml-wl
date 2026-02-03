@@ -370,9 +370,21 @@ def run_epoch_stream(
                 v_uvw = None
                 if "uvwFI" in target_dict:
                     v_uvw = target_dict["uvwFI"].cpu().numpy()
+                    # Legacy position fields
                     val_root_data["x_truth"].append(v_uvw[:, 0])
                     val_root_data["y_truth"].append(v_uvw[:, 1])
                     val_root_data["z_truth"].append(v_uvw[:, 2])
+                    # Position task fields (for resolution profiles)
+                    val_root_data["true_u"].append(v_uvw[:, 0])
+                    val_root_data["true_v"].append(v_uvw[:, 1])
+                    val_root_data["true_w"].append(v_uvw[:, 2])
+
+                # Collect predicted uvwFI values
+                if "uvwFI" in preds:
+                    p_uvw = preds["uvwFI"].cpu().numpy()
+                    val_root_data["pred_u"].append(p_uvw[:, 0])
+                    val_root_data["pred_v"].append(p_uvw[:, 1])
+                    val_root_data["pred_w"].append(p_uvw[:, 2])
 
                 v_vtx = None
                 if "xyzVTX" in target_dict:
