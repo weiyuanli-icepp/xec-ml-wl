@@ -449,6 +449,10 @@ def run_epoch_stream(
     profiler.stop()
     if profile:
         print(profiler.report())
+        # Print dataset I/O breakdown if available
+        # Note: only accurate when num_workers=0 for DataLoader
+        if hasattr(loader, 'dataset') and hasattr(loader.dataset, 'get_profile_report'):
+            print(loader.dataset.get_profile_report())
 
     # Final optimizer step if gradients remain from incomplete accumulation
     if train and accum_step % grad_accum_steps != 0:

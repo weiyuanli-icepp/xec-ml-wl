@@ -614,6 +614,16 @@ def run_epoch_inpainter(
     # Initialize profiler
     profiler = SimpleProfiler(enabled=profile, sync_cuda=True)
 
+    # Cumulative dataset I/O stats (since we create a new dataset per file)
+    cumulative_io_stats = {
+        "io_time": 0.0,
+        "process_time": 0.0,
+        "batch_time": 0.0,
+        "chunk_count": 0,
+        "event_count": 0,
+        "file_count": 0,
+    }
+
     for root_file in train_files:
         profiler.start("data_load")
         # Note: dataset I/O profiling requires dataloader_workers=0 for accurate stats
@@ -749,6 +759,12 @@ def run_epoch_inpainter(
                     metric_sums[key] += value
             num_batches += 1
 
+        # Accumulate dataset I/O stats from this file
+        if profile and dataloader_workers == 0:
+            file_stats = dataset.get_profile_stats()
+            for key in cumulative_io_stats:
+                cumulative_io_stats[key] += file_stats.get(key, 0)
+
         profiler.start("data_load")  # For next file/iteration
 
     # Stop any pending timer
@@ -757,10 +773,25 @@ def run_epoch_inpainter(
     # Print profiler report if enabled
     if profile:
         print(profiler.report())
-        # Print dataset I/O breakdown (only accurate when dataloader_workers=0)
-        # Note: shows stats from last file only when looping over multiple files
-        if dataloader_workers == 0:
-            print(dataset.get_profile_report())
+        # Print cumulative dataset I/O breakdown (only accurate when dataloader_workers=0)
+        if dataloader_workers == 0 and cumulative_io_stats["event_count"] > 0:
+            total_time = cumulative_io_stats["io_time"] + cumulative_io_stats["process_time"] + cumulative_io_stats["batch_time"]
+            lines = ["[Dataset Profile] Cumulative I/O breakdown:"]
+            lines.append(f"  Files: {cumulative_io_stats['file_count']}, Chunks: {cumulative_io_stats['chunk_count']}, Events: {cumulative_io_stats['event_count']:,}")
+            timing_items = [
+                ("I/O (uproot)", cumulative_io_stats["io_time"]),
+                ("CPU (normalize)", cumulative_io_stats["process_time"]),
+                ("Batch (numpy→torch)", cumulative_io_stats["batch_time"]),
+            ]
+            max_name_len = max(len(name) for name, _ in timing_items)
+            for name, t in timing_items:
+                pct = 100 * t / total_time if total_time > 0 else 0
+                lines.append(f"  {name:<{max_name_len}}  {t:>7.2f}s  ({pct:>5.1f}%)")
+            lines.append(f"  {'TOTAL':<{max_name_len}}  {total_time:>7.2f}s")
+            if total_time > 0:
+                throughput = cumulative_io_stats["event_count"] / total_time
+                lines.append(f"  Throughput: {throughput:,.0f} events/s")
+            print("\n".join(lines))
 
     # Final optimizer step if grads remain
     if (accum_step % grad_accum_steps) != 0:
@@ -892,6 +923,16 @@ def run_eval_inpainter(
 
     # Initialize profiler
     profiler = SimpleProfiler(enabled=profile, sync_cuda=True)
+
+    # Cumulative dataset I/O stats (since we create a new dataset per file)
+    cumulative_io_stats = {
+        "io_time": 0.0,
+        "process_time": 0.0,
+        "batch_time": 0.0,
+        "chunk_count": 0,
+        "event_count": 0,
+        "file_count": 0,
+    }
 
     with torch.no_grad():
         for root_file in val_files:
@@ -1148,6 +1189,12 @@ def run_eval_inpainter(
 
                 num_batches += 1
 
+            # Accumulate dataset I/O stats from this file
+            if profile and dataloader_workers == 0:
+                file_stats = dataset.get_profile_stats()
+                for key in cumulative_io_stats:
+                    cumulative_io_stats[key] += file_stats.get(key, 0)
+
             profiler.start("data_load")  # For next file/iteration
 
     # Stop any pending timer
@@ -1156,10 +1203,25 @@ def run_eval_inpainter(
     # Print profiler report if enabled
     if profile:
         print(profiler.report("Validation timing breakdown"))
-        # Print dataset I/O breakdown (only accurate when dataloader_workers=0)
-        # Note: shows stats from last file only when looping over multiple files
-        if dataloader_workers == 0:
-            print(dataset.get_profile_report())
+        # Print cumulative dataset I/O breakdown (only accurate when dataloader_workers=0)
+        if dataloader_workers == 0 and cumulative_io_stats["event_count"] > 0:
+            total_time = cumulative_io_stats["io_time"] + cumulative_io_stats["process_time"] + cumulative_io_stats["batch_time"]
+            lines = ["[Dataset Profile] Cumulative I/O breakdown:"]
+            lines.append(f"  Files: {cumulative_io_stats['file_count']}, Chunks: {cumulative_io_stats['chunk_count']}, Events: {cumulative_io_stats['event_count']:,}")
+            timing_items = [
+                ("I/O (uproot)", cumulative_io_stats["io_time"]),
+                ("CPU (normalize)", cumulative_io_stats["process_time"]),
+                ("Batch (numpy→torch)", cumulative_io_stats["batch_time"]),
+            ]
+            max_name_len = max(len(name) for name, _ in timing_items)
+            for name, t in timing_items:
+                pct = 100 * t / total_time if total_time > 0 else 0
+                lines.append(f"  {name:<{max_name_len}}  {t:>7.2f}s  ({pct:>5.1f}%)")
+            lines.append(f"  {'TOTAL':<{max_name_len}}  {total_time:>7.2f}s")
+            if total_time > 0:
+                throughput = cumulative_io_stats["event_count"] / total_time
+                lines.append(f"  Throughput: {throughput:,.0f} events/s")
+            print("\n".join(lines))
 
     avg_metrics = {k: v / max(1, num_batches) for k, v in metric_sums.items()}
 
