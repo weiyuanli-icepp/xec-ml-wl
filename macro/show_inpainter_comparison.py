@@ -354,7 +354,15 @@ Examples:
     # --- Load inpainter predictions ---
     print(f"Loading predictions from: {args.predictions}")
     with uproot.open(args.predictions) as f:
-        pred_tree = f["tree"]
+        # Try common tree names for predictions
+        if "predictions" in f:
+            pred_tree = f["predictions"]
+        elif "tree" in f:
+            pred_tree = f["tree"]
+        else:
+            available = [k.split(";")[0] for k in f.keys()]
+            print(f"Error: No 'predictions' or 'tree' found. Available: {available}")
+            sys.exit(1)
 
         # Check available branches
         available_branches = pred_tree.keys()
