@@ -565,12 +565,15 @@ def plot_metrics_summary(metrics: Dict, output_dir: str, sentinel_value: float):
     time_mae = [metrics['per_face'][f]['time_mae'] for f in faces]
     time_mae_valid = [metrics['per_face'][f].get('time_mae_valid', np.nan) for f in faces]
 
+    # Scale down time_mae (all) by 10 for better visualization
+    time_mae_scaled = [t / 10 for t in time_mae]
+
     x = np.arange(len(faces))
     width = 0.25
 
     fig, ax = plt.subplots(figsize=(12, 6))
     bars1 = ax.bar(x - width, npho_mae, width, label='Npho MAE', color='blue', alpha=0.7)
-    bars2 = ax.bar(x, time_mae, width, label='Time MAE (all)', color='green', alpha=0.7)
+    bars2 = ax.bar(x, time_mae_scaled, width, label='Time MAE (all) ÷10', color='green', alpha=0.7)
     bars3 = ax.bar(x + width, time_mae_valid, width, label='Time MAE (valid only)', color='orange', alpha=0.7)
 
     ax.set_xlabel('Face')
