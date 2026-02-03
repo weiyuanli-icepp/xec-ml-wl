@@ -872,6 +872,7 @@ Examples:
     parser.add_argument("--chunksize", type=int, default=None, help="Chunk size for streaming")
     parser.add_argument("--num_workers", type=int, default=None, help="DataLoader workers")
     parser.add_argument("--num_threads", type=int, default=None, help="CPU preprocessing threads")
+    parser.add_argument("--prefetch_factor", type=int, default=None, help="DataLoader prefetch factor")
 
     # Normalization (override config)
     parser.add_argument("--npho_scale", type=float, default=None)
@@ -947,6 +948,8 @@ def apply_cli_overrides(cfg, args):
         cfg.data.num_workers = 1
     if args.num_threads is not None:
         cfg.data.num_threads = args.num_threads
+    if args.prefetch_factor is not None:
+        cfg.data.prefetch_factor = args.prefetch_factor
 
     # Normalization
     if args.npho_scale is not None:

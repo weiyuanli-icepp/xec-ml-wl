@@ -133,6 +133,7 @@ Examples:
     parser.add_argument("--chunksize",  type=int, default=None, help="Number of events per read")
     parser.add_argument("--num_workers", type=int, default=None, help="DataLoader workers")
     parser.add_argument("--num_threads", type=int, default=None, help="CPU preprocessing threads")
+    parser.add_argument("--prefetch_factor", type=int, default=None, help="DataLoader prefetch factor")
     parser.add_argument("--npho_branch", type=str, default=None, help="Input branch for photon counts")
     parser.add_argument("--time_branch", type=str, default=None, help="Input branch for timing")
 
@@ -196,7 +197,7 @@ Examples:
             print(f"[INFO] ARM/GH node detected - limiting num_workers from {num_workers} to 1")
             num_workers = 1
         num_threads = args.num_threads if args.num_threads is not None else getattr(cfg.data, 'num_threads', 4)
-        prefetch_factor = int(getattr(cfg.data, 'prefetch_factor', 2))
+        prefetch_factor = args.prefetch_factor if args.prefetch_factor is not None else int(getattr(cfg.data, 'prefetch_factor', 2))
         npho_branch = args.npho_branch or getattr(cfg.data, "npho_branch", "npho")
         time_branch = args.time_branch or getattr(cfg.data, "time_branch", "relative_time")
         log_invalid_npho = getattr(cfg.data, "log_invalid_npho", True)
@@ -259,7 +260,7 @@ Examples:
             print(f"[INFO] ARM/GH node detected - limiting num_workers from {num_workers} to 1")
             num_workers = 1
         num_threads = args.num_threads or 4
-        prefetch_factor = 2  # Default
+        prefetch_factor = args.prefetch_factor or 2
         npho_branch = args.npho_branch or "npho"
         time_branch = args.time_branch or "relative_time"
         log_invalid_npho = True  # Default: enabled
