@@ -13,6 +13,8 @@ logging.getLogger("alembic").setLevel(logging.WARNING)
 # Suppress torch.compile/dynamo warnings about tensor construction
 warnings.filterwarnings("ignore", message=".*To copy construct from a tensor.*")
 warnings.filterwarnings("ignore", message=".*skipping cudagraphs.*")
+# Suppress LR scheduler deprecation warning (SequentialLR internal behavior)
+warnings.filterwarnings("ignore", message=".*epoch parameter in.*scheduler.step.*")
 
 # Suppress torch dynamo verbose output and Triton autotuning
 os.environ["TORCH_LOGS"] = "-all"
@@ -75,9 +77,8 @@ def save_predictions_to_root(predictions, save_path, epoch, run_id=None):
         "mask": predictions["mask"].astype(np.float32),
     }
 
-    if run_id:
-        run_id_str = str(run_id)
-        branch_data["run_id"] = np.array([run_id_str] * n_events)
+    # Note: run_id is not stored in ROOT (uproot can't write Unicode strings)
+    # The run_id is available in the filename and MLflow artifact metadata
 
     # Add masked input if available
     if "x_masked" in predictions and len(predictions["x_masked"]) > 0:
