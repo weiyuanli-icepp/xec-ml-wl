@@ -541,6 +541,8 @@ def main():
     # Options
     parser.add_argument("--batch-size", type=int, default=64,
                         help="Batch size for inference (default: 64)")
+    parser.add_argument("--num-threads", type=int, default=None,
+                        help="Number of CPU threads for PyTorch (default: all available)")
     parser.add_argument("--max-events", type=int, default=None,
                         help="Maximum events to process")
     parser.add_argument("--seed", type=int, default=42,
@@ -552,6 +554,13 @@ def main():
                         help="TTree name in ROOT file (default: tree)")
 
     args = parser.parse_args()
+
+    # Set number of threads
+    if args.num_threads is not None:
+        torch.set_num_threads(args.num_threads)
+        print(f"[INFO] Using {args.num_threads} CPU threads")
+    else:
+        print(f"[INFO] Using {torch.get_num_threads()} CPU threads (default)")
 
     # Create output directory
     os.makedirs(args.output, exist_ok=True)
