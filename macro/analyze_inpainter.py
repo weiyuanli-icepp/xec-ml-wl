@@ -5,11 +5,13 @@ Analyze Inpainter Predictions
 Generates detailed metrics and plots from inpainter validation output.
 Works with both MC and real data validation results.
 
+Mode is auto-detected based on whether 'mask_type' column exists:
+- If mask_type exists: Real data mode (separates artificial vs dead channel metrics)
+- If mask_type missing: MC mode (all predictions have ground truth)
+
 Usage:
     python macro/analyze_inpainter.py predictions.root --output analysis/
-
-    # Specify mode explicitly
-    python macro/analyze_inpainter.py predictions.root --mode real --output analysis/
+    python macro/analyze_inpainter.py predictions.root --output analysis/ --no-plots
 """
 
 import os
