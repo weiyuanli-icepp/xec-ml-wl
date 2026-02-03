@@ -52,6 +52,14 @@ from .geom_defs import (
 )
 from .config import load_inpainter_config
 
+# Suppress common harmless warnings
+warnings.filterwarnings("ignore", message=".*To copy construct from a tensor.*", category=UserWarning)
+warnings.filterwarnings("ignore", module="torch._dynamo.*")
+warnings.filterwarnings("ignore", module="torch.fx.*")
+# Suppress scheduler warnings (harmless, PyTorch internal)
+warnings.filterwarnings("ignore", message=".*epoch parameter in.*scheduler.step.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*lr_scheduler.step.*before.*optimizer.step.*", category=UserWarning)
+
 # Enable TensorFloat32
 torch.set_float32_matmul_precision('high')
 

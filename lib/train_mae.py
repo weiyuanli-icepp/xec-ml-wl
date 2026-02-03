@@ -13,8 +13,9 @@ logging.getLogger("alembic").setLevel(logging.WARNING)
 # Suppress torch.compile/dynamo warnings about tensor construction
 warnings.filterwarnings("ignore", message=".*To copy construct from a tensor.*")
 warnings.filterwarnings("ignore", message=".*skipping cudagraphs.*")
-# Suppress LR scheduler deprecation warning (SequentialLR internal behavior)
+# Suppress LR scheduler warnings (harmless, PyTorch internal)
 warnings.filterwarnings("ignore", message=".*epoch parameter in.*scheduler.step.*")
+warnings.filterwarnings("ignore", message=".*lr_scheduler.step.*before.*optimizer.step.*")
 
 # Suppress torch dynamo verbose output and Triton autotuning
 os.environ["TORCH_LOGS"] = "-all"

@@ -58,8 +58,9 @@ logging.getLogger("torch._dynamo").setLevel(logging.WARNING)
 warnings.filterwarnings("ignore", message=".*To copy construct from a tensor.*", category=UserWarning)
 warnings.filterwarnings("ignore", module="torch._dynamo.*")
 warnings.filterwarnings("ignore", module="torch.fx.*")
-# Suppress SequentialLR epoch deprecation warning (harmless, PyTorch internal)
+# Suppress scheduler warnings (harmless, PyTorch internal)
 warnings.filterwarnings("ignore", message=".*epoch parameter in.*scheduler.step.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*lr_scheduler.step.*before.*optimizer.step.*", category=UserWarning)
 
 # ------------------------------------------------------------
 # Enable TensorFloat32
