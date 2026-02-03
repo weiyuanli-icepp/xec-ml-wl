@@ -92,7 +92,9 @@ def compute_inpainting_loss_flat(
         if use_npho_time_weight:
             # Denormalize npho to get raw values for weighting
             npho_norm_valid = gt_masked[time_valid, 0]
-            raw_npho = npho_scale * (torch.exp(npho_norm_valid * npho_scale2) - 1.0)
+            # Clamp exponent to prevent overflow in float16 (max safe ~10)
+            exp_arg = (npho_norm_valid * npho_scale2).clamp(max=10.0)
+            raw_npho = npho_scale * (torch.exp(exp_arg) - 1.0)
             time_weights = torch.sqrt(raw_npho.clamp(min=1.0))
             time_weights = time_weights / time_weights.mean()  # Normalize weights
             loss_time = loss_time * time_weights
@@ -293,7 +295,9 @@ def compute_inpainting_loss(
             # Apply npho weighting to time loss if enabled
             if use_npho_time_weight and time_valid.any():
                 # De-normalize to get approximate raw npho for weighting
-                raw_npho_approx = npho_scale * (torch.exp(npho_gt_norm * npho_scale2) - 1)
+                # Clamp exponent to prevent overflow in float16 (max safe ~10)
+                exp_arg = (npho_gt_norm * npho_scale2).clamp(max=10.0)
+                raw_npho_approx = npho_scale * (torch.exp(exp_arg) - 1)
                 npho_weights = torch.sqrt(raw_npho_approx.clamp(min=npho_threshold))
                 npho_weights = npho_weights / (npho_weights[time_valid].mean() + 1e-8)
                 loss_time_elem = loss_time_elem * npho_weights
@@ -430,7 +434,9 @@ def compute_inpainting_loss(
 
             # Apply npho weighting to time loss if enabled
             if use_npho_time_weight and time_valid.any():
-                raw_npho_approx = npho_scale * (torch.exp(npho_gt_norm * npho_scale2) - 1)
+                # Clamp exponent to prevent overflow in float16 (max safe ~10)
+                exp_arg = (npho_gt_norm * npho_scale2).clamp(max=10.0)
+                raw_npho_approx = npho_scale * (torch.exp(exp_arg) - 1)
                 npho_weights = torch.sqrt(raw_npho_approx.clamp(min=npho_threshold))
                 npho_weights = npho_weights / (npho_weights[time_valid].mean() + 1e-8)
                 loss_time_elem = loss_time_elem * npho_weights
