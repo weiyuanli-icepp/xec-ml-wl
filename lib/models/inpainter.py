@@ -428,6 +428,15 @@ class OuterSensorInpaintingHead(nn.Module):
                     ph, pw = self.pool_kernel
                 h0, h1 = h0 // ph, h1 // ph
                 w0, w1 = w0 // pw, w1 // pw
+                # Ensure at least 1 position per dimension to avoid empty regions
+                # (Center sensors have 3×2 finegrid regions which become 1×0 with [3,3] pooling)
+                if h1 <= h0:
+                    h1 = h0 + 1
+                if w1 <= w0:
+                    w1 = w0 + 1
+                # Clamp to grid bounds
+                h1 = min(h1, self.grid_h)
+                w1 = min(w1, self.grid_w)
 
             # Generate flat indices for all positions in this region
             positions = []
