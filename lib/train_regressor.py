@@ -70,6 +70,15 @@ torch.set_float32_matmul_precision('high')
 # ------------------------------------------------------------
 #  Artifact Saving Helper
 # ------------------------------------------------------------
+def _safe_log_artifact(path):
+    """Log artifact to MLflow only if there's an active run."""
+    try:
+        if mlflow.active_run() is not None:
+            mlflow.log_artifact(path)
+    except Exception:
+        pass  # Silently skip if MLflow logging fails
+
+
 def save_validation_artifacts(
     model,
     angle_pred, angle_true,
@@ -107,7 +116,7 @@ def save_validation_artifacts(
         else:
             backbone = model
         plot_face_weights(backbone, outfile=face_pdf)
-        mlflow.log_artifact(face_pdf)
+        _safe_log_artifact(face_pdf)
     except Exception as e:
         print(f"[WARN] Could not save face weights plot: {e}")
 
@@ -118,11 +127,11 @@ def save_validation_artifacts(
             "true_theta": angle_true[:, 0], "true_phi": angle_true[:, 1],
             "pred_theta": angle_pred[:, 0], "pred_phi": angle_pred[:, 1]
         }).to_csv(csv_path, index=False)
-        mlflow.log_artifact(csv_path)
+        _safe_log_artifact(csv_path)
 
         res_pdf = os.path.join(artifact_dir, f"resolution_angle_{run_name}{suffix}.pdf")
         plot_resolution_profile(angle_pred, angle_true, outfile=res_pdf)
-        mlflow.log_artifact(res_pdf)
+        _safe_log_artifact(res_pdf)
 
     # --- Energy Task ---
     if "energy" in active_tasks:
@@ -134,11 +143,11 @@ def save_validation_artifacts(
                 "true_energy": true_energy,
                 "pred_energy": pred_energy
             }).to_csv(csv_path, index=False)
-            mlflow.log_artifact(csv_path)
+            _safe_log_artifact(csv_path)
 
             res_pdf = os.path.join(artifact_dir, f"resolution_energy_{run_name}{suffix}.pdf")
             plot_energy_resolution_profile(pred_energy, true_energy, root_data, outfile=res_pdf)
-            mlflow.log_artifact(res_pdf)
+            _safe_log_artifact(res_pdf)
 
     # --- Timing Task ---
     if "timing" in active_tasks:
@@ -150,11 +159,11 @@ def save_validation_artifacts(
                 "true_timing": true_timing,
                 "pred_timing": pred_timing
             }).to_csv(csv_path, index=False)
-            mlflow.log_artifact(csv_path)
+            _safe_log_artifact(csv_path)
 
             res_pdf = os.path.join(artifact_dir, f"resolution_timing_{run_name}{suffix}.pdf")
             plot_timing_resolution_profile(pred_timing, true_timing, outfile=res_pdf)
-            mlflow.log_artifact(res_pdf)
+            _safe_log_artifact(res_pdf)
 
     # --- Position Task (uvwFI) ---
     if "uvwFI" in active_tasks:
@@ -170,13 +179,13 @@ def save_validation_artifacts(
                 "true_u": true_u, "true_v": true_v, "true_w": true_w,
                 "pred_u": pred_u, "pred_v": pred_v, "pred_w": pred_w
             }).to_csv(csv_path, index=False)
-            mlflow.log_artifact(csv_path)
+            _safe_log_artifact(csv_path)
 
             pred_uvw = np.stack([pred_u, pred_v, pred_w], axis=1)
             true_uvw = np.stack([true_u, true_v, true_w], axis=1)
             res_pdf = os.path.join(artifact_dir, f"resolution_uvwFI_{run_name}{suffix}.pdf")
             plot_position_resolution_profile(pred_uvw, true_uvw, outfile=res_pdf)
-            mlflow.log_artifact(res_pdf)
+            _safe_log_artifact(res_pdf)
 
     # --- Worst Case Events ---
     if worst_events:
