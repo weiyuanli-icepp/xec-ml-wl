@@ -21,44 +21,44 @@ The library includes a **dead channel inpainting** module for recovering sensor 
                                        │
                     ┌──────────────────┴──────────────────┐
                     ▼                                     ▼
-         ┌──────────────────┐                  ┌──────────────────┐
-         │   MAE Training   │                  │ Direct Training  │
-         │  (Optional but   │                  │  (From scratch)  │
-         │   recommended)   │                  │                  │
-         └────────┬─────────┘                  └────────┬─────────┘
-                  │                                     │
-                  │  Pretrained encoder                 │
-                  ▼                                     │
-         ┌──────────────────┐                          │
-         │    Inpainter     │◄─────────────────────────┘
-         │    Training      │
-         │                  │
-         │  • Random mask   │
-         │  • Predict npho, │
-         │    time at mask  │
-         └────────┬─────────┘
-                  │
-                  ▼
-         ┌──────────────────┐
-         │   Checkpoint     │
-         │   (.pth file)    │
-         └────────┬─────────┘
-                  │
-                  ▼
-         ┌──────────────────┐
-         │  TorchScript     │  (macro/export_onnx_inpainter.py)
-         │  Export (.pt)    │
-         └────────┬─────────┘
-                  │
-      ┌───────────┴───────────┐
-      │                       │
-      ▼                       ▼
-┌─────────────┐        ┌─────────────┐
-│ MC Pseudo-  │        │  Real Data  │
-│ Experiment  │        │ Validation  │
-└──────┬──────┘        └──────┬──────┘
-       │                      │
-       ▼                      ▼
+          ┌──────────────────┐                  ┌──────────────────┐
+          │   MAE Training   │                  │ Direct Training  │
+          │  (Optional but   │                  │  (From scratch)  │
+          │   recommended)   │                  │                  │
+          └────────┬─────────┘                  └────────┬─────────┘
+                   │                                     │
+                   │  Pretrained encoder                 │
+                   ▼                                     │
+          ┌──────────────────┐                           │
+          │    Inpainter     │◄──────────────────────────┘
+          │    Training      │
+          │                  │
+          │  • Random mask   │
+          │  • Predict npho, │
+          │    time at mask  │
+          └────────┬─────────┘
+                   │
+                   ▼
+          ┌──────────────────┐
+          │   Checkpoint     │
+          │   (.pth file)    │
+          └────────┬─────────┘
+                   │
+                   ▼
+          ┌──────────────────┐
+          │  TorchScript     │  (macro/export_onnx_inpainter.py)
+          │  Export (.pt)    │
+          └────────┬─────────┘
+                   │
+       ┌───────────┴───────────┐
+       │                       │
+       ▼                       ▼
+ ┌─────────────┐        ┌─────────────┐
+ │ MC Pseudo-  │        │  Real Data  │
+ │ Experiment  │        │ Validation  │
+ └──────┬──────┘        └──────┬──────┘
+        │                      │
+        ▼                      ▼
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                          VALIDATION WORKFLOWS                               │
