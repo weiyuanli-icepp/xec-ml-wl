@@ -863,7 +863,7 @@ class XEC_Inpainter(nn.Module):
         if self.encoder.outer_fine and self.head_outer_sensor is not None:
             # Sensor-level prediction for finegrid mode
             # Build outer finegrid tensor (without pooling - the head handles that)
-            outer_tensor = build_outer_fine_grid_tensor(x_masked, pool_kernel=self.encoder.outer_fine_pool)
+            outer_tensor = build_outer_fine_grid_tensor(x_masked, pool_kernel=self.encoder.outer_fine_pool, sentinel_value=self.sentinel_value)
 
             # Build sensor-level mask (B, 234) indexed by OUTER_ALL_SENSOR_IDS order
             outer_sensor_ids_tensor = torch.tensor(OUTER_ALL_SENSOR_IDS, device=device, dtype=torch.long)
@@ -997,7 +997,7 @@ class XEC_Inpainter(nn.Module):
 
         if self.encoder.outer_fine and self.head_outer_sensor is not None:
             # Sensor-level prediction for finegrid mode (234 sensors)
-            outer_tensor = build_outer_fine_grid_tensor(x_masked, pool_kernel=self.encoder.outer_fine_pool)
+            outer_tensor = build_outer_fine_grid_tensor(x_masked, pool_kernel=self.encoder.outer_fine_pool, sentinel_value=self.sentinel_value)
             outer_pred, outer_sensor_ids = self.head_outer_sensor.forward_full(outer_tensor, outer_latent)  # (B, 234, 2)
             # Scatter back using sensor IDs
             pred_all[:, outer_sensor_ids, :] = outer_pred

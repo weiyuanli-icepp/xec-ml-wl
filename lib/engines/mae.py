@@ -153,7 +153,8 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
             if hasattr(model, "encoder") and getattr(model.encoder, "outer_fine", False):
                 outer_target = build_outer_fine_grid_tensor(
                     x_in,
-                    pool_kernel=model.encoder.outer_fine_pool
+                    pool_kernel=model.encoder.outer_fine_pool,
+                    sentinel_value=getattr(model, "sentinel_value", None)
                 )
             else:
                 outer_target = gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP)
@@ -641,7 +642,7 @@ def run_eval_mae(model, device, root_files, tree_name,
                     "inner": gather_face(x_in, INNER_INDEX_MAP),
                     "us":    gather_face(x_in, US_INDEX_MAP),
                     "ds":    gather_face(x_in, DS_INDEX_MAP),
-                    "outer": build_outer_fine_grid_tensor(x_in, model.encoder.outer_fine_pool) if getattr(model.encoder, "outer_fine", False) else gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP),
+                    "outer": build_outer_fine_grid_tensor(x_in, model.encoder.outer_fine_pool, sentinel_value=getattr(model, "sentinel_value", None)) if getattr(model.encoder, "outer_fine", False) else gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP),
                     "top":   gather_hex_nodes(x_in, top_indices).permute(0, 2, 1),
                     "bot":   gather_hex_nodes(x_in, bot_indices).permute(0, 2, 1)
                 }
