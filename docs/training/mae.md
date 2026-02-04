@@ -174,20 +174,51 @@ Key parameters in `config/mae_config.yaml`:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `mask_ratio` | 0.65 | Fraction of valid sensors to mask |
-| `time_mask_ratio_scale` | 1.0 | Bias masking toward valid-time sensors (>1.0 prefers valid-time) |
+| `model.predict_channels` | ["npho", "time"] | Which channels to predict (output). Use ["npho"] for npho-only mode |
+| `model.mask_ratio` | 0.65 | Fraction of valid sensors to mask |
 | `outer_mode` | "finegrid" | Outer face mode (`finegrid` or `split`) |
 | `outer_fine_pool` | [3, 3] | Pooling kernel for finegrid outer |
-| `loss_fn` | "smooth_l1" | Loss function (smooth_l1, mse, l1, huber) |
-| `npho_weight` | 1.0 | Weight for npho channel loss |
-| `time_weight` | 1.0 | Weight for time channel loss |
+| `training.loss_fn` | "smooth_l1" | Loss function (smooth_l1, mse, l1, huber) |
+| `training.npho_weight` | 1.0 | Weight for npho channel loss |
+| `training.time.weight` | 1.0 | Weight for time channel loss |
+| `training.time.mask_ratio_scale` | 1.0 | Bias masking toward valid-time sensors (>1.0 prefers valid-time) |
+| `training.time.use_npho_weight` | true | Weight time loss by sqrt(npho) |
+| `training.time.npho_threshold` | 100 | Min npho for time loss (skip low-signal sensors) |
 | `auto_channel_weight` | false | Learn channel weights automatically |
-| `npho_threshold` | 100 | Min npho for time loss (skip low-signal sensors) |
-| `use_npho_time_weight` | true | Weight time loss by sqrt(npho) |
 | `track_mae_rmse` | false | Compute MAE/RMSE metrics (slower) |
 | `track_train_metrics` | false | Per-face training metrics |
 | `grad_accum_steps` | 1 | Gradient accumulation steps |
 | `ema_decay` | null | EMA decay rate (null=disabled, 0.999 typical) |
+
+### Configurable Output Channels
+
+The model can predict either both channels (npho and time) or just npho:
+
+```yaml
+model:
+  predict_channels: ["npho"]  # npho-only mode (faster training, smaller model)
+  # predict_channels: ["npho", "time"]  # default: both channels
+```
+
+When `predict_channels: ["npho"]`:
+- The decoder output dimension is 1 instead of 2
+- Time-related loss/metrics are skipped
+- Prediction ROOT files only contain `pred_npho`, `truth_npho`, `error_npho`
+- Analysis macros auto-detect the mode from metadata in the ROOT file
+
+### Nested Time Configuration
+
+Time-specific training options are grouped under `training.time:` and only apply when `"time"` is in `predict_channels`:
+
+```yaml
+training:
+  npho_weight: 1.0
+  time:
+    weight: 1.0                # Loss weight for time channel
+    mask_ratio_scale: 1.0      # Stratified masking scale for valid-time sensors
+    use_npho_weight: true      # Weight time loss by sqrt(npho)
+    npho_threshold: 100.0      # Min npho for conditional time loss
+```
 
 **Note:** Use the **new normalization scheme** (npho_scale=1000, sentinel_value=-1.0) for MAE pretraining. See [Data Pipeline](../architecture/data-pipeline.md) for details.
 

@@ -248,6 +248,7 @@ model:
   outer_fine_pool: [3, 3]       # Must match MAE encoder config
   mask_ratio: 0.05              # Realistic dead channel density (1-10%)
   freeze_encoder: true          # Freeze encoder, train only heads
+  predict_channels: ["npho", "time"]  # Output channels (or ["npho"] for npho-only)
 
 # Training
 training:
@@ -257,8 +258,33 @@ training:
   lr_scheduler: "cosine"
   loss_fn: "smooth_l1"          # smooth_l1, mse, l1
   npho_weight: 1.0
-  time_weight: 1.0
+  time:                         # Time-specific options (ignored if 'time' not in predict_channels)
+    weight: 1.0
+    mask_ratio_scale: 1.0
+    use_npho_weight: true
+    npho_threshold: 100.0
 ```
+
+### Npho-Only Mode
+
+Set `model.predict_channels: ["npho"]` to train a model that only predicts photon counts:
+
+```yaml
+model:
+  predict_channels: ["npho"]  # npho-only mode
+```
+
+**Benefits:**
+- Faster training (fewer output channels, simplified loss)
+- Smaller model footprint
+- Useful when timing information is not needed
+
+**Behavior:**
+- Input: Still uses both npho and time channels (encoder sees full context)
+- Output: Only predicts npho (1 channel instead of 2)
+- Time-related loss/metrics are skipped
+- Output ROOT files only contain `pred_npho`, `truth_npho`, `error_npho`
+- Analysis macros auto-detect mode from metadata tree in ROOT files
 
 ## 5. Metrics
 

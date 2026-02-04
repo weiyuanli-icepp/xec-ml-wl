@@ -150,6 +150,19 @@ def load_predictions_for_event(pred_file: str, event_idx: int) -> dict:
         tree = f['predictions']
         arrays = tree.arrays(library='np')
 
+        # Check for metadata to detect predict_channels
+        predict_time = 'pred_time' in arrays
+
+        # Try to load metadata if available
+        if 'metadata' in f:
+            metadata = f['metadata']
+            meta_arrays = metadata.arrays(library='np')
+            if 'predict_channels' in meta_arrays:
+                channels_str = str(meta_arrays['predict_channels'][0])
+                predict_channels = channels_str.split(',')
+                predict_time = 'time' in predict_channels
+                print(f"[INFO] predict_channels from metadata: {predict_channels}")
+
     # Filter for this event
     mask = arrays['event_idx'] == event_idx
 
@@ -161,20 +174,32 @@ def load_predictions_for_event(pred_file: str, event_idx: int) -> dict:
         'face': arrays['face'][mask],
         'mask_type': arrays['mask_type'][mask],
         'pred_npho': arrays['pred_npho'][mask],
-        'pred_time': arrays['pred_time'][mask],
         'truth_npho': arrays['truth_npho'][mask],
-        'truth_time': arrays['truth_time'][mask],
         'error_npho': arrays['error_npho'][mask],
-        'error_time': arrays['error_time'][mask],
         'run': int(arrays['run'][mask][0]),
         'event': int(arrays['event'][mask][0]),
+        'predict_time': predict_time,  # Flag indicating if time was predicted
     }
+
+    # Only add time fields if they exist
+    if predict_time:
+        result['pred_time'] = arrays['pred_time'][mask]
+        result['truth_time'] = arrays['truth_time'][mask]
+        result['error_time'] = arrays['error_time'][mask]
+    else:
+        # Create placeholder arrays for compatibility
+        n = mask.sum()
+        result['pred_time'] = np.full(n, np.nan, dtype=np.float32)
+        result['truth_time'] = np.full(n, np.nan, dtype=np.float32)
+        result['error_time'] = np.full(n, np.nan, dtype=np.float32)
 
     # Count by mask type
     n_artificial = (result['mask_type'] == 0).sum()
     n_dead = (result['mask_type'] == 1).sum()
     print(f"[INFO] Loaded {len(result['sensor_id'])} predictions: "
           f"{n_artificial} artificial, {n_dead} dead")
+    if not predict_time:
+        print("[INFO] Time channel not predicted (npho-only mode)")
 
     return result
 
@@ -688,15 +713,29 @@ def print_event_summary(event_data: dict, predictions: dict):
     if art_mask.sum() > 0:
         print("\nMetrics (artificial masks only):")
 
-        for var in ['npho', 'time']:
-            error = predictions[f'error_{var}'][art_mask]
-            valid = error > -900  # Filter out invalid values
+        # Always show npho metrics
+        error = predictions['error_npho'][art_mask]
+        valid = error > -900  # Filter out invalid values
+        if valid.sum() > 0:
+            error_valid = error[valid]
+            mae = np.mean(np.abs(error_valid))
+            rmse = np.sqrt(np.mean(error_valid ** 2))
+            bias = np.mean(error_valid)
+            print(f"  npho: MAE={mae:.4f}, RMSE={rmse:.4f}, Bias={bias:.4f}")
+
+        # Only show time metrics if model predicted time
+        predict_time = predictions.get('predict_time', True)
+        if predict_time:
+            error = predictions['error_time'][art_mask]
+            valid = (error > -900) & ~np.isnan(error)  # Filter out invalid values
             if valid.sum() > 0:
                 error_valid = error[valid]
                 mae = np.mean(np.abs(error_valid))
                 rmse = np.sqrt(np.mean(error_valid ** 2))
                 bias = np.mean(error_valid)
-                print(f"  {var}: MAE={mae:.4f}, RMSE={rmse:.4f}, Bias={bias:.4f}")
+                print(f"  time: MAE={mae:.4f}, RMSE={rmse:.4f}, Bias={bias:.4f}")
+        else:
+            print("  time: (not predicted)")
 
     print("=" * 60 + "\n")
 
@@ -770,7 +809,16 @@ def main():
         print_event_summary(event_data, predictions)
 
     # Determine channels to plot
-    channels = ['npho', 'time'] if args.channel == 'both' else [args.channel]
+    predict_time = predictions.get('predict_time', True)
+    if args.channel == 'both':
+        channels = ['npho', 'time'] if predict_time else ['npho']
+        if not predict_time:
+            print("[WARN] Time channel requested but not predicted. Showing npho only.")
+    elif args.channel == 'time' and not predict_time:
+        print("[ERROR] Time channel requested but not predicted (npho-only model).")
+        sys.exit(1)
+    else:
+        channels = [args.channel]
 
     for ch in channels:
         # Handle save path for multiple channels

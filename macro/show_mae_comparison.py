@@ -60,9 +60,23 @@ def main():
             sys.exit(1)
 
         branches = ["truth_npho", "truth_time", "mask", "masked_npho", "masked_time"]
-        has_pred = "pred_npho" in tree.keys() and "pred_time" in tree.keys()
-        if has_pred:
-            branches += ["pred_npho", "pred_time"]
+
+        # Check which prediction channels are available (npho-only or npho+time)
+        has_pred_npho = "pred_npho" in tree.keys()
+        has_pred_time = "pred_time" in tree.keys()
+        has_pred = has_pred_npho  # At least npho must be present
+
+        if has_pred_npho:
+            branches.append("pred_npho")
+        if has_pred_time:
+            branches.append("pred_time")
+
+        # Warn if user requested time but it's not available
+        if args.channel == "time" and not has_pred_time:
+            print(f"Error: Time channel requested but pred_time not found in file.")
+            print(f"  This model may have been trained with predict_channels: ['npho']")
+            print(f"  Available prediction branches: {[k for k in tree.keys() if 'pred' in k.lower()]}")
+            sys.exit(1)
 
         # Check for metadata branches (similar to inpainter)
         available_keys = tree.keys()
@@ -99,7 +113,11 @@ def main():
 
         if has_pred:
             pred_npho = arrays["pred_npho"][0]
-            pred_time = arrays["pred_time"][0]
+            # Use predicted time if available, otherwise use truth time
+            if has_pred_time:
+                pred_time = arrays["pred_time"][0]
+            else:
+                pred_time = arrays["truth_time"][0]  # Use truth time as placeholder
             x_pred = np.stack([pred_npho, pred_time], axis=-1)
         else:
             x_pred = None

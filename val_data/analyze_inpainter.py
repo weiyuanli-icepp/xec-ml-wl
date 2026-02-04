@@ -52,7 +52,7 @@ DEFAULT_TIME_SHIFT = -0.46
 INVALID_VALUE = -999.0
 
 
-def load_predictions(root_file: str) -> pd.DataFrame:
+def load_predictions(root_file: str) -> tuple:
     """
     Load inpainter predictions from ROOT file into pandas DataFrame.
 
@@ -60,11 +60,23 @@ def load_predictions(root_file: str) -> pd.DataFrame:
         root_file: Path to the prediction ROOT file
 
     Returns:
-        DataFrame with prediction data
+        Tuple of (DataFrame with prediction data, metadata dict)
     """
     with uproot.open(root_file) as f:
         tree = f["predictions"]
         df = tree.arrays(library="pd")
+
+        # Load metadata to detect predict_channels
+        metadata = {'predict_time': True}  # Default: both channels
+        if "metadata" in f:
+            meta_tree = f["metadata"]
+            meta_arrays = meta_tree.arrays(library="np")
+            if 'predict_channels' in meta_arrays:
+                channels_str = str(meta_arrays['predict_channels'][0])
+                predict_channels = channels_str.split(',')
+                metadata['predict_channels'] = predict_channels
+                metadata['predict_time'] = 'time' in predict_channels
+                print(f"[INFO] predict_channels from metadata: {predict_channels}")
 
     # Add face name column
     df["face_name"] = df["face"].map(FACE_ID_TO_NAME)
@@ -72,9 +84,15 @@ def load_predictions(root_file: str) -> pd.DataFrame:
     # Check for mask_type column (real data validation)
     has_mask_type = "mask_type" in df.columns
 
+    # Also check if time columns exist in the data
+    if "pred_time" not in df.columns:
+        metadata['predict_time'] = False
+        print("[INFO] Time columns not present in file (npho-only mode)")
+
     print(f"[INFO] Loaded {len(df):,} predictions from {root_file}")
     print(f"[INFO] Events: {df['event_idx'].nunique():,} unique")
     print(f"[INFO] Faces: {df['face_name'].value_counts().to_dict()}")
+    print(f"[INFO] predict_time: {metadata['predict_time']}")
 
     if has_mask_type:
         n_artificial = (df['mask_type'] == 0).sum()
@@ -83,10 +101,10 @@ def load_predictions(root_file: str) -> pd.DataFrame:
         print(f"       - Artificial masks (mask_type=0): {n_artificial:,}")
         print(f"       - Dead channels (mask_type=1): {n_dead:,}")
 
-    return df
+    return df, metadata
 
 
-def filter_valid_predictions(df: pd.DataFrame) -> pd.DataFrame:
+def filter_valid_predictions(df: pd.DataFrame, predict_time: bool = True) -> pd.DataFrame:
     """
     Filter predictions to only those with valid ground truth.
 
@@ -95,6 +113,7 @@ def filter_valid_predictions(df: pd.DataFrame) -> pd.DataFrame:
 
     Args:
         df: Full prediction DataFrame
+        predict_time: Whether time was predicted (if False, skip time filtering)
 
     Returns:
         Filtered DataFrame with only valid predictions
@@ -106,34 +125,43 @@ def filter_valid_predictions(df: pd.DataFrame) -> pd.DataFrame:
         # Training predictions: use all
         valid_df = df.copy()
 
-    # Filter out invalid error values
-    valid_df = valid_df[
-        (valid_df["error_npho"] > INVALID_VALUE + 1) &
-        (valid_df["error_time"] > INVALID_VALUE + 1)
-    ]
+    # Filter out invalid npho error values
+    valid_df = valid_df[valid_df["error_npho"] > INVALID_VALUE + 1]
+
+    # Filter out invalid time error values only if time was predicted
+    if predict_time and "error_time" in valid_df.columns:
+        valid_df = valid_df[valid_df["error_time"] > INVALID_VALUE + 1]
 
     return valid_df
 
 
-def compute_global_metrics(df: pd.DataFrame) -> dict:
+def compute_global_metrics(df: pd.DataFrame, predict_time: bool = True) -> dict:
     """
     Compute global metrics for npho and time predictions.
 
+    Args:
+        df: DataFrame with predictions
+        predict_time: Whether time was predicted
+
     Returns:
-        Dictionary with MAE, RMSE, bias, and 68th percentile for npho and time
+        Dictionary with MAE, RMSE, bias, and 68th percentile for npho (and time if predicted)
     """
     # Filter to valid predictions only
-    valid_df = filter_valid_predictions(df)
+    valid_df = filter_valid_predictions(df, predict_time=predict_time)
+
+    channels = ["npho", "time"] if predict_time else ["npho"]
 
     if len(valid_df) == 0:
         print("[WARNING] No valid predictions for metrics computation")
         return {f"{metric}_{var}": np.nan
                 for metric in ["mae", "rmse", "bias", "res68", "res95", "std", "count"]
-                for var in ["npho", "time"]}
+                for var in channels}
 
-    metrics = {}
+    metrics = {'predict_time': predict_time}
 
-    for var in ["npho", "time"]:
+    for var in channels:
+        if f"error_{var}" not in valid_df.columns:
+            continue
         error = valid_df[f"error_{var}"].values
         abs_error = np.abs(error)
 
@@ -148,15 +176,21 @@ def compute_global_metrics(df: pd.DataFrame) -> dict:
     return metrics
 
 
-def compute_per_face_metrics(df: pd.DataFrame) -> pd.DataFrame:
+def compute_per_face_metrics(df: pd.DataFrame, predict_time: bool = True) -> pd.DataFrame:
     """
     Compute metrics grouped by face.
+
+    Args:
+        df: DataFrame with predictions
+        predict_time: Whether time was predicted
 
     Returns:
         DataFrame with metrics per face
     """
     # Filter to valid predictions only
-    valid_df = filter_valid_predictions(df)
+    valid_df = filter_valid_predictions(df, predict_time=predict_time)
+
+    channels = ["npho", "time"] if predict_time else ["npho"]
 
     results = []
 
@@ -167,7 +201,9 @@ def compute_per_face_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
         row = {"face": face_name, "count": len(face_df)}
 
-        for var in ["npho", "time"]:
+        for var in channels:
+            if f"error_{var}" not in face_df.columns:
+                continue
             error = face_df[f"error_{var}"].values
             abs_error = np.abs(error)
 
@@ -181,7 +217,7 @@ def compute_per_face_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(results)
 
 
-def compute_dead_channel_stats(df: pd.DataFrame) -> dict:
+def compute_dead_channel_stats(df: pd.DataFrame, predict_time: bool = True) -> dict:
     """
     Compute statistics for dead channel predictions (plausibility checks).
 
@@ -191,6 +227,7 @@ def compute_dead_channel_stats(df: pd.DataFrame) -> dict:
 
     Args:
         df: Full prediction DataFrame
+        predict_time: Whether time was predicted
 
     Returns:
         Dictionary with dead channel statistics
@@ -205,6 +242,7 @@ def compute_dead_channel_stats(df: pd.DataFrame) -> dict:
     stats = {
         "n_dead": len(dead_df),
         "n_events": dead_df["event_idx"].nunique(),
+        "predict_time": predict_time,
     }
 
     # Npho statistics
@@ -215,45 +253,53 @@ def compute_dead_channel_stats(df: pd.DataFrame) -> dict:
     stats["npho_max"] = np.max(pred_npho)
     stats["npho_negative_frac"] = (pred_npho < 0).sum() / len(pred_npho)
 
-    # Time statistics
-    pred_time = dead_df["pred_time"].values
-    stats["time_mean"] = np.mean(pred_time)
-    stats["time_std"] = np.std(pred_time)
-    stats["time_min"] = np.min(pred_time)
-    stats["time_max"] = np.max(pred_time)
+    # Time statistics (only if predicted)
+    if predict_time and "pred_time" in dead_df.columns:
+        pred_time_vals = dead_df["pred_time"].values
+        stats["time_mean"] = np.mean(pred_time_vals)
+        stats["time_std"] = np.std(pred_time_vals)
+        stats["time_min"] = np.min(pred_time_vals)
+        stats["time_max"] = np.max(pred_time_vals)
 
     # Per-face breakdown
     stats["by_face"] = {}
     for face_id, face_name in FACE_ID_TO_NAME.items():
         face_dead = dead_df[dead_df["face"] == face_id]
         if len(face_dead) > 0:
-            stats["by_face"][face_name] = {
+            face_stats = {
                 "count": len(face_dead),
                 "npho_mean": face_dead["pred_npho"].mean(),
-                "time_mean": face_dead["pred_time"].mean(),
             }
+            if predict_time and "pred_time" in face_dead.columns:
+                face_stats["time_mean"] = face_dead["pred_time"].mean()
+            stats["by_face"][face_name] = face_stats
 
     return stats
 
 
-def plot_residual_distributions(df: pd.DataFrame, save_dir: str, suffix: str = ""):
+def plot_residual_distributions(df: pd.DataFrame, save_dir: str, suffix: str = "", predict_time: bool = True):
     """
     Plot residual (error) distributions for npho and time.
 
-    Creates 5 plots in a 3x2 grid:
-    - Row 1: All data (npho, time)
-    - Row 2: truth_npho > 100 filter (npho, time)
+    Creates plots in a grid:
+    - Row 1: All data (npho, and time if predicted)
+    - Row 2: truth_npho > 100 filter (npho, and time if predicted)
     - Row 3: Normalized error (pred-truth)/truth for npho only (left), empty (right)
     """
     # Filter to valid predictions
-    valid_df = filter_valid_predictions(df)
+    valid_df = filter_valid_predictions(df, predict_time=predict_time)
 
     if len(valid_df) == 0:
         print("[WARNING] No valid predictions for residual plot")
         return
 
-    # Create 3x2 figure
-    fig, axes = plt.subplots(3, 2, figsize=(14, 15))
+    channels = ["npho", "time"] if predict_time else ["npho"]
+    n_cols = len(channels)
+
+    # Create figure
+    fig, axes = plt.subplots(3, n_cols, figsize=(7 * n_cols, 15))
+    if n_cols == 1:
+        axes = axes.reshape(-1, 1)
 
     # Fixed ranges
     npho_range = (-1000, 2000)
@@ -261,8 +307,11 @@ def plot_residual_distributions(df: pd.DataFrame, save_dir: str, suffix: str = "
     nbins = 100
 
     # Row 1: All data
-    for col, var in enumerate(["npho", "time"]):
+    for col, var in enumerate(channels):
         ax = axes[0, col]
+        if f"error_{var}" not in valid_df.columns:
+            ax.text(0.5, 0.5, f"No {var} data", ha='center', va='center', transform=ax.transAxes)
+            continue
         error = valid_df[f"error_{var}"].values
 
         mean = np.mean(error)
@@ -283,8 +332,11 @@ def plot_residual_distributions(df: pd.DataFrame, save_dir: str, suffix: str = "
 
     # Row 2: truth_npho > 100
     high_npho_df = valid_df[valid_df["truth_npho"] > 100]
-    for col, var in enumerate(["npho", "time"]):
+    for col, var in enumerate(channels):
         ax = axes[1, col]
+        if f"error_{var}" not in high_npho_df.columns:
+            ax.text(0.5, 0.5, f"No {var} data", ha='center', va='center', transform=ax.transAxes)
+            continue
         error = high_npho_df[f"error_{var}"].values
 
         if len(error) == 0:
@@ -335,8 +387,9 @@ def plot_residual_distributions(df: pd.DataFrame, save_dir: str, suffix: str = "
         ax.set_title(f"Normalized Residual: npho (truth_npho>100, n={len(norm_error_plot):,})\nμ={mean:.4g}, σ={std:.4g}")
         ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
 
-    # Hide right panel in row 3
-    axes[2, 1].set_visible(False)
+    # Hide right panel in row 3 (only if it exists)
+    if n_cols > 1:
+        axes[2, 1].set_visible(False)
 
     # Add count info
     n_total = len(df)
@@ -350,20 +403,21 @@ def plot_residual_distributions(df: pd.DataFrame, save_dir: str, suffix: str = "
     print(f"[INFO] Saved residual_distributions{suffix}.pdf")
 
 
-def plot_residual_per_face(df: pd.DataFrame, save_dir: str, suffix: str = ""):
+def plot_residual_per_face(df: pd.DataFrame, save_dir: str, suffix: str = "", predict_time: bool = True):
     """
     Plot residual distributions separated by face.
     """
     # Filter to valid predictions
-    valid_df = filter_valid_predictions(df)
+    valid_df = filter_valid_predictions(df, predict_time=predict_time)
 
     if len(valid_df) == 0:
         print("[WARNING] No valid predictions for per-face residual plot")
         return
 
     faces = sorted(valid_df["face"].unique())
+    channels = ["npho", "time"] if predict_time else ["npho"]
 
-    for var in ["npho", "time"]:
+    for var in channels:
         fig, axes = plt.subplots(2, 3, figsize=(15, 10))
         axes = axes.flatten()
 
@@ -401,12 +455,12 @@ def plot_residual_per_face(df: pd.DataFrame, save_dir: str, suffix: str = ""):
     print(f"[INFO] Saved residual_per_face_npho/time{suffix}.pdf")
 
 
-def plot_scatter_truth_vs_pred(df: pd.DataFrame, save_dir: str, max_points: int = 50000, suffix: str = ""):
+def plot_scatter_truth_vs_pred(df: pd.DataFrame, save_dir: str, max_points: int = 50000, suffix: str = "", predict_time: bool = True):
     """
     Plot 2D histogram of truth vs prediction with truth_npho > 100 cut.
     """
     # Filter to valid predictions
-    valid_df = filter_valid_predictions(df)
+    valid_df = filter_valid_predictions(df, predict_time=predict_time)
 
     if len(valid_df) == 0:
         print("[WARNING] No valid predictions for scatter plot")
@@ -419,13 +473,20 @@ def plot_scatter_truth_vs_pred(df: pd.DataFrame, save_dir: str, max_points: int 
         print("[WARNING] No valid predictions with truth_npho > 100 for scatter plot")
         return
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    channels = ["npho", "time"] if predict_time else ["npho"]
+    n_cols = len(channels)
+    fig, axes = plt.subplots(1, n_cols, figsize=(6 * n_cols, 5))
+    if n_cols == 1:
+        axes = [axes]
 
     # Fixed ranges
     npho_range = (-500, 4000)
     time_range = (-0.2e-7, 1e-7)
 
-    for ax, var in zip(axes, ["npho", "time"]):
+    for ax, var in zip(axes, channels):
+        if f"truth_{var}" not in valid_df.columns:
+            ax.text(0.5, 0.5, f"No {var} data", ha='center', va='center', transform=ax.transAxes)
+            continue
         truth = valid_df[f"truth_{var}"].values
         pred = valid_df[f"pred_{var}"].values
 
@@ -457,7 +518,7 @@ def plot_scatter_truth_vs_pred(df: pd.DataFrame, save_dir: str, max_points: int 
     print(f"[INFO] Saved scatter_truth_vs_pred{suffix}.pdf")
 
 
-def plot_resolution_vs_signal(df: pd.DataFrame, save_dir: str, n_bins: int = 20, suffix: str = ""):
+def plot_resolution_vs_signal(df: pd.DataFrame, save_dir: str, n_bins: int = 20, suffix: str = "", predict_time: bool = True):
     """
     Plot resolution and bias as function of truth_npho.
 
@@ -468,7 +529,7 @@ def plot_resolution_vs_signal(df: pd.DataFrame, save_dir: str, n_bins: int = 20,
     Note: Gray bars in bias plots show the count (number of samples) per bin.
     """
     # Filter to valid predictions
-    valid_df = filter_valid_predictions(df)
+    valid_df = filter_valid_predictions(df, predict_time=predict_time)
 
     if len(valid_df) == 0:
         print("[WARNING] No valid predictions for resolution plot")
@@ -550,67 +611,70 @@ def plot_resolution_vs_signal(df: pd.DataFrame, save_dir: str, n_bins: int = 20,
     # ============================================================
     # File 2: Time resolution/bias profiled by truth_npho transforms
     # ============================================================
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    if predict_time and "error_time" in valid_df.columns:
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
 
-    error_time = valid_df["error_time"].values
-    abs_error_time = np.abs(error_time)
+        error_time = valid_df["error_time"].values
+        abs_error_time = np.abs(error_time)
 
-    x_transforms = [
-        (truth_npho, "truth_npho"),
-        (log_truth_npho, "log10(truth_npho)"),
-        (sqrt_truth_npho, "sqrt(truth_npho)"),
-    ]
+        x_transforms = [
+            (truth_npho, "truth_npho"),
+            (log_truth_npho, "log10(truth_npho)"),
+            (sqrt_truth_npho, "sqrt(truth_npho)"),
+        ]
 
-    for col, (x_vals, x_label) in enumerate(x_transforms):
-        bins = np.percentile(x_vals, np.linspace(0, 100, n_bins + 1))
-        bins = np.unique(bins)
-        bin_centers = 0.5 * (bins[:-1] + bins[1:])
-        bin_indices = np.digitize(x_vals, bins) - 1
-        bin_indices = np.clip(bin_indices, 0, len(bins) - 2)
+        for col, (x_vals, x_label) in enumerate(x_transforms):
+            bins = np.percentile(x_vals, np.linspace(0, 100, n_bins + 1))
+            bins = np.unique(bins)
+            bin_centers = 0.5 * (bins[:-1] + bins[1:])
+            bin_indices = np.digitize(x_vals, bins) - 1
+            bin_indices = np.clip(bin_indices, 0, len(bins) - 2)
 
-        mae_per_bin, bias_per_bin, res68_per_bin, count_per_bin = [], [], [], []
-        for i in range(len(bins) - 1):
-            mask = bin_indices == i
-            if mask.sum() > 0:
-                mae_per_bin.append(np.mean(abs_error_time[mask]))
-                bias_per_bin.append(np.mean(error_time[mask]))
-                res68_per_bin.append(np.percentile(abs_error_time[mask], 68))
-                count_per_bin.append(mask.sum())
-            else:
-                mae_per_bin.append(np.nan)
-                bias_per_bin.append(np.nan)
-                res68_per_bin.append(np.nan)
-                count_per_bin.append(0)
+            mae_per_bin, bias_per_bin, res68_per_bin, count_per_bin = [], [], [], []
+            for i in range(len(bins) - 1):
+                mask = bin_indices == i
+                if mask.sum() > 0:
+                    mae_per_bin.append(np.mean(abs_error_time[mask]))
+                    bias_per_bin.append(np.mean(error_time[mask]))
+                    res68_per_bin.append(np.percentile(abs_error_time[mask], 68))
+                    count_per_bin.append(mask.sum())
+                else:
+                    mae_per_bin.append(np.nan)
+                    bias_per_bin.append(np.nan)
+                    res68_per_bin.append(np.nan)
+                    count_per_bin.append(0)
 
-        ax = axes[0, col]
-        ax.plot(bin_centers, mae_per_bin, 'o-', color='blue', label='MAE')
-        ax.plot(bin_centers, res68_per_bin, 's-', color='green', label='68th pct')
-        ax.set_xlabel(x_label)
-        ax.set_ylabel("Resolution (|error_time|)")
-        ax.set_title(f"Time Resolution vs {x_label}")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
+            ax = axes[0, col]
+            ax.plot(bin_centers, mae_per_bin, 'o-', color='blue', label='MAE')
+            ax.plot(bin_centers, res68_per_bin, 's-', color='green', label='68th pct')
+            ax.set_xlabel(x_label)
+            ax.set_ylabel("Resolution (|error_time|)")
+            ax.set_title(f"Time Resolution vs {x_label}")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
 
-        ax = axes[1, col]
-        ax.plot(bin_centers, bias_per_bin, 'o-', color='red')
-        ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
-        ax.set_xlabel(x_label)
-        ax.set_ylabel("Bias (mean error_time)")
-        ax.set_title(f"Time Bias vs {x_label}")
-        ax.grid(True, alpha=0.3)
-        ax_twin = ax.twinx()
-        ax_twin.bar(bin_centers, count_per_bin, width=np.diff(bins).mean() * 0.8, alpha=0.2, color='gray')
-        ax_twin.set_ylabel("Count per bin (gray bars)", color='gray')
-        ax_twin.set_ylim(300, 350)
+            ax = axes[1, col]
+            ax.plot(bin_centers, bias_per_bin, 'o-', color='red')
+            ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
+            ax.set_xlabel(x_label)
+            ax.set_ylabel("Bias (mean error_time)")
+            ax.set_title(f"Time Bias vs {x_label}")
+            ax.grid(True, alpha=0.3)
+            ax_twin = ax.twinx()
+            ax_twin.bar(bin_centers, count_per_bin, width=np.diff(bins).mean() * 0.8, alpha=0.2, color='gray')
+            ax_twin.set_ylabel("Count per bin (gray bars)", color='gray')
+            ax_twin.set_ylim(300, 350)
 
-    plt.suptitle("Time Resolution and Bias profiled by truth_npho", fontsize=12)
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, f"resolution_time_vs_truthnpho{suffix}.pdf"), dpi=150)
-    plt.close()
-    print(f"[INFO] Saved resolution_time_vs_truthnpho{suffix}.pdf")
+        plt.suptitle("Time Resolution and Bias profiled by truth_npho", fontsize=12)
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, f"resolution_time_vs_truthnpho{suffix}.pdf"), dpi=150)
+        plt.close()
+        print(f"[INFO] Saved resolution_time_vs_truthnpho{suffix}.pdf")
+    else:
+        print("[INFO] Skipping time resolution plot (time not predicted)")
 
 
-def plot_dead_channel_distributions(df: pd.DataFrame, save_dir: str):
+def plot_dead_channel_distributions(df: pd.DataFrame, save_dir: str, predict_time: bool = True):
     """
     Plot prediction distributions for dead channels (no ground truth).
     """
@@ -682,7 +746,7 @@ def plot_dead_channel_distributions(df: pd.DataFrame, save_dir: str):
 
 
 def plot_metrics_summary(global_metrics: dict, face_metrics: pd.DataFrame, save_dir: str,
-                         dead_stats: dict = None, suffix: str = ""):
+                         dead_stats: dict = None, suffix: str = "", predict_time: bool = True):
     """
     Create a summary bar chart of metrics per face.
 
@@ -780,26 +844,28 @@ def plot_metrics_summary(global_metrics: dict, face_metrics: pd.DataFrame, save_
     print(f"[INFO] Saved metrics_summary{suffix}.pdf")
 
 
-def identify_outliers(df: pd.DataFrame, sigma_threshold: float = 5.0) -> pd.DataFrame:
+def identify_outliers(df: pd.DataFrame, sigma_threshold: float = 5.0, predict_time: bool = True) -> pd.DataFrame:
     """
     Identify predictions with large errors (outliers).
 
     Args:
         df: DataFrame with predictions
         sigma_threshold: Number of standard deviations to consider as outlier
+        predict_time: Whether time was predicted
 
     Returns:
         DataFrame with outlier predictions
     """
     # Filter to valid predictions
-    valid_df = filter_valid_predictions(df)
+    valid_df = filter_valid_predictions(df, predict_time=predict_time)
 
     if len(valid_df) == 0:
         return pd.DataFrame()
 
     outliers = []
+    channels = ["npho", "time"] if predict_time else ["npho"]
 
-    for var in ["npho", "time"]:
+    for var in channels:
         error = valid_df[f"error_{var}"].values
         std = np.std(error)
         mean = np.mean(error)
@@ -821,7 +887,7 @@ def identify_outliers(df: pd.DataFrame, sigma_threshold: float = 5.0) -> pd.Data
 
 
 def print_summary(global_metrics: dict, face_metrics: pd.DataFrame, outliers: pd.DataFrame,
-                  dead_stats: dict = None, has_mask_type: bool = False):
+                  dead_stats: dict = None, has_mask_type: bool = False, predict_time: bool = True):
     """
     Print a text summary of the analysis.
     """
@@ -829,18 +895,30 @@ def print_summary(global_metrics: dict, face_metrics: pd.DataFrame, outliers: pd
     print("INPAINTER EVALUATION SUMMARY")
     if has_mask_type:
         print("(Real Data Validation Mode)")
+    print(f"Predict time: {predict_time}")
     print("=" * 70)
 
     print("\n--- Global Metrics (Artificial Masks Only) ---")
-    print(f"{'Metric':<15} {'npho':>12} {'time':>12}")
-    print("-" * 40)
-    print(f"{'MAE':<15} {global_metrics['mae_npho']:>12.6f} {global_metrics['mae_time']:>12.6f}")
-    print(f"{'RMSE':<15} {global_metrics['rmse_npho']:>12.6f} {global_metrics['rmse_time']:>12.6f}")
-    print(f"{'Bias':<15} {global_metrics['bias_npho']:>12.6f} {global_metrics['bias_time']:>12.6f}")
-    print(f"{'Res (68%)':<15} {global_metrics['res68_npho']:>12.6f} {global_metrics['res68_time']:>12.6f}")
-    print(f"{'Res (95%)':<15} {global_metrics['res95_npho']:>12.6f} {global_metrics['res95_time']:>12.6f}")
-    print(f"{'Std':<15} {global_metrics['std_npho']:>12.6f} {global_metrics['std_time']:>12.6f}")
-    print(f"{'Count':<15} {global_metrics['count_npho']:>12,}")
+    if predict_time:
+        print(f"{'Metric':<15} {'npho':>12} {'time':>12}")
+        print("-" * 40)
+        print(f"{'MAE':<15} {global_metrics.get('mae_npho', np.nan):>12.6f} {global_metrics.get('mae_time', np.nan):>12.6f}")
+        print(f"{'RMSE':<15} {global_metrics.get('rmse_npho', np.nan):>12.6f} {global_metrics.get('rmse_time', np.nan):>12.6f}")
+        print(f"{'Bias':<15} {global_metrics.get('bias_npho', np.nan):>12.6f} {global_metrics.get('bias_time', np.nan):>12.6f}")
+        print(f"{'Res (68%)':<15} {global_metrics.get('res68_npho', np.nan):>12.6f} {global_metrics.get('res68_time', np.nan):>12.6f}")
+        print(f"{'Res (95%)':<15} {global_metrics.get('res95_npho', np.nan):>12.6f} {global_metrics.get('res95_time', np.nan):>12.6f}")
+        print(f"{'Std':<15} {global_metrics.get('std_npho', np.nan):>12.6f} {global_metrics.get('std_time', np.nan):>12.6f}")
+        print(f"{'Count':<15} {global_metrics.get('count_npho', 0):>12,}")
+    else:
+        print(f"{'Metric':<15} {'npho':>12}")
+        print("-" * 30)
+        print(f"{'MAE':<15} {global_metrics.get('mae_npho', np.nan):>12.6f}")
+        print(f"{'RMSE':<15} {global_metrics.get('rmse_npho', np.nan):>12.6f}")
+        print(f"{'Bias':<15} {global_metrics.get('bias_npho', np.nan):>12.6f}")
+        print(f"{'Res (68%)':<15} {global_metrics.get('res68_npho', np.nan):>12.6f}")
+        print(f"{'Res (95%)':<15} {global_metrics.get('res95_npho', np.nan):>12.6f}")
+        print(f"{'Std':<15} {global_metrics.get('std_npho', np.nan):>12.6f}")
+        print(f"{'Count':<15} {global_metrics.get('count_npho', 0):>12,}")
 
     if len(face_metrics) > 0:
         print("\n--- Per-Face Metrics ---")
@@ -925,22 +1003,23 @@ def main():
     print(f"[INFO] Output directory: {args.output}")
 
     # Load data
-    df = load_predictions(args.input)
+    df, metadata = load_predictions(args.input)
+    predict_time = metadata.get('predict_time', True)
 
     # Check for real data validation mode
     has_mask_type = "mask_type" in df.columns
 
     # Compute metrics (uses only valid/artificial predictions)
     print("\n[INFO] Computing metrics...")
-    global_metrics = compute_global_metrics(df)
-    face_metrics = compute_per_face_metrics(df)
-    outliers = identify_outliers(df, sigma_threshold=args.outlier_sigma)
+    global_metrics = compute_global_metrics(df, predict_time=predict_time)
+    face_metrics = compute_per_face_metrics(df, predict_time=predict_time)
+    outliers = identify_outliers(df, sigma_threshold=args.outlier_sigma, predict_time=predict_time)
 
     # Compute dead channel statistics (if applicable)
-    dead_stats = compute_dead_channel_stats(df) if has_mask_type else None
+    dead_stats = compute_dead_channel_stats(df, predict_time=predict_time) if has_mask_type else None
 
     # Print summary
-    print_summary(global_metrics, face_metrics, outliers, dead_stats, has_mask_type)
+    print_summary(global_metrics, face_metrics, outliers, dead_stats, has_mask_type, predict_time=predict_time)
 
     # Save metrics
     save_metrics_csv(global_metrics, face_metrics, args.output, dead_stats)
@@ -952,15 +1031,15 @@ def main():
 
     # Generate plots
     print("\n[INFO] Generating plots...")
-    plot_residual_distributions(df, args.output)
-    plot_residual_per_face(df, args.output)
-    plot_scatter_truth_vs_pred(df, args.output, max_points=args.max_points)
-    plot_resolution_vs_signal(df, args.output)
-    plot_metrics_summary(global_metrics, face_metrics, args.output, dead_stats)
+    plot_residual_distributions(df, args.output, predict_time=predict_time)
+    plot_residual_per_face(df, args.output, predict_time=predict_time)
+    plot_scatter_truth_vs_pred(df, args.output, max_points=args.max_points, predict_time=predict_time)
+    plot_resolution_vs_signal(df, args.output, predict_time=predict_time)
+    plot_metrics_summary(global_metrics, face_metrics, args.output, dead_stats, predict_time=predict_time)
 
     # Dead channel plots (if applicable)
     if has_mask_type:
-        plot_dead_channel_distributions(df, args.output)
+        plot_dead_channel_distributions(df, args.output, predict_time=predict_time)
 
     print(f"\n[INFO] Analysis complete. Results saved to {args.output}/")
 

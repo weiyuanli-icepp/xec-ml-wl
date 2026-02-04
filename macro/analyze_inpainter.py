@@ -49,9 +49,58 @@ FACE_NAMES = ['inner', 'us', 'ds', 'outer', 'top', 'bot']
 FACE_INT_TO_NAME = {0: 'inner', 1: 'us', 2: 'ds', 3: 'outer', 4: 'top', 5: 'bot'}
 
 
-def load_predictions(input_path: str) -> Dict[str, np.ndarray]:
-    """Load predictions from ROOT file."""
+def load_metadata(input_path: str) -> Dict:
+    """
+    Load metadata from ROOT file.
+
+    Returns dict with:
+    - predict_channels: list like ['npho'] or ['npho', 'time']
+    - npho_scale, npho_scale2, time_scale, time_shift: normalization params
+    """
+    metadata = {
+        'predict_channels': ['npho', 'time'],  # Default for legacy files
+        'npho_scale': DEFAULT_NPHO_SCALE,
+        'npho_scale2': DEFAULT_NPHO_SCALE2,
+        'time_scale': DEFAULT_TIME_SCALE,
+        'time_shift': DEFAULT_TIME_SHIFT,
+    }
+
+    with uproot.open(input_path) as f:
+        if 'metadata' in f:
+            meta_tree = f['metadata']
+            meta_keys = meta_tree.keys()
+
+            # Read predict_channels
+            if 'predict_channels' in meta_keys:
+                pc_val = meta_tree['predict_channels'].array(library='np')[0]
+                if isinstance(pc_val, bytes):
+                    pc_val = pc_val.decode()
+                metadata['predict_channels'] = pc_val.split(',')
+
+            # Read normalization params
+            for key in ['npho_scale', 'npho_scale2', 'time_scale', 'time_shift']:
+                if key in meta_keys:
+                    val = meta_tree[key].array(library='np')[0]
+                    if not np.isnan(val):
+                        metadata[key] = float(val)
+
+    return metadata
+
+
+def load_predictions(input_path: str) -> Tuple[Dict[str, np.ndarray], Dict]:
+    """
+    Load predictions and metadata from ROOT file.
+
+    Returns:
+        Tuple of (data dict, metadata dict)
+    """
     print(f"[INFO] Loading predictions from {input_path}")
+
+    # Load metadata first
+    metadata = load_metadata(input_path)
+    predict_channels = metadata['predict_channels']
+    predict_time = 'time' in predict_channels
+    print(f"[INFO] Predict channels: {predict_channels}")
 
     with uproot.open(input_path) as f:
         # Try different tree names
@@ -62,7 +111,7 @@ def load_predictions(input_path: str) -> Dict[str, np.ndarray]:
                 break
         if tree_name is None:
             # Use first tree
-            tree_name = [k for k in f.keys() if not k.startswith('_')][0].split(';')[0]
+            tree_name = [k for k in f.keys() if not k.startswith('_') and k != 'metadata'][0].split(';')[0]
 
         tree = f[tree_name]
         data = {key: tree[key].array(library='np') for key in tree.keys()}
@@ -77,7 +126,12 @@ def load_predictions(input_path: str) -> Dict[str, np.ndarray]:
         n_dead = (data['mask_type'] == 1).sum()
         print(f"[INFO] Artificial masks: {n_artificial:,}, Dead channels: {n_dead:,}")
 
-    return data
+    # Detect time prediction from data if not in metadata
+    if 'pred_time' not in data and 'time' in predict_channels:
+        print(f"[INFO] pred_time branch missing - switching to npho-only mode")
+        metadata['predict_channels'] = ['npho']
+
+    return data, metadata
 
 
 def denormalize_npho(npho_norm: np.ndarray, npho_scale: float, npho_scale2: float) -> np.ndarray:
@@ -90,9 +144,18 @@ def denormalize_time(time_norm: np.ndarray, time_scale: float, time_shift: float
     return (time_norm + time_shift) * time_scale
 
 
-def compute_detailed_metrics(data: Dict[str, np.ndarray], sentinel_value: float = DEFAULT_SENTINEL_VALUE) -> Dict:
-    """Compute detailed metrics from predictions."""
+def compute_detailed_metrics(data: Dict[str, np.ndarray], sentinel_value: float = DEFAULT_SENTINEL_VALUE,
+                             predict_time: bool = True) -> Dict:
+    """
+    Compute detailed metrics from predictions.
+
+    Args:
+        data: Prediction data dict
+        sentinel_value: Sentinel value for invalid time
+        predict_time: Whether time was predicted (if False, skip time metrics)
+    """
     metrics = {}
+    metrics['predict_time'] = predict_time
 
     # Filter valid predictions (has ground truth)
     valid = data['error_npho'] > -999
@@ -124,37 +187,40 @@ def compute_detailed_metrics(data: Dict[str, np.ndarray], sentinel_value: float 
 
     # Global metrics
     err_npho = data['error_npho'][eval_mask]
-    err_time = data['error_time'][eval_mask]
-
-    # Time metrics excluding invalid sensors (where truth_time == sentinel)
-    # Valid time = sensors where time was actually measured (not set to sentinel due to low npho)
-    valid_time_mask = eval_mask & (data['truth_time'] != sentinel_value)
-    err_time_valid = data['error_time'][valid_time_mask]
 
     metrics['global'] = {
         'n': len(err_npho),
-        'n_valid_time': len(err_time_valid),
         'npho_mae': np.mean(np.abs(err_npho)),
         'npho_rmse': np.sqrt(np.mean(err_npho ** 2)),
         'npho_bias': np.mean(err_npho),
         'npho_std': np.std(err_npho),
         'npho_68pct': np.percentile(np.abs(err_npho), 68),
         'npho_95pct': np.percentile(np.abs(err_npho), 95),
-        # Time metrics including all sensors
-        'time_mae': np.mean(np.abs(err_time)),
-        'time_rmse': np.sqrt(np.mean(err_time ** 2)),
-        'time_bias': np.mean(err_time),
-        'time_std': np.std(err_time),
-        'time_68pct': np.percentile(np.abs(err_time), 68),
-        'time_95pct': np.percentile(np.abs(err_time), 95),
-        # Time metrics excluding invalid sensors
-        'time_mae_valid': np.mean(np.abs(err_time_valid)) if len(err_time_valid) > 0 else np.nan,
-        'time_rmse_valid': np.sqrt(np.mean(err_time_valid ** 2)) if len(err_time_valid) > 0 else np.nan,
-        'time_bias_valid': np.mean(err_time_valid) if len(err_time_valid) > 0 else np.nan,
-        'time_std_valid': np.std(err_time_valid) if len(err_time_valid) > 0 else np.nan,
-        'time_68pct_valid': np.percentile(np.abs(err_time_valid), 68) if len(err_time_valid) > 0 else np.nan,
-        'time_95pct_valid': np.percentile(np.abs(err_time_valid), 95) if len(err_time_valid) > 0 else np.nan,
     }
+
+    # Time metrics only if time was predicted
+    if predict_time and 'error_time' in data:
+        err_time = data['error_time'][eval_mask]
+
+        # Time metrics excluding invalid sensors (where truth_time == sentinel)
+        valid_time_mask = eval_mask & (data['truth_time'] != sentinel_value)
+        err_time_valid = data['error_time'][valid_time_mask]
+
+        metrics['global'].update({
+            'n_valid_time': len(err_time_valid),
+            'time_mae': np.mean(np.abs(err_time)),
+            'time_rmse': np.sqrt(np.mean(err_time ** 2)),
+            'time_bias': np.mean(err_time),
+            'time_std': np.std(err_time),
+            'time_68pct': np.percentile(np.abs(err_time), 68),
+            'time_95pct': np.percentile(np.abs(err_time), 95),
+            'time_mae_valid': np.mean(np.abs(err_time_valid)) if len(err_time_valid) > 0 else np.nan,
+            'time_rmse_valid': np.sqrt(np.mean(err_time_valid ** 2)) if len(err_time_valid) > 0 else np.nan,
+            'time_bias_valid': np.mean(err_time_valid) if len(err_time_valid) > 0 else np.nan,
+            'time_std_valid': np.std(err_time_valid) if len(err_time_valid) > 0 else np.nan,
+            'time_68pct_valid': np.percentile(np.abs(err_time_valid), 68) if len(err_time_valid) > 0 else np.nan,
+            'time_95pct_valid': np.percentile(np.abs(err_time_valid), 95) if len(err_time_valid) > 0 else np.nan,
+        })
 
     # Per-face metrics
     metrics['per_face'] = {}
@@ -164,41 +230,50 @@ def compute_detailed_metrics(data: Dict[str, np.ndarray], sentinel_value: float 
             continue
 
         face_err_npho = data['error_npho'][face_mask]
-        face_err_time = data['error_time'][face_mask]
 
-        # Valid time for this face
-        face_valid_time_mask = face_mask & (data['truth_time'] != sentinel_value)
-        face_err_time_valid = data['error_time'][face_valid_time_mask]
-
-        metrics['per_face'][face_name] = {
+        face_metrics = {
             'n': len(face_err_npho),
-            'n_valid_time': len(face_err_time_valid),
             'npho_mae': np.mean(np.abs(face_err_npho)),
             'npho_rmse': np.sqrt(np.mean(face_err_npho ** 2)),
             'npho_bias': np.mean(face_err_npho),
             'npho_68pct': np.percentile(np.abs(face_err_npho), 68),
-            'time_mae': np.mean(np.abs(face_err_time)),
-            'time_rmse': np.sqrt(np.mean(face_err_time ** 2)),
-            'time_bias': np.mean(face_err_time),
-            'time_68pct': np.percentile(np.abs(face_err_time), 68),
-            'time_mae_valid': np.mean(np.abs(face_err_time_valid)) if len(face_err_time_valid) > 0 else np.nan,
-            'time_bias_valid': np.mean(face_err_time_valid) if len(face_err_time_valid) > 0 else np.nan,
         }
+
+        if predict_time and 'error_time' in data:
+            face_err_time = data['error_time'][face_mask]
+            face_valid_time_mask = face_mask & (data['truth_time'] != sentinel_value)
+            face_err_time_valid = data['error_time'][face_valid_time_mask]
+
+            face_metrics.update({
+                'n_valid_time': len(face_err_time_valid),
+                'time_mae': np.mean(np.abs(face_err_time)),
+                'time_rmse': np.sqrt(np.mean(face_err_time ** 2)),
+                'time_bias': np.mean(face_err_time),
+                'time_68pct': np.percentile(np.abs(face_err_time), 68),
+                'time_mae_valid': np.mean(np.abs(face_err_time_valid)) if len(face_err_time_valid) > 0 else np.nan,
+                'time_bias_valid': np.mean(face_err_time_valid) if len(face_err_time_valid) > 0 else np.nan,
+            })
+
+        metrics['per_face'][face_name] = face_metrics
 
     # Dead channel statistics (real data mode)
     if has_mask_type and metrics['n_dead'] > 0:
         dead_mask = data['mask_type'] == 1
-        metrics['dead_stats'] = {
+        dead_stats = {
             'n': dead_mask.sum(),
             'pred_npho_mean': np.mean(data['pred_npho'][dead_mask]),
             'pred_npho_std': np.std(data['pred_npho'][dead_mask]),
             'pred_npho_min': np.min(data['pred_npho'][dead_mask]),
             'pred_npho_max': np.max(data['pred_npho'][dead_mask]),
-            'pred_time_mean': np.mean(data['pred_time'][dead_mask]),
-            'pred_time_std': np.std(data['pred_time'][dead_mask]),
-            'pred_time_min': np.min(data['pred_time'][dead_mask]),
-            'pred_time_max': np.max(data['pred_time'][dead_mask]),
         }
+        if predict_time and 'pred_time' in data:
+            dead_stats.update({
+                'pred_time_mean': np.mean(data['pred_time'][dead_mask]),
+                'pred_time_std': np.std(data['pred_time'][dead_mask]),
+                'pred_time_min': np.min(data['pred_time'][dead_mask]),
+                'pred_time_max': np.max(data['pred_time'][dead_mask]),
+            })
+        metrics['dead_stats'] = dead_stats
 
     return metrics
 
@@ -207,7 +282,7 @@ def plot_residual_distributions(data: Dict[str, np.ndarray], output_dir: str,
                                  has_mask_type: bool,
                                  npho_scale: float, npho_scale2: float,
                                  time_scale: float, time_shift: float,
-                                 sentinel_value: float):
+                                 sentinel_value: float, predict_time: bool = True):
     """Plot residual distributions (normalized and denormalized)."""
     if not HAS_MATPLOTLIB:
         return
@@ -222,10 +297,12 @@ def plot_residual_distributions(data: Dict[str, np.ndarray], output_dir: str,
         return
 
     err_npho = data['error_npho'][valid]
-    err_time = data['error_time'][valid]
 
     # === Normalized residuals ===
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    n_cols = 2 if predict_time else 1
+    fig, axes = plt.subplots(1, n_cols, figsize=(6 * n_cols, 5))
+    if n_cols == 1:
+        axes = [axes]
 
     # Npho residuals
     ax = axes[0]
@@ -237,15 +314,17 @@ def plot_residual_distributions(data: Dict[str, np.ndarray], output_dir: str,
     ax.set_title(f'Npho Residuals (n={len(err_npho):,})\n'
                  f'MAE={np.mean(np.abs(err_npho)):.4f}, Bias={np.mean(err_npho):.4f}')
 
-    # Time residuals
-    ax = axes[1]
-    ax.hist(err_time, bins=100, range=(-0.4, 0.4), density=True, alpha=0.7, color='green')
-    ax.axvline(0, color='red', linestyle='--', alpha=0.5)
-    ax.set_xlim(-0.4, 0.4)
-    ax.set_xlabel('Time Error (pred - truth) [normalized]')
-    ax.set_ylabel('Density')
-    ax.set_title(f'Time Residuals (n={len(err_time):,})\n'
-                 f'MAE={np.mean(np.abs(err_time)):.4f}, Bias={np.mean(err_time):.4f}')
+    # Time residuals (only if predicted)
+    if predict_time and 'error_time' in data:
+        err_time = data['error_time'][valid]
+        ax = axes[1]
+        ax.hist(err_time, bins=100, range=(-0.4, 0.4), density=True, alpha=0.7, color='green')
+        ax.axvline(0, color='red', linestyle='--', alpha=0.5)
+        ax.set_xlim(-0.4, 0.4)
+        ax.set_xlabel('Time Error (pred - truth) [normalized]')
+        ax.set_ylabel('Density')
+        ax.set_title(f'Time Residuals (n={len(err_time):,})\n'
+                     f'MAE={np.mean(np.abs(err_time)):.4f}, Bias={np.mean(err_time):.4f}')
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'residual_distributions.pdf'))
@@ -256,19 +335,15 @@ def plot_residual_distributions(data: Dict[str, np.ndarray], output_dir: str,
     # Get truth values and compute denormalized errors
     truth_npho_norm = data['truth_npho'][valid]
     pred_npho_norm = data['pred_npho'][valid]
-    truth_time_norm = data['truth_time'][valid]
-    pred_time_norm = data['pred_time'][valid]
 
-    # Denormalize
+    # Denormalize npho
     truth_npho_raw = denormalize_npho(truth_npho_norm, npho_scale, npho_scale2)
     pred_npho_raw = denormalize_npho(pred_npho_norm, npho_scale, npho_scale2)
-    truth_time_raw = denormalize_time(truth_time_norm, time_scale, time_shift)
-    pred_time_raw = denormalize_time(pred_time_norm, time_scale, time_shift)
-
     err_npho_raw = pred_npho_raw - truth_npho_raw
-    err_time_raw = pred_time_raw - truth_time_raw
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(1, n_cols, figsize=(6 * n_cols, 5))
+    if n_cols == 1:
+        axes = [axes]
 
     # Npho residuals (raw)
     ax = axes[0]
@@ -282,17 +357,24 @@ def plot_residual_distributions(data: Dict[str, np.ndarray], output_dir: str,
     ax.set_title(f'Npho Residuals - Denormalized\n'
                  f'MAE={np.mean(np.abs(err_npho_raw)):.1f}, Bias={np.mean(err_npho_raw):.1f} photons')
 
-    # Time residuals (raw)
-    ax = axes[1]
-    err_time_ns = err_time_raw * 1e9  # Convert to nanoseconds
-    time_low, time_high = np.percentile(err_time_ns, [1, 99])
-    time_range = (max(time_low, -10), min(time_high, 10))
-    ax.hist(err_time_ns, bins=100, range=time_range, density=True, alpha=0.7, color='green')
-    ax.axvline(0, color='red', linestyle='--', alpha=0.5)
-    ax.set_xlabel('Time Error (pred - truth) [ns]')
-    ax.set_ylabel('Density')
-    ax.set_title(f'Time Residuals - Denormalized\n'
-                 f'MAE={np.mean(np.abs(err_time_ns)):.2f}, Bias={np.mean(err_time_ns):.2f} ns')
+    # Time residuals (raw) - only if predicted
+    if predict_time and 'pred_time' in data:
+        truth_time_norm = data['truth_time'][valid]
+        pred_time_norm = data['pred_time'][valid]
+        truth_time_raw = denormalize_time(truth_time_norm, time_scale, time_shift)
+        pred_time_raw = denormalize_time(pred_time_norm, time_scale, time_shift)
+        err_time_raw = pred_time_raw - truth_time_raw
+
+        ax = axes[1]
+        err_time_ns = err_time_raw * 1e9  # Convert to nanoseconds
+        time_low, time_high = np.percentile(err_time_ns, [1, 99])
+        time_range = (max(time_low, -10), min(time_high, 10))
+        ax.hist(err_time_ns, bins=100, range=time_range, density=True, alpha=0.7, color='green')
+        ax.axvline(0, color='red', linestyle='--', alpha=0.5)
+        ax.set_xlabel('Time Error (pred - truth) [ns]')
+        ax.set_ylabel('Density')
+        ax.set_title(f'Time Residuals - Denormalized\n'
+                     f'MAE={np.mean(np.abs(err_time_ns)):.2f}, Bias={np.mean(err_time_ns):.2f} ns')
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'residual_distributions_denorm.pdf'))
@@ -303,7 +385,8 @@ def plot_residual_distributions(data: Dict[str, np.ndarray], output_dir: str,
 def plot_per_face_residuals(data: Dict[str, np.ndarray], output_dir: str,
                              has_mask_type: bool,
                              npho_scale: float, npho_scale2: float,
-                             time_scale: float, time_shift: float):
+                             time_scale: float, time_shift: float,
+                             predict_time: bool = True):
     """Plot per-face residual distributions (normalized and denormalized)."""
     if not HAS_MATPLOTLIB:
         return
@@ -338,30 +421,32 @@ def plot_per_face_residuals(data: Dict[str, np.ndarray], output_dir: str,
     plt.savefig(os.path.join(output_dir, 'residual_per_face_npho.pdf'))
     plt.close()
 
-    # === Normalized Time residuals ===
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    axes = axes.flatten()
+    # === Normalized Time residuals (only if predicted) ===
+    if predict_time and 'error_time' in data:
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        axes = axes.flatten()
 
-    for idx, (face_int, face_name) in enumerate(FACE_INT_TO_NAME.items()):
-        ax = axes[idx]
-        face_mask = valid & (data['face'] == face_int)
+        for idx, (face_int, face_name) in enumerate(FACE_INT_TO_NAME.items()):
+            ax = axes[idx]
+            face_mask = valid & (data['face'] == face_int)
 
-        if face_mask.sum() == 0:
-            ax.text(0.5, 0.5, f'{face_name}\nNo data', ha='center', va='center')
-            continue
+            if face_mask.sum() == 0:
+                ax.text(0.5, 0.5, f'{face_name}\nNo data', ha='center', va='center')
+                continue
 
-        err_time = data['error_time'][face_mask]
-        ax.hist(err_time, bins=50, range=(-0.3, 0.3), density=True, alpha=0.7, color='green')
-        ax.axvline(0, color='red', linestyle='--', alpha=0.5)
-        ax.set_xlim(-0.3, 0.3)
-        ax.set_xlabel('Time Error [normalized]')
-        ax.set_title(f'{face_name} (n={len(err_time):,})\n'
-                     f'MAE={np.mean(np.abs(err_time)):.4f}, Bias={np.mean(err_time):.4f}')
+            err_time = data['error_time'][face_mask]
+            ax.hist(err_time, bins=50, range=(-0.3, 0.3), density=True, alpha=0.7, color='green')
+            ax.axvline(0, color='red', linestyle='--', alpha=0.5)
+            ax.set_xlim(-0.3, 0.3)
+            ax.set_xlabel('Time Error [normalized]')
+            ax.set_title(f'{face_name} (n={len(err_time):,})\n'
+                         f'MAE={np.mean(np.abs(err_time)):.4f}, Bias={np.mean(err_time):.4f}')
 
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'residual_per_face_time.pdf'))
-    plt.close()
-    print("[INFO] Saved residual_per_face_*.pdf")
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'residual_per_face_time.pdf'))
+        plt.close()
+
+    print("[INFO] Saved residual_per_face_npho.pdf" + (" + time.pdf" if predict_time else ""))
 
     # === Denormalized Npho residuals ===
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
@@ -391,40 +476,43 @@ def plot_per_face_residuals(data: Dict[str, np.ndarray], output_dir: str,
     plt.savefig(os.path.join(output_dir, 'residual_per_face_npho_denorm.pdf'))
     plt.close()
 
-    # === Denormalized Time residuals ===
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    axes = axes.flatten()
+    # === Denormalized Time residuals (only if predicted) ===
+    if predict_time and 'pred_time' in data:
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        axes = axes.flatten()
 
-    for idx, (face_int, face_name) in enumerate(FACE_INT_TO_NAME.items()):
-        ax = axes[idx]
-        face_mask = valid & (data['face'] == face_int)
+        for idx, (face_int, face_name) in enumerate(FACE_INT_TO_NAME.items()):
+            ax = axes[idx]
+            face_mask = valid & (data['face'] == face_int)
 
-        if face_mask.sum() == 0:
-            ax.text(0.5, 0.5, f'{face_name}\nNo data', ha='center', va='center')
-            continue
+            if face_mask.sum() == 0:
+                ax.text(0.5, 0.5, f'{face_name}\nNo data', ha='center', va='center')
+                continue
 
-        truth_time_raw = denormalize_time(data['truth_time'][face_mask], time_scale, time_shift)
-        pred_time_raw = denormalize_time(data['pred_time'][face_mask], time_scale, time_shift)
-        err_time_ns = (pred_time_raw - truth_time_raw) * 1e9  # ns
+            truth_time_raw = denormalize_time(data['truth_time'][face_mask], time_scale, time_shift)
+            pred_time_raw = denormalize_time(data['pred_time'][face_mask], time_scale, time_shift)
+            err_time_ns = (pred_time_raw - truth_time_raw) * 1e9  # ns
 
-        time_low, time_high = np.percentile(err_time_ns, [2, 98])
-        time_range = (max(time_low, -5), min(time_high, 5))
-        ax.hist(err_time_ns, bins=50, range=time_range, density=True, alpha=0.7, color='green')
-        ax.axvline(0, color='red', linestyle='--', alpha=0.5)
-        ax.set_xlabel('Time Error [ns]')
-        ax.set_title(f'{face_name} (n={len(err_time_ns):,})\n'
-                     f'MAE={np.mean(np.abs(err_time_ns)):.2f}, Bias={np.mean(err_time_ns):.2f} ns')
+            time_low, time_high = np.percentile(err_time_ns, [2, 98])
+            time_range = (max(time_low, -5), min(time_high, 5))
+            ax.hist(err_time_ns, bins=50, range=time_range, density=True, alpha=0.7, color='green')
+            ax.axvline(0, color='red', linestyle='--', alpha=0.5)
+            ax.set_xlabel('Time Error [ns]')
+            ax.set_title(f'{face_name} (n={len(err_time_ns):,})\n'
+                         f'MAE={np.mean(np.abs(err_time_ns)):.2f}, Bias={np.mean(err_time_ns):.2f} ns')
 
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'residual_per_face_time_denorm.pdf'))
-    plt.close()
-    print("[INFO] Saved residual_per_face_*_denorm.pdf")
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'residual_per_face_time_denorm.pdf'))
+        plt.close()
+
+    print("[INFO] Saved residual_per_face_npho_denorm.pdf" + (" + time_denorm.pdf" if predict_time else ""))
 
 
 def plot_scatter_truth_vs_pred(data: Dict[str, np.ndarray], output_dir: str,
                                 has_mask_type: bool,
                                 npho_scale: float, npho_scale2: float,
-                                time_scale: float, time_shift: float):
+                                time_scale: float, time_shift: float,
+                                predict_time: bool = True):
     """Plot scatter of truth vs prediction with log-scale density."""
     if not HAS_MATPLOTLIB:
         return
@@ -441,11 +529,15 @@ def plot_scatter_truth_vs_pred(data: Dict[str, np.ndarray], output_dir: str,
 
     truth_npho = data['truth_npho'][valid]
     pred_npho = data['pred_npho'][valid]
-    truth_time = data['truth_time'][valid]
-    pred_time = data['pred_time'][valid]
+
+    # Determine layout based on whether time is predicted
+    has_time = predict_time and 'pred_time' in data
+    n_cols = 2 if has_time else 1
 
     # === Normalized scatter ===
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(1, n_cols, figsize=(7 * n_cols, 5))
+    if n_cols == 1:
+        axes = [axes]
 
     # Npho - log scale density
     ax = axes[0]
@@ -458,20 +550,23 @@ def plot_scatter_truth_vs_pred(data: Dict[str, np.ndarray], output_dir: str,
     ax.set_title('Npho: Truth vs Prediction')
     ax.legend()
 
-    # Time - log scale density with fixed range
-    ax = axes[1]
-    # Filter to valid time range [0, 1]
-    time_range_mask = (truth_time >= 0) & (truth_time <= 1)
-    h = ax.hist2d(truth_time[time_range_mask], pred_time[time_range_mask],
-                  bins=100, range=[[0, 1], [pred_time.min(), pred_time.max()]],
-                  cmap='Greens', norm=LogNorm(), cmin=1)
-    plt.colorbar(h[3], ax=ax, label='Count (log)')
-    ax.plot([0, 1], [0, 1], 'r--', alpha=0.7, linewidth=2, label='y=x')
-    ax.set_xlim(0, 1)
-    ax.set_xlabel('Truth Time (normalized)')
-    ax.set_ylabel('Pred Time (normalized)')
-    ax.set_title('Time: Truth vs Prediction')
-    ax.legend()
+    # Time - log scale density with fixed range (only if predicted)
+    if has_time:
+        truth_time = data['truth_time'][valid]
+        pred_time = data['pred_time'][valid]
+        ax = axes[1]
+        # Filter to valid time range [0, 1]
+        time_range_mask = (truth_time >= 0) & (truth_time <= 1)
+        h = ax.hist2d(truth_time[time_range_mask], pred_time[time_range_mask],
+                      bins=100, range=[[0, 1], [pred_time.min(), pred_time.max()]],
+                      cmap='Greens', norm=LogNorm(), cmin=1)
+        plt.colorbar(h[3], ax=ax, label='Count (log)')
+        ax.plot([0, 1], [0, 1], 'r--', alpha=0.7, linewidth=2, label='y=x')
+        ax.set_xlim(0, 1)
+        ax.set_xlabel('Truth Time (normalized)')
+        ax.set_ylabel('Pred Time (normalized)')
+        ax.set_title('Time: Truth vs Prediction')
+        ax.legend()
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'scatter_truth_vs_pred.pdf'))
@@ -480,10 +575,10 @@ def plot_scatter_truth_vs_pred(data: Dict[str, np.ndarray], output_dir: str,
     # === Denormalized scatter ===
     truth_npho_raw = denormalize_npho(truth_npho, npho_scale, npho_scale2)
     pred_npho_raw = denormalize_npho(pred_npho, npho_scale, npho_scale2)
-    truth_time_raw = denormalize_time(truth_time, time_scale, time_shift) * 1e9  # ns
-    pred_time_raw = denormalize_time(pred_time, time_scale, time_shift) * 1e9  # ns
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(1, n_cols, figsize=(7 * n_cols, 5))
+    if n_cols == 1:
+        axes = [axes]
 
     # Npho denormalized
     ax = axes[0]
@@ -500,18 +595,21 @@ def plot_scatter_truth_vs_pred(data: Dict[str, np.ndarray], output_dir: str,
     ax.set_title('Npho: Truth vs Prediction (denormalized)')
     ax.legend()
 
-    # Time denormalized
-    ax = axes[1]
-    time_low, time_high = np.percentile(truth_time_raw, [1, 99])
-    mask_time = (truth_time_raw >= time_low) & (truth_time_raw <= time_high)
-    h = ax.hist2d(truth_time_raw[mask_time], pred_time_raw[mask_time],
-                  bins=100, cmap='Greens', norm=LogNorm(), cmin=1)
-    plt.colorbar(h[3], ax=ax, label='Count (log)')
-    ax.plot([time_low, time_high], [time_low, time_high], 'r--', alpha=0.7, linewidth=2, label='y=x')
-    ax.set_xlabel('Truth Time [ns]')
-    ax.set_ylabel('Pred Time [ns]')
-    ax.set_title('Time: Truth vs Prediction (denormalized)')
-    ax.legend()
+    # Time denormalized (only if predicted)
+    if has_time:
+        truth_time_raw = denormalize_time(truth_time, time_scale, time_shift) * 1e9  # ns
+        pred_time_raw = denormalize_time(pred_time, time_scale, time_shift) * 1e9  # ns
+        ax = axes[1]
+        time_low, time_high = np.percentile(truth_time_raw, [1, 99])
+        mask_time = (truth_time_raw >= time_low) & (truth_time_raw <= time_high)
+        h = ax.hist2d(truth_time_raw[mask_time], pred_time_raw[mask_time],
+                      bins=100, cmap='Greens', norm=LogNorm(), cmin=1)
+        plt.colorbar(h[3], ax=ax, label='Count (log)')
+        ax.plot([time_low, time_high], [time_low, time_high], 'r--', alpha=0.7, linewidth=2, label='y=x')
+        ax.set_xlabel('Truth Time [ns]')
+        ax.set_ylabel('Pred Time [ns]')
+        ax.set_title('Time: Truth vs Prediction (denormalized)')
+        ax.legend()
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'scatter_truth_vs_pred_denorm.pdf'))
@@ -520,7 +618,9 @@ def plot_scatter_truth_vs_pred(data: Dict[str, np.ndarray], output_dir: str,
     # --- Zoomed scatter for high-signal region (npho > 0.1) ---
     high_signal = truth_npho > 0.1
     if high_signal.sum() > 100:
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        fig, axes = plt.subplots(1, n_cols, figsize=(7 * n_cols, 5))
+        if n_cols == 1:
+            axes = [axes]
 
         ax = axes[0]
         h = ax.hist2d(truth_npho[high_signal], pred_npho[high_signal],
@@ -533,16 +633,17 @@ def plot_scatter_truth_vs_pred(data: Dict[str, np.ndarray], output_dir: str,
         ax.set_title(f'Npho: High Signal (npho > 0.1, n={high_signal.sum():,})')
         ax.legend()
 
-        ax = axes[1]
-        h = ax.hist2d(truth_time[high_signal], pred_time[high_signal],
-                      bins=50, cmap='Greens', norm=LogNorm(), cmin=1)
-        plt.colorbar(h[3], ax=ax, label='Count (log)')
-        lims = [truth_time[high_signal].min(), truth_time[high_signal].max()]
-        ax.plot(lims, lims, 'r--', alpha=0.7, linewidth=2, label='y=x')
-        ax.set_xlabel('Truth Time (normalized)')
-        ax.set_ylabel('Pred Time (normalized)')
-        ax.set_title(f'Time: High Signal (npho > 0.1)')
-        ax.legend()
+        if has_time:
+            ax = axes[1]
+            h = ax.hist2d(truth_time[high_signal], pred_time[high_signal],
+                          bins=50, cmap='Greens', norm=LogNorm(), cmin=1)
+            plt.colorbar(h[3], ax=ax, label='Count (log)')
+            lims = [truth_time[high_signal].min(), truth_time[high_signal].max()]
+            ax.plot(lims, lims, 'r--', alpha=0.7, linewidth=2, label='y=x')
+            ax.set_xlabel('Truth Time (normalized)')
+            ax.set_ylabel('Pred Time (normalized)')
+            ax.set_title(f'Time: High Signal (npho > 0.1)')
+            ax.legend()
 
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, 'scatter_truth_vs_pred_highsignal.pdf'))
@@ -552,7 +653,7 @@ def plot_scatter_truth_vs_pred(data: Dict[str, np.ndarray], output_dir: str,
         print("[INFO] Saved scatter_truth_vs_pred.pdf and scatter_truth_vs_pred_denorm.pdf")
 
 
-def plot_metrics_summary(metrics: Dict, output_dir: str, sentinel_value: float):
+def plot_metrics_summary(metrics: Dict, output_dir: str, sentinel_value: float, predict_time: bool = True):
     """Plot bar chart of per-face metrics."""
     if not HAS_MATPLOTLIB:
         return
@@ -562,29 +663,36 @@ def plot_metrics_summary(metrics: Dict, output_dir: str, sentinel_value: float):
 
     faces = list(metrics['per_face'].keys())
     npho_mae = [metrics['per_face'][f]['npho_mae'] for f in faces]
-    time_mae = [metrics['per_face'][f]['time_mae'] for f in faces]
-    time_mae_valid = [metrics['per_face'][f].get('time_mae_valid', np.nan) for f in faces]
-
-    # Scale down time_mae (all) by 10 for better visualization
-    time_mae_scaled = [t / 10 for t in time_mae]
 
     x = np.arange(len(faces))
-    width = 0.25
 
-    fig, ax = plt.subplots(figsize=(12, 6))
-    bars1 = ax.bar(x - width, npho_mae, width, label='Npho MAE', color='blue', alpha=0.7)
-    bars2 = ax.bar(x, time_mae_scaled, width, label='Time MAE (all) ÷10', color='green', alpha=0.7)
-    bars3 = ax.bar(x + width, time_mae_valid, width, label='Time MAE (valid only)', color='orange', alpha=0.7)
+    if predict_time:
+        time_mae = [metrics['per_face'][f].get('time_mae', np.nan) for f in faces]
+        time_mae_valid = [metrics['per_face'][f].get('time_mae_valid', np.nan) for f in faces]
+        # Scale down time_mae (all) by 10 for better visualization
+        time_mae_scaled = [t / 10 if not np.isnan(t) else np.nan for t in time_mae]
+        width = 0.25
+        fig, ax = plt.subplots(figsize=(12, 6))
+        bars1 = ax.bar(x - width, npho_mae, width, label='Npho MAE', color='blue', alpha=0.7)
+        bars2 = ax.bar(x, time_mae_scaled, width, label='Time MAE (all) ÷10', color='green', alpha=0.7)
+        bars3 = ax.bar(x + width, time_mae_valid, width, label='Time MAE (valid only)', color='orange', alpha=0.7)
+        ax.set_title('Per-Face MAE Comparison\n(Time valid = excluding sensors with truth_time == sentinel)')
+        all_bars = [bars1, bars2, bars3]
+    else:
+        width = 0.4
+        fig, ax = plt.subplots(figsize=(10, 6))
+        bars1 = ax.bar(x, npho_mae, width, label='Npho MAE', color='blue', alpha=0.7)
+        ax.set_title('Per-Face Npho MAE')
+        all_bars = [bars1]
 
     ax.set_xlabel('Face')
     ax.set_ylabel('MAE (normalized)')
-    ax.set_title('Per-Face MAE Comparison\n(Time valid = excluding sensors with truth_time == sentinel)')
     ax.set_xticks(x)
     ax.set_xticklabels(faces)
     ax.legend()
 
     # Add value labels
-    for bars in [bars1, bars2, bars3]:
+    for bars in all_bars:
         for bar in bars:
             height = bar.get_height()
             if not np.isnan(height):
@@ -646,7 +754,7 @@ def save_metrics_csv(metrics: Dict, output_dir: str):
         print("[INFO] Saved dead_channel_stats.csv")
 
 
-def print_report(metrics: Dict):
+def print_report(metrics: Dict, predict_time: bool = True):
     """Print metrics report to console."""
     print("\n" + "=" * 70)
     print("INPAINTER ANALYSIS REPORT")
@@ -654,6 +762,7 @@ def print_report(metrics: Dict):
 
     mode_str = "Real Data" if metrics['mode'] == 'real_data' else "MC"
     print(f"Mode: {mode_str}")
+    print(f"Predict channels: {'npho, time' if predict_time else 'npho only'}")
     print(f"Total predictions: {metrics['n_total']:,}")
     print(f"Predictions with truth: {metrics['n_with_truth']:,}")
     if 'n_artificial' in metrics:
@@ -663,28 +772,49 @@ def print_report(metrics: Dict):
     if 'global' in metrics:
         g = metrics['global']
         print(f"\n--- Global Metrics ---")
-        print(f"{'Metric':<20} {'Npho':>12} {'Time (all)':>12} {'Time (valid)':>12}")
-        print("-" * 60)
-        print(f"{'N':<20} {g['n']:>12,} {g['n']:>12,} {g['n_valid_time']:>12,}")
-        print(f"{'MAE':<20} {g['npho_mae']:>12.4f} {g['time_mae']:>12.4f} {g['time_mae_valid']:>12.4f}")
-        print(f"{'RMSE':<20} {g['npho_rmse']:>12.4f} {g['time_rmse']:>12.4f} {g['time_rmse_valid']:>12.4f}")
-        print(f"{'Bias':<20} {g['npho_bias']:>12.4f} {g['time_bias']:>12.4f} {g['time_bias_valid']:>12.4f}")
-        print(f"{'Std':<20} {g['npho_std']:>12.4f} {g['time_std']:>12.4f} {g['time_std_valid']:>12.4f}")
-        print(f"{'68th pct':<20} {g['npho_68pct']:>12.4f} {g['time_68pct']:>12.4f} {g['time_68pct_valid']:>12.4f}")
-        print(f"{'95th pct':<20} {g['npho_95pct']:>12.4f} {g['time_95pct']:>12.4f} {g['time_95pct_valid']:>12.4f}")
+        if predict_time:
+            print(f"{'Metric':<20} {'Npho':>12} {'Time (all)':>12} {'Time (valid)':>12}")
+            print("-" * 60)
+            print(f"{'N':<20} {g['n']:>12,} {g['n']:>12,} {g.get('n_valid_time', 0):>12,}")
+            print(f"{'MAE':<20} {g['npho_mae']:>12.4f} {g['time_mae']:>12.4f} {g['time_mae_valid']:>12.4f}")
+            print(f"{'RMSE':<20} {g['npho_rmse']:>12.4f} {g['time_rmse']:>12.4f} {g['time_rmse_valid']:>12.4f}")
+            print(f"{'Bias':<20} {g['npho_bias']:>12.4f} {g['time_bias']:>12.4f} {g['time_bias_valid']:>12.4f}")
+            print(f"{'Std':<20} {g['npho_std']:>12.4f} {g['time_std']:>12.4f} {g['time_std_valid']:>12.4f}")
+            print(f"{'68th pct':<20} {g['npho_68pct']:>12.4f} {g['time_68pct']:>12.4f} {g['time_68pct_valid']:>12.4f}")
+            print(f"{'95th pct':<20} {g['npho_95pct']:>12.4f} {g['time_95pct']:>12.4f} {g['time_95pct_valid']:>12.4f}")
+        else:
+            print(f"{'Metric':<20} {'Npho':>12}")
+            print("-" * 35)
+            print(f"{'N':<20} {g['n']:>12,}")
+            print(f"{'MAE':<20} {g['npho_mae']:>12.4f}")
+            print(f"{'RMSE':<20} {g['npho_rmse']:>12.4f}")
+            print(f"{'Bias':<20} {g['npho_bias']:>12.4f}")
+            print(f"{'Std':<20} {g['npho_std']:>12.4f}")
+            print(f"{'68th pct':<20} {g['npho_68pct']:>12.4f}")
+            print(f"{'95th pct':<20} {g['npho_95pct']:>12.4f}")
 
     if 'per_face' in metrics and metrics['per_face']:
         print(f"\n--- Per-Face Metrics ---")
-        print(f"{'Face':<8} {'N':>8} {'Npho MAE':>10} {'Npho Bias':>10} {'Time MAE':>10} {'Time MAE*':>10}")
-        print("-" * 60)
-        print("(* = valid sensors only, excluding sentinel)")
-        for face_name in FACE_NAMES:
-            if face_name in metrics['per_face']:
-                m = metrics['per_face'][face_name]
-                time_mae_valid = m.get('time_mae_valid', np.nan)
-                time_mae_valid_str = f"{time_mae_valid:>10.4f}" if not np.isnan(time_mae_valid) else "       N/A"
-                print(f"{face_name:<8} {m['n']:>8,} {m['npho_mae']:>10.4f} {m['npho_bias']:>10.4f} "
-                      f"{m['time_mae']:>10.4f} {time_mae_valid_str}")
+        if predict_time:
+            print(f"{'Face':<8} {'N':>8} {'Npho MAE':>10} {'Npho Bias':>10} {'Time MAE':>10} {'Time MAE*':>10}")
+            print("-" * 60)
+            print("(* = valid sensors only, excluding sentinel)")
+            for face_name in FACE_NAMES:
+                if face_name in metrics['per_face']:
+                    m = metrics['per_face'][face_name]
+                    time_mae = m.get('time_mae', np.nan)
+                    time_mae_valid = m.get('time_mae_valid', np.nan)
+                    time_mae_str = f"{time_mae:>10.4f}" if not np.isnan(time_mae) else "       N/A"
+                    time_mae_valid_str = f"{time_mae_valid:>10.4f}" if not np.isnan(time_mae_valid) else "       N/A"
+                    print(f"{face_name:<8} {m['n']:>8,} {m['npho_mae']:>10.4f} {m['npho_bias']:>10.4f} "
+                          f"{time_mae_str} {time_mae_valid_str}")
+        else:
+            print(f"{'Face':<8} {'N':>8} {'Npho MAE':>10} {'Npho Bias':>10}")
+            print("-" * 40)
+            for face_name in FACE_NAMES:
+                if face_name in metrics['per_face']:
+                    m = metrics['per_face'][face_name]
+                    print(f"{face_name:<8} {m['n']:>8,} {m['npho_mae']:>10.4f} {m['npho_bias']:>10.4f}")
 
     if 'dead_stats' in metrics:
         d = metrics['dead_stats']
@@ -692,8 +822,9 @@ def print_report(metrics: Dict):
         print(f"Total: {d['n']:,}")
         print(f"Npho: mean={d['pred_npho_mean']:.4f}, std={d['pred_npho_std']:.4f}, "
               f"range=[{d['pred_npho_min']:.4f}, {d['pred_npho_max']:.4f}]")
-        print(f"Time: mean={d['pred_time_mean']:.4f}, std={d['pred_time_std']:.4f}, "
-              f"range=[{d['pred_time_min']:.4f}, {d['pred_time_max']:.4f}]")
+        if predict_time and 'pred_time_mean' in d:
+            print(f"Time: mean={d['pred_time_mean']:.4f}, std={d['pred_time_std']:.4f}, "
+                  f"range=[{d['pred_time_min']:.4f}, {d['pred_time_max']:.4f}]")
 
     print("=" * 70)
 
@@ -729,16 +860,27 @@ def main():
     # Create output directory
     os.makedirs(args.output, exist_ok=True)
 
-    # Load predictions
-    data = load_predictions(args.input)
+    # Load predictions and metadata
+    data, metadata = load_predictions(args.input)
     has_mask_type = 'mask_type' in data
+
+    # Get predict_time from metadata
+    predict_channels = metadata.get('predict_channels', ['npho', 'time'])
+    predict_time = 'time' in predict_channels
+
+    # Use metadata normalization params if not overridden by CLI
+    # (CLI args use defaults, so check if they match defaults to detect override)
+    npho_scale = metadata.get('npho_scale', args.npho_scale)
+    npho_scale2 = metadata.get('npho_scale2', args.npho_scale2)
+    time_scale = metadata.get('time_scale', args.time_scale)
+    time_shift = metadata.get('time_shift', args.time_shift)
 
     # Compute metrics
     print("[INFO] Computing metrics...")
-    metrics = compute_detailed_metrics(data, sentinel_value=args.sentinel)
+    metrics = compute_detailed_metrics(data, sentinel_value=args.sentinel, predict_time=predict_time)
 
     # Print report
-    print_report(metrics)
+    print_report(metrics, predict_time=predict_time)
 
     # Save metrics
     save_metrics_csv(metrics, args.output)
@@ -747,16 +889,16 @@ def main():
     if not args.no_plots and HAS_MATPLOTLIB:
         print("[INFO] Generating plots...")
         plot_residual_distributions(data, args.output, has_mask_type,
-                                     args.npho_scale, args.npho_scale2,
-                                     args.time_scale, args.time_shift,
-                                     args.sentinel)
+                                     npho_scale, npho_scale2,
+                                     time_scale, time_shift,
+                                     args.sentinel, predict_time=predict_time)
         plot_per_face_residuals(data, args.output, has_mask_type,
-                                 args.npho_scale, args.npho_scale2,
-                                 args.time_scale, args.time_shift)
+                                 npho_scale, npho_scale2,
+                                 time_scale, time_shift, predict_time=predict_time)
         plot_scatter_truth_vs_pred(data, args.output, has_mask_type,
-                                    args.npho_scale, args.npho_scale2,
-                                    args.time_scale, args.time_shift)
-        plot_metrics_summary(metrics, args.output, args.sentinel)
+                                    npho_scale, npho_scale2,
+                                    time_scale, time_shift, predict_time=predict_time)
+        plot_metrics_summary(metrics, args.output, args.sentinel, predict_time=predict_time)
 
     print(f"\n[INFO] Analysis complete! Results saved to {args.output}/")
 

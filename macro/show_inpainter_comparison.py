@@ -369,6 +369,20 @@ Examples:
         base_branches = ["event_idx", "sensor_id", "face", "pred_npho", "pred_time", "truth_npho", "truth_time"]
         branches_to_load = [b for b in base_branches if b in available_branches]
 
+        # Check which prediction channels are available (npho-only or npho+time)
+        has_pred_npho = "pred_npho" in available_branches
+        has_pred_time = "pred_time" in available_branches
+
+        # Warn if user requested time but it's not available
+        if args.channel == "time" and not has_pred_time:
+            print(f"Error: Time channel requested but pred_time not found in predictions file.")
+            print(f"  This model may have been trained with predict_channels: ['npho']")
+            print(f"  Available prediction branches: {[k for k in available_branches if 'pred' in k.lower()]}")
+            sys.exit(1)
+        if args.channel == "both" and not has_pred_time:
+            print(f"Warning: Time channel not available (npho-only model), plotting npho only.")
+            args.channel = "npho"
+
         # Try to load run_number and event_number if available
         has_run_event = "run_number" in available_branches and "event_number" in available_branches
         if has_run_event:
@@ -443,7 +457,11 @@ Examples:
 
         sensor_ids = sensor_ids_all[valid_face_mask]
         pred_npho = all_arrays["pred_npho"][event_mask][valid_face_mask]
-        pred_time = all_arrays["pred_time"][event_mask][valid_face_mask]
+        # Use predicted time if available, otherwise use truth time
+        if has_pred_time:
+            pred_time = all_arrays["pred_time"][event_mask][valid_face_mask]
+        else:
+            pred_time = all_arrays["truth_time"][event_mask][valid_face_mask]  # Placeholder
         truth_npho_pred = all_arrays["truth_npho"][event_mask][valid_face_mask]
         truth_time_pred = all_arrays["truth_time"][event_mask][valid_face_mask]
 

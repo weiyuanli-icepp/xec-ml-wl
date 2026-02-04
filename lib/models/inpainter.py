@@ -30,15 +30,22 @@ class FaceInpaintingHead(nn.Module):
     Uses local CNN + global latent conditioning to predict masked sensor values.
 
     Args:
+        face_h: Height of the face grid
+        face_w: Width of the face grid
+        latent_dim: Dimension of input latent vector
+        hidden_dim: Hidden dimension for CNN layers
         use_local_context: If True (default), uses face_tensor (local neighbor values)
                           concatenated with latent. If False, uses only global latent
                           (similar to MAE decoder) for ablation studies.
+        out_channels: Number of output channels (1 for npho-only, 2 for npho+time)
     """
-    def __init__(self, face_h, face_w, latent_dim=1024, hidden_dim=64, use_local_context=True):
+    def __init__(self, face_h, face_w, latent_dim=1024, hidden_dim=64, use_local_context=True,
+                 out_channels=2):
         super().__init__()
         self.face_h = face_h
         self.face_w = face_w
         self.use_local_context = use_local_context
+        self.out_channels = out_channels
 
         # Project latent token to conditioning vector
         self.latent_proj = nn.Sequential(
@@ -67,11 +74,11 @@ class FaceInpaintingHead(nn.Module):
                 nn.GELU(),
             )
 
-        # Prediction head: predicts (npho, time) at each position
+        # Prediction head: predicts (npho [+ time]) at each position
         self.pred_head = nn.Sequential(
             nn.Conv2d(hidden_dim, hidden_dim // 2, kernel_size=3, padding=1),
             nn.GELU(),
-            nn.Conv2d(hidden_dim // 2, 2, kernel_size=1),
+            nn.Conv2d(hidden_dim // 2, out_channels, kernel_size=1),
         )
 
     def forward(self, face_tensor, latent_token, mask_2d):
@@ -82,8 +89,9 @@ class FaceInpaintingHead(nn.Module):
             mask_2d: (B, H, W) - binary mask (1 = masked/dead, 0 = valid)
 
         Returns:
-            pred_masked: (B, num_masked, 2) - predictions for masked positions
+            pred_masked: (B, num_masked, out_channels) - predictions for masked positions
             mask_indices: (B, num_masked, 2) - (h, w) indices of masked positions
+            valid_mask: (B, num_masked) - which positions are valid (for padding)
         """
         B, C, H, W = face_tensor.shape
         device = face_tensor.device
@@ -102,7 +110,7 @@ class FaceInpaintingHead(nn.Module):
             features = self.global_decoder(latent_cond)  # (B, hidden_dim, H, W)
 
         # Predict all positions
-        pred_all = self.pred_head(features)  # (B, 2, H, W)
+        pred_all = self.pred_head(features)  # (B, out_channels, H, W)
 
         # Extract only masked positions
         # Find max number of masked positions in batch for padding
@@ -112,7 +120,7 @@ class FaceInpaintingHead(nn.Module):
         if max_masked == 0:
             # No masked positions
             return (
-                torch.zeros(B, 0, 2, device=device, dtype=face_tensor.dtype),
+                torch.zeros(B, 0, self.out_channels, device=device, dtype=face_tensor.dtype),
                 torch.zeros(B, 0, 2, dtype=torch.long, device=device),
                 torch.zeros(B, 0, dtype=torch.bool, device=device),
             )
@@ -122,7 +130,7 @@ class FaceInpaintingHead(nn.Module):
         batch_idx, h_idx, w_idx = mask_2d.nonzero(as_tuple=True)
 
         # Gather predictions at all masked positions
-        gathered_preds = pred_all[batch_idx, :, h_idx, w_idx]  # (total_masked, 2)
+        gathered_preds = pred_all[batch_idx, :, h_idx, w_idx]  # (total_masked, out_channels)
 
         # Compute within-batch position indices for scattering
         cumsum = torch.zeros(B + 1, device=device, dtype=torch.long)
@@ -130,7 +138,7 @@ class FaceInpaintingHead(nn.Module):
         within_batch_idx = torch.arange(len(batch_idx), device=device) - cumsum[batch_idx]
 
         # Scatter into output tensors
-        pred_masked = torch.zeros(B, max_masked, 2, device=device, dtype=pred_all.dtype)
+        pred_masked = torch.zeros(B, max_masked, self.out_channels, device=device, dtype=pred_all.dtype)
         pred_masked[batch_idx, within_batch_idx] = gathered_preds
 
         mask_indices = torch.zeros(B, max_masked, 2, dtype=torch.long, device=device)
@@ -151,7 +159,7 @@ class FaceInpaintingHead(nn.Module):
             latent_token: (B, latent_dim) - global context from encoder
 
         Returns:
-            pred_all: (B, H, W, 2) - predictions for all positions
+            pred_all: (B, H, W, out_channels) - predictions for all positions
         """
         B, C, H, W = face_tensor.shape
 
@@ -169,10 +177,10 @@ class FaceInpaintingHead(nn.Module):
             features = self.global_decoder(latent_cond)  # (B, hidden_dim, H, W)
 
         # Predict all positions
-        pred_all = self.pred_head(features)  # (B, 2, H, W)
+        pred_all = self.pred_head(features)  # (B, out_channels, H, W)
 
-        # Return in (B, H, W, 2) format for easier scattering
-        return pred_all.permute(0, 2, 3, 1)  # (B, H, W, 2)
+        # Return in (B, H, W, out_channels) format for easier scattering
+        return pred_all.permute(0, 2, 3, 1)  # (B, H, W, out_channels)
 
 
 class HexInpaintingHead(nn.Module):
@@ -181,14 +189,21 @@ class HexInpaintingHead(nn.Module):
     Uses local GNN + global latent conditioning to predict masked sensor values.
 
     Args:
+        num_nodes: Number of nodes in the graph
+        edge_index: Adjacency matrix for graph attention
+        latent_dim: Dimension of input latent vector
+        hidden_dim: Hidden dimension for GNN layers
         use_local_context: If True (default), uses node_features (local neighbor values)
                           with GNN message passing. If False, uses only global latent
                           (similar to MAE decoder) for ablation studies.
+        out_channels: Number of output channels (1 for npho-only, 2 for npho+time)
     """
-    def __init__(self, num_nodes, edge_index, latent_dim=1024, hidden_dim=96, use_local_context=True):
+    def __init__(self, num_nodes, edge_index, latent_dim=1024, hidden_dim=96, use_local_context=True,
+                 out_channels=2):
         super().__init__()
         self.num_nodes = num_nodes
         self.use_local_context = use_local_context
+        self.out_channels = out_channels
 
         if not torch.is_tensor(edge_index):
             edge_index = torch.from_numpy(edge_index)
@@ -223,7 +238,7 @@ class HexInpaintingHead(nn.Module):
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.GELU(),
-            nn.Linear(hidden_dim // 2, 2),  # (npho, time)
+            nn.Linear(hidden_dim // 2, out_channels),  # (npho [+ time])
         )
 
     def forward(self, node_features, latent_token, node_mask):
@@ -234,7 +249,7 @@ class HexInpaintingHead(nn.Module):
             node_mask: (B, num_nodes) - binary mask (1 = masked/dead, 0 = valid)
 
         Returns:
-            pred_masked: (B, num_masked, 2) - predictions for masked positions
+            pred_masked: (B, num_masked, out_channels) - predictions for masked positions
             mask_indices: (B, num_masked) - node indices of masked positions
             valid_mask: (B, num_masked) - which positions are valid (for padding)
         """
@@ -258,7 +273,7 @@ class HexInpaintingHead(nn.Module):
             x = x.unsqueeze(1).expand(-1, N, -1)  # (B, N, hidden_dim)
 
         # Predict all nodes
-        pred_all = self.pred_head(x)  # (B, N, 2)
+        pred_all = self.pred_head(x)  # (B, N, out_channels)
 
         # Extract only masked positions
         num_masked_per_sample = node_mask.sum(dim=1).int()  # (B,)
@@ -266,7 +281,7 @@ class HexInpaintingHead(nn.Module):
 
         if max_masked == 0:
             return (
-                torch.zeros(B, 0, 2, device=device, dtype=node_features.dtype),
+                torch.zeros(B, 0, self.out_channels, device=device, dtype=node_features.dtype),
                 torch.zeros(B, 0, dtype=torch.long, device=device),
                 torch.zeros(B, 0, dtype=torch.bool, device=device),
             )
@@ -276,7 +291,7 @@ class HexInpaintingHead(nn.Module):
         batch_idx, node_idx = node_mask.nonzero(as_tuple=True)
 
         # Gather predictions at all masked positions
-        gathered_preds = pred_all[batch_idx, node_idx]  # (total_masked, 2)
+        gathered_preds = pred_all[batch_idx, node_idx]  # (total_masked, out_channels)
 
         # Compute within-batch position indices for scattering
         cumsum = torch.zeros(B + 1, device=device, dtype=torch.long)
@@ -284,7 +299,7 @@ class HexInpaintingHead(nn.Module):
         within_batch_idx = torch.arange(len(batch_idx), device=device) - cumsum[batch_idx]
 
         # Scatter into output tensors
-        pred_masked = torch.zeros(B, max_masked, 2, device=device, dtype=pred_all.dtype)
+        pred_masked = torch.zeros(B, max_masked, self.out_channels, device=device, dtype=pred_all.dtype)
         pred_masked[batch_idx, within_batch_idx] = gathered_preds
 
         mask_indices = torch.zeros(B, max_masked, dtype=torch.long, device=device)
@@ -304,7 +319,7 @@ class HexInpaintingHead(nn.Module):
             latent_token: (B, latent_dim) - global context from encoder
 
         Returns:
-            pred_all: (B, num_nodes, 2) - predictions for all nodes
+            pred_all: (B, num_nodes, out_channels) - predictions for all nodes
         """
         B, N, C = node_features.shape
 
@@ -325,7 +340,7 @@ class HexInpaintingHead(nn.Module):
             x = x.unsqueeze(1).expand(-1, N, -1)  # (B, N, hidden_dim)
 
         # Predict all nodes
-        pred_all = self.pred_head(x)  # (B, N, 2)
+        pred_all = self.pred_head(x)  # (B, N, out_channels)
 
         return pred_all
 
@@ -340,19 +355,25 @@ class OuterSensorInpaintingHead(nn.Module):
     Architecture:
     1. Local CNN processes finegrid input with latent conditioning
     2. For each sensor, learnable attention pools features from its finegrid region (VECTORIZED)
-    3. MLP predicts (npho, time) for each sensor
+    3. MLP predicts (npho [+ time]) for each sensor
 
     Args:
+        latent_dim: Dimension of input latent vector
+        hidden_dim: Hidden dimension for CNN layers
+        pool_kernel: Kernel size for pooling finegrid (e.g., [3, 3])
         use_local_context: If True (default), uses finegrid features (local spatial context)
                           with attention pooling. If False, uses only global latent
                           for ablation studies.
+        out_channels: Number of output channels (1 for npho-only, 2 for npho+time)
     """
 
-    def __init__(self, latent_dim=1024, hidden_dim=64, pool_kernel=None, use_local_context=True):
+    def __init__(self, latent_dim=1024, hidden_dim=64, pool_kernel=None, use_local_context=True,
+                 out_channels=2):
         super().__init__()
         self.pool_kernel = pool_kernel
         self.use_local_context = use_local_context
         self.hidden_dim = hidden_dim
+        self.out_channels = out_channels
 
         # Compute actual finegrid size after pooling
         if pool_kernel:
@@ -391,7 +412,7 @@ class OuterSensorInpaintingHead(nn.Module):
             self.pred_head = nn.Sequential(
                 nn.Linear(hidden_dim + hidden_dim, hidden_dim),
                 nn.GELU(),
-                nn.Linear(hidden_dim, 2),  # (npho, time)
+                nn.Linear(hidden_dim, out_channels),  # (npho [+ time])
             )
         else:
             # Global-only decoder: MLP from latent to per-sensor predictions
@@ -405,7 +426,7 @@ class OuterSensorInpaintingHead(nn.Module):
             self.pred_head = nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim // 2),
                 nn.GELU(),
-                nn.Linear(hidden_dim // 2, 2),  # (npho, time)
+                nn.Linear(hidden_dim // 2, out_channels),  # (npho [+ time])
             )
 
         # Build vectorized lookup tables for sensor regions
@@ -489,7 +510,7 @@ class OuterSensorInpaintingHead(nn.Module):
             latent_token: (B, latent_dim) global context from encoder
 
         Returns:
-            all_preds: (B, n_sensors, 2) predictions for all sensors
+            all_preds: (B, n_sensors, out_channels) predictions for all sensors
         """
         B, C, H, W = finegrid_tensor.shape
         device = finegrid_tensor.device
@@ -569,7 +590,7 @@ class OuterSensorInpaintingHead(nn.Module):
             sensor_mask: (B, 234) binary mask at sensor level (indexed by OUTER_ALL_SENSOR_IDS order)
 
         Returns:
-            pred_masked: (B, max_masked, 2) predictions for masked sensors
+            pred_masked: (B, max_masked, out_channels) predictions for masked sensors
             sensor_ids_masked: (B, max_masked) flat sensor IDs
             valid: (B, max_masked) boolean mask for valid positions
         """
@@ -585,7 +606,7 @@ class OuterSensorInpaintingHead(nn.Module):
 
         if max_masked == 0:
             return (
-                torch.zeros(B, 0, 2, device=device, dtype=finegrid_tensor.dtype),
+                torch.zeros(B, 0, self.out_channels, device=device, dtype=finegrid_tensor.dtype),
                 torch.zeros(B, 0, dtype=torch.long, device=device),
                 torch.zeros(B, 0, dtype=torch.bool, device=device),
             )
@@ -594,7 +615,7 @@ class OuterSensorInpaintingHead(nn.Module):
         batch_idx, sensor_idx = sensor_mask.nonzero(as_tuple=True)
 
         # Gather predictions
-        gathered_preds = all_preds[batch_idx, sensor_idx]  # (total_masked, 2)
+        gathered_preds = all_preds[batch_idx, sensor_idx]  # (total_masked, out_channels)
 
         # Get actual sensor IDs
         gathered_sensor_ids = self.sensor_ids[sensor_idx]  # (total_masked,)
@@ -605,7 +626,7 @@ class OuterSensorInpaintingHead(nn.Module):
         within_batch_idx = torch.arange(len(batch_idx), device=device) - cumsum[batch_idx]
 
         # Scatter into output tensors
-        pred_masked = torch.zeros(B, max_masked, 2, device=device, dtype=all_preds.dtype)
+        pred_masked = torch.zeros(B, max_masked, self.out_channels, device=device, dtype=all_preds.dtype)
         pred_masked[batch_idx, within_batch_idx] = gathered_preds
 
         sensor_ids_masked = torch.zeros(B, max_masked, dtype=torch.long, device=device)
@@ -625,7 +646,7 @@ class OuterSensorInpaintingHead(nn.Module):
             latent_token: (B, latent_dim) global context from encoder
 
         Returns:
-            all_preds: (B, n_sensors, 2) predictions for all 234 outer sensors
+            all_preds: (B, n_sensors, out_channels) predictions for all 234 outer sensors
             sensor_ids: (n_sensors,) tensor of sensor IDs (constant across batch)
         """
         all_preds = self._compute_all_sensor_preds_vectorized(finegrid_tensor, latent_token)
@@ -647,15 +668,20 @@ class XEC_Inpainter(nn.Module):
         use_local_context: If True (default), inpainting heads use local neighbor values
                           in addition to global latent. If False, only global latent is used
                           (similar to MAE decoder). Set to False for ablation studies.
+        predict_channels: List of channels to predict (["npho"] or ["npho", "time"])
     """
     def __init__(self, encoder: XECEncoder, freeze_encoder: bool = True, sentinel_value: float = DEFAULT_SENTINEL_VALUE,
-                 time_mask_ratio_scale: float = 1.0, use_local_context: bool = True):
+                 time_mask_ratio_scale: float = 1.0, use_local_context: bool = True, predict_channels=None):
         super().__init__()
         self.encoder = encoder
         self.freeze_encoder = freeze_encoder
         self.sentinel_value = sentinel_value
         self.time_mask_ratio_scale = time_mask_ratio_scale
         self.use_local_context = use_local_context
+
+        # Configurable output channels
+        self.predict_channels = predict_channels if predict_channels is not None else ["npho", "time"]
+        self.out_channels = len(self.predict_channels)
 
         if freeze_encoder:
             for param in self.encoder.parameters():
@@ -665,9 +691,12 @@ class XEC_Inpainter(nn.Module):
         latent_dim = encoder.face_embed_dim  # 1024
 
         # Inpainting heads for each face
-        self.head_inner = FaceInpaintingHead(93, 44, latent_dim=latent_dim, use_local_context=use_local_context)
-        self.head_us = FaceInpaintingHead(24, 6, latent_dim=latent_dim, use_local_context=use_local_context)
-        self.head_ds = FaceInpaintingHead(24, 6, latent_dim=latent_dim, use_local_context=use_local_context)
+        self.head_inner = FaceInpaintingHead(93, 44, latent_dim=latent_dim, use_local_context=use_local_context,
+                                              out_channels=self.out_channels)
+        self.head_us = FaceInpaintingHead(24, 6, latent_dim=latent_dim, use_local_context=use_local_context,
+                                           out_channels=self.out_channels)
+        self.head_ds = FaceInpaintingHead(24, 6, latent_dim=latent_dim, use_local_context=use_local_context,
+                                           out_channels=self.out_channels)
 
         # Outer face head - sensor-level for finegrid mode, grid-level otherwise
         if encoder.outer_fine:
@@ -676,12 +705,14 @@ class XEC_Inpainter(nn.Module):
                 latent_dim=latent_dim,
                 hidden_dim=64,
                 pool_kernel=encoder.outer_fine_pool,
-                use_local_context=use_local_context
+                use_local_context=use_local_context,
+                out_channels=self.out_channels
             )
             self.head_outer = None  # Not used in finegrid mode
         else:
             # Use grid-level head for split/coarse mode
-            self.head_outer = FaceInpaintingHead(9, 24, latent_dim=latent_dim, use_local_context=use_local_context)
+            self.head_outer = FaceInpaintingHead(9, 24, latent_dim=latent_dim, use_local_context=use_local_context,
+                                                  out_channels=self.out_channels)
             self.head_outer_sensor = None
 
         # Hex face heads
@@ -689,8 +720,10 @@ class XEC_Inpainter(nn.Module):
         num_hex_bot = len(flatten_hex_rows(BOTTOM_HEX_ROWS))
         edge_index = torch.from_numpy(HEX_EDGE_INDEX_NP).long()
 
-        self.head_top = HexInpaintingHead(num_hex_top, edge_index, latent_dim=latent_dim, use_local_context=use_local_context)
-        self.head_bot = HexInpaintingHead(num_hex_bot, edge_index, latent_dim=latent_dim, use_local_context=use_local_context)
+        self.head_top = HexInpaintingHead(num_hex_top, edge_index, latent_dim=latent_dim, use_local_context=use_local_context,
+                                           out_channels=self.out_channels)
+        self.head_bot = HexInpaintingHead(num_hex_bot, edge_index, latent_dim=latent_dim, use_local_context=use_local_context,
+                                           out_channels=self.out_channels)
 
         # Store face index maps for gathering
         self.register_buffer("inner_idx", torch.from_numpy(INNER_INDEX_MAP).long())
@@ -972,25 +1005,25 @@ class XEC_Inpainter(nn.Module):
         inner_pred = self.head_inner.forward_full(inner_tensor, inner_latent)  # (B, 93, 44, 2)
 
         # Initialize output tensor with same dtype as predictions (important for AMP)
-        pred_all = torch.zeros(B, 4760, 2, device=device, dtype=inner_pred.dtype)
+        pred_all = torch.zeros(B, 4760, self.out_channels, device=device, dtype=inner_pred.dtype)
 
         # Scatter back to flat indices
         inner_flat_idx = self.inner_idx.flatten()  # (93*44,)
-        pred_all[:, inner_flat_idx, :] = inner_pred.reshape(B, -1, 2)
+        pred_all[:, inner_flat_idx, :] = inner_pred.reshape(B, -1, self.out_channels)
 
         # US face (24×6 = 144 sensors)
         us_tensor = gather_face(x_masked, US_INDEX_MAP)  # (B, 2, 24, 6)
         us_latent = latent_seq[:, name_to_idx["us"]]
         us_pred = self.head_us.forward_full(us_tensor, us_latent)  # (B, 24, 6, 2)
         us_flat_idx = self.us_idx.flatten()
-        pred_all[:, us_flat_idx, :] = us_pred.reshape(B, -1, 2)
+        pred_all[:, us_flat_idx, :] = us_pred.reshape(B, -1, self.out_channels)
 
         # DS face (24×6 = 144 sensors)
         ds_tensor = gather_face(x_masked, DS_INDEX_MAP)  # (B, 2, 24, 6)
         ds_latent = latent_seq[:, name_to_idx["ds"]]
-        ds_pred = self.head_ds.forward_full(ds_tensor, ds_latent)  # (B, 24, 6, 2)
+        ds_pred = self.head_ds.forward_full(ds_tensor, ds_latent)  # (B, 24, 6, out_channels)
         ds_flat_idx = self.ds_idx.flatten()
-        pred_all[:, ds_flat_idx, :] = ds_pred.reshape(B, -1, 2)
+        pred_all[:, ds_flat_idx, :] = ds_pred.reshape(B, -1, self.out_channels)
 
         # Outer face
         outer_latent = latent_seq[:, outer_idx]
@@ -1004,9 +1037,9 @@ class XEC_Inpainter(nn.Module):
         else:
             # Grid-level prediction for split/coarse mode (9×24 = 216 sensors)
             outer_tensor = gather_face(x_masked, OUTER_COARSE_FULL_INDEX_MAP)  # (B, 2, 9, 24)
-            outer_pred = self.head_outer.forward_full(outer_tensor, outer_latent)  # (B, 9, 24, 2)
+            outer_pred = self.head_outer.forward_full(outer_tensor, outer_latent)  # (B, 9, 24, out_channels)
             outer_flat_idx = self.outer_coarse_idx.flatten()
-            pred_all[:, outer_flat_idx, :] = outer_pred.reshape(B, -1, 2)
+            pred_all[:, outer_flat_idx, :] = outer_pred.reshape(B, -1, self.out_channels)
 
         # Top hex face
         top_nodes = gather_hex_nodes(x_masked, self.top_hex_indices)  # (B, num_top, 2)
@@ -1017,7 +1050,8 @@ class XEC_Inpainter(nn.Module):
         # Bottom hex face
         bot_nodes = gather_hex_nodes(x_masked, self.bottom_hex_indices)  # (B, num_bot, 2)
         bot_latent = latent_seq[:, bot_idx]
-        bot_pred = self.head_bot.forward_full(bot_nodes, bot_latent)  # (B, num_bot, 2)
+        bot_pred = self.head_bot.forward_full(bot_nodes, bot_latent)  # (B, num_bot, out_channels)
+        pred_all[:, self.bottom_hex_indices, :] = bot_pred
 
         return pred_all
 

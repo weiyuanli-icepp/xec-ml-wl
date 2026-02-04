@@ -115,7 +115,12 @@ def main():
             branches = [pred_branch, truth_branch, "mask"]
         else:
             print(f"Error: Missing '{err_branch}' or prediction/truth branches.")
-            print(f"Available branches: {sorted(keys)}")
+            # Check if this is a npho-only model
+            if args.channel == "time" and "pred_npho" in keys and "pred_time" not in keys:
+                print(f"  This model appears to be trained with predict_channels: ['npho'] (npho-only mode).")
+                print(f"  Try --channel npho instead.")
+            else:
+                print(f"Available branches: {sorted(keys)}")
             sys.exit(1)
 
         entry_start = None

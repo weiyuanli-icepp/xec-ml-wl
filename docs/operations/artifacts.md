@@ -97,23 +97,40 @@ Saved at: every 10 epochs, best epoch, and final epoch. Use these for fine-tunin
 |------|-------------|
 | `mae_predictions_epoch_{epoch}.root` | Validation set sensor-level predictions |
 
-**Branches:**
+**Main Tree Branches (`predictions`):**
 - `event_id` - Event identifier
-- `truth_npho`, `truth_time` - Ground truth values
+- `truth_npho` - Ground truth npho values
+- `truth_time` - Ground truth time values (only if `"time"` in `predict_channels`)
 - `mask` - Binary mask (1 = masked sensor)
 - `masked_npho`, `masked_time` - Input values (masked sensors have sentinel)
-- `pred_npho`, `pred_time` - Model predictions
-- `err_npho`, `err_time` - Prediction errors
+- `pred_npho` - Model predictions for npho
+- `pred_time` - Model predictions for time (only if `"time"` in `predict_channels`)
+- `err_npho` - Prediction errors for npho
+- `err_time` - Prediction errors for time (only if `"time"` in `predict_channels`)
 - `run_id` - Run number
+
+**Metadata Tree (`metadata`):**
+
+The ROOT file includes a `metadata` tree with a single entry containing model configuration:
+- `predict_channels` - Comma-separated list of predicted channels (e.g., `"npho"` or `"npho,time"`)
+- `npho_scale` - Normalization scale for npho
+- `time_scale` - Normalization scale for time
+- `sentinel_value` - Value used for invalid/masked sensors
+
+Downstream macros auto-detect the prediction mode from this metadata.
 
 Saved at: every 10 epochs + final epoch.
 
 ### MLflow Metrics
 
-- `train/total_loss`, `train/npho_loss`, `train/time_loss`
-- `val/total_loss`, `val/npho_loss`, `val/time_loss`
-- `val/mae_npho`, `val/mae_time`, `val/rmse_npho`, `val/rmse_time` (if `track_mae_rmse` enabled)
-- Per-face losses: `val/loss_{face}_npho`, `val/loss_{face}_time`
+- `train/total_loss`, `train/npho_loss`
+- `train/time_loss` (only if `"time"` in `predict_channels`)
+- `val/total_loss`, `val/npho_loss`
+- `val/time_loss` (only if `"time"` in `predict_channels`)
+- `val/mae_npho`, `val/rmse_npho` (if `track_mae_rmse` enabled)
+- `val/mae_time`, `val/rmse_time` (if `track_mae_rmse` enabled and predicting time)
+- Per-face losses: `val/loss_{face}_npho`
+- Per-face time losses: `val/loss_{face}_time` (only if predicting time)
 - Channel variances (if `auto_channel_weight` enabled)
 
 ---
@@ -135,22 +152,39 @@ Output directory: `{save_path}/` (typically `artifacts/<RUN_NAME>/`)
 |------|-------------|
 | `inpainter_predictions_epoch_{epoch}.root` | Validation predictions with masked channel recovery |
 
-**Branches:**
+**Main Tree Branches (`predictions`):**
 - `event_idx` - Event index
 - `sensor_id` - Sensor identifier
 - `face` - Detector face name
-- `truth_npho`, `truth_time` - Ground truth values
-- `pred_npho`, `pred_time` - Model predictions
-- `error_npho`, `error_time` - Prediction errors
+- `truth_npho` - Ground truth npho values
+- `truth_time` - Ground truth time values (only if `"time"` in `predict_channels`)
+- `pred_npho` - Model predictions for npho
+- `pred_time` - Model predictions for time (only if `"time"` in `predict_channels`)
+- `error_npho` - Prediction errors for npho
+- `error_time` - Prediction errors for time (only if `"time"` in `predict_channels`)
+
+**Metadata Tree (`metadata`):**
+
+The ROOT file includes a `metadata` tree with a single entry containing model configuration:
+- `predict_channels` - Comma-separated list of predicted channels (e.g., `"npho"` or `"npho,time"`)
+- `npho_scale` - Normalization scale for npho
+- `time_scale` - Normalization scale for time
+- `sentinel_value` - Value used for invalid/masked sensors
+
+Downstream macros (e.g., `macro/analyze_inpainter.py`, `val_data/analyze_inpainter.py`) auto-detect the prediction mode from this metadata and skip time-related analysis when only npho is predicted.
 
 Saved at: every 10 epochs + final epoch.
 
 ### MLflow Metrics
 
-- `train/total_loss`, `train/npho_loss`, `train/time_loss`
-- `val/total_loss`, `val/npho_loss`, `val/time_loss`
-- Per-face losses: `val/loss_{face}_npho`, `val/loss_{face}_time`
-- `val/mae_npho`, `val/mae_time`, `val/rmse_npho`, `val/rmse_time` (if `track_mae_rmse` enabled)
+- `train/total_loss`, `train/npho_loss`
+- `train/time_loss` (only if `"time"` in `predict_channels`)
+- `val/total_loss`, `val/npho_loss`
+- `val/time_loss` (only if `"time"` in `predict_channels`)
+- Per-face losses: `val/loss_{face}_npho`
+- Per-face time losses: `val/loss_{face}_time` (only if predicting time)
+- `val/mae_npho`, `val/rmse_npho` (if `track_mae_rmse` enabled)
+- `val/mae_time`, `val/rmse_time` (if `track_mae_rmse` enabled and predicting time)
 - `actual_mask_ratio`, `n_masked_total`
 
 ---
@@ -306,11 +340,16 @@ These metrics evaluate the quality of the photon direction reconstruction. Calcu
 
 | Metric | Description |
 |--------|-------------|
-| `total_loss` | Combined weighted loss (npho + time) |
-| `loss_npho` / `loss_time` | Per-channel losses |
-| `mae_npho` / `mae_time` | Mean Absolute Error on masked positions |
-| `rmse_npho` / `rmse_time` | Root Mean Square Error on masked positions |
+| `total_loss` | Combined weighted loss (npho + time if predicting both) |
+| `loss_npho` | Npho channel loss |
+| `loss_time` | Time channel loss (only if `"time"` in `predict_channels`) |
+| `mae_npho` | Mean Absolute Error for npho on masked positions |
+| `mae_time` | Mean Absolute Error for time on masked positions (only if predicting time) |
+| `rmse_npho` | Root Mean Square Error for npho on masked positions |
+| `rmse_time` | Root Mean Square Error for time on masked positions (only if predicting time) |
 | `actual_mask_ratio` | Effective mask ratio after excluding invalid sensors |
+
+**Npho-Only Mode:** When `predict_channels: ["npho"]`, time-related metrics (`loss_time`, `mae_time`, `rmse_time`) are not tracked.
 
 ### 3. System Engineering Metrics
 

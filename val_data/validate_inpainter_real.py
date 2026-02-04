@@ -281,7 +281,7 @@ def create_artificial_mask(n_events: int, dead_mask: np.ndarray,
     return artificial_mask
 
 
-def load_inpainter_model(checkpoint_path: str, device: str = 'cpu') -> XEC_Inpainter:
+def load_inpainter_model(checkpoint_path: str, device: str = 'cpu') -> Tuple[XEC_Inpainter, List[str]]:
     """
     Load inpainter model from checkpoint.
 
@@ -290,7 +290,7 @@ def load_inpainter_model(checkpoint_path: str, device: str = 'cpu') -> XEC_Inpai
         device: Device to load model on
 
     Returns:
-        Loaded inpainter model
+        Tuple of (inpainter model, predict_channels list)
     """
     print(f"[INFO] Loading model from {checkpoint_path}")
 
@@ -303,14 +303,18 @@ def load_inpainter_model(checkpoint_path: str, device: str = 'cpu') -> XEC_Inpai
         # Use defaults
         config = {}
 
+    # Get predict_channels from config (default to ["npho", "time"] for legacy)
+    predict_channels = config.get('predict_channels', ['npho', 'time'])
+    print(f"[INFO] predict_channels: {predict_channels}")
+
     # Create encoder
     encoder = XECEncoder(
         outer_mode=config.get('outer_mode', 'finegrid'),
         outer_fine_pool=config.get('outer_fine_pool', None),
     )
 
-    # Create inpainter
-    model = XEC_Inpainter(encoder=encoder)
+    # Create inpainter with predict_channels
+    model = XEC_Inpainter(encoder=encoder, predict_channels=predict_channels)
 
     # Load weights
     if 'model_state_dict' in checkpoint:
@@ -332,7 +336,7 @@ def load_inpainter_model(checkpoint_path: str, device: str = 'cpu') -> XEC_Inpai
 
     print(f"[INFO] Model loaded successfully")
 
-    return model
+    return model, predict_channels
 
 
 def load_torchscript_model(model_path: str, device: str = 'cpu'):
@@ -552,12 +556,13 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
                               npho_scale: float = DEFAULT_NPHO_SCALE,
                               npho_scale2: float = DEFAULT_NPHO_SCALE2,
                               time_scale: float = DEFAULT_TIME_SCALE,
-                              time_shift: float = DEFAULT_TIME_SHIFT) -> List[Dict]:
+                              time_shift: float = DEFAULT_TIME_SHIFT,
+                              predict_channels: List[str] = None) -> List[Dict]:
     """
     Collect predictions from flat output tensor (for TorchScript/ONNX).
 
     Args:
-        output: Model output (N, 4760, 2) with predictions (in normalized space)
+        output: Model output (N, 4760, out_channels) with predictions (in normalized space)
         x_original: Original input before masking (N, 4760, 2) - NOT USED, kept for API compat
         combined_mask: Boolean mask (N, 4760) of all masked channels
         artificial_mask: Boolean mask (N, 4760) of artificially masked
@@ -565,6 +570,7 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
         data: Original data dictionary with raw npho/time and metadata
         npho_scale, npho_scale2: Npho normalization parameters (for denormalizing predictions)
         time_scale, time_shift: Time normalization parameters (for denormalizing predictions)
+        predict_channels: List of predicted channels (e.g., ["npho"] or ["npho", "time"])
 
     Returns:
         List of prediction dictionaries
@@ -574,6 +580,15 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
         NOT from normalized/denormalized values. This avoids any roundtrip errors.
         Only predictions need denormalization since they come from the model in normalized space.
     """
+    if predict_channels is None:
+        predict_channels = ['npho', 'time']
+
+    predict_time = 'time' in predict_channels
+
+    # Determine output channel indices
+    pred_npho_idx = predict_channels.index('npho')
+    pred_time_idx = predict_channels.index('time') if predict_time else -1
+
     all_preds = []
     n_events = len(output)
 
@@ -625,13 +640,16 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
             is_artificial = artificial_mask[event_idx, sensor_id]
             mask_type = 0 if is_artificial else 1
 
-            # Get prediction (denormalize from model's normalized output)
-            pred_npho_norm = float(output[event_idx, sensor_id, 0])
-            pred_time_norm = float(output[event_idx, sensor_id, 1])
-
-            # Denormalize prediction
+            # Get npho prediction (denormalize from model's normalized output)
+            pred_npho_norm = float(output[event_idx, sensor_id, pred_npho_idx])
             pred_npho = denorm_npho(pred_npho_norm)
-            pred_time = denorm_time(pred_time_norm)
+
+            # Get time prediction only if model predicts time
+            if predict_time:
+                pred_time_norm = float(output[event_idx, sensor_id, pred_time_idx])
+                pred_time = denorm_time(pred_time_norm)
+            else:
+                pred_time = -999.0
 
             # Get truth DIRECTLY from raw data (no normalization roundtrip!)
             if is_artificial:
@@ -646,12 +664,16 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
                     truth_npho = truth_npho_raw  # Use raw value directly!
                     error_npho = pred_npho - truth_npho
 
-                if truth_time_raw > 1e9:
+                if predict_time:
+                    if truth_time_raw > 1e9:
+                        truth_time = -999.0
+                        error_time = -999.0
+                    else:
+                        truth_time = truth_time_raw  # Use raw value directly!
+                        error_time = pred_time - truth_time
+                else:
                     truth_time = -999.0
                     error_time = -999.0
-                else:
-                    truth_time = truth_time_raw  # Use raw value directly!
-                    error_time = pred_time - truth_time
             else:
                 # Dead channel - no truth
                 truth_npho = -999.0
@@ -667,12 +689,15 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
                 'face': face_name,
                 'mask_type': mask_type,
                 'truth_npho': truth_npho,
-                'truth_time': truth_time,
                 'pred_npho': pred_npho,
-                'pred_time': pred_time,
                 'error_npho': error_npho,
-                'error_time': error_time,
             }
+
+            # Only include time fields if model predicts time
+            if predict_time:
+                pred_dict['truth_time'] = truth_time
+                pred_dict['pred_time'] = pred_time
+                pred_dict['error_time'] = error_time
 
             all_preds.append(pred_dict)
 
@@ -685,7 +710,8 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                         npho_scale: float = DEFAULT_NPHO_SCALE,
                         npho_scale2: float = DEFAULT_NPHO_SCALE2,
                         time_scale: float = DEFAULT_TIME_SCALE,
-                        time_shift: float = DEFAULT_TIME_SHIFT) -> List[Dict]:
+                        time_shift: float = DEFAULT_TIME_SHIFT,
+                        predict_channels: List[str] = None) -> List[Dict]:
     """
     Collect predictions into a flat list for saving.
 
@@ -697,6 +723,7 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
         data: Original data dictionary with raw npho/time and metadata
         npho_scale, npho_scale2: Npho normalization parameters (for denormalizing predictions)
         time_scale, time_shift: Time normalization parameters (for denormalizing predictions)
+        predict_channels: List of predicted channels (e.g., ["npho"] or ["npho", "time"])
 
     Returns:
         List of prediction dictionaries
@@ -706,6 +733,15 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
         NOT from normalized/denormalized values. This avoids any roundtrip errors.
         Only predictions need denormalization since they come from the model in normalized space.
     """
+    if predict_channels is None:
+        predict_channels = ['npho', 'time']
+
+    predict_time = 'time' in predict_channels
+
+    # Determine output channel indices
+    pred_npho_idx = predict_channels.index('npho')
+    pred_time_idx = predict_channels.index('time') if predict_time else -1
+
     all_preds = []
 
     # Raw data arrays for truth values (no normalization needed!)
@@ -732,7 +768,7 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                 continue
 
             face_result = results[face_name]
-            pred = face_result['pred']  # (B, max_masked, 2)
+            pred = face_result['pred']  # (B, max_masked, out_channels)
             valid = face_result['valid']  # (B, max_masked)
 
             B = pred.shape[0]
@@ -772,13 +808,16 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                     is_dead = dead_mask[sensor_id]
                     mask_type = 0 if is_artificial else 1
 
-                    # Get prediction (denormalize from model's normalized output)
-                    pred_npho_norm = float(pred[b, i, 0])
-                    pred_time_norm = float(pred[b, i, 1])
-
-                    # Denormalize prediction
+                    # Get npho prediction (denormalize from model's normalized output)
+                    pred_npho_norm = float(pred[b, i, pred_npho_idx])
                     pred_npho = denorm_npho(pred_npho_norm)
-                    pred_time = denorm_time(pred_time_norm)
+
+                    # Get time prediction only if model predicts time
+                    if predict_time:
+                        pred_time_norm = float(pred[b, i, pred_time_idx])
+                        pred_time = denorm_time(pred_time_norm)
+                    else:
+                        pred_time = -999.0
 
                     # Get truth DIRECTLY from raw data (no normalization roundtrip!)
                     if is_artificial:
@@ -793,12 +832,16 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                             truth_npho = truth_npho_raw  # Use raw value directly!
                             error_npho = pred_npho - truth_npho
 
-                        if truth_time_raw > 1e9:
+                        if predict_time:
+                            if truth_time_raw > 1e9:
+                                truth_time = -999.0
+                                error_time = -999.0
+                            else:
+                                truth_time = truth_time_raw  # Use raw value directly!
+                                error_time = pred_time - truth_time
+                        else:
                             truth_time = -999.0
                             error_time = -999.0
-                        else:
-                            truth_time = truth_time_raw  # Use raw value directly!
-                            error_time = pred_time - truth_time
                     else:
                         # Dead channel - no truth
                         truth_npho = -999.0
@@ -814,12 +857,15 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                         'face': face_name,
                         'mask_type': mask_type,
                         'truth_npho': truth_npho,
-                        'truth_time': truth_time,
                         'pred_npho': pred_npho,
-                        'pred_time': pred_time,
                         'error_npho': error_npho,
-                        'error_time': error_time,
                     }
+
+                    # Only include time fields if model predicts time
+                    if predict_time:
+                        pred_dict['truth_time'] = truth_time
+                        pred_dict['pred_time'] = pred_time
+                        pred_dict['error_time'] = error_time
 
                     all_preds.append(pred_dict)
 
@@ -827,18 +873,28 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
 
 
 def save_predictions_to_root(predictions: List[Dict], output_path: str,
-                             metadata: Dict = None):
+                             predict_channels: List[str] = None,
+                             npho_scale: float = DEFAULT_NPHO_SCALE,
+                             npho_scale2: float = DEFAULT_NPHO_SCALE2,
+                             time_scale: float = DEFAULT_TIME_SCALE,
+                             time_shift: float = DEFAULT_TIME_SHIFT):
     """
-    Save predictions to ROOT file.
+    Save predictions to ROOT file with metadata.
 
     Args:
         predictions: List of prediction dictionaries
         output_path: Output ROOT file path
-        metadata: Optional metadata to store
+        predict_channels: List of predicted channels (for metadata)
+        npho_scale, npho_scale2, time_scale, time_shift: Normalization parameters (for metadata)
     """
     if not predictions:
         print("[WARNING] No predictions to save")
         return
+
+    if predict_channels is None:
+        predict_channels = ['npho', 'time']
+
+    predict_time = 'time' in predict_channels
 
     # Convert to arrays
     face_map = {"inner": 0, "us": 1, "ds": 2, "outer": 3, "top": 4, "bot": 5}
@@ -851,17 +907,31 @@ def save_predictions_to_root(predictions: List[Dict], output_path: str,
         'face': np.array([face_map.get(p['face'], -1) for p in predictions], dtype=np.int32),
         'mask_type': np.array([p['mask_type'] for p in predictions], dtype=np.int32),
         'truth_npho': np.array([p['truth_npho'] for p in predictions], dtype=np.float32),
-        'truth_time': np.array([p['truth_time'] for p in predictions], dtype=np.float32),
         'pred_npho': np.array([p['pred_npho'] for p in predictions], dtype=np.float32),
-        'pred_time': np.array([p['pred_time'] for p in predictions], dtype=np.float32),
         'error_npho': np.array([p['error_npho'] for p in predictions], dtype=np.float32),
-        'error_time': np.array([p['error_time'] for p in predictions], dtype=np.float32),
+    }
+
+    # Only include time branches if model predicts time
+    if predict_time:
+        branches['truth_time'] = np.array([p.get('truth_time', -999.0) for p in predictions], dtype=np.float32)
+        branches['pred_time'] = np.array([p.get('pred_time', -999.0) for p in predictions], dtype=np.float32)
+        branches['error_time'] = np.array([p.get('error_time', -999.0) for p in predictions], dtype=np.float32)
+
+    # Metadata tree
+    metadata = {
+        'predict_channels': np.array([','.join(predict_channels)], dtype='U32'),
+        'npho_scale': np.array([npho_scale], dtype=np.float64),
+        'npho_scale2': np.array([npho_scale2], dtype=np.float64),
+        'time_scale': np.array([time_scale], dtype=np.float64),
+        'time_shift': np.array([time_shift], dtype=np.float64),
     }
 
     with uproot.recreate(output_path) as f:
         f['predictions'] = branches
+        f['metadata'] = metadata
 
     print(f"[INFO] Saved {len(predictions):,} predictions to {output_path}")
+    print(f"[INFO]   predict_channels: {predict_channels}")
 
     # Print summary
     mask_types = branches['mask_type']
@@ -927,6 +997,8 @@ def main():
                         help=f"Time normalization scale (default: {DEFAULT_TIME_SCALE})")
     parser.add_argument("--time-shift", type=float, default=DEFAULT_TIME_SHIFT,
                         help=f"Time normalization shift (default: {DEFAULT_TIME_SHIFT})")
+    parser.add_argument("--predict-channels", type=str, nargs='+', default=None,
+                        help="Predicted channels, e.g., 'npho' or 'npho time' (default: auto-detect from checkpoint, or 'npho time' for TorchScript/ONNX)")
 
     args = parser.parse_args()
 
@@ -1017,6 +1089,10 @@ def main():
         # TorchScript model (recommended)
         model = load_torchscript_model(args.torchscript, device=device)
 
+        # Use CLI predict_channels or default to ['npho', 'time']
+        predict_channels = args.predict_channels if args.predict_channels else ['npho', 'time']
+        print(f"[INFO] predict_channels: {predict_channels}")
+
         print("[INFO] Running inference (TorchScript)...")
         output = run_inference_torchscript(
             model, x_input, combined_mask.astype(np.float32),
@@ -1032,12 +1108,17 @@ def main():
             npho_scale=args.npho_scale,
             npho_scale2=args.npho_scale2,
             time_scale=args.time_scale,
-            time_shift=args.time_shift
+            time_shift=args.time_shift,
+            predict_channels=predict_channels
         )
 
     elif args.onnx:
         # ONNX model
         session = load_onnx_model(args.onnx, device=device)
+
+        # Use CLI predict_channels or default to ['npho', 'time']
+        predict_channels = args.predict_channels if args.predict_channels else ['npho', 'time']
+        print(f"[INFO] predict_channels: {predict_channels}")
 
         print("[INFO] Running inference (ONNX)...")
         output = run_inference_onnx(
@@ -1054,12 +1135,18 @@ def main():
             npho_scale=args.npho_scale,
             npho_scale2=args.npho_scale2,
             time_scale=args.time_scale,
-            time_shift=args.time_shift
+            time_shift=args.time_shift,
+            predict_channels=predict_channels
         )
 
     else:
         # Checkpoint model (slower, for debugging)
-        model = load_inpainter_model(args.checkpoint, device=device)
+        model, predict_channels = load_inpainter_model(args.checkpoint, device=device)
+
+        # Override with CLI if provided
+        if args.predict_channels:
+            predict_channels = args.predict_channels
+            print(f"[INFO] Overriding predict_channels from CLI: {predict_channels}")
 
         print("[INFO] Running inference (checkpoint mode - consider using --torchscript for speed)...")
         predictions = run_inference(
@@ -1076,7 +1163,8 @@ def main():
             npho_scale=args.npho_scale,
             npho_scale2=args.npho_scale2,
             time_scale=args.time_scale,
-            time_shift=args.time_shift
+            time_shift=args.time_shift,
+            predict_channels=predict_channels
         )
 
     # Diagnostic: Show normalization parameters used for PREDICTIONS ONLY
@@ -1116,7 +1204,14 @@ def main():
 
     # Save to ROOT
     output_file = os.path.join(args.output, "real_data_predictions.root")
-    save_predictions_to_root(pred_list, output_file)
+    save_predictions_to_root(
+        pred_list, output_file,
+        predict_channels=predict_channels,
+        npho_scale=args.npho_scale,
+        npho_scale2=args.npho_scale2,
+        time_scale=args.time_scale,
+        time_shift=args.time_shift
+    )
 
     # Save dead channel list
     dead_file = os.path.join(args.output, "dead_channels.txt")

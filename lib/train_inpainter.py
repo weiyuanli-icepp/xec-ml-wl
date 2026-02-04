@@ -251,8 +251,11 @@ Examples:
         outer_mode = args.outer_mode or cfg.model.outer_mode
         outer_fine_pool = args.outer_fine_pool or cfg.model.outer_fine_pool
         mask_ratio = args.mask_ratio if args.mask_ratio is not None else cfg.model.mask_ratio
-        time_mask_ratio_scale = args.time_mask_ratio_scale if args.time_mask_ratio_scale is not None else getattr(cfg.model, "time_mask_ratio_scale", 1.0)
+        # time_mask_ratio_scale moved to nested time config
+        time_mask_ratio_scale = args.time_mask_ratio_scale if args.time_mask_ratio_scale is not None else cfg.training.time.mask_ratio_scale
         freeze_encoder = cfg.model.freeze_encoder if not args.finetune_encoder else False
+        # predict_channels controls output channels (npho-only or npho+time)
+        predict_channels = cfg.model.predict_channels
         # --global_only disables local context (ablation study)
         use_local_context = not args.global_only and getattr(cfg.model, "use_local_context", True)
 
@@ -265,9 +268,10 @@ Examples:
         loss_fn = args.loss_fn or cfg.training.loss_fn
         loss_beta = args.loss_beta if args.loss_beta is not None else getattr(cfg.training, "loss_beta", 1.0)
         npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight
-        time_weight = args.time_weight if args.time_weight is not None else cfg.training.time_weight
-        npho_threshold = args.npho_threshold if args.npho_threshold is not None else getattr(cfg.training, "npho_threshold", None)
-        use_npho_time_weight = not args.no_npho_time_weight and getattr(cfg.training, "use_npho_time_weight", True)
+        # Get time config from nested structure
+        time_weight = args.time_weight if args.time_weight is not None else cfg.training.time.weight
+        npho_threshold = args.npho_threshold if args.npho_threshold is not None else cfg.training.time.npho_threshold
+        use_npho_time_weight = not args.no_npho_time_weight and cfg.training.time.use_npho_weight
         grad_clip = args.grad_clip if args.grad_clip is not None else cfg.training.grad_clip
         # If --disable_mae_rmse_metrics flag is passed, disable; otherwise use config value
         track_mae_rmse = False if args.disable_mae_rmse_metrics else getattr(cfg.training, "track_mae_rmse", True)
@@ -331,6 +335,7 @@ Examples:
         time_mask_ratio_scale = args.time_mask_ratio_scale or 1.0
         freeze_encoder = not args.finetune_encoder  # Default: frozen
         use_local_context = not args.global_only  # Default: True (use local context)
+        predict_channels = ["npho", "time"]  # Default: predict both channels
 
         lr = args.lr or 1e-4
         lr_scheduler = args.lr_scheduler
@@ -416,7 +421,8 @@ Examples:
     model = XEC_Inpainter(
         encoder, freeze_encoder=freeze_encoder, sentinel_value=sentinel_value,
         time_mask_ratio_scale=time_mask_ratio_scale,
-        use_local_context=use_local_context
+        use_local_context=use_local_context,
+        predict_channels=predict_channels
     ).to(device)
 
     print(f"[INFO] Inpainter created:")
@@ -424,6 +430,7 @@ Examples:
     print(f"  - Trainable params: {model.get_num_trainable_params():,}")
     print(f"  - Encoder frozen: {freeze_encoder}")
     print(f"  - Use local context: {use_local_context}")
+    print(f"  - Predict channels: {predict_channels}")
 
     # torch.compile - auto-detect ARM architecture and disable (Triton not supported)
     is_arm = platform.machine() in ("aarch64", "arm64")
@@ -574,6 +581,7 @@ Examples:
             "chunksize": chunksize,
             "mask_ratio": mask_ratio,
             "freeze_encoder": freeze_encoder,
+            "predict_channels": ",".join(predict_channels),
             "lr": lr,
             "lr_scheduler": lr_scheduler,
             "warmup_epochs": warmup_epochs,
@@ -713,6 +721,7 @@ Examples:
                         'outer_fine_pool': outer_fine_pool,
                         'mask_ratio': mask_ratio,
                         'freeze_encoder': freeze_encoder,
+                        'predict_channels': list(predict_channels),
                         # Normalization parameters (critical for inference)
                         'npho_scale': float(npho_scale),
                         'npho_scale2': float(npho_scale2),
@@ -754,6 +763,7 @@ Examples:
                     time_scale=float(time_scale),
                     time_shift=float(time_shift),
                     sentinel_value=float(sentinel_value),
+                    predict_channels=list(predict_channels),
                 ) as writer:
                     # Use EMA model for predictions if available
                     pred_model = ema_model if ema_model is not None else model

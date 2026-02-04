@@ -46,6 +46,14 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
     loss_func = get_pointwise_loss_fn(loss_fn)
     log_vars = getattr(model, "channel_log_vars", None) if auto_channel_weight else None
 
+    # Detect predict_channels from model (default to ["npho", "time"] for legacy)
+    predict_channels = getattr(model, 'predict_channels', ['npho', 'time'])
+    predict_time = 'time' in predict_channels
+    # Map prediction channel indices to input channel indices
+    INPUT_CH_MAP = {"npho": 0, "time": 1}
+    pred_npho_idx = predict_channels.index("npho") if "npho" in predict_channels else None
+    pred_time_idx = predict_channels.index("time") if "time" in predict_channels else None
+
     # Conditional time loss threshold
     if npho_threshold is None:
         npho_threshold = DEFAULT_NPHO_THRESHOLD
@@ -210,98 +218,109 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                     else:
                         mask_expanded = torch.ones_like(pred[:, 0:1])
 
-                    # Separate npho (channel 0) and time (channel 1) losses
+                    # Separate npho and time losses (use prediction channel indices)
                     target = targets[name]
-                    loss_map_npho = loss_func(pred[:, 0:1], target[:, 0:1])
-                    loss_map_time = loss_func(pred[:, 1:2], target[:, 1:2])
+                    # npho: prediction channel pred_npho_idx -> input channel 0
+                    loss_map_npho = loss_func(pred[:, pred_npho_idx:pred_npho_idx+1], target[:, 0:1])
+                    # time: prediction channel pred_time_idx -> input channel 1 (only if predicting time)
+                    if predict_time:
+                        loss_map_time = loss_func(pred[:, pred_time_idx:pred_time_idx+1], target[:, 1:2])
 
                     mask_sum = mask_expanded.sum()
                     mask_sum_safe = mask_sum + 1e-8
                     npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum_safe
 
-                    # Conditional time loss: only compute where npho > threshold
-                    # Get normalized npho values for this face
-                    npho_norm_all = x_in[:, :, 0]  # (B, 4760) - normalized npho
-                    if isinstance(indices, torch.Tensor):
-                        npho_norm_face = npho_norm_all[:, indices]  # (B, num_sensors)
-                    else:
-                        npho_norm_face = npho_norm_all[:, indices.flatten()].view(x_in.size(0), *indices.shape)
+                    # Time loss (only if predicting time)
+                    time_loss = torch.tensor(0.0, device=device)
+                    time_mask_sum = torch.tensor(0.0, device=device)
+                    if predict_time:
+                        # Conditional time loss: only compute where npho > threshold
+                        # Get normalized npho values for this face
+                        npho_norm_all = x_in[:, :, 0]  # (B, 4760) - normalized npho
+                        if isinstance(indices, torch.Tensor):
+                            npho_norm_face = npho_norm_all[:, indices]  # (B, num_sensors)
+                        else:
+                            npho_norm_face = npho_norm_all[:, indices.flatten()].view(x_in.size(0), *indices.shape)
 
-                    # Create time_valid_mask using normalized threshold
-                    if name in ["top", "bot"]:
-                        time_valid_base = (npho_norm_face > npho_threshold_norm).unsqueeze(1).float()  # (B, 1, N)
-                    elif name == "outer" and getattr(model.encoder, "outer_fine", False):
-                        # For outer fine grid: use coarse-level threshold check, then upsample
-                        time_valid_coarse = (npho_norm_face > npho_threshold_norm).float()  # (B, H_coarse, W_coarse)
-                        time_valid_coarse = time_valid_coarse.view(x_in.size(0), 1, *indices.shape)
-                        time_valid_base = F.interpolate(time_valid_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
-                        if pool_kernel:
-                            # Pool and convert back to binary (any valid → valid, be permissive)
-                            time_valid_base = F.avg_pool2d(time_valid_base, kernel_size=(ph, pw), stride=(ph, pw))
-                            time_valid_base = (time_valid_base > 0).float()
-                    else:
-                        H, W = pred.shape[-2], pred.shape[-1]
-                        time_valid_base = (npho_norm_face > npho_threshold_norm).view(x_in.size(0), 1, H, W).float()
-
-                    # Combined mask for time: randomly masked AND time-valid (npho > threshold)
-                    time_mask_expanded = mask_expanded * time_valid_base
-
-                    # Npho weighting for time loss (chi-square-like: weight ~ sqrt(npho))
-                    if use_npho_time_weight and time_mask_expanded.sum() > 0:
-                        # De-normalize to get approximate raw npho for weighting
-                        # raw_npho = npho_scale * (exp(npho_norm * npho_scale2) - 1)
-                        raw_npho_face = npho_scale * (torch.exp(npho_norm_face * npho_scale2) - 1)
+                        # Create time_valid_mask using normalized threshold
                         if name in ["top", "bot"]:
-                            npho_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
+                            time_valid_base = (npho_norm_face > npho_threshold_norm).unsqueeze(1).float()  # (B, 1, N)
                         elif name == "outer" and getattr(model.encoder, "outer_fine", False):
-                            npho_coarse = raw_npho_face.view(x_in.size(0), 1, *indices.shape)
-                            npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
+                            # For outer fine grid: use coarse-level threshold check, then upsample
+                            time_valid_coarse = (npho_norm_face > npho_threshold_norm).float()  # (B, H_coarse, W_coarse)
+                            time_valid_coarse = time_valid_coarse.view(x_in.size(0), 1, *indices.shape)
+                            time_valid_base = F.interpolate(time_valid_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
                             if pool_kernel:
-                                npho_fine = F.avg_pool2d(npho_fine, kernel_size=(ph, pw), stride=(ph, pw))
-                            npho_weight_map = torch.sqrt(npho_fine.clamp(min=npho_threshold))
+                                # Pool and convert back to binary (any valid → valid, be permissive)
+                                time_valid_base = F.avg_pool2d(time_valid_base, kernel_size=(ph, pw), stride=(ph, pw))
+                                time_valid_base = (time_valid_base > 0).float()
                         else:
                             H, W = pred.shape[-2], pred.shape[-1]
-                            npho_weight_map = torch.sqrt(raw_npho_face.view(x_in.size(0), 1, H, W).clamp(min=npho_threshold))
-                        # Normalize weight so mean is ~1 for stable training
-                        npho_weight_map = npho_weight_map / (npho_weight_map[time_mask_expanded.bool()].mean() + 1e-8)
-                        weighted_time_loss = (loss_map_time * time_mask_expanded * npho_weight_map).sum()
-                    else:
-                        weighted_time_loss = (loss_map_time * time_mask_expanded).sum()
+                            time_valid_base = (npho_norm_face > npho_threshold_norm).view(x_in.size(0), 1, H, W).float()
 
-                    time_mask_sum = time_mask_expanded.sum()
-                    time_mask_sum_safe = time_mask_sum + 1e-8
-                    time_loss = weighted_time_loss / time_mask_sum_safe
+                        # Combined mask for time: randomly masked AND time-valid (npho > threshold)
+                        time_mask_expanded = mask_expanded * time_valid_base
 
-                    # Track time-valid masked count (no .item() to avoid GPU-CPU sync)
-                    total_time_valid_masked += time_mask_sum
+                        # Npho weighting for time loss (chi-square-like: weight ~ sqrt(npho))
+                        if use_npho_time_weight and time_mask_expanded.sum() > 0:
+                            # De-normalize to get approximate raw npho for weighting
+                            # raw_npho = npho_scale * (exp(npho_norm * npho_scale2) - 1)
+                            raw_npho_face = npho_scale * (torch.exp(npho_norm_face * npho_scale2) - 1)
+                            if name in ["top", "bot"]:
+                                npho_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
+                            elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                                npho_coarse = raw_npho_face.view(x_in.size(0), 1, *indices.shape)
+                                npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
+                                if pool_kernel:
+                                    npho_fine = F.avg_pool2d(npho_fine, kernel_size=(ph, pw), stride=(ph, pw))
+                                npho_weight_map = torch.sqrt(npho_fine.clamp(min=npho_threshold))
+                            else:
+                                H, W = pred.shape[-2], pred.shape[-1]
+                                npho_weight_map = torch.sqrt(raw_npho_face.view(x_in.size(0), 1, H, W).clamp(min=npho_threshold))
+                            # Normalize weight so mean is ~1 for stable training
+                            npho_weight_map = npho_weight_map / (npho_weight_map[time_mask_expanded.bool()].mean() + 1e-8)
+                            weighted_time_loss = (loss_map_time * time_mask_expanded * npho_weight_map).sum()
+                        else:
+                            weighted_time_loss = (loss_map_time * time_mask_expanded).sum()
+
+                        time_mask_sum = time_mask_expanded.sum()
+                        time_mask_sum_safe = time_mask_sum + 1e-8
+                        time_loss = weighted_time_loss / time_mask_sum_safe
+
+                        # Track time-valid masked count (no .item() to avoid GPU-CPU sync)
+                        total_time_valid_masked += time_mask_sum
 
                     # MAE/RMSE tracking (expensive - skip if disabled)
                     if track_mae_rmse:
-                        diff_npho = pred[:, 0:1] - target[:, 0:1]
-                        diff_time = pred[:, 1:2] - target[:, 1:2]
+                        diff_npho = pred[:, pred_npho_idx:pred_npho_idx+1] - target[:, 0:1]
                         mask_sum_val = mask_sum.item()
-                        time_mask_sum_val = time_mask_sum.item()
                         if mask_sum_val > 0:
                             masked_abs_sum_npho += (diff_npho.abs() * mask_expanded).sum().item()
                             masked_sq_sum_npho += (diff_npho.pow(2) * mask_expanded).sum().item()
                             masked_count_npho += mask_sum_val
                             masked_abs_face_npho[name] += (diff_npho.abs() * mask_expanded).sum().item()
                             masked_sq_face_npho[name] += (diff_npho.pow(2) * mask_expanded).sum().item()
-                        if time_mask_sum_val > 0:
-                            # Time metrics computed only on time-valid sensors
-                            masked_abs_sum_time += (diff_time.abs() * time_mask_expanded).sum().item()
-                            masked_sq_sum_time += (diff_time.pow(2) * time_mask_expanded).sum().item()
-                            masked_count_time += time_mask_sum_val
-                            masked_abs_face_time[name] += (diff_time.abs() * time_mask_expanded).sum().item()
-                            masked_sq_face_time[name] += (diff_time.pow(2) * time_mask_expanded).sum().item()
-                            masked_count_face[name] += time_mask_sum_val
+                        if predict_time:
+                            diff_time = pred[:, pred_time_idx:pred_time_idx+1] - target[:, 1:2]
+                            time_mask_sum_val = time_mask_sum.item()
+                            if time_mask_sum_val > 0:
+                                # Time metrics computed only on time-valid sensors
+                                masked_abs_sum_time += (diff_time.abs() * time_mask_expanded).sum().item()
+                                masked_sq_sum_time += (diff_time.pow(2) * time_mask_expanded).sum().item()
+                                masked_count_time += time_mask_sum_val
+                                masked_abs_face_time[name] += (diff_time.abs() * time_mask_expanded).sum().item()
+                                masked_sq_face_time[name] += (diff_time.pow(2) * time_mask_expanded).sum().item()
+                                masked_count_face[name] += time_mask_sum_val
 
-                    if log_vars is not None and log_vars.numel() >= 2:
+                    if log_vars is not None and log_vars.numel() >= 2 and predict_time:
                         npho_loss = 0.5 * torch.exp(-log_vars[0]) * npho_loss + 0.5 * log_vars[0]
                         time_loss = 0.5 * torch.exp(-log_vars[1]) * time_loss + 0.5 * log_vars[1]
+                    elif log_vars is not None and log_vars.numel() >= 1:
+                        npho_loss = 0.5 * torch.exp(-log_vars[0]) * npho_loss + 0.5 * log_vars[0]
                     else:
                         npho_loss = npho_loss * npho_weight
-                        time_loss = time_loss * time_weight
+                        if predict_time:
+                            time_loss = time_loss * time_weight
                     face_loss = npho_loss + time_loss
                     loss += face_loss
 
@@ -309,7 +328,8 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                     if track_train_metrics:
                         face_loss_sums[name] += face_loss.item()
                         face_npho_loss_sums[name] += npho_loss.item()
-                        face_time_loss_sums[name] += time_loss.item()
+                        if predict_time:
+                            face_time_loss_sums[name] += time_loss.item()
 
             profiler.stop()  # loss_compute
 
@@ -370,28 +390,33 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
             metrics[f"loss_{name}"] = val / max(1, n_batches)
         for name, val in face_npho_loss_sums.items():
             metrics[f"loss_{name}_npho"] = val / max(1, n_batches)
-        for name, val in face_time_loss_sums.items():
-            metrics[f"loss_{name}_time"] = val / max(1, n_batches)
+        if predict_time:
+            for name, val in face_time_loss_sums.items():
+                metrics[f"loss_{name}_time"] = val / max(1, n_batches)
         # Aggregate npho/time losses (sum across faces)
         metrics["loss_npho"] = sum(metrics[f"loss_{name}_npho"] for name in face_npho_loss_sums)
-        metrics["loss_time"] = sum(metrics[f"loss_{name}_time"] for name in face_time_loss_sums)
+        if predict_time:
+            metrics["loss_time"] = sum(metrics[f"loss_{name}_time"] for name in face_time_loss_sums)
 
     # MAE/RMSE metrics (only if track_mae_rmse)
     if track_mae_rmse:
         metrics["mae_npho"] = masked_abs_sum_npho / max(masked_count_npho, 1e-8)
-        metrics["mae_time"] = masked_abs_sum_time / max(masked_count_time, 1e-8)
         metrics["rmse_npho"] = (masked_sq_sum_npho / max(masked_count_npho, 1e-8)) ** 0.5
-        metrics["rmse_time"] = (masked_sq_sum_time / max(masked_count_time, 1e-8)) ** 0.5
+        if predict_time:
+            metrics["mae_time"] = masked_abs_sum_time / max(masked_count_time, 1e-8)
+            metrics["rmse_time"] = (masked_sq_sum_time / max(masked_count_time, 1e-8)) ** 0.5
         for name in face_loss_sums:
             face_count = masked_count_face[name]
             metrics[f"mae_{name}_npho"] = masked_abs_face_npho[name] / max(face_count, 1e-8)
-            metrics[f"mae_{name}_time"] = masked_abs_face_time[name] / max(face_count, 1e-8)
             metrics[f"rmse_{name}_npho"] = (masked_sq_face_npho[name] / max(face_count, 1e-8)) ** 0.5
-            metrics[f"rmse_{name}_time"] = (masked_sq_face_time[name] / max(face_count, 1e-8)) ** 0.5
+            if predict_time:
+                metrics[f"mae_{name}_time"] = masked_abs_face_time[name] / max(face_count, 1e-8)
+                metrics[f"rmse_{name}_time"] = (masked_sq_face_time[name] / max(face_count, 1e-8)) ** 0.5
 
-    if log_vars is not None and log_vars.numel() >= 2:
+    if log_vars is not None and log_vars.numel() >= 1:
         metrics["channel_logvar_npho"] = log_vars[0].item()
-        metrics["channel_logvar_time"] = log_vars[1].item()
+        if predict_time and log_vars.numel() >= 2:
+            metrics["channel_logvar_time"] = log_vars[1].item()
 
     # Actual mask ratio (randomly-masked / valid sensors)
     # Convert tensor accumulators to Python scalars
@@ -447,6 +472,13 @@ def run_eval_mae(model, device, root_files, tree_name,
     loss_func = get_pointwise_loss_fn(loss_fn)
     log_vars = getattr(model, "channel_log_vars", None) if auto_channel_weight else None
 
+    # Detect predict_channels from model (default to ["npho", "time"] for legacy)
+    predict_channels = getattr(model, 'predict_channels', ['npho', 'time'])
+    predict_time = 'time' in predict_channels
+    # Map prediction channel indices to input channel indices
+    pred_npho_idx = predict_channels.index("npho") if "npho" in predict_channels else None
+    pred_time_idx = predict_channels.index("time") if "time" in predict_channels else None
+
     # Conditional time loss threshold
     if npho_threshold is None:
         npho_threshold = DEFAULT_NPHO_THRESHOLD
@@ -472,12 +504,14 @@ def run_eval_mae(model, device, root_files, tree_name,
     total_loss = 0.0
     n_batches = 0
 
-    # Prediction collection
+    # Prediction collection - only include pred_time if predicting time
     predictions = {
         "truth_npho": [], "truth_time": [],
-        "pred_npho": [], "pred_time": [],
+        "pred_npho": [],
         "mask": [], "x_masked": []
     }
+    if predict_time:
+        predictions["pred_time"] = []
     n_collected = 0
 
     # Track actual mask ratio (randomly-masked / valid sensors)
@@ -489,6 +523,9 @@ def run_eval_mae(model, device, root_files, tree_name,
 
     top_indices = torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long()
     bot_indices = torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long()
+
+    # Number of output channels based on predict_channels
+    out_channels = len(predict_channels)
 
     face_to_sensor_indices = {
         "inner": INNER_INDEX_MAP,
@@ -513,7 +550,7 @@ def run_eval_mae(model, device, root_files, tree_name,
         idx_flat = torch.tensor(index_map.reshape(-1), device=face_pred.device, dtype=torch.long)
         valid = idx_flat >= 0
         idx = idx_flat[valid]
-        vals = face_pred.permute(0, 2, 3, 1).reshape(face_pred.size(0), -1, 2)[:, valid]
+        vals = face_pred.permute(0, 2, 3, 1).reshape(face_pred.size(0), -1, out_channels)[:, valid]
         full[:, idx, :] = vals
 
     def scatter_hex_face(full, pred_nodes, indices):
@@ -531,24 +568,38 @@ def run_eval_mae(model, device, root_files, tree_name,
 
         cr, cc = OUTER_FINE_COARSE_SCALE
         Hc, Wc = OUTER_COARSE_FULL_INDEX_MAP.shape
-        npho = fine_pred[:, 0:1].contiguous().view(-1, 1, Hc, cr, Wc, cc).sum(dim=(3, 5))
-        time = fine_pred[:, 1:2].contiguous().view(-1, 1, Hc, cr, Wc, cc).mean(dim=(3, 5))
-        coarse_pred = torch.cat([npho, time], dim=1)
+
+        # Aggregate npho (always present at pred index 0) - sum over sub-pixels
+        npho_idx = pred_npho_idx if pred_npho_idx is not None else 0
+        npho = fine_pred[:, npho_idx:npho_idx+1].contiguous().view(-1, 1, Hc, cr, Wc, cc).sum(dim=(3, 5))
+        coarse_parts = [npho]
+
+        # Aggregate time only if predicting time - mean over sub-pixels
+        if predict_time and pred_time_idx is not None:
+            time = fine_pred[:, pred_time_idx:pred_time_idx+1].contiguous().view(-1, 1, Hc, cr, Wc, cc).mean(dim=(3, 5))
+            coarse_parts.append(time)
+
+        coarse_pred = torch.cat(coarse_parts, dim=1)
 
         sr, sc = OUTER_FINE_CENTER_SCALE
         Hc_center, Wc_center = OUTER_CENTER_INDEX_MAP.shape
         top = OUTER_FINE_CENTER_START[0] * cr
         left = OUTER_FINE_CENTER_START[1] * cc
         center_fine = fine_pred[:, :, top:top + Hc_center * sr, left:left + Wc_center * sc]
-        c_npho = center_fine[:, 0:1].contiguous().view(-1, 1, Hc_center, sr, Wc_center, sc).sum(dim=(3, 5))
-        c_time = center_fine[:, 1:2].contiguous().view(-1, 1, Hc_center, sr, Wc_center, sc).mean(dim=(3, 5))
-        center_pred = torch.cat([c_npho, c_time], dim=1)
+        c_npho = center_fine[:, npho_idx:npho_idx+1].contiguous().view(-1, 1, Hc_center, sr, Wc_center, sc).sum(dim=(3, 5))
+        center_parts = [c_npho]
+
+        if predict_time and pred_time_idx is not None:
+            c_time = center_fine[:, pred_time_idx:pred_time_idx+1].contiguous().view(-1, 1, Hc_center, sr, Wc_center, sc).mean(dim=(3, 5))
+            center_parts.append(c_time)
+
+        center_pred = torch.cat(center_parts, dim=1)
 
         return coarse_pred, center_pred
 
     def assemble_full_pred(recons_dict):
         full = torch.zeros(
-            (recons_dict["inner"].size(0), num_sensors, 2),
+            (recons_dict["inner"].size(0), num_sensors, out_channels),
             device=recons_dict["inner"].device,
             dtype=recons_dict["inner"].dtype,
         )
@@ -676,104 +727,119 @@ def run_eval_mae(model, device, root_files, tree_name,
                             mask_expanded = torch.ones_like(pred[:, 0:1])
 
                         target = targets[name]
-                        loss_map_npho = loss_func(pred[:, 0:1], target[:, 0:1])
-                        loss_map_time = loss_func(pred[:, 1:2], target[:, 1:2])
+                        # npho: prediction channel pred_npho_idx -> input channel 0
+                        loss_map_npho = loss_func(pred[:, pred_npho_idx:pred_npho_idx+1], target[:, 0:1])
+                        # time: prediction channel pred_time_idx -> input channel 1 (only if predicting time)
+                        if predict_time:
+                            loss_map_time = loss_func(pred[:, pred_time_idx:pred_time_idx+1], target[:, 1:2])
 
                         mask_sum = mask_expanded.sum()
                         mask_sum_safe = mask_sum + 1e-8
                         npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum_safe
 
-                        # Conditional time loss: only compute where npho > threshold
-                        # Get normalized npho values for this face
-                        npho_norm_all = x_in[:, :, 0]  # (B, 4760) - normalized npho
-                        if isinstance(indices, torch.Tensor):
-                            npho_norm_face = npho_norm_all[:, indices]
-                        else:
-                            npho_norm_face = npho_norm_all[:, indices.flatten()].view(x_in.size(0), *indices.shape)
+                        # Time loss (only if predicting time)
+                        time_loss = torch.tensor(0.0, device=device)
+                        time_mask_sum = torch.tensor(0.0, device=device)
+                        if predict_time:
+                            # Conditional time loss: only compute where npho > threshold
+                            # Get normalized npho values for this face
+                            npho_norm_all = x_in[:, :, 0]  # (B, 4760) - normalized npho
+                            if isinstance(indices, torch.Tensor):
+                                npho_norm_face = npho_norm_all[:, indices]
+                            else:
+                                npho_norm_face = npho_norm_all[:, indices.flatten()].view(x_in.size(0), *indices.shape)
 
-                        # Create time_valid_mask using normalized threshold
-                        if name in ["top", "bot"]:
-                            time_valid_base = (npho_norm_face > npho_threshold_norm).unsqueeze(1).float()
-                        elif name == "outer" and getattr(model.encoder, "outer_fine", False):
-                            time_valid_coarse = (npho_norm_face > npho_threshold_norm).float()
-                            time_valid_coarse = time_valid_coarse.view(x_in.size(0), 1, *indices.shape)
-                            time_valid_base = F.interpolate(time_valid_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
-                            if pool_kernel:
-                                time_valid_base = F.avg_pool2d(time_valid_base, kernel_size=(ph, pw), stride=(ph, pw))
-                                time_valid_base = (time_valid_base > 0).float()
-                        else:
-                            H, W = pred.shape[-2], pred.shape[-1]
-                            time_valid_base = (npho_norm_face > npho_threshold_norm).view(x_in.size(0), 1, H, W).float()
-
-                        time_mask_expanded = mask_expanded * time_valid_base
-
-                        # Npho weighting for time loss
-                        if use_npho_time_weight and time_mask_expanded.sum() > 0:
-                            # De-normalize to get approximate raw npho for weighting
-                            raw_npho_face = npho_scale * (torch.exp(npho_norm_face * npho_scale2) - 1)
+                            # Create time_valid_mask using normalized threshold
                             if name in ["top", "bot"]:
-                                npho_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
+                                time_valid_base = (npho_norm_face > npho_threshold_norm).unsqueeze(1).float()
                             elif name == "outer" and getattr(model.encoder, "outer_fine", False):
-                                npho_coarse = raw_npho_face.view(x_in.size(0), 1, *indices.shape)
-                                npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
+                                time_valid_coarse = (npho_norm_face > npho_threshold_norm).float()
+                                time_valid_coarse = time_valid_coarse.view(x_in.size(0), 1, *indices.shape)
+                                time_valid_base = F.interpolate(time_valid_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
                                 if pool_kernel:
-                                    npho_fine = F.avg_pool2d(npho_fine, kernel_size=(ph, pw), stride=(ph, pw))
-                                npho_weight_map = torch.sqrt(npho_fine.clamp(min=npho_threshold))
+                                    time_valid_base = F.avg_pool2d(time_valid_base, kernel_size=(ph, pw), stride=(ph, pw))
+                                    time_valid_base = (time_valid_base > 0).float()
                             else:
                                 H, W = pred.shape[-2], pred.shape[-1]
-                                npho_weight_map = torch.sqrt(raw_npho_face.view(x_in.size(0), 1, H, W).clamp(min=npho_threshold))
-                            npho_weight_map = npho_weight_map / (npho_weight_map[time_mask_expanded.bool()].mean() + 1e-8)
-                            weighted_time_loss = (loss_map_time * time_mask_expanded * npho_weight_map).sum()
-                        else:
-                            weighted_time_loss = (loss_map_time * time_mask_expanded).sum()
+                                time_valid_base = (npho_norm_face > npho_threshold_norm).view(x_in.size(0), 1, H, W).float()
 
-                        time_mask_sum = time_mask_expanded.sum()
-                        time_mask_sum_safe = time_mask_sum + 1e-8
-                        time_loss = weighted_time_loss / time_mask_sum_safe
+                            time_mask_expanded = mask_expanded * time_valid_base
 
-                        # Track time-valid masked count (no .item() to avoid GPU-CPU sync)
-                        total_time_valid_masked += time_mask_sum
+                            # Npho weighting for time loss
+                            if use_npho_time_weight and time_mask_expanded.sum() > 0:
+                                # De-normalize to get approximate raw npho for weighting
+                                raw_npho_face = npho_scale * (torch.exp(npho_norm_face * npho_scale2) - 1)
+                                if name in ["top", "bot"]:
+                                    npho_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
+                                elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                                    npho_coarse = raw_npho_face.view(x_in.size(0), 1, *indices.shape)
+                                    npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
+                                    if pool_kernel:
+                                        npho_fine = F.avg_pool2d(npho_fine, kernel_size=(ph, pw), stride=(ph, pw))
+                                    npho_weight_map = torch.sqrt(npho_fine.clamp(min=npho_threshold))
+                                else:
+                                    H, W = pred.shape[-2], pred.shape[-1]
+                                    npho_weight_map = torch.sqrt(raw_npho_face.view(x_in.size(0), 1, H, W).clamp(min=npho_threshold))
+                                npho_weight_map = npho_weight_map / (npho_weight_map[time_mask_expanded.bool()].mean() + 1e-8)
+                                weighted_time_loss = (loss_map_time * time_mask_expanded * npho_weight_map).sum()
+                            else:
+                                weighted_time_loss = (loss_map_time * time_mask_expanded).sum()
+
+                            time_mask_sum = time_mask_expanded.sum()
+                            time_mask_sum_safe = time_mask_sum + 1e-8
+                            time_loss = weighted_time_loss / time_mask_sum_safe
+
+                            # Track time-valid masked count (no .item() to avoid GPU-CPU sync)
+                            total_time_valid_masked += time_mask_sum
 
                         # MAE/RMSE tracking (skip if disabled for speed)
                         if track_mae_rmse:
-                            diff_npho = pred[:, 0:1] - target[:, 0:1]
-                            diff_time = pred[:, 1:2] - target[:, 1:2]
+                            diff_npho = pred[:, pred_npho_idx:pred_npho_idx+1] - target[:, 0:1]
                             mask_sum_val = mask_sum.item()
-                            time_mask_sum_val = time_mask_sum.item()
                             if mask_sum_val > 0:
                                 masked_abs_sum_npho += (diff_npho.abs() * mask_expanded).sum().item()
                                 masked_sq_sum_npho += (diff_npho.pow(2) * mask_expanded).sum().item()
                                 masked_count_npho += mask_sum_val
                                 masked_abs_face_npho[name] += (diff_npho.abs() * mask_expanded).sum().item()
                                 masked_sq_face_npho[name] += (diff_npho.pow(2) * mask_expanded).sum().item()
-                            if time_mask_sum_val > 0:
-                                masked_abs_sum_time += (diff_time.abs() * time_mask_expanded).sum().item()
-                                masked_sq_sum_time += (diff_time.pow(2) * time_mask_expanded).sum().item()
-                                masked_count_time += time_mask_sum_val
-                                masked_abs_face_time[name] += (diff_time.abs() * time_mask_expanded).sum().item()
-                                masked_sq_face_time[name] += (diff_time.pow(2) * time_mask_expanded).sum().item()
-                                masked_count_face[name] += time_mask_sum_val
-                        if log_vars is not None and log_vars.numel() >= 2:
+                            if predict_time:
+                                diff_time = pred[:, pred_time_idx:pred_time_idx+1] - target[:, 1:2]
+                                time_mask_sum_val = time_mask_sum.item()
+                                if time_mask_sum_val > 0:
+                                    masked_abs_sum_time += (diff_time.abs() * time_mask_expanded).sum().item()
+                                    masked_sq_sum_time += (diff_time.pow(2) * time_mask_expanded).sum().item()
+                                    masked_count_time += time_mask_sum_val
+                                    masked_abs_face_time[name] += (diff_time.abs() * time_mask_expanded).sum().item()
+                                    masked_sq_face_time[name] += (diff_time.pow(2) * time_mask_expanded).sum().item()
+                                    masked_count_face[name] += time_mask_sum_val
+                        if log_vars is not None and log_vars.numel() >= 2 and predict_time:
                             npho_loss = 0.5 * torch.exp(-log_vars[0]) * npho_loss + 0.5 * log_vars[0]
                             time_loss = 0.5 * torch.exp(-log_vars[1]) * time_loss + 0.5 * log_vars[1]
+                        elif log_vars is not None and log_vars.numel() >= 1:
+                            npho_loss = 0.5 * torch.exp(-log_vars[0]) * npho_loss + 0.5 * log_vars[0]
                         else:
                             npho_loss = npho_loss * npho_weight
-                            time_loss = time_loss * time_weight
+                            if predict_time:
+                                time_loss = time_loss * time_weight
                         face_loss = npho_loss + time_loss
 
                         face_loss_sums[name] += face_loss.item()
                         face_npho_loss_sums[name] += npho_loss.item()
-                        face_time_loss_sums[name] += time_loss.item()
+                        if predict_time:
+                            face_time_loss_sums[name] += time_loss.item()
                         loss += face_loss
 
                 # Collect predictions for ROOT output
                 if collect_predictions and n_collected < max_events:
                     full_pred = assemble_full_pred(recons)
                     n_to_collect = min(x_in.shape[0], max_events - n_collected)
+                    # Truth from input (always both channels)
                     predictions["truth_npho"].append(x_in[:n_to_collect, :, 0].cpu().numpy())
                     predictions["truth_time"].append(x_in[:n_to_collect, :, 1].cpu().numpy())
-                    predictions["pred_npho"].append(full_pred[:n_to_collect, :, 0].cpu().numpy())
-                    predictions["pred_time"].append(full_pred[:n_to_collect, :, 1].cpu().numpy())
+                    # Predictions - use channel indices from predict_channels
+                    predictions["pred_npho"].append(full_pred[:n_to_collect, :, pred_npho_idx].cpu().numpy())
+                    if predict_time and pred_time_idx is not None:
+                        predictions["pred_time"].append(full_pred[:n_to_collect, :, pred_time_idx].cpu().numpy())
                     predictions["mask"].append(mask[:n_to_collect].cpu().numpy())
                     predictions["x_masked"].append(x_masked[:n_to_collect].cpu().numpy())
                     n_collected += n_to_collect
@@ -804,29 +870,34 @@ def run_eval_mae(model, device, root_files, tree_name,
         metrics[f"loss_{name}"] = val / max(1, n_batches)
     for name, val in face_npho_loss_sums.items():
         metrics[f"loss_{name}_npho"] = val / max(1, n_batches)
-    for name, val in face_time_loss_sums.items():
-        metrics[f"loss_{name}_time"] = val / max(1, n_batches)
+    if predict_time:
+        for name, val in face_time_loss_sums.items():
+            metrics[f"loss_{name}_time"] = val / max(1, n_batches)
 
     # Aggregate npho/time losses (sum across faces, consistent with total_loss)
     metrics["loss_npho"] = sum(metrics[f"loss_{name}_npho"] for name in face_npho_loss_sums)
-    metrics["loss_time"] = sum(metrics[f"loss_{name}_time"] for name in face_time_loss_sums)
+    if predict_time:
+        metrics["loss_time"] = sum(metrics[f"loss_{name}_time"] for name in face_time_loss_sums)
 
     # MAE/RMSE metrics (only if track_mae_rmse)
     if track_mae_rmse:
         metrics["mae_npho"] = masked_abs_sum_npho / max(masked_count_npho, 1e-8)
-        metrics["mae_time"] = masked_abs_sum_time / max(masked_count_time, 1e-8)
         metrics["rmse_npho"] = (masked_sq_sum_npho / max(masked_count_npho, 1e-8)) ** 0.5
-        metrics["rmse_time"] = (masked_sq_sum_time / max(masked_count_time, 1e-8)) ** 0.5
+        if predict_time:
+            metrics["mae_time"] = masked_abs_sum_time / max(masked_count_time, 1e-8)
+            metrics["rmse_time"] = (masked_sq_sum_time / max(masked_count_time, 1e-8)) ** 0.5
         for name in face_loss_sums:
             face_count = masked_count_face[name]
             metrics[f"mae_{name}_npho"] = masked_abs_face_npho[name] / max(face_count, 1e-8)
-            metrics[f"mae_{name}_time"] = masked_abs_face_time[name] / max(face_count, 1e-8)
             metrics[f"rmse_{name}_npho"] = (masked_sq_face_npho[name] / max(face_count, 1e-8)) ** 0.5
-            metrics[f"rmse_{name}_time"] = (masked_sq_face_time[name] / max(face_count, 1e-8)) ** 0.5
+            if predict_time:
+                metrics[f"mae_{name}_time"] = masked_abs_face_time[name] / max(face_count, 1e-8)
+                metrics[f"rmse_{name}_time"] = (masked_sq_face_time[name] / max(face_count, 1e-8)) ** 0.5
 
-    if log_vars is not None and log_vars.numel() >= 2:
+    if log_vars is not None and log_vars.numel() >= 1:
         metrics["channel_logvar_npho"] = log_vars[0].item()
-        metrics["channel_logvar_time"] = log_vars[1].item()
+        if predict_time and log_vars.numel() >= 2:
+            metrics["channel_logvar_time"] = log_vars[1].item()
 
     # Actual mask ratio (randomly-masked / valid sensors)
     # Convert tensor accumulators to Python scalars

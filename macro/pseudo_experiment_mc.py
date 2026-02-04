@@ -52,7 +52,7 @@ from lib.geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
     OUTER_COARSE_FULL_INDEX_MAP, TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
     flatten_hex_rows,
-    DEFAULT_NPHO_SCALE, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
+    DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
 )
 
 # Constants
@@ -172,8 +172,14 @@ def prepare_model_input(relative_npho: np.ndarray, relative_time: np.ndarray,
     return x.astype(np.float32)
 
 
-def load_inpainter_model(checkpoint_path: str, device: str = 'cpu') -> XEC_Inpainter:
-    """Load inpainter model from checkpoint."""
+def load_inpainter_model(checkpoint_path: str, device: str = 'cpu'):
+    """
+    Load inpainter model from checkpoint.
+
+    Returns:
+        Tuple of (model, predict_channels) where predict_channels is a list
+        like ['npho'] or ['npho', 'time'].
+    """
     print(f"[INFO] Loading model from {checkpoint_path}")
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -181,14 +187,18 @@ def load_inpainter_model(checkpoint_path: str, device: str = 'cpu') -> XEC_Inpai
     # Extract config from checkpoint
     config = checkpoint.get('config', {})
 
+    # Get predict_channels from config (default to both for legacy checkpoints)
+    predict_channels = config.get('predict_channels', ['npho', 'time'])
+    print(f"[INFO] Predict channels: {predict_channels}")
+
     # Create encoder
     encoder = XECEncoder(
         outer_mode=config.get('outer_mode', 'finegrid'),
         outer_fine_pool=config.get('outer_fine_pool', None),
     )
 
-    # Create inpainter
-    model = XEC_Inpainter(encoder=encoder)
+    # Create inpainter with predict_channels
+    model = XEC_Inpainter(encoder=encoder, predict_channels=predict_channels)
 
     # Load weights
     if 'model_state_dict' in checkpoint:
@@ -208,7 +218,7 @@ def load_inpainter_model(checkpoint_path: str, device: str = 'cpu') -> XEC_Inpai
     model.eval()
 
     print(f"[INFO] Model loaded successfully")
-    return model
+    return model, predict_channels
 
 
 def run_inference(model: XEC_Inpainter, x: np.ndarray,
@@ -258,7 +268,8 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                         dead_mask: np.ndarray,
                         npho_scale: float = DEFAULT_NPHO_SCALE,
                         time_scale: float = DEFAULT_TIME_SCALE,
-                        time_shift: float = DEFAULT_TIME_SHIFT) -> List[Dict]:
+                        time_shift: float = DEFAULT_TIME_SHIFT,
+                        predict_channels: List[str] = None) -> List[Dict]:
     """
     Collect predictions into a flat list for saving.
 
@@ -267,10 +278,18 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
         x_original: Original input before masking (N, 4760, 2)
         dead_mask: Boolean mask (4760,) of dead channels
         npho_scale, time_scale, time_shift: Normalization parameters
+        predict_channels: List of predicted channels (['npho'] or ['npho', 'time'])
 
     Returns:
         List of prediction dictionaries
     """
+    if predict_channels is None:
+        predict_channels = ['npho', 'time']
+    predict_time = 'time' in predict_channels
+    # Map prediction channel names to indices in the prediction tensor
+    pred_npho_idx = predict_channels.index('npho') if 'npho' in predict_channels else 0
+    pred_time_idx = predict_channels.index('time') if 'time' in predict_channels else None
+
     all_preds = []
 
     for batch in predictions:
@@ -283,7 +302,7 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                 continue
 
             face_result = results[face_name]
-            pred = face_result['pred']  # (B, max_masked, 2)
+            pred = face_result['pred']  # (B, max_masked, out_channels)
             valid = face_result['valid']  # (B, max_masked)
 
             B = pred.shape[0]
@@ -316,12 +335,16 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                         idx_map = FACE_INDEX_MAPS[face_name]
                         sensor_id = int(idx_map[h_idx, w_idx])
 
-                    # Get prediction (denormalize)
-                    pred_npho_norm = float(pred[b, i, 0])
-                    pred_time_norm = float(pred[b, i, 1])
-
+                    # Get npho prediction (denormalize)
+                    pred_npho_norm = float(pred[b, i, pred_npho_idx])
                     pred_npho = pred_npho_norm / npho_scale if npho_scale != 0 else pred_npho_norm
-                    pred_time = (pred_time_norm - time_shift) / time_scale if time_scale != 0 else pred_time_norm
+
+                    # Get time prediction only if predicting time
+                    if predict_time and pred_time_idx is not None:
+                        pred_time_norm = float(pred[b, i, pred_time_idx])
+                        pred_time = (pred_time_norm - time_shift) / time_scale if time_scale != 0 else pred_time_norm
+                    else:
+                        pred_time = -999.0  # Sentinel for not predicted
 
                     # Get truth from original MC data
                     truth_npho_norm = float(x_original[event_idx, sensor_id, 0])
@@ -335,7 +358,10 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                         truth_npho = truth_npho_norm / npho_scale if npho_scale != 0 else truth_npho_norm
                         error_npho = pred_npho - truth_npho
 
-                    if truth_time_norm == MODEL_SENTINEL or abs(truth_time_norm) > 1e9:
+                    if not predict_time:
+                        truth_time = -999.0
+                        error_time = -999.0
+                    elif truth_time_norm == MODEL_SENTINEL or abs(truth_time_norm) > 1e9:
                         truth_time = -999.0
                         error_time = -999.0
                     else:
@@ -360,11 +386,30 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
 
 
 def save_predictions_to_root(predictions: List[Dict], output_path: str,
-                             run_number: int = None):
-    """Save predictions to ROOT file."""
+                             run_number: int = None,
+                             predict_channels: List[str] = None,
+                             npho_scale: float = DEFAULT_NPHO_SCALE,
+                             npho_scale2: float = DEFAULT_NPHO_SCALE2,
+                             time_scale: float = DEFAULT_TIME_SCALE,
+                             time_shift: float = DEFAULT_TIME_SHIFT):
+    """
+    Save predictions to ROOT file with metadata.
+
+    Args:
+        predictions: List of prediction dictionaries
+        output_path: Output ROOT file path
+        run_number: Run number for dead channel pattern
+        predict_channels: List of predicted channels (['npho'] or ['npho', 'time'])
+        npho_scale, npho_scale2, time_scale, time_shift: Normalization parameters
+    """
     if not predictions:
         print("[WARNING] No predictions to save")
         return
+
+    if predict_channels is None:
+        predict_channels = ['npho', 'time']
+
+    predict_time = 'time' in predict_channels
 
     # Convert to arrays
     face_map = {"inner": 0, "us": 1, "ds": 2, "outer": 3, "top": 4, "bot": 5}
@@ -376,39 +421,54 @@ def save_predictions_to_root(predictions: List[Dict], output_path: str,
         'truth_npho': np.array([p['truth_npho'] for p in predictions], dtype=np.float32),
         'truth_time': np.array([p['truth_time'] for p in predictions], dtype=np.float32),
         'pred_npho': np.array([p['pred_npho'] for p in predictions], dtype=np.float32),
-        'pred_time': np.array([p['pred_time'] for p in predictions], dtype=np.float32),
         'error_npho': np.array([p['error_npho'] for p in predictions], dtype=np.float32),
-        'error_time': np.array([p['error_time'] for p in predictions], dtype=np.float32),
     }
+
+    # Only include time predictions if time was predicted
+    if predict_time:
+        branches['pred_time'] = np.array([p['pred_time'] for p in predictions], dtype=np.float32)
+        branches['error_time'] = np.array([p['error_time'] for p in predictions], dtype=np.float32)
 
     # Add run number as metadata (same for all entries)
     if run_number is not None:
         branches['dead_pattern_run'] = np.full(len(predictions), run_number, dtype=np.int32)
 
+    # Metadata for downstream analysis scripts
+    metadata = {
+        'predict_channels': np.array([','.join(predict_channels)], dtype='U32'),
+        'npho_scale': np.array([npho_scale], dtype=np.float64),
+        'npho_scale2': np.array([npho_scale2], dtype=np.float64),
+        'time_scale': np.array([time_scale], dtype=np.float64),
+        'time_shift': np.array([time_shift], dtype=np.float64),
+    }
+
     with uproot.recreate(output_path) as f:
         f['predictions'] = branches
+        f['metadata'] = metadata
 
     print(f"[INFO] Saved {len(predictions):,} predictions to {output_path}")
+    print(f"[INFO] Metadata: predict_channels={predict_channels}")
 
 
-def compute_metrics(predictions: List[Dict]) -> Dict:
+def compute_metrics(predictions: List[Dict], predict_time: bool = True) -> Dict:
     """
     Compute metrics from predictions.
 
     Args:
         predictions: List of prediction dictionaries
+        predict_time: Whether time channel was predicted
 
     Returns:
         Dictionary of metrics
     """
-    # Filter valid predictions (where we have ground truth)
-    valid_preds = [p for p in predictions if p['error_npho'] > -999 and p['error_time'] > -999]
+    # Filter valid predictions (where we have ground truth for npho)
+    # For time, only require validity if predicting time
+    valid_preds = [p for p in predictions if p['error_npho'] > -999]
 
     if not valid_preds:
         return {}
 
     error_npho = np.array([p['error_npho'] for p in valid_preds])
-    error_time = np.array([p['error_time'] for p in valid_preds])
 
     metrics = {
         'n_predictions': len(valid_preds),
@@ -416,21 +476,33 @@ def compute_metrics(predictions: List[Dict]) -> Dict:
         'npho_rmse': np.sqrt(np.mean(error_npho ** 2)),
         'npho_bias': np.mean(error_npho),
         'npho_res_68pct': np.percentile(np.abs(error_npho), 68),
-        'time_mae': np.mean(np.abs(error_time)),
-        'time_rmse': np.sqrt(np.mean(error_time ** 2)),
-        'time_bias': np.mean(error_time),
-        'time_res_68pct': np.percentile(np.abs(error_time), 68),
     }
+
+    # Time metrics only if predicting time
+    if predict_time:
+        # Filter to predictions with valid time error
+        time_valid_preds = [p for p in valid_preds if p['error_time'] > -999]
+        if time_valid_preds:
+            error_time = np.array([p['error_time'] for p in time_valid_preds])
+            metrics.update({
+                'time_mae': np.mean(np.abs(error_time)),
+                'time_rmse': np.sqrt(np.mean(error_time ** 2)),
+                'time_bias': np.mean(error_time),
+                'time_res_68pct': np.percentile(np.abs(error_time), 68),
+            })
 
     # Per-face metrics
     for face_name in ['inner', 'us', 'ds', 'outer', 'top', 'bot']:
         face_preds = [p for p in valid_preds if p['face'] == face_name]
         if face_preds:
             face_err_npho = np.array([p['error_npho'] for p in face_preds])
-            face_err_time = np.array([p['error_time'] for p in face_preds])
             metrics[f'{face_name}_n'] = len(face_preds)
             metrics[f'{face_name}_npho_mae'] = np.mean(np.abs(face_err_npho))
-            metrics[f'{face_name}_time_mae'] = np.mean(np.abs(face_err_time))
+            if predict_time:
+                face_time_valid = [p for p in face_preds if p['error_time'] > -999]
+                if face_time_valid:
+                    face_err_time = np.array([p['error_time'] for p in face_time_valid])
+                    metrics[f'{face_name}_time_mae'] = np.mean(np.abs(face_err_time))
 
     return metrics
 
@@ -526,7 +598,8 @@ def main():
     print(f"[INFO] Total masked sensors with ground truth: {n_valid_masked:,}")
 
     # Load model
-    model = load_inpainter_model(args.checkpoint, device='cpu')
+    model, predict_channels = load_inpainter_model(args.checkpoint, device='cpu')
+    predict_time = 'time' in predict_channels
 
     # Run inference
     print("[INFO] Running inference (CPU)...")
@@ -541,11 +614,12 @@ def main():
         predictions, x_original, dead_mask,
         npho_scale=args.npho_scale,
         time_scale=args.time_scale,
-        time_shift=args.time_shift
+        time_shift=args.time_shift,
+        predict_channels=predict_channels
     )
 
     # Compute metrics
-    metrics = compute_metrics(pred_list)
+    metrics = compute_metrics(pred_list, predict_time=predict_time)
 
     # Print metrics
     print("\n" + "=" * 60)
@@ -559,30 +633,42 @@ def main():
     print(f"Events processed: {n_events:,}")
     print(f"Total predictions: {len(pred_list):,}")
     print(f"Predictions with ground truth: {metrics.get('n_predictions', 0):,}")
+    print(f"Predict channels: {predict_channels}")
     print()
     print("Global Metrics (all dead channel predictions):")
     print(f"  npho: MAE={metrics.get('npho_mae', np.nan):.4f}, "
           f"RMSE={metrics.get('npho_rmse', np.nan):.4f}, "
           f"Bias={metrics.get('npho_bias', np.nan):.4f}, "
           f"68%={metrics.get('npho_res_68pct', np.nan):.4f}")
-    print(f"  time: MAE={metrics.get('time_mae', np.nan):.4f}, "
-          f"RMSE={metrics.get('time_rmse', np.nan):.4f}, "
-          f"Bias={metrics.get('time_bias', np.nan):.4f}, "
-          f"68%={metrics.get('time_res_68pct', np.nan):.4f}")
+    if predict_time:
+        print(f"  time: MAE={metrics.get('time_mae', np.nan):.4f}, "
+              f"RMSE={metrics.get('time_rmse', np.nan):.4f}, "
+              f"Bias={metrics.get('time_bias', np.nan):.4f}, "
+              f"68%={metrics.get('time_res_68pct', np.nan):.4f}")
+    else:
+        print("  time: (not predicted)")
     print()
     print("Per-Face Metrics:")
     for face_name in ['inner', 'us', 'ds', 'outer', 'top', 'bot']:
         n = metrics.get(f'{face_name}_n', 0)
         if n > 0:
-            print(f"  {face_name:>6}: n={n:5d}, "
-                  f"npho_MAE={metrics.get(f'{face_name}_npho_mae', np.nan):.4f}, "
-                  f"time_MAE={metrics.get(f'{face_name}_time_mae', np.nan):.4f}")
+            if predict_time:
+                print(f"  {face_name:>6}: n={n:5d}, "
+                      f"npho_MAE={metrics.get(f'{face_name}_npho_mae', np.nan):.4f}, "
+                      f"time_MAE={metrics.get(f'{face_name}_time_mae', np.nan):.4f}")
+            else:
+                print(f"  {face_name:>6}: n={n:5d}, "
+                      f"npho_MAE={metrics.get(f'{face_name}_npho_mae', np.nan):.4f}")
     print("=" * 60)
 
     # Save predictions to ROOT
     run_for_filename = args.run if args.run else "custom"
     output_file = os.path.join(args.output, f"pseudo_experiment_run{run_for_filename}.root")
-    save_predictions_to_root(pred_list, output_file, run_number=args.run)
+    save_predictions_to_root(pred_list, output_file, run_number=args.run,
+                             predict_channels=predict_channels,
+                             npho_scale=args.npho_scale,
+                             time_scale=args.time_scale,
+                             time_shift=args.time_shift)
 
     # Save metrics to CSV
     import csv

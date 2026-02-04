@@ -16,6 +16,19 @@ from .geom_defs import (
 
 
 @dataclass
+class TimeConfig:
+    """Time channel prediction options (ignored if 'time' not in predict_channels).
+
+    These options are grouped under the `time:` subsection in training config.
+    They only take effect when the model predicts both npho and time channels.
+    """
+    weight: float = 1.0  # Loss weight for time channel
+    mask_ratio_scale: float = 1.0  # Scale factor for masking valid-time sensors (1.0 = uniform)
+    use_npho_weight: bool = True  # Weight time loss by sqrt(npho)
+    npho_threshold: Optional[float] = None  # Min npho for conditional time loss
+
+
+@dataclass
 class TaskConfig:
     """Configuration for a single task."""
     enabled: bool = False
@@ -348,7 +361,7 @@ class MAEModelConfig:
     outer_mode: str = "finegrid"
     outer_fine_pool: Optional[List[int]] = None
     mask_ratio: float = 0.6
-    time_mask_ratio_scale: float = 1.0  # Scale factor for masking valid-time sensors (1.0 = uniform)
+    predict_channels: List[str] = field(default_factory=lambda: ["npho", "time"])  # Output channels to predict
 
 
 @dataclass
@@ -362,7 +375,7 @@ class MAETrainingConfig:
     weight_decay: float = 1e-4
     loss_fn: str = "smooth_l1"  # smooth_l1, mse, l1, huber
     npho_weight: float = 1.0
-    time_weight: float = 1.0
+    time: TimeConfig = field(default_factory=TimeConfig)  # Time channel options (nested)
     auto_channel_weight: bool = False
     channel_dropout_rate: float = 0.1
     grad_clip: float = 1.0
@@ -373,9 +386,6 @@ class MAETrainingConfig:
     compile: str = "reduce-overhead"
     # Compile entire model as single graph (True=slower compile but better perf, False=faster compile)
     compile_fullgraph: bool = False
-    # Conditional time loss: only compute where npho > threshold
-    npho_threshold: Optional[float] = None  # None uses DEFAULT_NPHO_THRESHOLD (10.0)
-    use_npho_time_weight: bool = True  # Weight time loss by sqrt(npho)
     track_mae_rmse: bool = False  # Compute/log MAE/RMSE metrics
     track_train_metrics: bool = False  # Track per-face loss during training
     profile: bool = False  # Enable training profiler
@@ -407,6 +417,61 @@ class MAEConfig:
     training: MAETrainingConfig = field(default_factory=MAETrainingConfig)
     checkpoint: MAECheckpointConfig = field(default_factory=MAECheckpointConfig)
     mlflow: MAEMLflowConfig = field(default_factory=MAEMLflowConfig)
+
+
+def _migrate_flat_time_options(training_raw: Dict, model_raw: Optional[Dict] = None,
+                                config_type: str = "MAE") -> Dict:
+    """
+    Migrate deprecated flat time options to nested time: config.
+
+    Old flat options (training section):
+      - time_weight -> time.weight
+      - use_npho_time_weight -> time.use_npho_weight
+      - npho_threshold -> time.npho_threshold
+
+    Old model option:
+      - time_mask_ratio_scale -> training.time.mask_ratio_scale
+
+    Returns:
+        Migrated training config dict with nested time: section.
+    """
+    old_training_keys = {
+        'time_weight': 'weight',
+        'use_npho_time_weight': 'use_npho_weight',
+        'npho_threshold': 'npho_threshold',
+    }
+
+    found_old = [k for k in old_training_keys if k in training_raw]
+
+    # Check for time_mask_ratio_scale in model config (deprecated location)
+    model_time_mask_ratio = None
+    if model_raw and 'time_mask_ratio_scale' in model_raw:
+        model_time_mask_ratio = model_raw.pop('time_mask_ratio_scale')
+        found_old.append('model.time_mask_ratio_scale')
+
+    if found_old:
+        print(f"[WARN] Deprecated flat time options in {config_type} config: {found_old}")
+        print(f"[WARN] Please migrate to nested 'training.time:' config. Example:")
+        print(f"[WARN]   training:")
+        print(f"[WARN]     time:")
+        print(f"[WARN]       weight: 1.0")
+        print(f"[WARN]       mask_ratio_scale: 1.0")
+        print(f"[WARN]       use_npho_weight: true")
+        print(f"[WARN]       npho_threshold: null")
+
+        # Auto-migrate for backward compatibility
+        if 'time' not in training_raw:
+            training_raw['time'] = {}
+
+        for old_key, new_key in old_training_keys.items():
+            if old_key in training_raw:
+                training_raw['time'][new_key] = training_raw.pop(old_key)
+
+        # Migrate model.time_mask_ratio_scale -> training.time.mask_ratio_scale
+        if model_time_mask_ratio is not None:
+            training_raw['time']['mask_ratio_scale'] = model_time_mask_ratio
+
+    return training_raw
 
 
 def load_mae_config(config_path: str, warn_missing: bool = True, auto_update: bool = True) -> MAEConfig:
@@ -448,10 +513,17 @@ def load_mae_config(config_path: str, warn_missing: bool = True, auto_update: bo
             if hasattr(config.model, k):
                 setattr(config.model, k, v)
 
-    # Training
+    # Training (with migration for deprecated flat time options)
     if 'training' in raw_config:
-        for k, v in raw_config['training'].items():
-            if hasattr(config.training, k):
+        model_raw = raw_config.get('model', {})
+        training_raw = _migrate_flat_time_options(raw_config['training'], model_raw, "MAE")
+        for k, v in training_raw.items():
+            if k == 'time' and isinstance(v, dict):
+                # Handle nested time config
+                for tk, tv in v.items():
+                    if hasattr(config.training.time, tk):
+                        setattr(config.training.time, tk, tv)
+            elif hasattr(config.training, k):
                 setattr(config.training, k, v)
 
     # Checkpoint
@@ -505,7 +577,7 @@ class InpainterModelConfig:
     outer_mode: str = "finegrid"
     outer_fine_pool: Optional[List[int]] = None
     mask_ratio: float = 0.05  # Default 5% for realistic dead channel density
-    time_mask_ratio_scale: float = 1.0  # Scale factor for masking valid-time sensors (1.0 = uniform)
+    predict_channels: List[str] = field(default_factory=lambda: ["npho", "time"])  # Output channels to predict
     freeze_encoder: bool = True  # Freeze encoder from MAE
     use_local_context: bool = True  # Use local neighbor context for inpainting
 
@@ -523,7 +595,7 @@ class InpainterTrainingConfig:
     loss_fn: str = "smooth_l1"  # smooth_l1, mse, l1, huber
     loss_beta: float = 1.0  # beta for smooth_l1/huber loss
     npho_weight: float = 1.0
-    time_weight: float = 1.0
+    time: TimeConfig = field(default_factory=TimeConfig)  # Time channel options (nested)
     grad_clip: float = 1.0
     amp: bool = True
     # torch.compile mode: "max-autotune" (best perf, slow compile), "reduce-overhead", "default", or "false"/"none" to disable
@@ -534,9 +606,6 @@ class InpainterTrainingConfig:
     save_root_predictions: bool = True
     grad_accum_steps: int = 1
     track_train_metrics: bool = True
-    # Conditional time loss: only compute where npho > threshold
-    npho_threshold: Optional[float] = None  # None uses DEFAULT_NPHO_THRESHOLD (10.0)
-    use_npho_time_weight: bool = True  # Weight time loss by sqrt(npho)
     ema_decay: Optional[float] = None  # None = disabled, 0.999 = typical value
     profile: bool = False  # Enable training profiler
 
@@ -608,10 +677,17 @@ def load_inpainter_config(config_path: str, warn_missing: bool = True, auto_upda
             if hasattr(config.model, k):
                 setattr(config.model, k, v)
 
-    # Training
+    # Training (with migration for deprecated flat time options)
     if 'training' in raw_config:
-        for k, v in raw_config['training'].items():
-            if hasattr(config.training, k):
+        model_raw = raw_config.get('model', {})
+        training_raw = _migrate_flat_time_options(raw_config['training'], model_raw, "Inpainter")
+        for k, v in training_raw.items():
+            if k == 'time' and isinstance(v, dict):
+                # Handle nested time config
+                for tk, tv in v.items():
+                    if hasattr(config.training.time, tk):
+                        setattr(config.training.time, tk, tv)
+            elif hasattr(config.training, k):
                 setattr(config.training, k, v)
 
     # Checkpoint
@@ -658,12 +734,19 @@ def _get_dataclass_defaults(cls) -> Dict[str, Any]:
     return defaults
 
 
+def _is_dataclass_instance(obj) -> bool:
+    """Check if an object is a dataclass instance."""
+    import dataclasses
+    return dataclasses.is_dataclass(obj) and not isinstance(obj, type)
+
+
 def _check_missing_keys(raw_section: Dict, dataclass_cls, section_name: str) -> List[tuple]:
     """
     Check for missing keys in a config section.
 
     Returns:
         List of (key, default_value) tuples for missing keys.
+        Nested dataclass defaults are converted to dicts for proper YAML serialization.
     """
     if raw_section is None:
         raw_section = {}
@@ -673,6 +756,10 @@ def _check_missing_keys(raw_section: Dict, dataclass_cls, section_name: str) -> 
 
     for key, default_val in defaults.items():
         if key not in raw_section:
+            # Convert nested dataclass to dict for proper display/serialization
+            if _is_dataclass_instance(default_val):
+                import dataclasses
+                default_val = dataclasses.asdict(default_val)
             missing.append((key, default_val))
 
     return missing
@@ -816,8 +903,12 @@ def _update_config_file(config_path: str, raw_config: Dict,
             # Insert missing keys
             insert_lines = []
             for key, default_val in missing_list:
-                val_str = _format_yaml_value(default_val)
-                insert_lines.append(f"  {key}: {val_str}  # (auto-added)\n")
+                val_str = _format_yaml_value(default_val, indent=1)
+                if isinstance(default_val, dict):
+                    # Nested config - format with proper indentation
+                    insert_lines.append(f"  {key}:  # (auto-added){val_str}\n")
+                else:
+                    insert_lines.append(f"  {key}: {val_str}  # (auto-added)\n")
 
             for j, line in enumerate(insert_lines):
                 lines.insert(insert_pos + j, line)
@@ -830,7 +921,7 @@ def _update_config_file(config_path: str, raw_config: Dict,
         print(f"[INFO] Updated config file with missing options: {config_path}")
 
 
-def _format_yaml_value(value) -> str:
+def _format_yaml_value(value, indent: int = 0) -> str:
     """Format a Python value for YAML output."""
     if value is None:
         return "null"
@@ -840,6 +931,15 @@ def _format_yaml_value(value) -> str:
         if value == "":
             return '""'
         return f'"{value}"' if ' ' in value or ':' in value else value
+    elif isinstance(value, dict):
+        # Format nested dict as multi-line YAML
+        if not value:
+            return "{}"
+        lines = []
+        for k, v in value.items():
+            val_str = _format_yaml_value(v)
+            lines.append(f"{'  ' * (indent + 1)}{k}: {val_str}")
+        return "\n" + "\n".join(lines)
     elif isinstance(value, (list, tuple)):
         return '[' + ', '.join(_format_yaml_value(v) for v in value) + ']'
     elif isinstance(value, float):

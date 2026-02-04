@@ -28,6 +28,7 @@ def compute_inpainting_loss_flat(
     npho_scale2: float = DEFAULT_NPHO_SCALE2,
     use_npho_time_weight: bool = True,
     track_metrics: bool = True,
+    predict_channels: List[str] = None,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Compute inpainting loss from FLAT predictions (from forward_training).
@@ -36,7 +37,7 @@ def compute_inpainting_loss_flat(
     without per-face iteration. All masked positions are treated uniformly.
 
     Args:
-        pred_all: (B, 4760, 2) - predictions for all sensors
+        pred_all: (B, 4760, out_channels) - predictions for all sensors
         original_values: (B, 4760, 2) - ground truth sensor values (normalized)
         mask: (B, 4760) - binary mask of randomly-masked positions (1 = masked)
         loss_fn: "smooth_l1", "mse", or "l1"
@@ -47,12 +48,20 @@ def compute_inpainting_loss_flat(
         npho_scale, npho_scale2: normalization params for npho
         use_npho_time_weight: whether to weight time loss by sqrt(npho)
         track_metrics: whether to compute MAE/RMSE metrics
+        predict_channels: list of channels being predicted (["npho"] or ["npho", "time"])
 
     Returns:
         total_loss: scalar loss for backprop
         metrics: dict of losses and optional MAE/RMSE
     """
     device = pred_all.device
+
+    # Detect predict_channels (default to ["npho", "time"] for legacy)
+    if predict_channels is None:
+        predict_channels = ["npho", "time"]
+    predict_time = "time" in predict_channels
+    pred_npho_idx = predict_channels.index("npho") if "npho" in predict_channels else 0
+    pred_time_idx = predict_channels.index("time") if "time" in predict_channels else None
 
     # Threshold for valid time (in normalized space)
     if npho_threshold is None:
@@ -75,63 +84,67 @@ def compute_inpainting_loss_flat(
         return torch.tensor(0.0, device=device), {"total_loss": 0.0}
 
     # Gather predictions and targets at masked positions
-    pred_masked = pred_all[mask_bool]  # (num_masked, 2)
+    pred_masked = pred_all[mask_bool]  # (num_masked, out_channels)
     gt_masked = original_values[mask_bool]  # (num_masked, 2)
 
     # Compute npho loss (all masked positions)
-    loss_npho = loss_func(pred_masked[:, 0], gt_masked[:, 0])  # (num_masked,)
-
-    # Compute time loss (only for sensors with sufficient npho)
-    npho_gt_norm = gt_masked[:, 0]
-    time_valid = npho_gt_norm > npho_threshold_norm  # (num_masked,)
-
-    if time_valid.sum() > 0:
-        pred_time_valid = pred_masked[time_valid, 1]
-        gt_time_valid = gt_masked[time_valid, 1]
-
-        loss_time = loss_func(pred_time_valid, gt_time_valid)  # (num_time_valid,)
-
-        # Optional: weight by sqrt(npho) for chi-square-like weighting
-        if use_npho_time_weight:
-            # Denormalize npho to get raw values for weighting
-            npho_norm_valid = gt_masked[time_valid, 0]
-            # Clamp exponent to prevent overflow in float16 (max safe ~10)
-            exp_arg = (npho_norm_valid * npho_scale2).clamp(max=10.0)
-            raw_npho = npho_scale * (torch.exp(exp_arg) - 1.0)
-            time_weights = torch.sqrt(raw_npho.clamp(min=1.0))
-            time_weights = time_weights / time_weights.mean()  # Normalize weights
-            loss_time = loss_time * time_weights
-
-        avg_time_loss = loss_time.mean()
-    else:
-        avg_time_loss = torch.tensor(0.0, device=device)
-
+    loss_npho = loss_func(pred_masked[:, pred_npho_idx], gt_masked[:, 0])  # (num_masked,)
     avg_npho_loss = loss_npho.mean()
 
+    # Compute time loss (only if predicting time)
+    avg_time_loss = torch.tensor(0.0, device=device)
+    time_valid = None
+    if predict_time:
+        # Compute time loss (only for sensors with sufficient npho)
+        npho_gt_norm = gt_masked[:, 0]
+        time_valid = npho_gt_norm > npho_threshold_norm  # (num_masked,)
+
+        if time_valid.sum() > 0:
+            pred_time_valid = pred_masked[time_valid, pred_time_idx]
+            gt_time_valid = gt_masked[time_valid, 1]
+
+            loss_time = loss_func(pred_time_valid, gt_time_valid)  # (num_time_valid,)
+
+            # Optional: weight by sqrt(npho) for chi-square-like weighting
+            if use_npho_time_weight:
+                # Denormalize npho to get raw values for weighting
+                npho_norm_valid = gt_masked[time_valid, 0]
+                # Clamp exponent to prevent overflow in float16 (max safe ~10)
+                exp_arg = (npho_norm_valid * npho_scale2).clamp(max=10.0)
+                raw_npho = npho_scale * (torch.exp(exp_arg) - 1.0)
+                time_weights = torch.sqrt(raw_npho.clamp(min=1.0))
+                time_weights = time_weights / time_weights.mean()  # Normalize weights
+                loss_time = loss_time * time_weights
+
+            avg_time_loss = loss_time.mean()
+
     # Total loss
-    total_loss = npho_weight * avg_npho_loss + time_weight * avg_time_loss
+    total_loss = npho_weight * avg_npho_loss
+    if predict_time:
+        total_loss = total_loss + time_weight * avg_time_loss
 
     metrics = {
         "total_loss": total_loss.item(),
         "loss_npho": avg_npho_loss.item(),
-        "loss_time": avg_time_loss.item(),
     }
+    if predict_time:
+        metrics["loss_time"] = avg_time_loss.item()
 
     # Optional MAE/RMSE metrics
     if track_metrics:
         with torch.no_grad():
             # MAE
-            mae_npho = torch.abs(pred_masked[:, 0] - gt_masked[:, 0]).mean().item()
+            mae_npho = torch.abs(pred_masked[:, pred_npho_idx] - gt_masked[:, 0]).mean().item()
             metrics["mae_npho"] = mae_npho
 
-            if time_valid.sum() > 0:
-                mae_time = torch.abs(pred_masked[time_valid, 1] - gt_masked[time_valid, 1]).mean().item()
-                metrics["mae_time"] = mae_time
+            # RMSE
+            rmse_npho = torch.sqrt(((pred_masked[:, pred_npho_idx] - gt_masked[:, 0]) ** 2).mean()).item()
+            metrics["rmse_npho"] = rmse_npho
 
-                # RMSE
-                rmse_npho = torch.sqrt(((pred_masked[:, 0] - gt_masked[:, 0]) ** 2).mean()).item()
-                rmse_time = torch.sqrt(((pred_masked[time_valid, 1] - gt_masked[time_valid, 1]) ** 2).mean()).item()
-                metrics["rmse_npho"] = rmse_npho
+            if predict_time and time_valid is not None and time_valid.sum() > 0:
+                mae_time = torch.abs(pred_masked[time_valid, pred_time_idx] - gt_masked[time_valid, 1]).mean().item()
+                metrics["mae_time"] = mae_time
+                rmse_time = torch.sqrt(((pred_masked[time_valid, pred_time_idx] - gt_masked[time_valid, 1]) ** 2).mean()).item()
                 metrics["rmse_time"] = rmse_time
 
     return total_loss, metrics
@@ -154,6 +167,7 @@ def compute_inpainting_loss(
     npho_scale: float = DEFAULT_NPHO_SCALE,
     npho_scale2: float = DEFAULT_NPHO_SCALE2,
     use_npho_time_weight: bool = True,
+    predict_channels: List[str] = None,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Compute inpainting loss for all faces.
@@ -174,6 +188,7 @@ def compute_inpainting_loss(
         npho_scale: normalization scale for npho (for de-normalizing)
         npho_scale2: normalization scale2 for npho
         use_npho_time_weight: whether to weight time loss by sqrt(npho)
+        predict_channels: list of channels being predicted (["npho"] or ["npho", "time"])
 
     Returns:
         total_loss: scalar loss for backprop
@@ -181,6 +196,13 @@ def compute_inpainting_loss(
     """
     device = original_values.device
     B = original_values.shape[0]
+
+    # Detect predict_channels (default to ["npho", "time"] for legacy)
+    if predict_channels is None:
+        predict_channels = ["npho", "time"]
+    predict_time = "time" in predict_channels
+    pred_npho_idx = predict_channels.index("npho") if "npho" in predict_channels else 0
+    pred_time_idx = predict_channels.index("time") if "time" in predict_channels else None
 
     # Conditional time loss threshold (convert raw threshold to normalized space)
     if npho_threshold is None:
@@ -289,13 +311,13 @@ def compute_inpainting_loss(
         avg_time = torch.tensor(0.0, device=device)
 
         if npho_weight > 0 and nonzero_mask.any():
-            loss_npho_elem = loss_func(pr_all[:, 0], gt_all[:, 0], reduction="none")
+            loss_npho_elem = loss_func(pr_all[:, pred_npho_idx], gt_all[:, 0], reduction="none")
             loss_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_npho_elem)
             loss_npho_means = loss_npho_sum / safe_counts
             avg_npho = loss_npho_means[nonzero_mask].mean()
 
-        if time_weight > 0 and nonzero_mask.any():
-            loss_time_elem = loss_func(pr_all[:, 1], gt_all[:, 1], reduction="none")
+        if predict_time and time_weight > 0 and nonzero_mask.any():
+            loss_time_elem = loss_func(pr_all[:, pred_time_idx], gt_all[:, 1], reduction="none")
 
             # Apply npho weighting to time loss if enabled
             if use_npho_time_weight and time_valid.any():
@@ -345,19 +367,21 @@ def compute_inpainting_loss(
 
         if track_mae_rmse and track_metrics:
             # Accumulate raw errors for MAE/RMSE
-            diff = pr_all - gt_all
-            diff_npho = diff[:, 0]
-            diff_time = diff[:, 1]
+            diff_npho = pr_all[:, pred_npho_idx] - gt_all[:, 0]
 
             # For npho: use all masked sensors
             abs_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_npho.abs())
             sq_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_npho ** 2)
 
-            # For time: only use time-valid sensors
-            diff_time_valid = diff_time.clone()
-            diff_time_valid[~time_valid] = 0.0
-            abs_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time_valid.abs())
-            sq_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time_valid ** 2)
+            # For time: only use time-valid sensors (if predicting time)
+            abs_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype)
+            sq_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype)
+            if predict_time:
+                diff_time = pr_all[:, pred_time_idx] - gt_all[:, 1]
+                diff_time_valid = diff_time.clone()
+                diff_time_valid[~time_valid] = 0.0
+                abs_time_sum = abs_time_sum.scatter_add(0, batch_idx, diff_time_valid.abs())
+                sq_time_sum = sq_time_sum.scatter_add(0, batch_idx, diff_time_valid ** 2)
 
             face_abs_npho[face_name] = abs_npho_sum.sum().item()
             face_abs_time[face_name] = abs_time_sum.sum().item()
@@ -429,13 +453,13 @@ def compute_inpainting_loss(
         avg_time = torch.tensor(0.0, device=device)
 
         if npho_weight > 0 and nonzero_mask.any():
-            loss_npho_elem = loss_func(pr_all[:, 0], gt_all[:, 0], reduction="none")
+            loss_npho_elem = loss_func(pr_all[:, pred_npho_idx], gt_all[:, 0], reduction="none")
             loss_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_npho_elem)
             loss_npho_means = loss_npho_sum / safe_counts
             avg_npho = loss_npho_means[nonzero_mask].mean()
 
-        if time_weight > 0 and nonzero_mask.any():
-            loss_time_elem = loss_func(pr_all[:, 1], gt_all[:, 1], reduction="none")
+        if predict_time and time_weight > 0 and nonzero_mask.any():
+            loss_time_elem = loss_func(pr_all[:, pred_time_idx], gt_all[:, 1], reduction="none")
 
             # Apply npho weighting to time loss if enabled
             if use_npho_time_weight and time_valid.any():
@@ -473,17 +497,20 @@ def compute_inpainting_loss(
         if track_mae_rmse and track_metrics:
             # Accumulate raw errors for MAE/RMSE
             diff = pr_all - gt_all
-            diff_npho = diff[:, 0]
-            diff_time = diff[:, 1]
-
-            # For time: only use time-valid sensors
-            diff_time_valid = diff_time.clone()
-            diff_time_valid[~time_valid] = 0.0
+            diff_npho = pr_all[:, pred_npho_idx] - gt_all[:, 0]
 
             abs_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_npho.abs())
-            abs_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time_valid.abs())
             sq_npho_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_npho ** 2)
-            sq_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, diff_time_valid ** 2)
+
+            # For time: only use time-valid sensors (if predicting time)
+            abs_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype)
+            sq_time_sum = torch.zeros(B, device=pred.device, dtype=pr_all.dtype)
+            if predict_time:
+                diff_time = pr_all[:, pred_time_idx] - gt_all[:, 1]
+                diff_time_valid = diff_time.clone()
+                diff_time_valid[~time_valid] = 0.0
+                abs_time_sum = abs_time_sum.scatter_add(0, batch_idx, diff_time_valid.abs())
+                sq_time_sum = sq_time_sum.scatter_add(0, batch_idx, diff_time_valid ** 2)
 
             face_abs_npho[face_name] = abs_npho_sum.sum().item()
             face_abs_time[face_name] = abs_time_sum.sum().item()
@@ -511,16 +538,18 @@ def compute_inpainting_loss(
     if track_metrics:
         # Aggregate metrics (sum across faces, consistent with total_loss)
         metrics["loss_npho"] = total_npho_loss
-        metrics["loss_time"] = total_time_loss
+        if predict_time:
+            metrics["loss_time"] = total_time_loss
         metrics["total_loss"] = total_loss.item()
 
         # Global MAE/RMSE
         if track_mae_rmse:
             tc = max(total_count, 1)
             metrics["mae_npho"] = total_abs_npho / tc
-            metrics["mae_time"] = total_abs_time / tc
             metrics["rmse_npho"] = (total_sq_npho / tc) ** 0.5
-            metrics["rmse_time"] = (total_sq_time / tc) ** 0.5
+            if predict_time:
+                metrics["mae_time"] = total_abs_time / tc
+                metrics["rmse_time"] = (total_sq_time / tc) ** 0.5
 
         # Mask statistics
         metrics["n_masked_total"] = total_count
@@ -578,6 +607,9 @@ def run_epoch_inpainter(
         metrics: dict of averaged metrics
     """
     model.train()
+
+    # Get predict_channels from model for conditional loss computation
+    predict_channels = getattr(model, 'predict_channels', ['npho', 'time'])
 
     # Auto-select fast forward: always True because the vectorized OuterSensorInpaintingHead
     # computes all sensors regardless of path (forward() calls _compute_all_sensor_preds_vectorized
@@ -713,6 +745,7 @@ def run_epoch_inpainter(
                         npho_scale2=npho_scale2,
                         use_npho_time_weight=use_npho_time_weight,
                         track_metrics=track_metrics,
+                        predict_channels=predict_channels,
                     )
                 else:
                     # Original path: per-face loss computation
@@ -731,6 +764,7 @@ def run_epoch_inpainter(
                         npho_scale=npho_scale,
                         npho_scale2=npho_scale2,
                         use_npho_time_weight=use_npho_time_weight,
+                        predict_channels=predict_channels,
                     )
             profiler.stop()
 
@@ -890,6 +924,9 @@ def run_eval_inpainter(
     """
     model.eval()
 
+    # Get predict_channels from model for conditional loss computation
+    predict_channels = getattr(model, 'predict_channels', ['npho', 'time'])
+
     # Auto-select fast forward: always True (see run_epoch_inpainter comment)
     # Exception: collect_predictions requires the results dict from standard forward
     if use_fast_forward is None:
@@ -1042,6 +1079,7 @@ def run_eval_inpainter(
                             npho_scale2=npho_scale2,
                             use_npho_time_weight=use_npho_time_weight,
                             track_metrics=True,
+                            predict_channels=predict_channels,
                         )
                     else:
                         _, metrics = compute_inpainting_loss(
@@ -1059,6 +1097,7 @@ def run_eval_inpainter(
                             npho_scale=npho_scale,
                             npho_scale2=npho_scale2,
                             use_npho_time_weight=use_npho_time_weight,
+                            predict_channels=predict_channels,
                         )
                     if not track_mae_rmse:
                         metrics = {k: v for k, v in metrics.items() if not (k.startswith("mae_") or k.startswith("rmse_"))}
@@ -1272,7 +1311,8 @@ class RootPredictionWriter:
     def __init__(self, save_path: str, epoch: int, run_id: str = None, tree_name: str = "tree",
                  npho_scale: float = None, npho_scale2: float = None,
                  time_scale: float = None, time_shift: float = None,
-                 sentinel_value: float = None):
+                 sentinel_value: float = None,
+                 predict_channels: List[str] = None):
         import os
         import uproot
 
@@ -1290,6 +1330,10 @@ class RootPredictionWriter:
         self.time_shift = time_shift
         self.sentinel_value = sentinel_value
 
+        # Store predict_channels
+        self.predict_channels = predict_channels if predict_channels is not None else ['npho', 'time']
+        self.predict_time = 'time' in self.predict_channels
+
         # Main predictions tree
         branch_types = {
             "event_idx": np.int32,      # Batch-based index (for backwards compatibility)
@@ -1300,10 +1344,12 @@ class RootPredictionWriter:
             "truth_npho": np.float32,
             "truth_time": np.float32,
             "pred_npho": np.float32,
-            "pred_time": np.float32,
             "error_npho": np.float32,
-            "error_time": np.float32,
         }
+        # Only include time predictions if time was predicted
+        if self.predict_time:
+            branch_types["pred_time"] = np.float32
+            branch_types["error_time"] = np.float32
         if self.run_id is not None:
             branch_types["run_id"] = str
         self._tree = self._file.mktree(tree_name, branch_types)
@@ -1313,18 +1359,17 @@ class RootPredictionWriter:
         self._write_metadata()
 
     def _write_metadata(self):
-        """Write normalization factors to a separate metadata tree."""
-        metadata_data = {
+        """Write normalization factors and model config to a separate metadata tree."""
+        # Use a dict-based approach for metadata that mixes types
+        metadata = {
+            "predict_channels": np.array([','.join(self.predict_channels)], dtype='U32'),
             "npho_scale": np.array([self.npho_scale if self.npho_scale is not None else np.nan], dtype=np.float64),
             "npho_scale2": np.array([self.npho_scale2 if self.npho_scale2 is not None else np.nan], dtype=np.float64),
             "time_scale": np.array([self.time_scale if self.time_scale is not None else np.nan], dtype=np.float64),
             "time_shift": np.array([self.time_shift if self.time_shift is not None else np.nan], dtype=np.float64),
             "sentinel_value": np.array([self.sentinel_value if self.sentinel_value is not None else np.nan], dtype=np.float64),
         }
-        # Use explicit type specification to avoid awkward import issues
-        metadata_types = {k: np.float64 for k in metadata_data}
-        self._file.mktree("metadata", metadata_types)
-        self._file["metadata"].extend(metadata_data)
+        self._file["metadata"] = metadata
 
     def write(self, predictions: List[Dict]):
         if not predictions:
@@ -1344,10 +1389,7 @@ class RootPredictionWriter:
         truth_npho = np.array([p["truth_npho"] for p in predictions], dtype=np.float32)
         truth_time = np.array([p["truth_time"] for p in predictions], dtype=np.float32)
         pred_npho = np.array([p["pred_npho"] for p in predictions], dtype=np.float32)
-        pred_time = np.array([p["pred_time"] for p in predictions], dtype=np.float32)
-
         error_npho = pred_npho - truth_npho
-        error_time = pred_time - truth_time
 
         branches = {
             "event_idx": event_idx,
@@ -1358,10 +1400,15 @@ class RootPredictionWriter:
             "truth_npho": truth_npho,
             "truth_time": truth_time,
             "pred_npho": pred_npho,
-            "pred_time": pred_time,
             "error_npho": error_npho,
-            "error_time": error_time,
         }
+
+        # Only include time predictions if time was predicted
+        if self.predict_time:
+            pred_time = np.array([p["pred_time"] for p in predictions], dtype=np.float32)
+            error_time = pred_time - truth_time
+            branches["pred_time"] = pred_time
+            branches["error_time"] = error_time
 
         if self.run_id is not None:
             branches["run_id"] = np.full(n, self.run_id, dtype=object)
@@ -1381,7 +1428,11 @@ class RootPredictionWriter:
         self.close()
 
 
-def save_predictions_to_root(predictions: List[Dict], save_path: str, epoch: int, run_id: str = None):
+def save_predictions_to_root(predictions: List[Dict], save_path: str, epoch: int, run_id: str = None,
+                             predict_channels: List[str] = None,
+                             npho_scale: float = None, npho_scale2: float = None,
+                             time_scale: float = None, time_shift: float = None,
+                             sentinel_value: float = None):
     """
     Save inpainter predictions to a ROOT file.
 
@@ -1390,6 +1441,8 @@ def save_predictions_to_root(predictions: List[Dict], save_path: str, epoch: int
         save_path: directory to save the file
         epoch: epoch number
         run_id: optional MLflow run ID
+        predict_channels: list of predicted channels (['npho'] or ['npho', 'time'])
+        npho_scale, npho_scale2, time_scale, time_shift, sentinel_value: normalization params for metadata
 
     Returns:
         path to saved ROOT file
@@ -1397,7 +1450,11 @@ def save_predictions_to_root(predictions: List[Dict], save_path: str, epoch: int
     if not predictions:
         return None
 
-    with RootPredictionWriter(save_path, epoch, run_id=run_id) as writer:
+    with RootPredictionWriter(save_path, epoch, run_id=run_id,
+                              predict_channels=predict_channels,
+                              npho_scale=npho_scale, npho_scale2=npho_scale2,
+                              time_scale=time_scale, time_shift=time_shift,
+                              sentinel_value=sentinel_value) as writer:
         writer.write(predictions)
         if writer.count == 0:
             return None

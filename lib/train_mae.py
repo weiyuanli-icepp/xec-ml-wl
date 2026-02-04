@@ -54,7 +54,10 @@ torch.autograd.set_detect_anomaly(False)
 torch.autograd.profiler.emit_nvtx(False)
 
 
-def save_predictions_to_root(predictions, save_path, epoch, run_id=None):
+def save_predictions_to_root(predictions, save_path, epoch, run_id=None,
+                             predict_channels=None,
+                             npho_scale=None, npho_scale2=None,
+                             time_scale=None, time_shift=None):
     """
     Save MAE predictions to ROOT file for analysis.
 
@@ -62,8 +65,29 @@ def save_predictions_to_root(predictions, save_path, epoch, run_id=None):
         predictions: dict with keys: truth_npho, truth_time, pred_npho, pred_time, mask, x_masked
         save_path: directory to save the file
         epoch: current epoch number
+        predict_channels: List of predicted channels (['npho'] or ['npho', 'time'])
+        npho_scale, npho_scale2, time_scale, time_shift: Normalization parameters for metadata
     """
+    from lib.geom_defs import (
+        DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
+        DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT
+    )
+
     root_path = os.path.join(save_path, f"mae_predictions_epoch_{epoch+1}.root")
+
+    if predict_channels is None:
+        predict_channels = ['npho', 'time']
+    predict_time = 'time' in predict_channels
+
+    # Set defaults for normalization params
+    if npho_scale is None:
+        npho_scale = DEFAULT_NPHO_SCALE
+    if npho_scale2 is None:
+        npho_scale2 = DEFAULT_NPHO_SCALE2
+    if time_scale is None:
+        time_scale = DEFAULT_TIME_SCALE
+    if time_shift is None:
+        time_shift = DEFAULT_TIME_SHIFT
 
     n_events = len(predictions["truth_npho"])
     if n_events == 0:
@@ -88,20 +112,33 @@ def save_predictions_to_root(predictions, save_path, epoch, run_id=None):
 
     if "pred_npho" in predictions and len(predictions["pred_npho"]) > 0:
         pred_npho = predictions["pred_npho"].astype(np.float32)
-        pred_time = predictions["pred_time"].astype(np.float32)
         branch_data["pred_npho"] = pred_npho
-        branch_data["pred_time"] = pred_time
         branch_data["err_npho"] = (pred_npho - predictions["truth_npho"]).astype(np.float32)
-        branch_data["err_time"] = (pred_time - predictions["truth_time"]).astype(np.float32)
+
+        # Only add time predictions if time was predicted
+        if predict_time and "pred_time" in predictions and len(predictions["pred_time"]) > 0:
+            pred_time = predictions["pred_time"].astype(np.float32)
+            branch_data["pred_time"] = pred_time
+            branch_data["err_time"] = (pred_time - predictions["truth_time"]).astype(np.float32)
 
     # Use explicit type specification to avoid awkward import issues
     branch_types = {k: v.dtype for k, v in branch_data.items()}
 
+    # Metadata for downstream analysis scripts
+    metadata = {
+        'predict_channels': np.array([','.join(predict_channels)], dtype='U32'),
+        'npho_scale': np.array([npho_scale], dtype=np.float64),
+        'npho_scale2': np.array([npho_scale2], dtype=np.float64),
+        'time_scale': np.array([time_scale], dtype=np.float64),
+        'time_shift': np.array([time_shift], dtype=np.float64),
+    }
+
     with uproot.recreate(root_path) as f:
         f.mktree("tree", branch_types)
         f["tree"].extend(branch_data)
+        f['metadata'] = metadata
 
-    print(f"[INFO] Saved {n_events} events to {root_path}")
+    print(f"[INFO] Saved {n_events} events to {root_path} (predict_channels={predict_channels})")
     return root_path
 
 
@@ -210,7 +247,8 @@ Examples:
         outer_mode = args.outer_mode or cfg.model.outer_mode
         outer_fine_pool = args.outer_fine_pool or cfg.model.outer_fine_pool
         mask_ratio = args.mask_ratio if args.mask_ratio is not None else cfg.model.mask_ratio
-        time_mask_ratio_scale = args.time_mask_ratio_scale if args.time_mask_ratio_scale is not None else getattr(cfg.model, "time_mask_ratio_scale", 1.0)
+        # time_mask_ratio_scale moved to nested time config
+        time_mask_ratio_scale = args.time_mask_ratio_scale if args.time_mask_ratio_scale is not None else cfg.training.time.mask_ratio_scale
         lr = float(args.lr if args.lr is not None else cfg.training.lr)
         lr_scheduler = args.lr_scheduler or getattr(cfg.training, "lr_scheduler", None)
         lr_min = float(args.lr_min if args.lr_min is not None else getattr(cfg.training, "lr_min", 1e-6))
@@ -218,9 +256,12 @@ Examples:
         weight_decay = float(args.weight_decay if args.weight_decay is not None else cfg.training.weight_decay)
         loss_fn = args.loss_fn or cfg.training.loss_fn
         npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight
-        time_weight = args.time_weight if args.time_weight is not None else cfg.training.time_weight
-        npho_threshold = args.npho_threshold if args.npho_threshold is not None else getattr(cfg.training, "npho_threshold", None)
-        use_npho_time_weight = not args.no_npho_time_weight and getattr(cfg.training, "use_npho_time_weight", True)
+        # Get time config from nested structure
+        time_weight = args.time_weight if args.time_weight is not None else cfg.training.time.weight
+        npho_threshold = args.npho_threshold if args.npho_threshold is not None else cfg.training.time.npho_threshold
+        use_npho_time_weight = not args.no_npho_time_weight and cfg.training.time.use_npho_weight
+        # predict_channels controls output channels (npho-only or npho+time)
+        predict_channels = cfg.model.predict_channels
         track_mae_rmse = not args.no_track_mae_rmse and getattr(cfg.training, "track_mae_rmse", False)
         track_train_metrics = not args.no_track_train_metrics and getattr(cfg.training, "track_train_metrics", False)
         profile = args.profile or getattr(cfg.training, 'profile', False)
@@ -284,6 +325,7 @@ Examples:
         time_weight = args.time_weight or 1.0
         npho_threshold = args.npho_threshold  # None uses DEFAULT_NPHO_THRESHOLD
         use_npho_time_weight = not args.no_npho_time_weight
+        predict_channels = ["npho", "time"]  # Default: predict both channels
         track_mae_rmse = args.track_mae_rmse and not args.no_track_mae_rmse
         track_train_metrics = args.track_train_metrics and not args.no_track_train_metrics
         profile = args.profile
@@ -347,12 +389,14 @@ Examples:
 
     model = XEC_MAE(
         encoder, mask_ratio=mask_ratio, learn_channel_logvars=auto_channel_weight,
-        sentinel_value=sentinel_value, time_mask_ratio_scale=time_mask_ratio_scale
+        sentinel_value=sentinel_value, time_mask_ratio_scale=time_mask_ratio_scale,
+        predict_channels=predict_channels
     ).to(device)
     total_params, trainable_params = count_model_params(model)
     print("[INFO] MAE created:")
     print(f"  - Total params: {total_params:,}")
     print(f"  - Trainable params: {trainable_params:,}")
+    print(f"  - Predict channels: {predict_channels}")
 
     # torch.compile - auto-detect ARM architecture and disable (Triton not supported)
     is_arm = platform.machine() in ("aarch64", "arm64")
@@ -538,6 +582,7 @@ Examples:
             "sentinel_value": sentinel_value,
             "outer_mode": outer_mode_label,
             "mask_ratio": mask_ratio,
+            "predict_channels": ",".join(predict_channels),
             "total_params": total_params,
             "trainable_params": trainable_params,
             "lr": lr_label,
@@ -678,7 +723,12 @@ Examples:
             # Save predictions
             if predictions is not None:
                 try:
-                    root_path = save_predictions_to_root(predictions, save_path, epoch, run_id=run.info.run_id)
+                    root_path = save_predictions_to_root(
+                        predictions, save_path, epoch, run_id=run.info.run_id,
+                        predict_channels=predict_channels,
+                        npho_scale=npho_scale, npho_scale2=npho_scale2,
+                        time_scale=time_scale, time_shift=time_shift
+                    )
                     if root_path:
                         mlflow.log_artifact(root_path)
                 except Exception as e:
@@ -702,6 +752,7 @@ Examples:
                         'outer_mode': outer_mode,
                         'outer_fine_pool': outer_fine_pool,
                         'mask_ratio': mask_ratio,
+                        'predict_channels': list(predict_channels),
                     }
                 }
                 if ema_model is not None:
