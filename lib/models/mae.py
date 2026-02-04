@@ -16,31 +16,39 @@ class FaceDecoder(nn.Module):
     Reconstructs 2D images from 1D latent vector.
 
     Args:
-        embed_dim: Dimension of input latent vector
+        embed_dim: Dimension of input latent vector (from encoder)
+        decoder_dim: Dimension for decoder layers (lightweight decoder)
         out_h: Output height
         out_w: Output width
         out_channels: Number of output channels (1 for npho-only, 2 for npho+time)
     """
-    def __init__(self, embed_dim=1024, out_h=10, out_w=10, out_channels=2):
+    def __init__(self, embed_dim=1024, decoder_dim=128, out_h=10, out_w=10, out_channels=2):
         super().__init__()
         self.out_h = out_h
         self.out_w = out_w
         self.out_channels = out_channels
 
-        self.linear = nn.Linear(embed_dim, 256 * 4 * 4)
+        # Project from encoder dim to decoder dim, then expand spatially
+        # Use decoder_dim as base, with 2x and 4x multiples for upsampling stages
+        dim1 = decoder_dim * 2  # e.g., 256 when decoder_dim=128
+        dim2 = decoder_dim      # e.g., 128
+        dim3 = decoder_dim // 2  # e.g., 64
+
+        self.linear = nn.Linear(embed_dim, dim1 * 4 * 4)
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(256, 128, kernel_size=3, stride=2, padding=1, output_padding=1), # 4->8
-            nn.LayerNorm([128, 8, 8]),
+            nn.ConvTranspose2d(dim1, dim2, kernel_size=3, stride=2, padding=1, output_padding=1),  # 4->8
+            nn.LayerNorm([dim2, 8, 8]),
             nn.GELU(),
-            nn.ConvTranspose2d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1), # 8->16
-            nn.LayerNorm([64, 16, 16]),
+            nn.ConvTranspose2d(dim2, dim3, kernel_size=3, stride=2, padding=1, output_padding=1),  # 8->16
+            nn.LayerNorm([dim3, 16, 16]),
             nn.GELU(),
-            nn.ConvTranspose2d(64, out_channels, kernel_size=3, padding=1), # 16->16
+            nn.ConvTranspose2d(dim3, out_channels, kernel_size=3, padding=1),  # 16->16
         )
+        self._dim1 = dim1  # Store for forward pass
 
     def forward(self, x):
         B = x.shape[0]
-        x = self.linear(x).reshape(B, 256, 4, 4)
+        x = self.linear(x).reshape(B, self._dim1, 4, 4)
         x = self.decoder(x)
         x = F.interpolate(x, size=(self.out_h, self.out_w), mode='bilinear', align_corners=False)
         return x
@@ -53,39 +61,44 @@ class GraphFaceDecoder(nn.Module):
     Args:
         num_nodes: Number of nodes in the graph
         adj_matrix: Adjacency matrix for graph attention
-        embed_dim: Dimension of input latent vector
+        embed_dim: Dimension of input latent vector (from encoder)
+        decoder_dim: Dimension for decoder layers (lightweight decoder, default 128)
         depth: Number of HexNeXt blocks
         out_channels: Number of output channels (1 for npho-only, 2 for npho+time)
     """
-    def __init__(self, num_nodes, adj_matrix, embed_dim=1024, depth=2, out_channels=2):
+    def __init__(self, num_nodes, adj_matrix, embed_dim=1024, decoder_dim=128, depth=2, out_channels=2):
         super().__init__()
         self.num_nodes = num_nodes
         self.out_channels = out_channels
+        self.decoder_dim = decoder_dim
         if not torch.is_tensor(adj_matrix):
             adj_matrix = torch.from_numpy(adj_matrix)
         self.register_buffer("adj_matrix", adj_matrix.long())
 
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_nodes, embed_dim))
+        # Project from encoder dim to lightweight decoder dim
+        self.proj_in = nn.Linear(embed_dim, decoder_dim)
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_nodes, decoder_dim))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
-        self.proj_global = nn.Linear(embed_dim, embed_dim)
 
         self.blocks = nn.ModuleList([
-            HexNeXtBlock(dim=embed_dim)
+            HexNeXtBlock(dim=decoder_dim)
             for _ in range(depth)
         ])
 
         self.head = nn.Sequential(
-            nn.LayerNorm(embed_dim),
-            nn.Linear(embed_dim, out_channels)  # -> Npho (+ Time) Prediction
+            nn.LayerNorm(decoder_dim),
+            nn.Linear(decoder_dim, out_channels)  # -> Npho (+ Time) Prediction
         )
 
     def forward(self, latent_token):
         """
-        latent_token: (B, 1024)
+        latent_token: (B, embed_dim)
         Returns: (B, out_channels, num_nodes)
         """
         B = latent_token.shape[0]
-        nodes = self.proj_global(latent_token).unsqueeze(1).expand(-1, self.num_nodes, -1)
+        # Project to decoder dimension
+        latent_proj = self.proj_in(latent_token)  # (B, decoder_dim)
+        nodes = latent_proj.unsqueeze(1).expand(-1, self.num_nodes, -1)  # (B, num_nodes, decoder_dim)
         nodes = nodes + self.pos_embed
         for blk in self.blocks:
             nodes = blk(nodes, self.adj_matrix)
@@ -103,25 +116,28 @@ class XEC_MAE(nn.Module):
         sentinel_value: Value used to mark invalid/masked sensors
         time_mask_ratio_scale: Scale factor for stratified masking of valid-time sensors
         predict_channels: List of channels to predict (["npho"] or ["npho", "time"])
+        decoder_dim: Dimension for lightweight decoder layers (default 128, following MAE paper's
+                     asymmetric design where decoder is significantly smaller than encoder)
     """
     def __init__(self, encoder: XECEncoder, mask_ratio=0.6, learn_channel_logvars: bool = False,
                  sentinel_value: float = DEFAULT_SENTINEL_VALUE, time_mask_ratio_scale: float = 1.0,
-                 predict_channels=None):
+                 predict_channels=None, decoder_dim: int = 128):
         super().__init__()
         self.encoder = encoder
         self.mask_ratio = mask_ratio
         self.learn_channel_logvars = learn_channel_logvars
         self.sentinel_value = sentinel_value
         self.time_mask_ratio_scale = time_mask_ratio_scale
+        self.decoder_dim = decoder_dim
 
         # Configurable output channels
         self.predict_channels = predict_channels if predict_channels is not None else ["npho", "time"]
         self.out_channels = len(self.predict_channels)
 
         # -- RECTANGULAR FACES DECODERS --
-        self.dec_inner = FaceDecoder(out_h=93, out_w=44, out_channels=self.out_channels)
-        self.dec_us    = FaceDecoder(out_h=24, out_w=6, out_channels=self.out_channels)
-        self.dec_ds    = FaceDecoder(out_h=24, out_w=6, out_channels=self.out_channels)
+        self.dec_inner = FaceDecoder(decoder_dim=decoder_dim, out_h=93, out_w=44, out_channels=self.out_channels)
+        self.dec_us    = FaceDecoder(decoder_dim=decoder_dim, out_h=24, out_w=6, out_channels=self.out_channels)
+        self.dec_ds    = FaceDecoder(decoder_dim=decoder_dim, out_h=24, out_w=6, out_channels=self.out_channels)
         if self.encoder.outer_fine:
             if self.encoder.outer_fine_pool:
                 if isinstance(self.encoder.outer_fine_pool, int):
@@ -134,18 +150,18 @@ class XEC_MAE(nn.Module):
                 out_h, out_w = OUTER_FINE_H, OUTER_FINE_W
         else:
             out_h, out_w = 9, 24
-        self.dec_outer = FaceDecoder(out_h=out_h, out_w=out_w, out_channels=self.out_channels)
+        self.dec_outer = FaceDecoder(decoder_dim=decoder_dim, out_h=out_h, out_w=out_w, out_channels=self.out_channels)
 
         # -- GRAPH FACES DECODERS --
         num_hex_top = len(flatten_hex_rows(TOP_HEX_ROWS))
         num_hex_bot = len(flatten_hex_rows(BOTTOM_HEX_ROWS))
         edge_index = torch.from_numpy(HEX_EDGE_INDEX_NP).long()
         self.dec_top = GraphFaceDecoder(
-            num_nodes=num_hex_top, adj_matrix=edge_index, embed_dim=1024,
+            num_nodes=num_hex_top, adj_matrix=edge_index, embed_dim=1024, decoder_dim=decoder_dim,
             out_channels=self.out_channels
         )
         self.dec_bot = GraphFaceDecoder(
-            num_nodes=num_hex_bot, adj_matrix=edge_index, embed_dim=1024,
+            num_nodes=num_hex_bot, adj_matrix=edge_index, embed_dim=1024, decoder_dim=decoder_dim,
             out_channels=self.out_channels
         )
 

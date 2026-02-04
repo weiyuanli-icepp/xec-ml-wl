@@ -362,6 +362,7 @@ class MAEModelConfig:
     outer_fine_pool: Optional[List[int]] = None
     mask_ratio: float = 0.6
     predict_channels: List[str] = field(default_factory=lambda: ["npho", "time"])  # Output channels to predict
+    decoder_dim: int = 128  # Lightweight decoder dimension (MAE paper: decoder << encoder)
 
 
 @dataclass

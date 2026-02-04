@@ -176,6 +176,7 @@ Key parameters in `config/mae_config.yaml`:
 |-----------|---------|-------------|
 | `model.predict_channels` | ["npho", "time"] | Which channels to predict (output). Use ["npho"] for npho-only mode |
 | `model.mask_ratio` | 0.65 | Fraction of valid sensors to mask |
+| `model.decoder_dim` | 128 | Lightweight decoder dimension (smaller forces encoder to learn more) |
 | `outer_mode` | "finegrid" | Outer face mode (`finegrid` or `split`) |
 | `outer_fine_pool` | [3, 3] | Pooling kernel for finegrid outer |
 | `training.loss_fn` | "smooth_l1" | Loss function (smooth_l1, mse, l1, huber) |

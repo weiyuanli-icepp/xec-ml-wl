@@ -32,6 +32,8 @@ model:
   time_mask_ratio_scale: 1.0        # Scale factor for masking valid-time sensors (>1.0 to prefer masking valid-time)
   predict_channels: ["npho", "time"]  # Output channels to predict: ["npho"] or ["npho", "time"]
                                       # Use ["npho"] for faster training when time prediction is not needed
+  decoder_dim: 128                  # Lightweight decoder dimension (MAE paper: decoder << encoder)
+                                      # Default 128, smaller values force encoder to learn more
 
 # === Training Configuration ===
 training:

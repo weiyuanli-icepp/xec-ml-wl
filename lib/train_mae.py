@@ -184,6 +184,7 @@ Examples:
     parser.add_argument("--outer_mode",           type=str, default=None, choices=["split", "finegrid"])
     parser.add_argument("--outer_fine_pool",      type=int, nargs=2, default=None)
     parser.add_argument("--mask_ratio",           type=float, default=None)
+    parser.add_argument("--decoder_dim",         type=int, default=None, help="Decoder hidden dimension (default: 128)")
     parser.add_argument("--lr",                   type=float, default=None)
     parser.add_argument("--lr_scheduler",         type=str, default=None, choices=["none", "cosine"])
     parser.add_argument("--lr_min",               type=float, default=None, help="Minimum lr for cosine scheduler")
@@ -262,6 +263,7 @@ Examples:
         use_npho_time_weight = not args.no_npho_time_weight and cfg.training.time.use_npho_weight
         # predict_channels controls output channels (npho-only or npho+time)
         predict_channels = cfg.model.predict_channels
+        decoder_dim = args.decoder_dim if args.decoder_dim is not None else getattr(cfg.model, 'decoder_dim', 128)
         track_mae_rmse = not args.no_track_mae_rmse and getattr(cfg.training, "track_mae_rmse", False)
         track_train_metrics = not args.no_track_train_metrics and getattr(cfg.training, "track_train_metrics", False)
         profile = args.profile or getattr(cfg.training, 'profile', False)
@@ -326,6 +328,7 @@ Examples:
         npho_threshold = args.npho_threshold  # None uses DEFAULT_NPHO_THRESHOLD
         use_npho_time_weight = not args.no_npho_time_weight
         predict_channels = ["npho", "time"]  # Default: predict both channels
+        decoder_dim = args.decoder_dim if args.decoder_dim is not None else 128
         track_mae_rmse = args.track_mae_rmse and not args.no_track_mae_rmse
         track_train_metrics = args.track_train_metrics and not args.no_track_train_metrics
         profile = args.profile
@@ -390,13 +393,14 @@ Examples:
     model = XEC_MAE(
         encoder, mask_ratio=mask_ratio, learn_channel_logvars=auto_channel_weight,
         sentinel_value=sentinel_value, time_mask_ratio_scale=time_mask_ratio_scale,
-        predict_channels=predict_channels
+        predict_channels=predict_channels, decoder_dim=decoder_dim
     ).to(device)
     total_params, trainable_params = count_model_params(model)
     print("[INFO] MAE created:")
     print(f"  - Total params: {total_params:,}")
     print(f"  - Trainable params: {trainable_params:,}")
     print(f"  - Predict channels: {predict_channels}")
+    print(f"  - Decoder dim: {decoder_dim}")
 
     # torch.compile - auto-detect ARM architecture and disable (Triton not supported)
     is_arm = platform.machine() in ("aarch64", "arm64")
@@ -582,6 +586,7 @@ Examples:
             "sentinel_value": sentinel_value,
             "outer_mode": outer_mode_label,
             "mask_ratio": mask_ratio,
+            "decoder_dim": decoder_dim,
             "predict_channels": ",".join(predict_channels),
             "total_params": total_params,
             "trainable_params": trainable_params,
@@ -752,6 +757,7 @@ Examples:
                         'outer_mode': outer_mode,
                         'outer_fine_pool': outer_fine_pool,
                         'mask_ratio': mask_ratio,
+                        'decoder_dim': decoder_dim,
                         'predict_channels': list(predict_channels),
                     }
                 }
