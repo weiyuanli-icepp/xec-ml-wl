@@ -459,7 +459,60 @@ Train on progressively harder examples:
 | **Transformer layers** | 2 | 4-6 | +Cross-face reasoning |
 | **Attention heads** | 8 | 16 | +Multi-pattern attention |
 
-## D. Inpainter Improvements
+## D. MAE Decoder Improvements
+
+### 1. Per-Face Decoder Dimensions
+
+**Current:** Uniform `decoder_dim=128` for all faces.
+
+**Observation:** Face sizes vary dramatically:
+
+| Face | Sensors | Relative Size |
+|------|---------|---------------|
+| Inner | 4,092 | 56× |
+| Outer | ~360 | 5× |
+| US/DS | 144 | 2× |
+| Top/Bottom | 73 | 1× |
+
+**Idea:** Scale decoder capacity by face size. Larger faces may need more capacity to reconstruct.
+
+**Option A: Manual per-face config**
+```yaml
+model:
+  decoder_dim_inner: 256
+  decoder_dim_outer: 128
+  decoder_dim_us: 64
+  decoder_dim_ds: 64
+  decoder_dim_top: 64
+  decoder_dim_bot: 64
+```
+
+**Option B: Auto-scaling**
+```yaml
+model:
+  decoder_dim: 128  # base dimension
+  decoder_dim_scale_by_face: true  # Scale by sqrt(face_size / min_face_size)
+```
+
+Auto-computed dimensions (with base=128):
+- Inner: 128 × √(4092/73) ≈ 128 × 7.5 = 960 → cap at 512?
+- Outer: 128 × √(360/73) ≈ 128 × 2.2 = 282 → 256
+- US/DS: 128 × √(144/73) ≈ 128 × 1.4 = 179 → 128
+- Top/Bot: 128 × 1 = 128
+
+**Considerations:**
+1. FaceDecoder works at fixed 16×16 internally, then interpolates - may not benefit much
+2. GraphFaceDecoder works directly on nodes - per-face dim could help
+3. Adds configuration complexity
+4. Need ablation study to verify benefit
+
+**Applies to:** MAE decoder and potentially Inpainter heads
+
+**Status:** Deferred - keep uniform `decoder_dim=128` for simplicity, revisit if needed.
+
+---
+
+## E. Inpainter Improvements
 
 ### 1. Sensor-Level Outer Face Prediction
 
@@ -482,7 +535,7 @@ Train on progressively harder examples:
 
 **Status:** Planned (see plan file)
 
-## E. Evaluation & Analysis
+## F. Evaluation & Analysis
 
 ### 1. Uncertainty Estimation
 
@@ -499,7 +552,7 @@ Train on progressively harder examples:
 | **Angle dependence** | Resolution vs (θ, φ) | ✅ Implemented |
 | **Pile-up robustness** | Performance with overlapping events | 🔲 Not tested |
 
-## F. Infrastructure
+## G. Infrastructure
 
 ### 1. Streaming Predictions
 
@@ -542,4 +595,4 @@ with uproot.recreate("predictions.root") as f:
 
 ---
 
-*Last updated: February 2026*
+*Last updated: February 2026 (added per-face decoder dimensions idea)*
