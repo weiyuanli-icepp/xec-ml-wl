@@ -434,15 +434,28 @@ class OuterSensorInpaintingHead(nn.Module):
                     h1 = h0 + 1
                 if w1 <= w0:
                     w1 = w0 + 1
-                # Clamp to grid bounds
+                # Clamp to grid bounds, but ensure we don't undo the fix above
                 h1 = min(h1, self.grid_h)
                 w1 = min(w1, self.grid_w)
+                # If clamping made region empty, shift h0/w0 back to ensure at least 1 position
+                if h1 <= h0:
+                    h0 = max(0, h1 - 1)
+                if w1 <= w0:
+                    w0 = max(0, w1 - 1)
 
             # Generate flat indices for all positions in this region
             positions = []
             for h in range(h0, h1):
                 for w in range(w0, w1):
                     positions.append(h * self.grid_w + w)
+
+            # Safety check: ensure at least one position (fallback to nearest valid cell)
+            if len(positions) == 0:
+                # Use the clamped h0, w0 as fallback
+                h_safe = min(max(h0, 0), self.grid_h - 1)
+                w_safe = min(max(w0, 0), self.grid_w - 1)
+                positions.append(h_safe * self.grid_w + w_safe)
+
             all_region_indices.append(positions)
 
         # Find max region size for padding
@@ -520,10 +533,18 @@ class OuterSensorInpaintingHead(nn.Module):
             # Mask out invalid positions (padded regions)
             # valid_positions: (n_sensors, max_region_size) -> expand to (B, n_sensors, max_region_size)
             valid_mask = self.valid_positions.unsqueeze(0).expand(B, -1, -1)
-            attn_logits = attn_logits.masked_fill(~valid_mask, float('-inf'))
+
+            # Use a large negative value instead of -inf for numerical stability in float16
+            # -1e4 is safely representable in float16 and effectively zero after softmax
+            attn_logits = attn_logits.masked_fill(~valid_mask, -1e4)
 
             # Softmax over valid positions only
             attn_weights = F.softmax(attn_logits, dim=-1).unsqueeze(-1)  # (B, n_sensors, max_region_size, 1)
+
+            # Safety check: if any sensor has all-invalid positions (shouldn't happen with fixed region lookup),
+            # the softmax would produce uniform weights over -1e4 values. Clamp NaN to zero if any slip through.
+            if torch.isnan(attn_weights).any():
+                attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
 
             # Weighted sum (attention pooling)
             all_sensor_features = (gathered * attn_weights).sum(dim=2)  # (B, n_sensors, hidden_dim)
