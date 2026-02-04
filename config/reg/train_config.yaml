@@ -26,7 +26,7 @@ normalization:
 # === Model Configuration ===
 model:
   outer_mode: "finegrid"            # "finegrid" or "split"
-  outer_fine_pool: [3, 3]           # null or [h, w] for pooling
+  outer_fine_pool: null             # null or [h, w] for pooling
   hidden_dim: 256
   drop_path_rate: 0.0
 

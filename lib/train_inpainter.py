@@ -324,7 +324,7 @@ Examples:
         sentinel_value = args.sentinel_value or DEFAULT_SENTINEL_VALUE
 
         outer_mode = args.outer_mode or "finegrid"
-        outer_fine_pool = args.outer_fine_pool or [3, 3]
+        outer_fine_pool = args.outer_fine_pool  # None means no pooling
         mask_ratio = args.mask_ratio or 0.05
         time_mask_ratio_scale = args.time_mask_ratio_scale or 1.0
         freeze_encoder = not args.finetune_encoder  # Default: frozen

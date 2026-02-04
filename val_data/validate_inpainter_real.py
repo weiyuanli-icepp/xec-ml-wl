@@ -306,7 +306,7 @@ def load_inpainter_model(checkpoint_path: str, device: str = 'cpu') -> XEC_Inpai
     # Create encoder
     encoder = XECEncoder(
         outer_mode=config.get('outer_mode', 'finegrid'),
-        outer_fine_pool=config.get('outer_fine_pool', [3, 3]),
+        outer_fine_pool=config.get('outer_fine_pool', None),
     )
 
     # Create inpainter

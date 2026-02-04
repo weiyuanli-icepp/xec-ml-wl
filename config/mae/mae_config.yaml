@@ -27,7 +27,7 @@ normalization:
 # === Model Configuration ===
 model:
   outer_mode: "finegrid"            # "finegrid" or "split"
-  outer_fine_pool: [3, 3]           # null or [h, w] for pooling
+  outer_fine_pool: null             # null or [h, w] for pooling
   mask_ratio: 0.65                  # Fraction of input to mask (0.5-0.75 typical)
   time_mask_ratio_scale: 1.0        # Scale factor for masking valid-time sensors (>1.0 to prefer masking valid-time)
 

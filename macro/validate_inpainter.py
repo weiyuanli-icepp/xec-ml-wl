@@ -274,7 +274,7 @@ def load_model(checkpoint_path: Optional[str] = None,
 
         encoder = XECEncoder(
             outer_mode=config.get('outer_mode', 'finegrid'),
-            outer_fine_pool=config.get('outer_fine_pool', [3, 3]),
+            outer_fine_pool=config.get('outer_fine_pool', None),
         )
         model = XEC_Inpainter(encoder=encoder)
 

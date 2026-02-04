@@ -27,7 +27,7 @@ normalization:
 # === Model Configuration ===
 model:
   outer_mode: "finegrid"            # Must match MAE encoder config
-  outer_fine_pool: [3, 3]           # Must match MAE encoder config
+  outer_fine_pool: null             # Must match MAE encoder config
   mask_ratio: 0.05                  # Realistic dead channel density (1-10%)
   time_mask_ratio_scale: 1.0        # Scale factor for masking valid-time sensors (>1.0 to prefer masking valid-time)
   freeze_encoder: false             # Freeze encoder, train only inpainting heads
