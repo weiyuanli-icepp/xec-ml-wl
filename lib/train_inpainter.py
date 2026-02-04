@@ -63,8 +63,8 @@ warnings.filterwarnings("ignore", message=".*lr_scheduler.step.*before.*optimize
 # Enable TensorFloat32
 torch.set_float32_matmul_precision('high')
 
-# Enable anomaly detection to find NaN source (disable after debugging)
-torch.autograd.set_detect_anomaly(True)
+# Anomaly detection (enable for debugging NaN issues: torch.autograd.set_detect_anomaly(True))
+torch.autograd.set_detect_anomaly(False)
 torch.autograd.profiler.emit_nvtx(False)
 
 

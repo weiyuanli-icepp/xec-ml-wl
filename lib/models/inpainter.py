@@ -943,18 +943,12 @@ class XEC_Inpainter(nn.Module):
             top_idx = len(cnn_names)
         bot_idx = top_idx + 1
 
-        # DEBUG: Check encoder output
-        if torch.isnan(latent_seq).any():
-            print(f"[DEBUG] NaN in encoder latent_seq: {torch.isnan(latent_seq).sum().item()} values")
-
         # Process each face and scatter back to flat indices
 
         # Inner face (93×44 = 4092 sensors) - compute first to get dtype for output tensor
         inner_tensor = gather_face(x_masked, INNER_INDEX_MAP)  # (B, 2, 93, 44)
         inner_latent = latent_seq[:, name_to_idx["inner"]]
         inner_pred = self.head_inner.forward_full(inner_tensor, inner_latent)  # (B, 93, 44, 2)
-        if torch.isnan(inner_pred).any():
-            print(f"[DEBUG] NaN in inner_pred: {torch.isnan(inner_pred).sum().item()} values")
 
         # Initialize output tensor with same dtype as predictions (important for AMP)
         pred_all = torch.zeros(B, 4760, 2, device=device, dtype=inner_pred.dtype)
@@ -967,8 +961,6 @@ class XEC_Inpainter(nn.Module):
         us_tensor = gather_face(x_masked, US_INDEX_MAP)  # (B, 2, 24, 6)
         us_latent = latent_seq[:, name_to_idx["us"]]
         us_pred = self.head_us.forward_full(us_tensor, us_latent)  # (B, 24, 6, 2)
-        if torch.isnan(us_pred).any():
-            print(f"[DEBUG] NaN in us_pred: {torch.isnan(us_pred).sum().item()} values")
         us_flat_idx = self.us_idx.flatten()
         pred_all[:, us_flat_idx, :] = us_pred.reshape(B, -1, 2)
 
@@ -976,8 +968,6 @@ class XEC_Inpainter(nn.Module):
         ds_tensor = gather_face(x_masked, DS_INDEX_MAP)  # (B, 2, 24, 6)
         ds_latent = latent_seq[:, name_to_idx["ds"]]
         ds_pred = self.head_ds.forward_full(ds_tensor, ds_latent)  # (B, 24, 6, 2)
-        if torch.isnan(ds_pred).any():
-            print(f"[DEBUG] NaN in ds_pred: {torch.isnan(ds_pred).sum().item()} values")
         ds_flat_idx = self.ds_idx.flatten()
         pred_all[:, ds_flat_idx, :] = ds_pred.reshape(B, -1, 2)
 
@@ -988,16 +978,12 @@ class XEC_Inpainter(nn.Module):
             # Sensor-level prediction for finegrid mode (234 sensors)
             outer_tensor = build_outer_fine_grid_tensor(x_masked, pool_kernel=self.encoder.outer_fine_pool)
             outer_pred, outer_sensor_ids = self.head_outer_sensor.forward_full(outer_tensor, outer_latent)  # (B, 234, 2)
-            if torch.isnan(outer_pred).any():
-                print(f"[DEBUG] NaN in outer_pred (finegrid): {torch.isnan(outer_pred).sum().item()} values")
             # Scatter back using sensor IDs
             pred_all[:, outer_sensor_ids, :] = outer_pred
         else:
             # Grid-level prediction for split/coarse mode (9×24 = 216 sensors)
             outer_tensor = gather_face(x_masked, OUTER_COARSE_FULL_INDEX_MAP)  # (B, 2, 9, 24)
             outer_pred = self.head_outer.forward_full(outer_tensor, outer_latent)  # (B, 9, 24, 2)
-            if torch.isnan(outer_pred).any():
-                print(f"[DEBUG] NaN in outer_pred (coarse): {torch.isnan(outer_pred).sum().item()} values")
             outer_flat_idx = self.outer_coarse_idx.flatten()
             pred_all[:, outer_flat_idx, :] = outer_pred.reshape(B, -1, 2)
 
@@ -1005,16 +991,12 @@ class XEC_Inpainter(nn.Module):
         top_nodes = gather_hex_nodes(x_masked, self.top_hex_indices)  # (B, num_top, 2)
         top_latent = latent_seq[:, top_idx]
         top_pred = self.head_top.forward_full(top_nodes, top_latent)  # (B, num_top, 2)
-        if torch.isnan(top_pred).any():
-            print(f"[DEBUG] NaN in top_pred: {torch.isnan(top_pred).sum().item()} values")
         pred_all[:, self.top_hex_indices, :] = top_pred
 
         # Bottom hex face
         bot_nodes = gather_hex_nodes(x_masked, self.bottom_hex_indices)  # (B, num_bot, 2)
         bot_latent = latent_seq[:, bot_idx]
         bot_pred = self.head_bot.forward_full(bot_nodes, bot_latent)  # (B, num_bot, 2)
-        if torch.isnan(bot_pred).any():
-            print(f"[DEBUG] NaN in bot_pred: {torch.isnan(bot_pred).sum().item()} values")
 
         return pred_all
 

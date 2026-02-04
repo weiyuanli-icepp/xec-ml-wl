@@ -89,22 +89,6 @@ def compute_inpainting_loss_flat(
         pred_time_valid = pred_masked[time_valid, 1]
         gt_time_valid = gt_masked[time_valid, 1]
 
-        # DEBUG: Check for NaN in inputs to loss
-        if torch.isnan(pred_time_valid).any():
-            n_nan = torch.isnan(pred_time_valid).sum().item()
-            print(f"[DEBUG] NaN in pred_time_valid: {n_nan}/{len(pred_time_valid)} values")
-            print(f"[DEBUG] pred_time_valid stats: min={pred_time_valid.min():.4f}, max={pred_time_valid.max():.4f}")
-        if torch.isnan(gt_time_valid).any():
-            n_nan = torch.isnan(gt_time_valid).sum().item()
-            print(f"[DEBUG] NaN in gt_time_valid: {n_nan}/{len(gt_time_valid)} values")
-            print(f"[DEBUG] gt_time_valid stats: min={gt_time_valid[~torch.isnan(gt_time_valid)].min():.4f}, max={gt_time_valid[~torch.isnan(gt_time_valid)].max():.4f}")
-        if torch.isinf(pred_time_valid).any():
-            n_inf = torch.isinf(pred_time_valid).sum().item()
-            print(f"[DEBUG] Inf in pred_time_valid: {n_inf}/{len(pred_time_valid)} values")
-        if torch.isinf(gt_time_valid).any():
-            n_inf = torch.isinf(gt_time_valid).sum().item()
-            print(f"[DEBUG] Inf in gt_time_valid: {n_inf}/{len(gt_time_valid)} values")
-
         loss_time = loss_func(pred_time_valid, gt_time_valid)  # (num_time_valid,)
 
         # Optional: weight by sqrt(npho) for chi-square-like weighting
