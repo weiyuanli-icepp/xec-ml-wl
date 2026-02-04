@@ -44,6 +44,7 @@ training:
   warmup_epochs: 3
   weight_decay: 1.0e-4
   loss_fn: "smooth_l1"              # Options: smooth_l1, mse, l1, huber
+  loss_beta: 0.1                    # Beta for smooth_l1/huber (smaller = more sensitive to medium errors)
   npho_weight: 1.0                  # Weight for npho channel loss
   time_weight: 1.0                  # Weight for time channel loss
   grad_clip: 1.0                    # Gradient clipping (0 to disable)

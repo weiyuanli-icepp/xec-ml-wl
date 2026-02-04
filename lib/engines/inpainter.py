@@ -20,6 +20,7 @@ def compute_inpainting_loss_flat(
     original_values: torch.Tensor,
     mask: torch.Tensor,
     loss_fn: str = "smooth_l1",
+    loss_beta: float = 1.0,
     npho_weight: float = 1.0,
     time_weight: float = 1.0,
     npho_threshold: float = None,
@@ -39,6 +40,7 @@ def compute_inpainting_loss_flat(
         original_values: (B, 4760, 2) - ground truth sensor values (normalized)
         mask: (B, 4760) - binary mask of randomly-masked positions (1 = masked)
         loss_fn: "smooth_l1", "mse", or "l1"
+        loss_beta: beta parameter for smooth_l1/huber loss (default 1.0)
         npho_weight: weight for npho channel loss
         time_weight: weight for time channel loss
         npho_threshold: raw npho threshold for conditional time loss
@@ -63,7 +65,7 @@ def compute_inpainting_loss_flat(
     elif loss_fn == "l1":
         loss_func = lambda p, t: F.l1_loss(p, t, reduction="none")
     else:  # smooth_l1 / huber
-        loss_func = lambda p, t: F.smooth_l1_loss(p, t, reduction="none")
+        loss_func = lambda p, t: F.smooth_l1_loss(p, t, reduction="none", beta=loss_beta)
 
     # Get masked positions
     mask_bool = mask.bool()  # (B, N)
@@ -157,6 +159,7 @@ def compute_inpainting_loss(
     mask: torch.Tensor,
     face_index_maps: Dict[str, torch.Tensor],
     loss_fn: str = "smooth_l1",
+    loss_beta: float = 1.0,
     npho_weight: float = 1.0,
     time_weight: float = 1.0,
     outer_fine: bool = False,
@@ -177,6 +180,7 @@ def compute_inpainting_loss(
         mask: (B, 4760) - binary mask (1 = masked)
         face_index_maps: dict mapping face names to their index tensors
         loss_fn: "smooth_l1", "mse", or "l1"
+        loss_beta: beta parameter for smooth_l1/huber loss (default 1.0)
         npho_weight: weight for npho channel loss
         time_weight: weight for time channel loss
         outer_fine: whether outer face uses fine grid
@@ -206,7 +210,7 @@ def compute_inpainting_loss(
     elif loss_fn == "l1":
         loss_func = F.l1_loss
     else:  # smooth_l1 / huber
-        loss_func = F.smooth_l1_loss
+        loss_func = lambda p, t, reduction: F.smooth_l1_loss(p, t, reduction=reduction, beta=loss_beta)
 
     total_loss = torch.tensor(0.0, device=device)
     metrics = {}
@@ -559,6 +563,7 @@ def run_epoch_inpainter(
     time_shift: float = DEFAULT_TIME_SHIFT,
     sentinel_value: float = DEFAULT_SENTINEL_VALUE,
     loss_fn: str = "smooth_l1",
+    loss_beta: float = 1.0,
     npho_weight: float = 1.0,
     time_weight: float = 1.0,
     grad_clip: float = 1.0,
@@ -716,6 +721,7 @@ def run_epoch_inpainter(
                     loss, metrics = compute_inpainting_loss_flat(
                         pred_all, original_values, mask,
                         loss_fn=loss_fn,
+                        loss_beta=loss_beta,
                         npho_weight=npho_weight,
                         time_weight=time_weight,
                         npho_threshold=npho_threshold,
@@ -730,6 +736,7 @@ def run_epoch_inpainter(
                         results, original_values, mask,
                         face_index_maps,
                         loss_fn=loss_fn,
+                        loss_beta=loss_beta,
                         npho_weight=npho_weight,
                         time_weight=time_weight,
                         outer_fine=outer_fine,
@@ -868,6 +875,7 @@ def run_eval_inpainter(
     time_shift: float = DEFAULT_TIME_SHIFT,
     sentinel_value: float = DEFAULT_SENTINEL_VALUE,
     loss_fn: str = "smooth_l1",
+    loss_beta: float = 1.0,
     npho_weight: float = 1.0,
     time_weight: float = 1.0,
     collect_predictions: bool = False,
@@ -1042,6 +1050,7 @@ def run_eval_inpainter(
                         _, metrics = compute_inpainting_loss_flat(
                             pred_all, original_values, mask,
                             loss_fn=loss_fn,
+                            loss_beta=loss_beta,
                             npho_weight=npho_weight,
                             time_weight=time_weight,
                             npho_threshold=npho_threshold,
@@ -1055,6 +1064,7 @@ def run_eval_inpainter(
                             results, original_values, mask,
                             face_index_maps,
                             loss_fn=loss_fn,
+                            loss_beta=loss_beta,
                             npho_weight=npho_weight,
                             time_weight=time_weight,
                             outer_fine=outer_fine,

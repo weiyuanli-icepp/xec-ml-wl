@@ -192,6 +192,7 @@ Examples:
 
     # Loss
     parser.add_argument("--loss_fn", type=str, default=None, choices=["smooth_l1", "mse", "l1", "huber"])
+    parser.add_argument("--loss_beta", type=float, default=None, help="Beta for smooth_l1/huber loss (default 1.0)")
     parser.add_argument("--npho_weight", type=float, default=None)
     parser.add_argument("--time_weight", type=float, default=None)
     parser.add_argument("--grad_clip", type=float, default=None)
@@ -262,6 +263,7 @@ Examples:
         weight_decay = float(args.weight_decay if args.weight_decay is not None else cfg.training.weight_decay)
 
         loss_fn = args.loss_fn or cfg.training.loss_fn
+        loss_beta = args.loss_beta if args.loss_beta is not None else getattr(cfg.training, "loss_beta", 1.0)
         npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight
         time_weight = args.time_weight if args.time_weight is not None else cfg.training.time_weight
         npho_threshold = args.npho_threshold if args.npho_threshold is not None else getattr(cfg.training, "npho_threshold", None)
@@ -337,6 +339,7 @@ Examples:
         weight_decay = args.weight_decay or 1e-4
 
         loss_fn = args.loss_fn or "smooth_l1"
+        loss_beta = args.loss_beta if args.loss_beta is not None else 1.0
         npho_weight = args.npho_weight or 1.0
         time_weight = args.time_weight or 1.0
         npho_threshold = args.npho_threshold  # None uses DEFAULT_NPHO_THRESHOLD
@@ -576,6 +579,7 @@ Examples:
             "warmup_epochs": warmup_epochs,
             "weight_decay": weight_decay,
             "loss_fn": loss_fn,
+            "loss_beta": loss_beta,
             "npho_weight": npho_weight,
             "time_weight": time_weight,
             "grad_clip": grad_clip,
@@ -603,6 +607,7 @@ Examples:
                 time_shift=float(time_shift),
                 sentinel_value=float(sentinel_value),
                 loss_fn=loss_fn,
+                loss_beta=loss_beta,
                 npho_weight=npho_weight,
                 time_weight=time_weight,
                 grad_clip=grad_clip,
@@ -641,6 +646,7 @@ Examples:
                     time_shift=float(time_shift),
                     sentinel_value=float(sentinel_value),
                     loss_fn=loss_fn,
+                    loss_beta=loss_beta,
                     npho_weight=npho_weight,
                     time_weight=time_weight,
                     track_mae_rmse=track_mae_rmse,
@@ -765,6 +771,7 @@ Examples:
                         time_shift=float(time_shift),
                         sentinel_value=float(sentinel_value),
                         loss_fn=loss_fn,
+                        loss_beta=loss_beta,
                         npho_weight=npho_weight,
                         time_weight=time_weight,
                         collect_predictions=True,
