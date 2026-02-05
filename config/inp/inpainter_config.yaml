@@ -23,6 +23,12 @@ normalization:
   time_scale: 1.14e-7
   time_shift: -0.46
   sentinel_value: -1.0
+  # Normalization scheme for npho:
+  #   "log1p" (default) - log1p(x/scale)/scale2, good for wide dynamic range
+  #   "anscombe" - 2*sqrt(x + 3/8), variance stabilization for Poisson data
+  #   "sqrt" - sqrt(x)/sqrt(scale), simpler variance stabilization
+  #   "linear" - x/scale, no transform (baseline)
+  npho_scheme: "log1p"
 
 # === Model Configuration ===
 model:
@@ -64,6 +70,19 @@ training:
   use_npho_time_weight: true        # Weight time loss by sqrt(npho) for chi-square-like weighting
   ema_decay: null                   # EMA decay rate (null to disable, 0.999 typical)
   profile: false                    # Enable training profiler to identify bottlenecks
+
+  # === Npho Loss Weighting ===
+  # Weight reconstruction loss by (npho + 1)^alpha to give higher weight to high-photon-count sensors
+  npho_loss_weight:
+    enabled: false                  # Enable intensity-based loss weighting
+    alpha: 0.5                      # Exponent: 0.5 = sqrt, 1.0 = linear
+
+  # === Intensity-based Sample Reweighting ===
+  # Reweight samples by total event intensity to balance representation
+  intensity_reweighting:
+    enabled: false                  # Enable intensity-based sample reweighting
+    nbins: 5                        # Number of intensity bins
+    target: "uniform"               # Target distribution ("uniform")
 
 # === Checkpointing ===
 checkpoint:

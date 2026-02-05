@@ -22,6 +22,7 @@ from .geom_defs import (
     DEFAULT_SENTINEL_VALUE,
     DEFAULT_NPHO_THRESHOLD
 )
+from .normalization import NphoTransform
 
 class XECStreamingDataset(IterableDataset):
     """
@@ -57,7 +58,8 @@ class XECStreamingDataset(IterableDataset):
                  log_invalid_npho=True,
                  load_truth_branches=True,
                  shuffle=False,
-                 profile=False):
+                 profile=False,
+                 npho_scheme="log1p"):
         super().__init__()
 
         # I/O profiling
@@ -108,6 +110,14 @@ class XECStreamingDataset(IterableDataset):
         # Normalization parameters
         # npho_threshold: sensors with raw_npho < threshold have valid npho but invalid time
         self.scales = (npho_scale, npho_scale2, time_scale, time_shift, sentinel_value, npho_threshold)
+
+        # Create NphoTransform for configurable npho normalization
+        self.npho_transform = NphoTransform(
+            scheme=npho_scheme,
+            npho_scale=npho_scale,
+            npho_scale2=npho_scale2
+        )
+        self.npho_scheme = npho_scheme
 
         # Logging for invalid npho values (unexpected data issues)
         self.log_invalid_npho = log_invalid_npho
@@ -224,10 +234,10 @@ class XECStreamingDataset(IterableDataset):
         # - isnan: corrupted data
         mask_time_invalid = mask_npho_invalid | (raw_n < npho_thresh) | (np.abs(raw_t) > 9e9) | np.isnan(raw_t)
 
-        # Normalize npho: log1p transform
-        # For invalid npho, use 0 temporarily to avoid log1p warnings, then set to sentinel
+        # Normalize npho using configurable transform
+        # For invalid npho, use 0 temporarily to avoid transform issues, then set to sentinel
         raw_n_safe = np.where(mask_npho_invalid, 0.0, np.maximum(raw_n, 0.0))  # Also clamp small negatives
-        n_norm = np.log1p(raw_n_safe / n_sc) / n_sc2
+        n_norm = self.npho_transform.forward(raw_n_safe)
         n_norm[mask_npho_invalid] = sent
 
         # Normalize time: linear transform

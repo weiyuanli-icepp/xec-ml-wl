@@ -13,6 +13,7 @@ from ..geom_defs import (
     DEFAULT_SENTINEL_VALUE, DEFAULT_NPHO_THRESHOLD
 )
 from ..utils import SimpleProfiler
+from ..normalization import NphoTransform
 
 
 def compute_inpainting_loss_flat(
@@ -29,6 +30,9 @@ def compute_inpainting_loss_flat(
     use_npho_time_weight: bool = True,
     track_metrics: bool = True,
     predict_channels: List[str] = None,
+    npho_scheme: str = "log1p",
+    npho_loss_weight_enabled: bool = False,
+    npho_loss_weight_alpha: float = 0.5,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Compute inpainting loss from FLAT predictions (from forward_training).
@@ -63,10 +67,13 @@ def compute_inpainting_loss_flat(
     pred_npho_idx = predict_channels.index("npho") if "npho" in predict_channels else 0
     pred_time_idx = predict_channels.index("time") if "time" in predict_channels else None
 
+    # Create NphoTransform for denormalization and threshold conversion
+    npho_transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+
     # Threshold for valid time (in normalized space)
     if npho_threshold is None:
         npho_threshold = DEFAULT_NPHO_THRESHOLD
-    npho_threshold_norm = np.log1p(npho_threshold / npho_scale) / npho_scale2
+    npho_threshold_norm = npho_transform.convert_threshold(npho_threshold)
 
     # Select loss function
     if loss_fn == "mse":
@@ -87,9 +94,16 @@ def compute_inpainting_loss_flat(
     pred_masked = pred_all[mask_bool]  # (num_masked, out_channels)
     gt_masked = original_values[mask_bool]  # (num_masked, 2)
 
-    # Compute npho loss (all masked positions)
+    # Compute npho loss (all masked positions) with optional intensity-based weighting
     loss_npho = loss_func(pred_masked[:, pred_npho_idx], gt_masked[:, 0])  # (num_masked,)
-    avg_npho_loss = loss_npho.mean()
+    if npho_loss_weight_enabled and num_masked > 0:
+        # Denormalize to get raw npho for weighting
+        raw_npho_masked = npho_transform.inverse(gt_masked[:, 0])
+        weight_npho = (raw_npho_masked.clamp(min=1.0) + 1.0).pow(npho_loss_weight_alpha)
+        weight_npho = weight_npho / weight_npho.mean()  # Normalize weights
+        avg_npho_loss = (loss_npho * weight_npho).mean()
+    else:
+        avg_npho_loss = loss_npho.mean()
 
     # Compute time loss (only if predicting time)
     avg_time_loss = torch.tensor(0.0, device=device)
@@ -109,9 +123,7 @@ def compute_inpainting_loss_flat(
             if use_npho_time_weight:
                 # Denormalize npho to get raw values for weighting
                 npho_norm_valid = gt_masked[time_valid, 0]
-                # Clamp exponent to prevent overflow in float16 (max safe ~10)
-                exp_arg = (npho_norm_valid * npho_scale2).clamp(max=10.0)
-                raw_npho = npho_scale * (torch.exp(exp_arg) - 1.0)
+                raw_npho = npho_transform.inverse(npho_norm_valid)
                 time_weights = torch.sqrt(raw_npho.clamp(min=1.0))
                 time_weights = time_weights / time_weights.mean()  # Normalize weights
                 loss_time = loss_time * time_weights
@@ -168,6 +180,9 @@ def compute_inpainting_loss(
     npho_scale2: float = DEFAULT_NPHO_SCALE2,
     use_npho_time_weight: bool = True,
     predict_channels: List[str] = None,
+    npho_scheme: str = "log1p",
+    npho_loss_weight_enabled: bool = False,
+    npho_loss_weight_alpha: float = 0.5,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Compute inpainting loss for all faces.
@@ -207,8 +222,9 @@ def compute_inpainting_loss(
     # Conditional time loss threshold (convert raw threshold to normalized space)
     if npho_threshold is None:
         npho_threshold = DEFAULT_NPHO_THRESHOLD
-    # Convert raw threshold to normalized space: npho_norm = log1p(raw_n / npho_scale) / npho_scale2
-    npho_threshold_norm = np.log1p(npho_threshold / npho_scale) / npho_scale2
+    # Create NphoTransform for threshold conversion and denormalization
+    npho_transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+    npho_threshold_norm = npho_transform.convert_threshold(npho_threshold)
 
     # Select loss function
     if loss_fn == "mse":
@@ -321,10 +337,8 @@ def compute_inpainting_loss(
 
             # Apply npho weighting to time loss if enabled
             if use_npho_time_weight and time_valid.any():
-                # De-normalize to get approximate raw npho for weighting
-                # Clamp exponent to prevent overflow in float16 (max safe ~10)
-                exp_arg = (npho_gt_norm * npho_scale2).clamp(max=10.0)
-                raw_npho_approx = npho_scale * (torch.exp(exp_arg) - 1)
+                # De-normalize to get raw npho for weighting using NphoTransform
+                raw_npho_approx = npho_transform.inverse(npho_gt_norm)
                 npho_weights = torch.sqrt(raw_npho_approx.clamp(min=npho_threshold))
                 npho_weights = npho_weights / (npho_weights[time_valid].mean() + 1e-8)
                 loss_time_elem = loss_time_elem * npho_weights
@@ -340,6 +354,17 @@ def compute_inpainting_loss(
             time_nonzero_mask = time_counts_per_batch > 0
             if time_nonzero_mask.any():
                 avg_time = loss_time_means[time_nonzero_mask].mean()
+
+        # Apply npho loss weighting if enabled
+        if npho_loss_weight_enabled and nonzero_mask.any() and npho_weight > 0:
+            # Recompute npho loss with intensity-based weighting
+            raw_npho_for_weight = npho_transform.inverse(gt_all[:, 0])
+            weight_npho = (raw_npho_for_weight.clamp(min=1.0) + 1.0).pow(npho_loss_weight_alpha)
+            weight_npho = weight_npho / weight_npho.mean()
+            loss_npho_elem_weighted = loss_func(pr_all[:, pred_npho_idx], gt_all[:, 0], reduction="none") * weight_npho
+            loss_npho_sum_weighted = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_npho_elem_weighted)
+            loss_npho_means_weighted = loss_npho_sum_weighted / safe_counts
+            avg_npho = loss_npho_means_weighted[nonzero_mask].mean()
 
         if nonzero_mask.any():
             face_loss = npho_weight * avg_npho + time_weight * avg_time
@@ -463,9 +488,8 @@ def compute_inpainting_loss(
 
             # Apply npho weighting to time loss if enabled
             if use_npho_time_weight and time_valid.any():
-                # Clamp exponent to prevent overflow in float16 (max safe ~10)
-                exp_arg = (npho_gt_norm * npho_scale2).clamp(max=10.0)
-                raw_npho_approx = npho_scale * (torch.exp(exp_arg) - 1)
+                # De-normalize to get raw npho for weighting using NphoTransform
+                raw_npho_approx = npho_transform.inverse(npho_gt_norm)
                 npho_weights = torch.sqrt(raw_npho_approx.clamp(min=npho_threshold))
                 npho_weights = npho_weights / (npho_weights[time_valid].mean() + 1e-8)
                 loss_time_elem = loss_time_elem * npho_weights
@@ -481,6 +505,17 @@ def compute_inpainting_loss(
             time_nonzero_mask = time_counts_per_batch > 0
             if time_nonzero_mask.any():
                 avg_time = loss_time_means[time_nonzero_mask].mean()
+
+        # Apply npho loss weighting if enabled
+        if npho_loss_weight_enabled and nonzero_mask.any() and npho_weight > 0:
+            # Recompute npho loss with intensity-based weighting
+            raw_npho_for_weight = npho_transform.inverse(gt_all[:, 0])
+            weight_npho = (raw_npho_for_weight.clamp(min=1.0) + 1.0).pow(npho_loss_weight_alpha)
+            weight_npho = weight_npho / weight_npho.mean()
+            loss_npho_elem_weighted = loss_func(pr_all[:, pred_npho_idx], gt_all[:, 0], reduction="none") * weight_npho
+            loss_npho_sum_weighted = torch.zeros(B, device=pred.device, dtype=pr_all.dtype).scatter_add(0, batch_idx, loss_npho_elem_weighted)
+            loss_npho_means_weighted = loss_npho_sum_weighted / safe_counts
+            avg_npho = loss_npho_means_weighted[nonzero_mask].mean()
 
         if nonzero_mask.any():
             face_loss = npho_weight * avg_npho + time_weight * avg_time
@@ -592,6 +627,10 @@ def run_epoch_inpainter(
     profile: bool = False,
     log_invalid_npho: bool = True,
     use_fast_forward: Optional[bool] = None,
+    npho_scheme: str = "log1p",
+    npho_loss_weight_enabled: bool = False,
+    npho_loss_weight_alpha: float = 0.5,
+    intensity_reweighter: Optional[object] = None,
 ) -> Dict[str, float]:
     """
     Run one training epoch for inpainter.
@@ -637,7 +676,8 @@ def run_epoch_inpainter(
     # Convert npho_threshold to normalized space for stratified masking
     if npho_threshold is None:
         npho_threshold = DEFAULT_NPHO_THRESHOLD
-    npho_threshold_norm = np.log1p(npho_threshold / npho_scale) / npho_scale2
+    npho_transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+    npho_threshold_norm = npho_transform.convert_threshold(npho_threshold)
 
     # Accumulate metrics
     metric_sums = {}
@@ -680,6 +720,7 @@ def run_epoch_inpainter(
             time_branch=time_branch,
             npho_scale=npho_scale,
             npho_scale2=npho_scale2,
+            npho_scheme=npho_scheme,
             time_scale=time_scale,
             time_shift=time_shift,
             sentinel_value=sentinel_value,
@@ -746,6 +787,9 @@ def run_epoch_inpainter(
                         use_npho_time_weight=use_npho_time_weight,
                         track_metrics=track_metrics,
                         predict_channels=predict_channels,
+                        npho_scheme=npho_scheme,
+                        npho_loss_weight_enabled=npho_loss_weight_enabled,
+                        npho_loss_weight_alpha=npho_loss_weight_alpha,
                     )
                 else:
                     # Original path: per-face loss computation
@@ -765,6 +809,9 @@ def run_epoch_inpainter(
                         npho_scale2=npho_scale2,
                         use_npho_time_weight=use_npho_time_weight,
                         predict_channels=predict_channels,
+                        npho_scheme=npho_scheme,
+                        npho_loss_weight_enabled=npho_loss_weight_enabled,
+                        npho_loss_weight_alpha=npho_loss_weight_alpha,
                     )
             profiler.stop()
 
@@ -907,6 +954,9 @@ def run_eval_inpainter(
     profile: bool = False,
     log_invalid_npho: bool = True,
     use_fast_forward: Optional[bool] = None,
+    npho_scheme: str = "log1p",
+    npho_loss_weight_enabled: bool = False,
+    npho_loss_weight_alpha: float = 0.5,
 ) -> Dict[str, float]:
     """
     Run evaluation for inpainter.
@@ -960,7 +1010,8 @@ def run_eval_inpainter(
     # Convert npho_threshold to normalized space for stratified masking
     if npho_threshold is None:
         npho_threshold = DEFAULT_NPHO_THRESHOLD
-    npho_threshold_norm = np.log1p(npho_threshold / npho_scale) / npho_scale2
+    npho_transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+    npho_threshold_norm = npho_transform.convert_threshold(npho_threshold)
 
     metric_sums = {}
     num_batches = 0
@@ -999,6 +1050,7 @@ def run_eval_inpainter(
                 time_branch=time_branch,
                 npho_scale=npho_scale,
                 npho_scale2=npho_scale2,
+                npho_scheme=npho_scheme,
                 time_scale=time_scale,
                 time_shift=time_shift,
                 sentinel_value=sentinel_value,
@@ -1080,6 +1132,9 @@ def run_eval_inpainter(
                             use_npho_time_weight=use_npho_time_weight,
                             track_metrics=True,
                             predict_channels=predict_channels,
+                            npho_scheme=npho_scheme,
+                            npho_loss_weight_enabled=npho_loss_weight_enabled,
+                            npho_loss_weight_alpha=npho_loss_weight_alpha,
                         )
                     else:
                         _, metrics = compute_inpainting_loss(
@@ -1098,6 +1153,9 @@ def run_eval_inpainter(
                             npho_scale2=npho_scale2,
                             use_npho_time_weight=use_npho_time_weight,
                             predict_channels=predict_channels,
+                            npho_scheme=npho_scheme,
+                            npho_loss_weight_enabled=npho_loss_weight_enabled,
+                            npho_loss_weight_alpha=npho_loss_weight_alpha,
                         )
                     if not track_mae_rmse:
                         metrics = {k: v for k, v in metrics.items() if not (k.startswith("mae_") or k.startswith("rmse_"))}
@@ -1312,7 +1370,8 @@ class RootPredictionWriter:
                  npho_scale: float = None, npho_scale2: float = None,
                  time_scale: float = None, time_shift: float = None,
                  sentinel_value: float = None,
-                 predict_channels: List[str] = None):
+                 predict_channels: List[str] = None,
+                 npho_scheme: str = None):
         import os
         import uproot
 
@@ -1333,6 +1392,9 @@ class RootPredictionWriter:
         # Store predict_channels
         self.predict_channels = predict_channels if predict_channels is not None else ['npho', 'time']
         self.predict_time = 'time' in self.predict_channels
+
+        # Store npho_scheme
+        self.npho_scheme = npho_scheme if npho_scheme is not None else "log1p"
 
         # Main predictions tree
         branch_types = {
@@ -1368,6 +1430,7 @@ class RootPredictionWriter:
             "time_scale": np.array([self.time_scale if self.time_scale is not None else np.nan], dtype=np.float64),
             "time_shift": np.array([self.time_shift if self.time_shift is not None else np.nan], dtype=np.float64),
             "sentinel_value": np.array([self.sentinel_value if self.sentinel_value is not None else np.nan], dtype=np.float64),
+            "npho_scheme": np.array([self.npho_scheme], dtype='U32'),
         }
         self._file["metadata"] = metadata
 
@@ -1432,7 +1495,8 @@ def save_predictions_to_root(predictions: List[Dict], save_path: str, epoch: int
                              predict_channels: List[str] = None,
                              npho_scale: float = None, npho_scale2: float = None,
                              time_scale: float = None, time_shift: float = None,
-                             sentinel_value: float = None):
+                             sentinel_value: float = None,
+                             npho_scheme: str = None):
     """
     Save inpainter predictions to a ROOT file.
 
@@ -1443,6 +1507,7 @@ def save_predictions_to_root(predictions: List[Dict], save_path: str, epoch: int
         run_id: optional MLflow run ID
         predict_channels: list of predicted channels (['npho'] or ['npho', 'time'])
         npho_scale, npho_scale2, time_scale, time_shift, sentinel_value: normalization params for metadata
+        npho_scheme: Normalization scheme for npho ('log1p', 'anscombe', 'sqrt', 'linear')
 
     Returns:
         path to saved ROOT file
@@ -1454,7 +1519,8 @@ def save_predictions_to_root(predictions: List[Dict], save_path: str, epoch: int
                               predict_channels=predict_channels,
                               npho_scale=npho_scale, npho_scale2=npho_scale2,
                               time_scale=time_scale, time_shift=time_shift,
-                              sentinel_value=sentinel_value) as writer:
+                              sentinel_value=sentinel_value,
+                              npho_scheme=npho_scheme) as writer:
         writer.write(predictions)
         if writer.count == 0:
             return None

@@ -57,7 +57,8 @@ torch.autograd.profiler.emit_nvtx(False)
 def save_predictions_to_root(predictions, save_path, epoch, run_id=None,
                              predict_channels=None,
                              npho_scale=None, npho_scale2=None,
-                             time_scale=None, time_shift=None):
+                             time_scale=None, time_shift=None,
+                             npho_scheme=None):
     """
     Save MAE predictions to ROOT file for analysis.
 
@@ -67,6 +68,7 @@ def save_predictions_to_root(predictions, save_path, epoch, run_id=None,
         epoch: current epoch number
         predict_channels: List of predicted channels (['npho'] or ['npho', 'time'])
         npho_scale, npho_scale2, time_scale, time_shift: Normalization parameters for metadata
+        npho_scheme: Normalization scheme for npho ('log1p', 'anscombe', 'sqrt', 'linear')
     """
     from lib.geom_defs import (
         DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
@@ -88,6 +90,8 @@ def save_predictions_to_root(predictions, save_path, epoch, run_id=None,
         time_scale = DEFAULT_TIME_SCALE
     if time_shift is None:
         time_shift = DEFAULT_TIME_SHIFT
+    if npho_scheme is None:
+        npho_scheme = "log1p"
 
     n_events = len(predictions["truth_npho"])
     if n_events == 0:
@@ -131,6 +135,7 @@ def save_predictions_to_root(predictions, save_path, epoch, run_id=None,
         'npho_scale2': np.array([npho_scale2], dtype=np.float64),
         'time_scale': np.array([time_scale], dtype=np.float64),
         'time_shift': np.array([time_shift], dtype=np.float64),
+        'npho_scheme': np.array([npho_scheme], dtype='U32'),
     }
 
     with uproot.recreate(root_path) as f:
@@ -207,6 +212,13 @@ Examples:
     parser.add_argument("--track_train_metrics", action="store_true", help="Enable per-face train metrics tracking")
     parser.add_argument("--no_track_train_metrics", action="store_true", help="Disable per-face train metrics (faster)")
     parser.add_argument("--profile", action="store_true", help="Enable training profiler to identify bottlenecks")
+    parser.add_argument("--npho_scheme", type=str, default=None, choices=["log1p", "anscombe", "sqrt", "linear"],
+                        help="Normalization scheme for npho (default: log1p)")
+    parser.add_argument("--npho_loss_weight_enabled", action="store_true", help="Enable npho loss weighting by intensity")
+    parser.add_argument("--npho_loss_weight_alpha", type=float, default=None, help="Exponent for npho loss weighting (default: 0.5)")
+    parser.add_argument("--intensity_reweighting_enabled", action="store_true", help="Enable intensity-based sample reweighting")
+    parser.add_argument("--intensity_reweighting_nbins", type=int, default=None, help="Number of bins for intensity reweighting")
+    parser.add_argument("--intensity_reweighting_target", type=str, default=None, help="Target distribution for intensity reweighting")
     parser.add_argument("--compile", type=str, default=None,
                         choices=["max-autotune", "reduce-overhead", "default", "false", "none"],
                         help="torch.compile mode (default: reduce-overhead, use 'false' to disable)")
@@ -287,6 +299,13 @@ Examples:
         if args.compile is not None:
             compile_mode = args.compile
         compile_fullgraph = getattr(cfg.training, 'compile_fullgraph', False)
+        # New normalization and loss weighting options
+        npho_scheme = args.npho_scheme or getattr(cfg.normalization, 'npho_scheme', 'log1p')
+        npho_loss_weight_enabled = args.npho_loss_weight_enabled or cfg.training.npho_loss_weight.enabled
+        npho_loss_weight_alpha = args.npho_loss_weight_alpha if args.npho_loss_weight_alpha is not None else cfg.training.npho_loss_weight.alpha
+        intensity_reweighting_enabled = args.intensity_reweighting_enabled or cfg.training.intensity_reweighting.enabled
+        intensity_reweighting_nbins = args.intensity_reweighting_nbins if args.intensity_reweighting_nbins is not None else cfg.training.intensity_reweighting.nbins
+        intensity_reweighting_target = args.intensity_reweighting_target or cfg.training.intensity_reweighting.target
     else:
         # Pure CLI mode (legacy) - require train_root
         if not args.train_root:
@@ -345,6 +364,13 @@ Examples:
         save_interval = 10
         compile_mode = args.compile if args.compile is not None else 'reduce-overhead'
         compile_fullgraph = False  # Default for CLI mode
+        # New normalization and loss weighting options (CLI defaults)
+        npho_scheme = args.npho_scheme or "log1p"
+        npho_loss_weight_enabled = args.npho_loss_weight_enabled
+        npho_loss_weight_alpha = args.npho_loss_weight_alpha if args.npho_loss_weight_alpha is not None else 0.5
+        intensity_reweighting_enabled = args.intensity_reweighting_enabled
+        intensity_reweighting_nbins = args.intensity_reweighting_nbins if args.intensity_reweighting_nbins is not None else 5
+        intensity_reweighting_target = args.intensity_reweighting_target or "uniform"
 
     if lr_scheduler == "none":
         lr_scheduler = None
@@ -599,6 +625,10 @@ Examples:
             "grad_clip": grad_clip,
             "ema_decay": ema_decay,
             "resume_state": resume_state,
+            "npho_scheme": npho_scheme,
+            "npho_loss_weight_enabled": npho_loss_weight_enabled,
+            "npho_loss_weight_alpha": npho_loss_weight_alpha,
+            "intensity_reweighting_enabled": intensity_reweighting_enabled,
         })
 
         # Training Loop
@@ -635,6 +665,9 @@ Examples:
                 track_train_metrics=track_train_metrics,
                 profile=profile,
                 log_invalid_npho=log_invalid_npho,
+                npho_scheme=npho_scheme,
+                npho_loss_weight_enabled=npho_loss_weight_enabled,
+                npho_loss_weight_alpha=npho_loss_weight_alpha,
             )
 
             # Update EMA model
@@ -675,6 +708,9 @@ Examples:
                     track_mae_rmse=track_mae_rmse,
                     profile=profile,
                     log_invalid_npho=log_invalid_npho,
+                    npho_scheme=npho_scheme,
+                    npho_loss_weight_enabled=npho_loss_weight_enabled,
+                    npho_loss_weight_alpha=npho_loss_weight_alpha,
                 )
 
                 if collect_preds:
@@ -732,7 +768,8 @@ Examples:
                         predictions, save_path, epoch, run_id=run.info.run_id,
                         predict_channels=predict_channels,
                         npho_scale=npho_scale, npho_scale2=npho_scale2,
-                        time_scale=time_scale, time_shift=time_shift
+                        time_scale=time_scale, time_shift=time_shift,
+                        npho_scheme=npho_scheme
                     )
                     if root_path:
                         mlflow.log_artifact(root_path)

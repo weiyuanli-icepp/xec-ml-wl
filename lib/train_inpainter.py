@@ -207,6 +207,13 @@ Examples:
                         choices=["max-autotune", "reduce-overhead", "default", "false", "none"],
                         help="torch.compile mode (default: reduce-overhead, use 'false' to disable)")
     parser.add_argument("--ema_decay", type=float, default=None, help="EMA decay rate (None to disable, 0.999 typical)")
+    parser.add_argument("--npho_scheme", type=str, default=None, choices=["log1p", "anscombe", "sqrt", "linear"],
+                        help="Normalization scheme for npho (default: log1p)")
+    parser.add_argument("--npho_loss_weight_enabled", action="store_true", help="Enable npho loss weighting by intensity")
+    parser.add_argument("--npho_loss_weight_alpha", type=float, default=None, help="Exponent for npho loss weighting (default: 0.5)")
+    parser.add_argument("--intensity_reweighting_enabled", action="store_true", help="Enable intensity-based sample reweighting")
+    parser.add_argument("--intensity_reweighting_nbins", type=int, default=None, help="Number of bins for intensity reweighting")
+    parser.add_argument("--intensity_reweighting_target", type=str, default=None, help="Target distribution for intensity reweighting")
 
     # MLflow
     parser.add_argument("--mlflow_experiment", type=str, default=None)
@@ -292,6 +299,13 @@ Examples:
             compile_mode = args.compile
         compile_fullgraph = getattr(cfg.training, 'compile_fullgraph', False)
         ema_decay = args.ema_decay if args.ema_decay is not None else getattr(cfg.training, 'ema_decay', None)
+        # New normalization and loss weighting options
+        npho_scheme = args.npho_scheme or getattr(cfg.normalization, 'npho_scheme', 'log1p')
+        npho_loss_weight_enabled = args.npho_loss_weight_enabled or cfg.training.npho_loss_weight.enabled
+        npho_loss_weight_alpha = args.npho_loss_weight_alpha if args.npho_loss_weight_alpha is not None else cfg.training.npho_loss_weight.alpha
+        intensity_reweighting_enabled = args.intensity_reweighting_enabled or cfg.training.intensity_reweighting.enabled
+        intensity_reweighting_nbins = args.intensity_reweighting_nbins if args.intensity_reweighting_nbins is not None else cfg.training.intensity_reweighting.nbins
+        intensity_reweighting_target = args.intensity_reweighting_target or cfg.training.intensity_reweighting.target
 
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
@@ -358,6 +372,13 @@ Examples:
         compile_mode = args.compile if args.compile is not None else 'reduce-overhead'
         compile_fullgraph = False  # Default for CLI mode
         ema_decay = args.ema_decay  # None by default
+        # New normalization and loss weighting options (CLI defaults)
+        npho_scheme = args.npho_scheme or "log1p"
+        npho_loss_weight_enabled = args.npho_loss_weight_enabled
+        npho_loss_weight_alpha = args.npho_loss_weight_alpha if args.npho_loss_weight_alpha is not None else 0.5
+        intensity_reweighting_enabled = args.intensity_reweighting_enabled
+        intensity_reweighting_nbins = args.intensity_reweighting_nbins if args.intensity_reweighting_nbins is not None else 5
+        intensity_reweighting_target = args.intensity_reweighting_target or "uniform"
 
         mlflow_experiment = args.mlflow_experiment or "inpainting"
         mlflow_run_name = args.mlflow_run_name
@@ -594,6 +615,10 @@ Examples:
             "outer_mode": outer_mode,
             "trainable_params": model.get_num_trainable_params(),
             "total_params": model.get_num_total_params(),
+            "npho_scheme": npho_scheme,
+            "npho_loss_weight_enabled": npho_loss_weight_enabled,
+            "npho_loss_weight_alpha": npho_loss_weight_alpha,
+            "intensity_reweighting_enabled": intensity_reweighting_enabled,
         })
 
         # Training loop
@@ -630,6 +655,9 @@ Examples:
                 use_npho_time_weight=use_npho_time_weight,
                 profile=profile,
                 log_invalid_npho=log_invalid_npho,
+                npho_scheme=npho_scheme,
+                npho_loss_weight_enabled=npho_loss_weight_enabled,
+                npho_loss_weight_alpha=npho_loss_weight_alpha,
             )
 
             # Update EMA model
@@ -665,6 +693,9 @@ Examples:
                     use_npho_time_weight=use_npho_time_weight,
                     profile=profile,
                     log_invalid_npho=log_invalid_npho,
+                    npho_scheme=npho_scheme,
+                    npho_loss_weight_enabled=npho_loss_weight_enabled,
+                    npho_loss_weight_alpha=npho_loss_weight_alpha,
                 )
 
             dt = time.time() - t0
@@ -764,6 +795,7 @@ Examples:
                     time_shift=float(time_shift),
                     sentinel_value=float(sentinel_value),
                     predict_channels=list(predict_channels),
+                    npho_scheme=npho_scheme,
                 ) as writer:
                     # Use EMA model for predictions if available
                     pred_model = ema_model if ema_model is not None else model
@@ -794,6 +826,9 @@ Examples:
                         use_npho_time_weight=use_npho_time_weight,
                         profile=profile,
                         log_invalid_npho=log_invalid_npho,
+                        npho_scheme=npho_scheme,
+                        npho_loss_weight_enabled=npho_loss_weight_enabled,
+                        npho_loss_weight_alpha=npho_loss_weight_alpha,
                     )
                 root_path = writer.filepath if writer.count > 0 else None
                 t_root_elapsed = time.time() - t_root_start

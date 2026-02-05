@@ -500,7 +500,176 @@ tokens = self.fusion_transformer(tokens)  # 2-layer Transformer
 2. Learns which face correlations matter (via attention weights)
 3. Handles variable importance dynamically (e.g., events near corners)
 
-### 6. Network Depth Summary
+### 6. Task Heads: Multi-Task Regression
+
+The `XECMultiHeadModel` extends the encoder with task-specific regression heads. Each head is an independent MLP that maps the fused 6144-dim representation to task-specific outputs.
+
+**Full Architecture Overview:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         INPUT PROCESSING                                         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│                            Input: (B, 4760, 2)                                  │
+│                              ┌─────────────┐                                    │
+│                              │ npho, time  │                                    │
+│                              │ per sensor  │                                    │
+│                              └──────┬──────┘                                    │
+│                                     │                                           │
+│              ┌──────────────────────┼──────────────────────┐                    │
+│              ▼                      ▼                      ▼                    │
+│    ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐           │
+│    │  Rectangular    │    │  Rectangular    │    │   Hexagonal     │           │
+│    │  Inner (93×44)  │    │  Outer (15×24)  │    │  Top (334)      │           │
+│    │  US (24×6)      │    │                 │    │  Bottom (334)   │           │
+│    │  DS (24×6)      │    │                 │    │                 │           │
+│    └────────┬────────┘    └────────┬────────┘    └────────┬────────┘           │
+│             │                      │                      │                     │
+└─────────────┼──────────────────────┼──────────────────────┼─────────────────────┘
+              │                      │                      │
+┌─────────────┼──────────────────────┼──────────────────────┼─────────────────────┐
+│             ▼                      ▼                      ▼                     │
+│             │                      │                      │                     │
+│         ENCODER                ENCODER                ENCODER                   │
+│                                                                                 │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│    ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐           │
+│    │  FaceBackbone   │    │  FaceBackbone   │    │ DeepHexEncoder  │           │
+│    │  (ConvNeXtV2)   │    │  (ConvNeXtV2)   │    │  (HexNeXt)      │           │
+│    │                 │    │                 │    │                 │           │
+│    │  Stem→Stage1→   │    │  Stem→Stage1→   │    │  Stem→4×Block   │           │
+│    │  Down→Stage2→   │    │  Down→Stage2→   │    │  →Pool→Project  │           │
+│    │  Pool(4×4)      │    │  Pool(4×4)      │    │                 │           │
+│    └────────┬────────┘    └────────┬────────┘    └────────┬────────┘           │
+│             │                      │                      │                     │
+│             ▼                      ▼                      ▼                     │
+│         (B, 1024)              (B, 1024)              (B, 1024)                 │
+│           Inner                  Outer                 Top/Bot                  │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     │ 6 face tokens
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          TRANSFORMER FUSION                                      │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│                  ┌─────────────────────────────────────┐                        │
+│                  │  Stack: (B, 6, 1024)                │                        │
+│                  │  [Inner, US, DS, Outer, Top, Bot]   │                        │
+│                  └──────────────────┬──────────────────┘                        │
+│                                     │                                           │
+│                                     │ + Positional Embedding                    │
+│                                     ▼                                           │
+│                  ┌─────────────────────────────────────┐                        │
+│                  │  TransformerEncoder (2 layers)      │                        │
+│                  │  • 8 attention heads                │                        │
+│                  │  • FFN dim: 4096                    │                        │
+│                  │  • Cross-face attention             │                        │
+│                  └──────────────────┬──────────────────┘                        │
+│                                     │                                           │
+│                                     ▼                                           │
+│                  ┌─────────────────────────────────────┐                        │
+│                  │  Flatten: (B, 6144)                 │                        │
+│                  │  6 tokens × 1024 dims               │                        │
+│                  └──────────────────┬──────────────────┘                        │
+│                                     │                                           │
+└─────────────────────────────────────┼───────────────────────────────────────────┘
+                                      │
+                                      │ Shared representation
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           TASK HEADS (XECMultiHeadModel)                         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│       ┌─────────────┬─────────────┬─────────────┬─────────────┐                │
+│       ▼             ▼             ▼             ▼             ▼                │
+│  ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐          │
+│  │ Angle   │   │ Energy  │   │ Timing  │   │ uvwFI   │   │angleVec │          │
+│  │  Head   │   │  Head   │   │  Head   │   │  Head   │   │  Head   │          │
+│  └────┬────┘   └────┬────┘   └────┬────┘   └────┬────┘   └────┬────┘          │
+│       │             │             │             │             │                │
+│   Each head is an identical MLP structure:                                     │
+│                                                                                 │
+│   ┌──────────────────────────────────────────┐                                 │
+│   │  Linear(6144 → 256)                      │                                 │
+│   │       ↓                                  │                                 │
+│   │  LayerNorm(256)                          │                                 │
+│   │       ↓                                  │                                 │
+│   │  GELU                                    │                                 │
+│   │       ↓                                  │                                 │
+│   │  Dropout(0.2)                            │                                 │
+│   │       ↓                                  │                                 │
+│   │  Linear(256 → 256)                       │                                 │
+│   │       ↓                                  │                                 │
+│   │  LayerNorm(256)                          │                                 │
+│   │       ↓                                  │                                 │
+│   │  GELU                                    │                                 │
+│   │       ↓                                  │                                 │
+│   │  Dropout(0.2)                            │                                 │
+│   │       ↓                                  │                                 │
+│   │  Linear(256 → output_dim)                │                                 │
+│   └──────────────────────────────────────────┘                                 │
+│       │             │             │             │             │                │
+│       ▼             ▼             ▼             ▼             ▼                │
+│    (B, 2)        (B, 1)        (B, 1)        (B, 3)        (B, 3)              │
+│    θ, φ         Energy        Timing        u, v, w       x, y, z             │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Task Head Output Dimensions:**
+
+| Task | Output Dim | Description |
+|------|------------|-------------|
+| `angle` | 2 | Emission angles (θ, φ) |
+| `energy` | 1 | Photon energy |
+| `timing` | 1 | Event timing |
+| `uvwFI` | 3 | First interaction position (u, v, w) |
+| `angleVec` | 3 | Emission direction unit vector (x, y, z) |
+| `n_gamma` | 5 | Gamma multiplicity classification (0-4) |
+
+**Key Design Points:**
+
+1. **Shared Encoder**: All tasks share the same encoder and transformer fusion, enabling transfer learning across related physical observables.
+
+2. **Independent Heads**: Each task has its own head, allowing task-specific optimization without interference.
+
+3. **Consistent Head Architecture**: All heads use the same 2-hidden-layer MLP structure (6144→256→256→output), only differing in final output dimension.
+
+4. **Selective Training**: Tasks can be enabled/disabled in config without changing the architecture.
+
+**Implementation** (`lib/models/regressor.py`):
+
+```python
+class XECMultiHeadModel(nn.Module):
+    def __init__(self, encoder, task_config, ...):
+        self.encoder = encoder  # Shared backbone
+
+        # Create task-specific heads
+        self.heads = nn.ModuleDict()
+        for task_name, task_cfg in task_config.items():
+            if task_cfg.enabled:
+                self.heads[task_name] = self._make_head(
+                    input_dim=6144,
+                    output_dim=TASK_OUTPUT_DIMS[task_name]
+                )
+
+    def forward(self, x, adj_matrices):
+        # Shared encoder forward
+        features = self.encoder.forward_features(x, adj_matrices)  # (B, 6144)
+
+        # Task-specific predictions
+        outputs = {}
+        for task_name, head in self.heads.items():
+            outputs[task_name] = head(features)
+
+        return outputs
+```
+
+### 7. Network Depth Summary
 
 This section summarizes the total number of layers in the architecture, confirming it qualifies as **deep learning** (typically defined as neural networks with 3+ hidden layers).
 

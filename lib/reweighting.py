@@ -385,6 +385,197 @@ class SampleReweighter:
         idx3 = (torch.bucketize(v3, edges3) - 1).clamp(0, weights.shape[2] - 1)
         return weights[idx1, idx2, idx3]
 
+class IntensityReweighter:
+    """
+    Sample reweighting based on total event intensity.
+
+    Computes sample weights based on the sum of normalized npho values per event,
+    aiming to balance the representation of low-intensity and high-intensity events.
+
+    Usage:
+        reweighter = IntensityReweighter(nbins=5, target="uniform")
+        reweighter.fit(train_files, tree_name)
+
+        # In training loop:
+        weights = reweighter.compute_weights(x_batch, device)
+    """
+
+    def __init__(self, nbins: int = 5, target: str = "uniform"):
+        """
+        Args:
+            nbins: Number of intensity bins for histogram.
+            target: Target distribution. "uniform" for equal representation,
+                   "sqrt" for sqrt-weighted (downweight very high intensities).
+        """
+        self.nbins = nbins
+        self.target = target
+
+        self._fitted = False
+        self._bin_edges: Optional[np.ndarray] = None
+        self._bin_weights: Optional[np.ndarray] = None
+        self._bin_edges_t: Optional[torch.Tensor] = None
+        self._bin_weights_t: Optional[torch.Tensor] = None
+        self._device: Optional[torch.device] = None
+
+    @property
+    def is_enabled(self) -> bool:
+        """Check if reweighter is fitted and ready."""
+        return self._fitted
+
+    def fit(
+        self,
+        root_files: List[str],
+        tree_name: str = "tree",
+        npho_branch: str = "npho",
+        step_size: int = 10000,
+        npho_scale: float = 1000.0,
+        npho_scale2: float = 4.08,
+        npho_scheme: str = "log1p",
+    ):
+        """
+        Scan training data to build intensity histogram and weights.
+
+        Args:
+            root_files: List of ROOT file paths.
+            tree_name: Name of the TTree.
+            npho_branch: Branch name for photon counts.
+            step_size: Chunk size for streaming.
+            npho_scale: Normalization scale for npho.
+            npho_scale2: Secondary scale for log1p normalization.
+            npho_scheme: Normalization scheme used in training.
+        """
+        from .normalization import NphoTransform
+
+        print(f"[IntensityReweighter] Scanning training data for intensity histogram...")
+
+        # Create transform to normalize raw npho
+        transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+
+        # Collect total intensity per event
+        intensities = []
+
+        for arr in iterate_chunks(root_files, tree_name, [npho_branch], step_size):
+            raw_npho = arr[npho_branch].astype("float64")
+            # Clamp invalid values
+            raw_npho = np.clip(raw_npho, 0, 1e9)
+            # Normalize
+            npho_norm = transform.forward(raw_npho)
+            # Sum across sensors (axis=1 for shape (N, 4760))
+            total_intensity = npho_norm.sum(axis=1)
+            intensities.append(total_intensity)
+
+        intensities = np.concatenate(intensities)
+        print(f"[IntensityReweighter] Collected {len(intensities)} events")
+        print(f"[IntensityReweighter] Intensity range: [{intensities.min():.2f}, {intensities.max():.2f}]")
+
+        # Build quantile-based bins for more balanced binning
+        quantiles = np.linspace(0, 100, self.nbins + 1)
+        self._bin_edges = np.percentile(intensities, quantiles)
+        # Ensure edges are unique (can happen with many zeros)
+        self._bin_edges = np.unique(self._bin_edges)
+        actual_nbins = len(self._bin_edges) - 1
+
+        if actual_nbins < self.nbins:
+            print(f"[IntensityReweighter] Warning: reduced to {actual_nbins} bins due to duplicates")
+
+        # Compute histogram
+        counts, _ = np.histogram(intensities, bins=self._bin_edges)
+
+        # Compute weights (inverse frequency)
+        if self.target == "uniform":
+            # Target uniform distribution
+            weights = np.zeros(actual_nbins, dtype=np.float64)
+            valid = counts > 0
+            if valid.any():
+                total = counts.sum()
+                k = total / valid.sum()  # Target count per bin
+                weights[valid] = k / counts[valid]
+        elif self.target == "sqrt":
+            # Target sqrt distribution (moderately downweight high intensity)
+            weights = np.zeros(actual_nbins, dtype=np.float64)
+            valid = counts > 0
+            if valid.any():
+                # Use sqrt of bin center as target weight
+                bin_centers = (self._bin_edges[:-1] + self._bin_edges[1:]) / 2
+                target_weights = 1.0 / np.sqrt(bin_centers.clip(min=1.0))
+                target_counts = counts * target_weights[valid] if valid.any() else counts
+                total_target = target_counts.sum()
+                weights[valid] = (target_counts.sum() / actual_nbins) / counts[valid]
+        else:
+            raise ValueError(f"Unknown target: {self.target}")
+
+        self._bin_weights = weights
+
+        print(f"[IntensityReweighter] Bins: {actual_nbins}, "
+              f"weight range [{weights.min():.3f}, {weights.max():.3f}]")
+
+        self._fitted = True
+
+    def to_device(self, device: torch.device):
+        """Move tensors to GPU for fast lookup."""
+        if self._bin_edges is not None:
+            self._bin_edges_t = torch.as_tensor(self._bin_edges, device=device, dtype=torch.float32)
+            self._bin_weights_t = torch.as_tensor(self._bin_weights, device=device, dtype=torch.float32)
+        self._device = device
+
+    def compute_weights(self, x_batch: torch.Tensor, device: torch.device) -> Optional[torch.Tensor]:
+        """
+        Compute sample weights from normalized input batch.
+
+        Args:
+            x_batch: Input tensor of shape (B, 4760, 2) - normalized [npho, time].
+            device: Target device for output tensor.
+
+        Returns:
+            Weight tensor of shape (B,) or None if not fitted.
+        """
+        if not self._fitted:
+            return None
+
+        # Lazy initialization of GPU tensors
+        if self._device != device:
+            self.to_device(device)
+
+        # Sum npho channel across sensors
+        npho_sum = x_batch[:, :, 0].sum(dim=1)  # (B,)
+
+        # Bin lookup
+        bin_idx = torch.bucketize(npho_sum, self._bin_edges_t) - 1
+        bin_idx = bin_idx.clamp(0, self._bin_weights_t.shape[0] - 1)
+
+        return self._bin_weights_t[bin_idx]
+
+
+def create_intensity_reweighter_from_config(config) -> Optional[IntensityReweighter]:
+    """
+    Create IntensityReweighter from config object or dict.
+
+    Args:
+        config: IntensityReweightConfig object or dict with 'enabled', 'nbins', 'target'.
+
+    Returns:
+        IntensityReweighter if enabled, None otherwise.
+    """
+    if config is None:
+        return None
+
+    if hasattr(config, 'enabled'):
+        # Config object
+        if not config.enabled:
+            return None
+        return IntensityReweighter(nbins=config.nbins, target=config.target)
+    elif isinstance(config, dict):
+        # Dict config
+        if not config.get('enabled', False):
+            return None
+        return IntensityReweighter(
+            nbins=config.get('nbins', 5),
+            target=config.get('target', 'uniform')
+        )
+    else:
+        return None
+
+
 def create_reweighter_from_config(config_dict: Dict) -> SampleReweighter:
     """
     Create SampleReweighter from YAML config dictionary.

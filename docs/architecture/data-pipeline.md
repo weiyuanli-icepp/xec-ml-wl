@@ -59,6 +59,19 @@ There are currently **two normalization schemes** in use:
 ### 2. Normalization Formulas
 
 **Photon Count (Npho) - Extensive Quantity:**
+
+The npho normalization supports multiple schemes via the `npho_scheme` config parameter:
+
+| Scheme | Formula | Use Case |
+|--------|---------|----------|
+| `log1p` (default) | `log1p(x/scale)/scale2` | Wide dynamic range (0 to ~10⁶ photons) |
+| `anscombe` | `2√(x + 3/8) / (2√(scale + 3/8))` | Poisson variance stabilization |
+| `sqrt` | `√x / √scale` | Simpler variance stabilization |
+| `linear` | `x / scale` | No transform (baseline) |
+
+All schemes produce output values around 1 when `x = npho_scale`, making them interchangeable for model training.
+
+**Default scheme (log1p):**
 ```python
 # Log-transform to handle wide dynamic range (0 to ~10^6 photons)
 npho_norm = log1p(raw_npho / npho_scale) / npho_scale2
@@ -69,6 +82,14 @@ $$N_{\text{norm}} = \frac{\ln(1 + N_{\text{raw}} / s_1)}{s_2}$$
 Where:
 - $s_1$ = `npho_scale`
 - $s_2$ = `npho_scale2`
+
+**Anscombe scheme (for Poisson data):**
+```python
+# Variance-stabilizing transform with scaling
+npho_norm = 2 * sqrt(raw_npho + 0.375) / (2 * sqrt(npho_scale + 0.375))
+```
+
+The Anscombe transform converts Poisson-distributed data to approximately Gaussian with unit variance. The scaling ensures the output range matches other schemes.
 
 **Timing - Intensive Quantity:**
 ```python
@@ -162,7 +183,8 @@ After normalization with the **new scheme** (npho_scale=1000):
 | Parameter | Config Key | Legacy | New | Description |
 |-----------|------------|--------|-----|-------------|
 | `npho_scale` | `normalization.npho_scale` | 0.58 | 1000 | Npho log transform scale |
-| `npho_scale2` | `normalization.npho_scale2` | 1.0 | 4.08 | Secondary npho scale |
+| `npho_scale2` | `normalization.npho_scale2` | 1.0 | 4.08 | Secondary npho scale (log1p only) |
+| `npho_scheme` | `normalization.npho_scheme` | - | log1p | Normalization scheme (log1p/anscombe/sqrt/linear) |
 | `time_scale` | `normalization.time_scale` | 6.5e-8 | 1.14e-7 | Time scale (seconds) |
 | `time_shift` | `normalization.time_shift` | 0.5 | -0.46 | Time offset after scaling |
 | `sentinel_value` | `normalization.sentinel_value` | -5.0 | -1.0 | Invalid sensor marker |
@@ -177,11 +199,32 @@ After normalization with the **new scheme** (npho_scale=1000):
 To convert predictions back to physical units:
 
 ```python
-# Npho: inverse of log1p transform
+# Npho: inverse depends on scheme
+# For log1p (default):
 raw_npho = npho_scale * (exp(npho_norm * npho_scale2) - 1)
 
-# Time: inverse of linear transform
+# For anscombe:
+scale_factor = 2 * sqrt(npho_scale + 0.375)
+raw_npho = (npho_norm * scale_factor / 2) ** 2 - 0.375
+
+# For sqrt:
+raw_npho = (npho_norm * sqrt(npho_scale)) ** 2
+
+# For linear:
+raw_npho = npho_norm * npho_scale
+
+# Time: inverse of linear transform (same for all schemes)
 raw_time = (time_norm + time_shift) * time_scale
+```
+
+Use the `NphoTransform` class from `lib/normalization.py` for automatic scheme-aware transforms:
+
+```python
+from lib.normalization import NphoTransform
+
+transform = NphoTransform(scheme="log1p", npho_scale=1000, npho_scale2=4.08)
+npho_norm = transform.forward(raw_npho)
+raw_npho = transform.inverse(npho_norm)
 ```
 
 ---

@@ -22,6 +22,9 @@ normalization:
   time_scale: 6.5e-8
   time_shift: 0.5
   sentinel_value: -5.0
+  # Normalization scheme for npho:
+  #   "log1p" (default), "anscombe", "sqrt", "linear"
+  npho_scheme: "log1p"
 
 # === Model Configuration ===
 model:

@@ -12,6 +12,7 @@ try:
     from lib.geom_defs import (
         DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_NPHO_THRESHOLD
     )
+    from lib.normalization import NphoTransform
 except ImportError as e:
     print(f"Error: Could not import required modules: {e}")
     print("Run from repo root (xec-ml-wl/) or set PYTHONPATH.")
@@ -22,6 +23,32 @@ def _decode_run_id(val):
     if isinstance(val, bytes):
         return val.decode(errors="ignore")
     return str(val)
+
+
+def load_metadata_from_predictions(pred_file):
+    """
+    Load normalization metadata from MAE predictions file if available.
+    Returns dict with normalization factors, or empty dict if not found.
+    """
+    metadata = {}
+    try:
+        with uproot.open(pred_file) as f:
+            if "metadata" in f:
+                meta_tree = f["metadata"]
+                for key in ["npho_scale", "npho_scale2", "time_scale", "time_shift"]:
+                    if key in meta_tree:
+                        val = meta_tree[key].array(library="np")[0]
+                        if not np.isnan(val):
+                            metadata[key] = float(val)
+                # Read npho_scheme (string type)
+                if "npho_scheme" in meta_tree:
+                    val = meta_tree["npho_scheme"].array(library="np")[0]
+                    if isinstance(val, bytes):
+                        val = val.decode('utf-8')
+                    metadata["npho_scheme"] = str(val)
+    except Exception as e:
+        print(f"  Warning: Could not read metadata from predictions file: {e}")
+    return metadata
 
 
 def main():
@@ -47,6 +74,16 @@ def main():
     if not os.path.exists(args.file):
         print(f"Error: File not found at {args.file}")
         sys.exit(1)
+
+    # Load metadata from predictions file
+    metadata = load_metadata_from_predictions(args.file)
+    npho_scale = metadata.get("npho_scale", DEFAULT_NPHO_SCALE)
+    npho_scale2 = metadata.get("npho_scale2", DEFAULT_NPHO_SCALE2)
+    npho_scheme = metadata.get("npho_scheme", "log1p")
+
+    if metadata:
+        print(f"  Using normalization from predictions file:")
+        print(f"    npho_scale={npho_scale}, npho_scale2={npho_scale2}, npho_scheme={npho_scheme}")
 
     with uproot.open(args.file) as f:
         if args.tree not in f:
@@ -164,7 +201,8 @@ def main():
 
         # Determine npho_threshold for visualization (convert from raw to normalized space)
         raw_threshold = args.npho_threshold if args.npho_threshold is not None else DEFAULT_NPHO_THRESHOLD
-        npho_threshold_norm = np.log1p(raw_threshold / DEFAULT_NPHO_SCALE) / DEFAULT_NPHO_SCALE2
+        npho_transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+        npho_threshold_norm = npho_transform.convert_threshold(raw_threshold)
 
         plot_mae_comparison(
             x_truth,

@@ -31,6 +31,7 @@ try:
         DEFAULT_NPHO_THRESHOLD, OUTER_ALL_SENSOR_IDS
     )
     from lib.dataset import expand_path
+    from lib.normalization import NphoTransform
 except ImportError as e:
     print(f"Error: Could not import required modules: {e}")
     print("Run from repo root (xec-ml-wl/) or set PYTHONPATH.")
@@ -52,6 +53,12 @@ def load_metadata_from_predictions(pred_file):
                         val = meta_tree[key].array(library="np")[0]
                         if not np.isnan(val):
                             metadata[key] = float(val)
+                # Read npho_scheme (string type)
+                if "npho_scheme" in meta_tree:
+                    val = meta_tree["npho_scheme"].array(library="np")[0]
+                    if isinstance(val, bytes):
+                        val = val.decode('utf-8')
+                    metadata["npho_scheme"] = str(val)
     except Exception as e:
         print(f"  Warning: Could not read metadata from predictions file: {e}")
     return metadata
@@ -62,7 +69,8 @@ def normalize_input(raw_npho, raw_time,
                     npho_scale2=DEFAULT_NPHO_SCALE2,
                     time_scale=DEFAULT_TIME_SCALE,
                     time_shift=DEFAULT_TIME_SHIFT,
-                    sentinel_value=DEFAULT_SENTINEL_VALUE):
+                    sentinel_value=DEFAULT_SENTINEL_VALUE,
+                    npho_scheme="log1p"):
     """
     Apply the same normalization as training to raw input data.
     Returns normalized (npho, time) arrays.
@@ -71,9 +79,12 @@ def normalize_input(raw_npho, raw_time,
     mask_npho_bad = (raw_npho <= 0.0) | (raw_npho > 9e9) | np.isnan(raw_npho)
     mask_time_bad = mask_npho_bad | (np.abs(raw_time) > 9e9) | np.isnan(raw_time)
 
-    # Normalize
+    # Normalize npho using NphoTransform
     raw_npho_safe = np.where(mask_npho_bad, 0.0, raw_npho)
-    npho_norm = np.log1p(raw_npho_safe / npho_scale) / npho_scale2
+    npho_transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+    npho_norm = npho_transform.forward(raw_npho_safe)
+
+    # Normalize time
     time_norm = (raw_time / time_scale) - time_shift
 
     npho_norm[mask_npho_bad] = 0.0
@@ -281,17 +292,18 @@ Examples:
     time_scale = args.time_scale if args.time_scale is not None else metadata.get("time_scale", DEFAULT_TIME_SCALE)
     time_shift = args.time_shift if args.time_shift is not None else metadata.get("time_shift", DEFAULT_TIME_SHIFT)
     sentinel_value = args.sentinel_value if args.sentinel_value is not None else metadata.get("sentinel_value", DEFAULT_SENTINEL_VALUE)
+    npho_scheme = metadata.get("npho_scheme", "log1p")
 
     if metadata:
         print(f"  Using normalization from predictions file:")
         print(f"    npho_scale={npho_scale}, npho_scale2={npho_scale2}")
         print(f"    time_scale={time_scale}, time_shift={time_shift}")
-        print(f"    sentinel_value={sentinel_value}")
+        print(f"    sentinel_value={sentinel_value}, npho_scheme={npho_scheme}")
     else:
         print(f"  Warning: No metadata found in predictions file, using defaults")
         print(f"    npho_scale={npho_scale}, npho_scale2={npho_scale2}")
         print(f"    time_scale={time_scale}, time_shift={time_shift}")
-        print(f"    sentinel_value={sentinel_value}")
+        print(f"    sentinel_value={sentinel_value}, npho_scheme={npho_scheme}")
 
     # --- Load original data ---
     print(f"Loading original data from: {args.original}")
@@ -344,7 +356,8 @@ Examples:
         npho_scale2=npho_scale2,
         time_scale=time_scale,
         time_shift=time_shift,
-        sentinel_value=sentinel_value
+        sentinel_value=sentinel_value,
+        npho_scheme=npho_scheme
     )
 
     # x_truth: full normalized sensor values
@@ -536,7 +549,8 @@ Examples:
 
     # Determine npho_threshold for visualization (convert from raw to normalized space)
     raw_threshold = args.npho_threshold if args.npho_threshold is not None else DEFAULT_NPHO_THRESHOLD
-    npho_threshold_norm = np.log1p(raw_threshold / npho_scale) / npho_scale2
+    npho_transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+    npho_threshold_norm = npho_transform.convert_threshold(raw_threshold)
 
     # Determine which channels to plot
     channels_to_plot = ["npho", "time"] if args.channel == "both" else [args.channel]

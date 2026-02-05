@@ -258,6 +258,7 @@ def train_with_config(config_path: str, profile: bool = None):
         "npho_branch": getattr(cfg.data, "npho_branch", "relative_npho"),
         "time_branch": getattr(cfg.data, "time_branch", "relative_time"),
         "log_invalid_npho": getattr(cfg.data, "log_invalid_npho", True),
+        "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
     }
 
     train_loader = get_dataloader(
@@ -637,6 +638,7 @@ def train_with_config(config_path: str, profile: bool = None):
                 "total_params": total_params,
                 "trainable_params": trainable_params,
                 "loss_balance": cfg.loss_balance,
+                "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
             })
 
         best_state = None
@@ -896,6 +898,9 @@ Examples:
     parser.add_argument("--time_scale", type=float, default=None)
     parser.add_argument("--time_shift", type=float, default=None)
     parser.add_argument("--sentinel_value", type=float, default=None)
+    parser.add_argument("--npho_scheme", type=str, default=None,
+                        choices=["log1p", "anscombe", "sqrt", "linear"],
+                        help="Normalization scheme for npho (default: from config)")
 
     # Model (override config)
     parser.add_argument("--outer_mode", type=str, default=None, choices=["finegrid", "split"])
@@ -978,6 +983,8 @@ def apply_cli_overrides(cfg, args):
         cfg.normalization.time_shift = args.time_shift
     if args.sentinel_value is not None:
         cfg.normalization.sentinel_value = args.sentinel_value
+    if args.npho_scheme is not None:
+        cfg.normalization.npho_scheme = args.npho_scheme
 
     # Model
     if args.outer_mode is not None:
@@ -1062,9 +1069,9 @@ def collect_cli_overrides(args):
     override_args = [
         "train_path", "val_path", "tree", "batch_size", "chunksize",
         "num_workers", "num_threads", "npho_scale", "npho_scale2",
-        "time_scale", "time_shift", "sentinel_value", "outer_mode",
-        "outer_fine_pool", "hidden_dim", "drop_path_rate", "epochs",
-        "lr", "weight_decay", "warmup_epochs", "ema_decay",
+        "time_scale", "time_shift", "sentinel_value", "npho_scheme",
+        "outer_mode", "outer_fine_pool", "hidden_dim", "drop_path_rate",
+        "epochs", "lr", "weight_decay", "warmup_epochs", "ema_decay",
         "channel_dropout_rate", "grad_clip", "grad_accum_steps", "compile",
         "tasks", "loss_balance", "resume_from", "save_dir",
         "mlflow_experiment", "run_name", "onnx"

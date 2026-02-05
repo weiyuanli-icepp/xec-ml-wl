@@ -62,6 +62,8 @@ class NormalizationConfig:
     time_scale: float = DEFAULT_TIME_SCALE
     time_shift: float = DEFAULT_TIME_SHIFT
     sentinel_value: float = DEFAULT_SENTINEL_VALUE
+    # Normalization scheme for npho: "log1p" (default), "anscombe", "sqrt", "linear"
+    npho_scheme: str = "log1p"
 
 
 @dataclass
@@ -337,6 +339,37 @@ def create_default_config(save_path: str = None) -> XECConfig:
 
 
 # ------------------------------------------------------------
+#  Npho Loss Weighting Configuration (MAE/Inpainter)
+# ------------------------------------------------------------
+@dataclass
+class NphoLossWeightConfig:
+    """
+    Configuration for npho-based reconstruction loss weighting.
+
+    When enabled, weights the npho reconstruction loss by (npho + 1)^alpha,
+    giving higher weight to sensors with more photons (which have more information).
+    """
+    enabled: bool = False
+    alpha: float = 0.5  # Exponent: 0.5 = sqrt, 1.0 = linear
+
+
+# ------------------------------------------------------------
+#  Intensity-based Sample Reweighting Configuration (MAE/Inpainter)
+# ------------------------------------------------------------
+@dataclass
+class IntensityReweightConfig:
+    """
+    Configuration for intensity-based sample reweighting.
+
+    When enabled, reweights samples based on total event intensity (sum of npho)
+    to balance representation across different intensity levels.
+    """
+    enabled: bool = False
+    nbins: int = 5  # Number of intensity bins
+    target: str = "uniform"  # Target distribution: "uniform" or "sqrt"
+
+
+# ------------------------------------------------------------
 #  MAE (Masked Autoencoder) Configuration
 # ------------------------------------------------------------
 @dataclass
@@ -390,6 +423,10 @@ class MAETrainingConfig:
     track_mae_rmse: bool = False  # Compute/log MAE/RMSE metrics
     track_train_metrics: bool = False  # Track per-face loss during training
     profile: bool = False  # Enable training profiler
+    # Npho reconstruction loss weighting: weight = (npho + 1)^alpha
+    npho_loss_weight: NphoLossWeightConfig = field(default_factory=NphoLossWeightConfig)
+    # Intensity-based sample reweighting
+    intensity_reweighting: IntensityReweightConfig = field(default_factory=IntensityReweightConfig)
 
 
 @dataclass
@@ -524,6 +561,16 @@ def load_mae_config(config_path: str, warn_missing: bool = True, auto_update: bo
                 for tk, tv in v.items():
                     if hasattr(config.training.time, tk):
                         setattr(config.training.time, tk, tv)
+            elif k == 'npho_loss_weight' and isinstance(v, dict):
+                # Handle nested npho_loss_weight config
+                for nk, nv in v.items():
+                    if hasattr(config.training.npho_loss_weight, nk):
+                        setattr(config.training.npho_loss_weight, nk, nv)
+            elif k == 'intensity_reweighting' and isinstance(v, dict):
+                # Handle nested intensity_reweighting config
+                for ik, iv in v.items():
+                    if hasattr(config.training.intensity_reweighting, ik):
+                        setattr(config.training.intensity_reweighting, ik, iv)
             elif hasattr(config.training, k):
                 setattr(config.training, k, v)
 
@@ -609,6 +656,10 @@ class InpainterTrainingConfig:
     track_train_metrics: bool = True
     ema_decay: Optional[float] = None  # None = disabled, 0.999 = typical value
     profile: bool = False  # Enable training profiler
+    # Npho reconstruction loss weighting: weight = (npho + 1)^alpha
+    npho_loss_weight: NphoLossWeightConfig = field(default_factory=NphoLossWeightConfig)
+    # Intensity-based sample reweighting
+    intensity_reweighting: IntensityReweightConfig = field(default_factory=IntensityReweightConfig)
 
 
 @dataclass
@@ -688,6 +739,16 @@ def load_inpainter_config(config_path: str, warn_missing: bool = True, auto_upda
                 for tk, tv in v.items():
                     if hasattr(config.training.time, tk):
                         setattr(config.training.time, tk, tv)
+            elif k == 'npho_loss_weight' and isinstance(v, dict):
+                # Handle nested npho_loss_weight config
+                for nk, nv in v.items():
+                    if hasattr(config.training.npho_loss_weight, nk):
+                        setattr(config.training.npho_loss_weight, nk, nv)
+            elif k == 'intensity_reweighting' and isinstance(v, dict):
+                # Handle nested intensity_reweighting config
+                for ik, iv in v.items():
+                    if hasattr(config.training.intensity_reweighting, ik):
+                        setattr(config.training.intensity_reweighting, ik, iv)
             elif hasattr(config.training, k):
                 setattr(config.training, k, v)
 

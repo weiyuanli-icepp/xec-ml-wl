@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
+from typing import Optional
 from torch.utils.data import DataLoader
 from ..dataset import XECStreamingDataset
 from ..utils import get_pointwise_loss_fn, SimpleProfiler
@@ -14,6 +15,7 @@ from ..geom_defs import (
     DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT,
     DEFAULT_SENTINEL_VALUE, DEFAULT_NPHO_THRESHOLD
 )
+from ..normalization import NphoTransform
 
 
 def run_epoch_mae(model, optimizer, device, root_files, tree_name,
@@ -39,7 +41,11 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                   track_mae_rmse=True,
                   track_train_metrics=True,
                   profile=False,
-                  log_invalid_npho=True):
+                  log_invalid_npho=True,
+                  npho_scheme="log1p",
+                  npho_loss_weight_enabled=False,
+                  npho_loss_weight_alpha=0.5,
+                  intensity_reweighter=None):
     model.train()
     if scaler is None:
         scaler = torch.amp.GradScaler('cuda', enabled=amp)
@@ -58,8 +64,11 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
     if npho_threshold is None:
         npho_threshold = DEFAULT_NPHO_THRESHOLD
 
+    # Create NphoTransform for denormalization and threshold conversion
+    npho_transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+
     # Convert to normalized space for stratified masking and threshold checks
-    npho_threshold_norm = np.log1p(npho_threshold / npho_scale) / npho_scale2
+    npho_threshold_norm = npho_transform.convert_threshold(npho_threshold)
 
     # Per-face total losses
     face_loss_sums = {
@@ -128,6 +137,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
         log_invalid_npho=log_invalid_npho,
         load_truth_branches=False,  # MAE doesn't need truth branches
         profile=profile,
+        npho_scheme=npho_scheme,
     )
 
     loader = DataLoader(
@@ -228,19 +238,55 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
 
                     mask_sum = mask_expanded.sum()
                     mask_sum_safe = mask_sum + 1e-8
-                    npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum_safe
+
+                    # Npho loss with optional intensity-based weighting
+                    if npho_loss_weight_enabled and mask_sum > 0:
+                        # Get normalized npho for this face (for weighting)
+                        npho_norm_all = x_in[:, :, 0]  # (B, 4760) - normalized npho
+                        if isinstance(indices, torch.Tensor):
+                            npho_norm_face = npho_norm_all[:, indices]
+                        else:
+                            npho_norm_face = npho_norm_all[:, indices.flatten()].view(x_in.size(0), *indices.shape)
+
+                        # Denormalize npho for weighting
+                        raw_npho_face = npho_transform.inverse(npho_norm_face)
+                        # Reshape to match prediction shape
+                        if name in ["top", "bot"]:
+                            weight_map = (raw_npho_face.clamp(min=1.0) + 1.0).pow(npho_loss_weight_alpha).unsqueeze(1)
+                        elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                            H_coarse, W_coarse = OUTER_COARSE_FULL_INDEX_MAP.shape
+                            cr, cc = OUTER_FINE_COARSE_SCALE
+                            npho_coarse = raw_npho_face.view(x_in.size(0), 1, H_coarse, W_coarse)
+                            npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
+                            pool_kernel = model.encoder.outer_fine_pool
+                            if pool_kernel:
+                                if isinstance(pool_kernel, int):
+                                    ph, pw = pool_kernel, pool_kernel
+                                else:
+                                    ph, pw = pool_kernel
+                                npho_fine = F.avg_pool2d(npho_fine, kernel_size=(ph, pw), stride=(ph, pw))
+                            weight_map = (npho_fine.clamp(min=1.0) + 1.0).pow(npho_loss_weight_alpha)
+                        else:
+                            H, W = pred.shape[-2], pred.shape[-1]
+                            weight_map = (raw_npho_face.view(x_in.size(0), 1, H, W).clamp(min=1.0) + 1.0).pow(npho_loss_weight_alpha)
+                        # Normalize weights so mean is ~1 for stable training
+                        weight_map = weight_map / (weight_map[mask_expanded.bool()].mean() + 1e-8)
+                        npho_loss = (loss_map_npho * mask_expanded * weight_map).sum() / mask_sum_safe
+                    else:
+                        npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum_safe
 
                     # Time loss (only if predicting time)
                     time_loss = torch.tensor(0.0, device=device)
                     time_mask_sum = torch.tensor(0.0, device=device)
                     if predict_time:
                         # Conditional time loss: only compute where npho > threshold
-                        # Get normalized npho values for this face
-                        npho_norm_all = x_in[:, :, 0]  # (B, 4760) - normalized npho
-                        if isinstance(indices, torch.Tensor):
-                            npho_norm_face = npho_norm_all[:, indices]  # (B, num_sensors)
-                        else:
-                            npho_norm_face = npho_norm_all[:, indices.flatten()].view(x_in.size(0), *indices.shape)
+                        # Get normalized npho values for this face (reuse if already computed)
+                        if not npho_loss_weight_enabled:
+                            npho_norm_all = x_in[:, :, 0]  # (B, 4760) - normalized npho
+                            if isinstance(indices, torch.Tensor):
+                                npho_norm_face = npho_norm_all[:, indices]  # (B, num_sensors)
+                            else:
+                                npho_norm_face = npho_norm_all[:, indices.flatten()].view(x_in.size(0), *indices.shape)
 
                         # Create time_valid_mask using normalized threshold
                         if name in ["top", "bot"]:
@@ -263,9 +309,9 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
 
                         # Npho weighting for time loss (chi-square-like: weight ~ sqrt(npho))
                         if use_npho_time_weight and time_mask_expanded.sum() > 0:
-                            # De-normalize to get approximate raw npho for weighting
-                            # raw_npho = npho_scale * (exp(npho_norm * npho_scale2) - 1)
-                            raw_npho_face = npho_scale * (torch.exp(npho_norm_face * npho_scale2) - 1)
+                            # De-normalize to get approximate raw npho for weighting (reuse if already computed)
+                            if not npho_loss_weight_enabled:
+                                raw_npho_face = npho_transform.inverse(npho_norm_face)
                             if name in ["top", "bot"]:
                                 npho_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
                             elif name == "outer" and getattr(model.encoder, "outer_fine", False):
@@ -456,7 +502,10 @@ def run_eval_mae(model, device, root_files, tree_name,
                  use_npho_time_weight=True,
                  track_mae_rmse=True,
                  profile=False,
-                 log_invalid_npho=True):
+                 log_invalid_npho=True,
+                 npho_scheme="log1p",
+                 npho_loss_weight_enabled=False,
+                 npho_loss_weight_alpha=0.5):
     """
     Evaluate MAE model on validation data.
 
@@ -483,8 +532,11 @@ def run_eval_mae(model, device, root_files, tree_name,
     if npho_threshold is None:
         npho_threshold = DEFAULT_NPHO_THRESHOLD
 
+    # Create NphoTransform for denormalization and threshold conversion
+    npho_transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+
     # Convert to normalized space for stratified masking and threshold checks
-    npho_threshold_norm = np.log1p(npho_threshold / npho_scale) / npho_scale2
+    npho_threshold_norm = npho_transform.convert_threshold(npho_threshold)
 
     # Loss tracking
     face_loss_sums = {"inner": 0.0, "us": 0.0, "ds": 0.0, "outer": 0.0, "top": 0.0, "bot": 0.0}
@@ -638,6 +690,7 @@ def run_eval_mae(model, device, root_files, tree_name,
         log_invalid_npho=log_invalid_npho,
         load_truth_branches=False,  # MAE doesn't need truth branches
         profile=profile,
+        npho_scheme=npho_scheme,
     )
 
     loader = DataLoader(
@@ -768,7 +821,7 @@ def run_eval_mae(model, device, root_files, tree_name,
                             # Npho weighting for time loss
                             if use_npho_time_weight and time_mask_expanded.sum() > 0:
                                 # De-normalize to get approximate raw npho for weighting
-                                raw_npho_face = npho_scale * (torch.exp(npho_norm_face * npho_scale2) - 1)
+                                raw_npho_face = npho_transform.inverse(npho_norm_face)
                                 if name in ["top", "bot"]:
                                     npho_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
                                 elif name == "outer" and getattr(model.encoder, "outer_fine", False):
