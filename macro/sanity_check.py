@@ -5,8 +5,10 @@ Sanity check script for MAE, Inpainter, and Regressor training pipelines.
 Usage:
     python macro/sanity_check.py --data /path/to/test.root
     python macro/sanity_check.py --data /path/to/directory/
+    python macro/sanity_check.py --data "/path/to/data/*.root"  # glob pattern
     python macro/sanity_check.py --data /path/to/test.root --pipeline mae
     python macro/sanity_check.py --data /path/to/test.root --pipeline all --device cuda
+    python macro/sanity_check.py --data /path/to/test.root --npho-scheme anscombe
 """
 
 import argparse
@@ -40,7 +42,7 @@ def check_metrics(metrics, pipeline_name):
     return issues
 
 
-def test_mae(data_path, device, num_batches=5, profile=False):
+def test_mae(data_path, device, num_batches=5, profile=False, npho_scheme="log1p"):
     """Test MAE training pipeline."""
     print("\n" + "="*60)
     print("Testing MAE Pipeline")
@@ -52,6 +54,8 @@ def test_mae(data_path, device, num_batches=5, profile=False):
     from lib.dataset import XECStreamingDataset
     from lib.geom_defs import DEFAULT_SENTINEL_VALUE
     import uproot
+
+    print(f"Normalization scheme: {npho_scheme}")
 
     # Expand path to handle directories
     all_files = expand_path(data_path)
@@ -73,6 +77,7 @@ def test_mae(data_path, device, num_batches=5, profile=False):
         step_size=256,
         load_truth_branches=False,
         shuffle=False,
+        npho_scheme=npho_scheme,
     )
     for x_batch, _ in debug_dataset:
         npho = x_batch[:, :, 0]
@@ -114,6 +119,7 @@ def test_mae(data_path, device, num_batches=5, profile=False):
             track_train_metrics=True,
             profile=profile,
             log_invalid_npho=False,  # Suppress warnings for test
+            npho_scheme=npho_scheme,
         )
     except Exception as e:
         print(f"FAILED: {e}")
@@ -143,7 +149,7 @@ def test_mae(data_path, device, num_batches=5, profile=False):
     return True
 
 
-def test_inpainter(data_path, device, num_batches=5, profile=False):
+def test_inpainter(data_path, device, num_batches=5, profile=False, npho_scheme="log1p"):
     """Test Inpainter training pipeline."""
     print("\n" + "="*60)
     print("Testing Inpainter Pipeline")
@@ -152,6 +158,8 @@ def test_inpainter(data_path, device, num_batches=5, profile=False):
     from lib.models.inpainter import XEC_Inpainter
     from lib.models.regressor import XECEncoder
     from lib.engines.inpainter import run_epoch_inpainter
+
+    print(f"Normalization scheme: {npho_scheme}")
 
     # Create model (defaults now use geom_defs constants)
     print("Creating Inpainter model...")
@@ -179,6 +187,7 @@ def test_inpainter(data_path, device, num_batches=5, profile=False):
             dataset_workers=2,
             profile=profile,
             log_invalid_npho=False,
+            npho_scheme=npho_scheme,
         )
     except Exception as e:
         print(f"FAILED: {e}")
@@ -206,7 +215,7 @@ def test_inpainter(data_path, device, num_batches=5, profile=False):
     return True
 
 
-def test_regressor(data_path, device, num_batches=5, profile=False):
+def test_regressor(data_path, device, num_batches=5, profile=False, npho_scheme="log1p"):
     """Test Regressor training pipeline."""
     print("\n" + "="*60)
     print("Testing Regressor Pipeline")
@@ -215,6 +224,8 @@ def test_regressor(data_path, device, num_batches=5, profile=False):
     from lib.models.regressor import XECEncoder, XECMultiHeadModel
     from lib.engines.regressor import run_epoch_stream
     from lib.dataset import get_dataloader
+
+    print(f"Normalization scheme: {npho_scheme}")
 
     # Create model with angle task only (simplest)
     print("Creating Regressor model...")
@@ -245,6 +256,7 @@ def test_regressor(data_path, device, num_batches=5, profile=False):
         step_size=num_batches * 256,
         load_truth_branches=True,
         log_invalid_npho=False,
+        npho_scheme=npho_scheme,
     )
 
     # Run training
@@ -289,13 +301,17 @@ def test_regressor(data_path, device, num_batches=5, profile=False):
 
 def main():
     parser = argparse.ArgumentParser(description="Sanity check for training pipelines")
-    parser.add_argument("--data", required=True, help="Path to test ROOT file")
+    parser.add_argument("--data", required=True,
+                        help="Path to test ROOT file, directory, or glob pattern")
     parser.add_argument("--pipeline", choices=["mae", "inpainter", "regressor", "all"],
                         default="all", help="Which pipeline to test")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu",
                         help="Device to use (cuda/cpu)")
     parser.add_argument("--num-batches", type=int, default=5,
                         help="Number of batches to process")
+    parser.add_argument("--npho-scheme", type=str, default="log1p",
+                        choices=["log1p", "anscombe", "sqrt", "linear"],
+                        help="Normalization scheme for npho (default: log1p)")
     parser.add_argument("--profile", action="store_true",
                         help="Enable time profiling (adds CUDA syncs, slows down training)")
     args = parser.parse_args()
@@ -303,18 +319,22 @@ def main():
     print(f"Device: {args.device}")
     print(f"Data: {args.data}")
     print(f"Num batches: {args.num_batches}")
+    print(f"Npho scheme: {args.npho_scheme}")
     print(f"Profiling: {args.profile}")
 
     results = {}
 
+    # Convert hyphenated arg to underscore for function parameter
+    npho_scheme = args.npho_scheme
+
     if args.pipeline in ["mae", "all"]:
-        results["MAE"] = test_mae(args.data, args.device, args.num_batches, args.profile)
+        results["MAE"] = test_mae(args.data, args.device, args.num_batches, args.profile, npho_scheme)
 
     if args.pipeline in ["inpainter", "all"]:
-        results["Inpainter"] = test_inpainter(args.data, args.device, args.num_batches, args.profile)
+        results["Inpainter"] = test_inpainter(args.data, args.device, args.num_batches, args.profile, npho_scheme)
 
     if args.pipeline in ["regressor", "all"]:
-        results["Regressor"] = test_regressor(args.data, args.device, args.num_batches, args.profile)
+        results["Regressor"] = test_regressor(args.data, args.device, args.num_batches, args.profile, npho_scheme)
 
     # Summary
     print("\n" + "="*60)
