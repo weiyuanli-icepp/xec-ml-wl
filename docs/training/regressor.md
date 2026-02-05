@@ -83,7 +83,7 @@ Training is now **config-based** using `config/train_config.yaml`. CLI arguments
 | `--grad_clip` | `training.grad_clip` | `1.0` | Gradient clipping |
 | `--grad_accum_steps` | `training.grad_accum_steps` | `1` | Gradient accumulation steps |
 | `--outer_mode` | `model.outer_mode` | `finegrid` | Outer face mode (`finegrid` or `split`) |
-| `--tasks` | `tasks.*` | angle only | Enable specific tasks (angle, energy, timing, uvwFI) |
+| `--tasks` | `tasks.*` | angle only | Enable specific tasks (energy, timing, uvwFI, angle) |
 | `--resume_from` | `checkpoint.resume_from` | `null` | Path to checkpoint to resume |
 | `--refresh_lr` | `checkpoint.refresh_lr` | `false` | Reset LR scheduler for remaining epochs |
 | `--reset_epoch` | `checkpoint.reset_epoch` | `false` | Start from epoch 1 (load weights only) |

@@ -1,0 +1,88 @@
+\documentclass[border=15pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{positioning, shapes.geometric, arrows.meta, calc}
+
+% Colors
+\definecolor{InputColor}{RGB}{200,200,200}
+\definecolor{StemColor}{RGB}{129,199,132}
+\definecolor{HexColor}{RGB}{76,175,80}
+\definecolor{PoolColor}{RGB}{46,125,50}
+\definecolor{TokenColor}{RGB}{156,39,176}
+
+\begin{document}
+\begin{tikzpicture}[
+    scale=0.8,
+    every node/.style={font=\small},
+    >=Stealth,
+    hexnode/.style={regular polygon, regular polygon sides=6, minimum size=0.4cm, draw, thick},
+]
+
+% Helper for 3D boxes
+\newcommand{\featuremap}[7]{
+    \fill[#6!60] (#1,#2) rectangle (#1+#3,#2+#4);
+    \draw[thick] (#1,#2) rectangle (#1+#3,#2+#4);
+    \fill[#6!40] (#1,#2+#4) -- (#1+#5*0.3,#2+#4+#5*0.3) -- (#1+#3+#5*0.3,#2+#4+#5*0.3) -- (#1+#3,#2+#4) -- cycle;
+    \draw[thick] (#1,#2+#4) -- (#1+#5*0.3,#2+#4+#5*0.3) -- (#1+#3+#5*0.3,#2+#4+#5*0.3) -- (#1+#3,#2+#4);
+    \fill[#6!30] (#1+#3,#2) -- (#1+#3+#5*0.3,#2+#5*0.3) -- (#1+#3+#5*0.3,#2+#4+#5*0.3) -- (#1+#3,#2+#4) -- cycle;
+    \draw[thick] (#1+#3,#2) -- (#1+#3+#5*0.3,#2+#5*0.3) -- (#1+#3+#5*0.3,#2+#4+#5*0.3);
+    \node[below, font=\scriptsize, align=center] at (#1+#3/2+#5*0.15, #2-0.1) {#7};
+}
+
+% Title
+\node[font=\large\bfseries] at (7, 6) {HexNeXt Path (Hexagonal PMT Faces)};
+\node[font=\small] at (7, 5.3) {Top/Bottom PMT Arrays (334 nodes each)};
+
+% Input: Hexagonal grid representation
+\node[font=\scriptsize, align=center] at (0.8, 4.5) {Input};
+\foreach \i in {0,1,2,3,4} {
+    \foreach \j in {0,1,2,3} {
+        \node[hexnode, fill=InputColor!60] at (0.3+\i*0.35+mod(\j,2)*0.175, 0.5+\j*0.3) {};
+    }
+}
+\node[below, font=\scriptsize, align=center] at (0.8, -0.1) {334 nodes\\$\times$ 2 ch};
+
+% Arrow
+\draw[->, thick] (2.2, 2.2) -- (3.0, 2.2);
+\node[above, font=\scriptsize] at (2.6, 2.3) {Stem};
+
+% After Stem: nodes x 96
+\featuremap{3.2}{0.5}{1.0}{3.3}{0.6}{StemColor}{Stem\\334$\times$96}
+
+% Arrow
+\draw[->, thick] (5.0, 2.2) -- (5.8, 2.2);
+\node[above, font=\scriptsize] at (5.4, 2.3) {HexNeXt\\$\times$4};
+
+% After HexNeXt blocks: nodes x 96 (with graph attention)
+\featuremap{6.0}{0.5}{1.0}{3.3}{0.6}{HexColor}{HexNeXt\\334$\times$96}
+
+% Graph attention visualization
+\node[font=\tiny, align=center] at (6.7, 4.3) {Graph\\Attention};
+\draw[->, thin, gray] (6.3, 3.8) to[bend left=20] (7.0, 3.5);
+\draw[->, thin, gray] (6.5, 3.2) to[bend right=15] (7.0, 3.5);
+\draw[->, thin, gray] (6.4, 2.8) to[bend left=10] (7.0, 3.5);
+
+% Arrow
+\draw[->, thick] (7.8, 2.2) -- (8.6, 2.2);
+\node[above, font=\scriptsize] at (8.2, 2.3) {Global\\Pool};
+
+% Token: 1024-dim
+\featuremap{8.8}{1.5}{1.2}{1.2}{0.2}{TokenColor}{Token\\1024-dim}
+
+% Legend
+\node[font=\footnotesize\bfseries, anchor=west] at (0, -1.5) {HexNeXt Block:};
+\node[font=\scriptsize, anchor=west, align=left] at (0, -2.2) {
+    1. Depthwise Conv on hex neighbors\\
+    2. LayerNorm + Linear (expand 4$\times$)\\
+    3. GELU + GRN + Linear (project back)\\
+    4. Residual connection + DropPath
+};
+
+% Graph structure note
+\node[font=\scriptsize, anchor=west, align=left] at (7, -1.5) {
+    \textbf{Graph Attention:}\\
+    Each node attends to\\
+    6 hexagonal neighbors
+};
+
+\end{tikzpicture}
+\end{document}

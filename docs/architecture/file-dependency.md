@@ -163,7 +163,7 @@ graph TD
 | `lib/engines/regressor.py` | Training/validation loop for regression |
 | `lib/engines/mae.py` | Training/validation loop for MAE |
 | `lib/engines/inpainter.py` | Training/validation loop for inpainter |
-| `lib/tasks/` | Task-specific handlers (angle, energy, timing, position) |
+| `lib/tasks/` | Task-specific handlers (energy, timing, position, angle) |
 | `lib/geom_defs.py` | Detector geometry constants and index maps |
 | `lib/geom_utils.py` | Geometry utility functions (gather_face, etc.) |
 | `lib/config.py` | Configuration loading and dataclasses |

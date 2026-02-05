@@ -13,7 +13,7 @@ python macro/export_onnx.py \
 # Specify tasks explicitly
 python macro/export_onnx.py \
     artifacts/<RUN_NAME>/checkpoint_best.pth \
-    --tasks angle energy timing uvwFI \
+    --tasks energy timing uvwFI angle \
     --output model.onnx
 ```
 
