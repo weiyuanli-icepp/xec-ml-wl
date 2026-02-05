@@ -235,11 +235,14 @@ class XEC_MAE(nn.Module):
         mask = torch.zeros(B, N, device=device)
         mask.scatter_(1, ids_shuffle, should_mask)
 
-        # Apply sentinel to randomly-masked positions
-        # Note: already-invalid sensors already have sentinel value in x
+        # Apply masking values to randomly-masked positions
+        # - npho (channel 0): set to 0 (neutral for convolutions, physically meaningful)
+        # - time (channel 1): set to sentinel (distinguishes invalid from t=0)
+        # Note: already-invalid sensors already have appropriate values in x
         x_masked = x.clone()
-        mask_expanded = mask.bool().unsqueeze(-1).expand_as(x)
-        x_masked[mask_expanded] = sentinel
+        mask_bool = mask.bool()
+        x_masked[mask_bool, 0] = 0.0       # npho -> 0
+        x_masked[mask_bool, 1] = sentinel  # time -> sentinel
 
         return x_masked, mask
     

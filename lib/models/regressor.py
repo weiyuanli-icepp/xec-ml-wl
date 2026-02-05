@@ -54,6 +54,10 @@ class DeepHexEncoder(nn.Module):
         if node_feats.dim() == 4:
             node_feats = node_feats.flatten(0, 1)
 
+        # Zero out masked positions BEFORE stem to prevent sentinel pollution
+        if mask_1d is not None:
+            node_feats = node_feats * (1.0 - mask_1d.unsqueeze(-1))
+
         # Apply Stem
         x = self.stem(node_feats)
 
@@ -109,6 +113,10 @@ class FaceBackbone(nn.Module):
         Returns:
             (B, out_dim) flattened feature tensor
         """
+        # Zero out masked positions BEFORE stem to prevent sentinel pollution
+        if mask_2d is not None:
+            x = x * (1.0 - mask_2d)
+
         x = self.stem(x)
 
         # Resize mask to match post-stem dimensions (stem reduces by 1 due to kernel_size=4, padding=1)

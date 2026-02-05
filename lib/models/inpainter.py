@@ -809,11 +809,14 @@ class XEC_Inpainter(nn.Module):
         mask = torch.zeros(B, N, device=device)
         mask.scatter_(1, ids_shuffle, should_mask)
 
-        # Apply sentinel to randomly-masked positions
-        # Note: already-invalid sensors already have sentinel value in x_flat
+        # Apply masking values to randomly-masked positions
+        # - npho (channel 0): set to 0 (neutral for convolutions, physically meaningful)
+        # - time (channel 1): set to sentinel (distinguishes invalid from t=0)
+        # Note: already-invalid sensors already have appropriate values in x_flat
         x_masked = x_flat.clone()
-        mask_expanded = mask.bool().unsqueeze(-1).expand_as(x_flat)
-        x_masked[mask_expanded] = sentinel
+        mask_bool = mask.bool()
+        x_masked[mask_bool, 0] = 0.0       # npho -> 0
+        x_masked[mask_bool, 1] = sentinel  # time -> sentinel
 
         return x_masked, mask
 
@@ -846,7 +849,9 @@ class XEC_Inpainter(nn.Module):
             x_masked, mask = self.random_masking(x_flat, mask_ratio, npho_threshold_norm=npho_threshold_norm)
         else:
             x_masked = x_flat.clone()
-            x_masked[mask.bool().unsqueeze(-1).expand_as(x_flat)] = self.sentinel_value
+            mask_bool = mask.bool()
+            x_masked[mask_bool, 0] = 0.0                 # npho -> 0
+            x_masked[mask_bool, 1] = self.sentinel_value  # time -> sentinel
 
         # Get encoder features (with masked input and FCMAE-style masking)
         # Include both randomly-masked AND already-invalid sensors in the encoder mask
@@ -984,8 +989,12 @@ class XEC_Inpainter(nn.Module):
         x_flat = x_batch if x_batch.dim() == 3 else x_batch.view(B, -1, 2)
 
         # Apply masking
+        # - npho (channel 0): set to 0 (neutral for convolutions)
+        # - time (channel 1): set to sentinel (distinguishes invalid from t=0)
         x_masked = x_flat.clone()
-        x_masked[mask.bool().unsqueeze(-1).expand_as(x_flat)] = self.sentinel_value
+        mask_bool = mask.bool()
+        x_masked[mask_bool, 0] = 0.0                 # npho -> 0
+        x_masked[mask_bool, 1] = self.sentinel_value  # time -> sentinel
 
         # Get encoder features (with masked input and FCMAE-style masking)
         # Include both randomly-masked AND already-invalid sensors in the encoder mask
