@@ -195,8 +195,14 @@ class XEC_MAE(nn.Module):
         B, N, C = x.shape
         device = x.device
 
-        # Identify already-invalid sensors (time channel == sentinel)
-        already_invalid = (x[:, :, 1] == sentinel)  # (B, N)
+        # Identify already-invalid sensors based on which channels we're predicting
+        # - If predicting time: time==sentinel means sensor is invalid (can't predict time)
+        # - If only predicting npho: only exclude sensors where npho==sentinel
+        #   (sensors with valid npho but invalid time should still be maskable for npho)
+        if "time" in self.predict_channels:
+            already_invalid = (x[:, :, 1] == sentinel)  # (B, N)
+        else:
+            already_invalid = (x[:, :, 0] == sentinel)  # (B, N)
 
         # Count valid sensors per sample
         valid_count = (~already_invalid).sum(dim=1)  # (B,)
@@ -256,7 +262,11 @@ class XEC_MAE(nn.Module):
         # Include both randomly-masked AND already-invalid sensors in the encoder mask
         # to prevent sentinel values from leaking into neighboring features
         if use_fcmae_masking:
-            already_invalid = (x_batch[:, :, 1] == self.sentinel_value)  # (B, N)
+            # Check validity based on which channels we're predicting (consistent with random_masking)
+            if "time" in self.predict_channels:
+                already_invalid = (x_batch[:, :, 1] == self.sentinel_value)  # (B, N)
+            else:
+                already_invalid = (x_batch[:, :, 0] == self.sentinel_value)  # (B, N)
             encoder_mask = (mask.bool() | already_invalid).float()
         else:
             encoder_mask = None
@@ -290,7 +300,11 @@ class XEC_MAE(nn.Module):
         with torch.no_grad():
             x_masked, mask = self.random_masking(x_batch)
             if use_fcmae_masking:
-                already_invalid = (x_batch[:, :, 1] == self.sentinel_value)
+                # Check validity based on which channels we're predicting (consistent with random_masking)
+                if "time" in self.predict_channels:
+                    already_invalid = (x_batch[:, :, 1] == self.sentinel_value)
+                else:
+                    already_invalid = (x_batch[:, :, 0] == self.sentinel_value)
                 encoder_mask = (mask.bool() | already_invalid).float()
             else:
                 encoder_mask = None

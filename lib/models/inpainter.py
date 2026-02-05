@@ -769,8 +769,14 @@ class XEC_Inpainter(nn.Module):
         B, N, C = x_flat.shape
         device = x_flat.device
 
-        # Identify already-invalid sensors (time channel == sentinel)
-        already_invalid = (x_flat[:, :, 1] == sentinel)  # (B, N)
+        # Identify already-invalid sensors based on which channels we're predicting
+        # - If predicting time: time==sentinel means sensor is invalid (can't predict time)
+        # - If only predicting npho: only exclude sensors where npho==sentinel
+        #   (sensors with valid npho but invalid time should still be maskable for npho)
+        if "time" in self.predict_channels:
+            already_invalid = (x_flat[:, :, 1] == sentinel)  # (B, N)
+        else:
+            already_invalid = (x_flat[:, :, 0] == sentinel)  # (B, N)
 
         # Count valid sensors per sample
         valid_count = (~already_invalid).sum(dim=1)  # (B,)
@@ -845,7 +851,11 @@ class XEC_Inpainter(nn.Module):
         # Get encoder features (with masked input and FCMAE-style masking)
         # Include both randomly-masked AND already-invalid sensors in the encoder mask
         # to prevent sentinel values from leaking into neighboring features
-        already_invalid = (x_flat[:, :, 1] == self.sentinel_value)  # (B, N)
+        # Check validity based on which channels we're predicting (consistent with random_masking)
+        if "time" in self.predict_channels:
+            already_invalid = (x_flat[:, :, 1] == self.sentinel_value)  # (B, N)
+        else:
+            already_invalid = (x_flat[:, :, 0] == self.sentinel_value)  # (B, N)
         encoder_mask = (mask.bool() | already_invalid).float()
 
         with torch.set_grad_enabled(not self.freeze_encoder):
@@ -979,7 +989,11 @@ class XEC_Inpainter(nn.Module):
 
         # Get encoder features (with masked input and FCMAE-style masking)
         # Include both randomly-masked AND already-invalid sensors in the encoder mask
-        already_invalid = (x_flat[:, :, 1] == self.sentinel_value)  # (B, N)
+        # Check validity based on which channels we're predicting (consistent with random_masking)
+        if "time" in self.predict_channels:
+            already_invalid = (x_flat[:, :, 1] == self.sentinel_value)  # (B, N)
+        else:
+            already_invalid = (x_flat[:, :, 0] == self.sentinel_value)  # (B, N)
         encoder_mask = (mask.bool() | already_invalid).float()
 
         with torch.set_grad_enabled(not self.freeze_encoder):
