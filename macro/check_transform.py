@@ -2,6 +2,8 @@
 # 1. make sure to activate xec-ml-wl conda environment
 # 2. python macro/check_transform.py /path/to/data.root
 # 3. python macro/check_transform.py /path/to/data.root --npho_threshold 10.0
+# 4. python macro/check_transform.py /path/to/data.root --npho_scheme anscombe
+# 5. python macro/check_transform.py /path/to/data.root --npho_scheme all  # compare all schemes
 import uproot
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,6 +13,8 @@ import argparse
 
 # Add parent directory to path for imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from lib.normalization import NphoTransform
 
 # ==========================================
 #  CONFIGURATION
@@ -51,12 +55,13 @@ except ImportError:
     DEFAULT_NPHO_THRESHOLD = 10.0
 # ==========================================
 
-def analyze_file(file_path, npho_threshold=None):
+def analyze_file(file_path, npho_threshold=None, npho_scheme="log1p"):
     if npho_threshold is None:
         npho_threshold = DEFAULT_NPHO_THRESHOLD
 
     print(f"--- Analyzing: {file_path} ---")
     print(f"Npho threshold for meaningful time: {npho_threshold}")
+    print(f"Npho normalization scheme: {npho_scheme}")
 
     try:
         with uproot.open(file_path) as f:
@@ -91,9 +96,10 @@ def analyze_file(file_path, npho_threshold=None):
     # Then, FORCE invalid pixels to Sentinel
     trans_time[mask_inv] = SENTINEL_VAL
     
-    # 3. Transform NPHO
+    # 3. Transform NPHO using NphoTransform
     clean_npho = np.maximum(raw_npho, 0.0)
-    trans_npho = np.log1p(clean_npho / NPHO_SCALE) / NPHO_SCALE2
+    npho_transform = NphoTransform(scheme=npho_scheme, npho_scale=NPHO_SCALE, npho_scale2=NPHO_SCALE2)
+    trans_npho = npho_transform.forward(clean_npho)
     # Ensure invalid Npho stays 0.0
     trans_npho[mask_inv] = 0.0
 
@@ -148,7 +154,7 @@ def analyze_file(file_path, npho_threshold=None):
 
     # --- Left: Npho ---
     ax[0].hist(trans_npho, bins=200, color='blue', alpha=0.7, log=True)
-    ax[0].set_title(f"Transformed Npho\nScale={NPHO_SCALE}")
+    ax[0].set_title(f"Transformed Npho ({npho_scheme})\nScale={NPHO_SCALE}")
     ax[0].set_xlabel("Network Input Value")
     ax[0].set_ylabel("Count (Log Scale)")
 
@@ -176,6 +182,75 @@ def analyze_file(file_path, npho_threshold=None):
     plt.tight_layout()
     plt.show()
 
+def compare_all_schemes(file_path, npho_threshold=None):
+    """Compare all npho normalization schemes side by side."""
+    if npho_threshold is None:
+        npho_threshold = DEFAULT_NPHO_THRESHOLD
+
+    print(f"--- Comparing all schemes: {file_path} ---")
+    print(f"Npho threshold for meaningful time: {npho_threshold}")
+
+    try:
+        with uproot.open(file_path) as f:
+            tree = f["tree"]
+            df = tree.arrays([BRANCH_NPHO, BRANCH_TIME], library="np")
+        raw_npho = df[BRANCH_NPHO].astype("float32").flatten()
+    except Exception as e:
+        print(f"Error: {e}"); return
+
+    # Define invalid mask
+    mask_inv = (raw_npho <= 0.0) | np.isnan(raw_npho) | (raw_npho > 9.0e9)
+    clean_npho = np.maximum(raw_npho, 0.0)
+
+    # Transform with each scheme
+    schemes = ["log1p", "anscombe", "sqrt", "linear"]
+    colors = ["blue", "green", "orange", "red"]
+    transforms = {}
+
+    for scheme in schemes:
+        npho_transform = NphoTransform(scheme=scheme, npho_scale=NPHO_SCALE, npho_scale2=NPHO_SCALE2)
+        trans = npho_transform.forward(clean_npho)
+        trans[mask_inv] = 0.0
+        transforms[scheme] = trans
+
+    # Plotting
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    axes = axes.flatten()
+
+    for i, (scheme, color) in enumerate(zip(schemes, colors)):
+        trans = transforms[scheme]
+        sig = trans[trans > 0.0]
+
+        ax = axes[i]
+        ax.hist(trans, bins=200, color=color, alpha=0.7, log=True)
+        ax.set_title(f"{scheme}\nScale={NPHO_SCALE}")
+        ax.set_xlabel("Network Input Value")
+        ax.set_ylabel("Count (Log Scale)")
+
+        # Add statistics
+        if len(sig) > 0:
+            stats_text = f"Mean: {np.mean(sig):.3f}\nStd: {np.std(sig):.3f}\nRange: [{np.min(sig):.2f}, {np.max(sig):.2f}]"
+            ax.text(0.95, 0.95, stats_text, transform=ax.transAxes, fontsize=9,
+                    verticalalignment='top', horizontalalignment='right',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+    plt.suptitle(f"Npho Normalization Schemes Comparison\n{os.path.basename(file_path)}", fontsize=12)
+    plt.tight_layout()
+    plt.show()
+
+    # Print comparison table
+    print("\n" + "="*60)
+    print("      NPHO NORMALIZATION SCHEMES COMPARISON      ")
+    print("="*60)
+    print(f"{'Scheme':<12} {'Mean':>10} {'Std':>10} {'Min':>10} {'Max':>10}")
+    print("-"*60)
+    for scheme in schemes:
+        trans = transforms[scheme]
+        sig = trans[trans > 0.0]
+        if len(sig) > 0:
+            print(f"{scheme:<12} {np.mean(sig):>10.4f} {np.std(sig):>10.4f} {np.min(sig):>10.4f} {np.max(sig):>10.4f}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Check transformed npho/time distributions from ROOT file"
@@ -183,6 +258,13 @@ if __name__ == "__main__":
     parser.add_argument("file_path", help="Path to ROOT file")
     parser.add_argument("--npho_threshold", type=float, default=None,
                         help=f"Npho threshold for meaningful time (default: {DEFAULT_NPHO_THRESHOLD})")
+    parser.add_argument("--npho_scheme", type=str, default="log1p",
+                        choices=["log1p", "anscombe", "sqrt", "linear", "all"],
+                        help="Npho normalization scheme (default: log1p, use 'all' to compare)")
 
     args = parser.parse_args()
-    analyze_file(args.file_path, npho_threshold=args.npho_threshold)
+
+    if args.npho_scheme == "all":
+        compare_all_schemes(args.file_path, npho_threshold=args.npho_threshold)
+    else:
+        analyze_file(args.file_path, npho_threshold=args.npho_threshold, npho_scheme=args.npho_scheme)
