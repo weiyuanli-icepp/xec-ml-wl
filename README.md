@@ -2,15 +2,15 @@
 
 ## Machine Learning Model for the MEG II Liquid Xenon (LXe) Detector
 
-This repository contains machine learning models (CNN + Graph Transformer) for the LXe detector, utilizing both photon count (**$N_{\mathrm{pho}}$**) and timing information (**$t_{\mathrm{pm}}$**) from 4760 photo-sensors (4092 SiPMs + 668 PMTs):
+This repository contains machine learning models (CNN + GNN + Transformer) for the LXe detector, utilizing both photon count (**$N_{\mathrm{pho}}$**) and timing information (**$t_{\mathrm{pm}}$**) from 4760 photo-sensors (4092 SiPMs + 668 PMTs):
 
-- **Regressor:** Predicts physical observables including emission angle (**$\theta$**, **$\phi$**), energy, timing, and position (**uvwFI**)
+- **Regressor:** Predicts physical observables including energy, timing, position (**uvwFI**), and emission angle (**$\theta$**, **$\phi$**)
 - **MAE (Masked Autoencoder):** Self-supervised pretraining for encoder weights
 - **Inpainter:** Dead channel recovery through sensor value prediction
 
 This model respects the complex topology of the detector by combining:
 1.  **ConvNeXt V2** for rectangular faces (Inner, Outer, US, DS).
-2.  **HexNeXt (Graph Attention)** for hexagonal PMT faces (Top, Bottom).
+2.  **HexNeXt (GNN)** for hexagonal PMT faces (Top, Bottom).
 3.  **Transformer Fusion** to correlate signals across disjoint detector faces.
 
 ---
