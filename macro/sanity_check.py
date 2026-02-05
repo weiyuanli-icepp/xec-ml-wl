@@ -9,6 +9,7 @@ Usage:
     python macro/sanity_check.py --data /path/to/test.root --pipeline mae
     python macro/sanity_check.py --data /path/to/test.root --pipeline all --device cuda
     python macro/sanity_check.py --data /path/to/test.root --npho-scheme anscombe
+    python macro/sanity_check.py --data /path/to/test.root --all-regressor-tasks  # test all tasks
 """
 
 import argparse
@@ -215,10 +216,10 @@ def test_inpainter(data_path, device, num_batches=5, profile=False, npho_scheme=
     return True
 
 
-def test_regressor(data_path, device, num_batches=5, profile=False, npho_scheme="log1p"):
-    """Test Regressor training pipeline."""
+def test_regressor(data_path, device, num_batches=5, profile=False, npho_scheme="log1p", task="angle"):
+    """Test Regressor training pipeline for a specific task."""
     print("\n" + "="*60)
-    print("Testing Regressor Pipeline")
+    print(f"Testing Regressor Pipeline - Task: {task}")
     print("="*60)
 
     from lib.models.regressor import XECEncoder, XECMultiHeadModel
@@ -227,19 +228,28 @@ def test_regressor(data_path, device, num_batches=5, profile=False, npho_scheme=
 
     print(f"Normalization scheme: {npho_scheme}")
 
-    # Create model with angle task only (simplest)
-    print("Creating Regressor model...")
-
-    # Task weights for training
-    task_weights = {
-        "angle": {"loss_fn": "smooth_l1", "weight": 1.0, "loss_beta": 1.0}
+    # Task configurations
+    task_configs = {
+        "angle": {"loss_fn": "smooth_l1", "weight": 1.0, "loss_beta": 1.0},
+        "energy": {"loss_fn": "l1", "weight": 1.0, "loss_beta": 1.0},
+        "timing": {"loss_fn": "l1", "weight": 1.0, "loss_beta": 1.0},
+        "uvwFI": {"loss_fn": "mse", "weight": 1.0, "loss_beta": 1.0},
     }
+
+    if task not in task_configs:
+        print(f"Unknown task: {task}")
+        return False
+
+    # Create model with specified task
+    print(f"Creating Regressor model for task: {task}...")
+
+    task_weights = {task: task_configs[task]}
 
     # Create backbone encoder and multi-head model
     backbone = XECEncoder(outer_mode="finegrid", outer_fine_pool=(2, 2))
     model = XECMultiHeadModel(
         backbone=backbone,
-        active_tasks=["angle"],  # List of task names
+        active_tasks=[task],
         hidden_dim=256,
     ).to(device)
 
@@ -288,15 +298,41 @@ def test_regressor(data_path, device, num_batches=5, profile=False, npho_scheme=
 
     # Check metrics (use total_opt as the main loss)
     check_dict = {"total_loss": metrics.get("total_opt", None)}
-    issues = check_metrics(check_dict, "Regressor")
+    issues = check_metrics(check_dict, f"Regressor ({task})")
     if issues:
         print("\nISSUES DETECTED:")
         for issue in issues:
             print(f"  - {issue}")
         return False
 
-    print("\nRegressor: PASSED")
+    print(f"\nRegressor ({task}): PASSED")
     return True
+
+
+def test_all_regressor_tasks(data_path, device, num_batches=5, profile=False, npho_scheme="log1p"):
+    """Test all regressor tasks one by one."""
+    tasks = ["angle", "energy", "timing", "uvwFI"]
+    results = {}
+
+    print("\n" + "="*60)
+    print("Testing ALL Regressor Tasks")
+    print("="*60)
+
+    for task in tasks:
+        results[task] = test_regressor(data_path, device, num_batches, profile, npho_scheme, task=task)
+
+    # Summary
+    print("\n" + "-"*60)
+    print("Regressor Tasks Summary:")
+    print("-"*60)
+    all_passed = True
+    for task, passed in results.items():
+        status = "PASSED" if passed else "FAILED"
+        print(f"  {task}: {status}")
+        if not passed:
+            all_passed = False
+
+    return all_passed
 
 
 def main():
@@ -312,6 +348,8 @@ def main():
     parser.add_argument("--npho-scheme", type=str, default="log1p",
                         choices=["log1p", "anscombe", "sqrt", "linear"],
                         help="Normalization scheme for npho (default: log1p)")
+    parser.add_argument("--all-regressor-tasks", action="store_true",
+                        help="Test all regressor tasks (angle, energy, timing, uvwFI) individually")
     parser.add_argument("--profile", action="store_true",
                         help="Enable time profiling (adds CUDA syncs, slows down training)")
     args = parser.parse_args()
@@ -320,6 +358,7 @@ def main():
     print(f"Data: {args.data}")
     print(f"Num batches: {args.num_batches}")
     print(f"Npho scheme: {args.npho_scheme}")
+    print(f"All regressor tasks: {args.all_regressor_tasks}")
     print(f"Profiling: {args.profile}")
 
     results = {}
@@ -334,7 +373,12 @@ def main():
         results["Inpainter"] = test_inpainter(args.data, args.device, args.num_batches, args.profile, npho_scheme)
 
     if args.pipeline in ["regressor", "all"]:
-        results["Regressor"] = test_regressor(args.data, args.device, args.num_batches, args.profile, npho_scheme)
+        if args.all_regressor_tasks:
+            results["Regressor (all tasks)"] = test_all_regressor_tasks(
+                args.data, args.device, args.num_batches, args.profile, npho_scheme)
+        else:
+            results["Regressor (angle)"] = test_regressor(
+                args.data, args.device, args.num_batches, args.profile, npho_scheme, task="angle")
 
     # Summary
     print("\n" + "="*60)
