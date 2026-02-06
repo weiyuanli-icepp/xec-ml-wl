@@ -62,9 +62,3 @@ $ mamba env remove -n xec-ml-wl-gh
 $ mamba clean -a -y  # Optional: clear cache
 $ mamba env create -f env/gh.yml
 ```
-
-### 3. Prepare Batch Job
-
-```bash
-$ chmod +x start_jupyter_xec_gpu.sh jobs/*.sh
-```
