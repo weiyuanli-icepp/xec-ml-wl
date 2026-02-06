@@ -5,8 +5,8 @@
 #
 # Usage:
 #   source $HOME/miniforge-arm/bin/activate
-#   mamba env create -f env_setting/environment_gh.yml
-#   (when updating) mamba env update -f env_setting/environment_gh.yml --prune
+#   mamba env create -f env/gh.yml
+#   (when updating) mamba env update -f env/gh.yml --prune
 
 name: xec-ml-wl-gh
 channels:

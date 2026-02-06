@@ -2,8 +2,8 @@
 
 # Uses Python 3.13 and PyTorch 2.9.1 with CUDA 13.0
 # Usage:
-#   conda env create -f xec-ml-wl-gpu.yml
-#   (when updating) conda env update -f xec-ml-wl-gpu.yml --prune
+#   conda env create -f env/a100.yml
+#   (when updating) conda env update -f env/a100.yml --prune
 #   pip install torch-scatter torch-sparse torch-cluster torch-spline-conv torch-geometric -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
 #   (Until the stable v1.24 of onnxruntime-gpu comes out, which is planned to be late Jan. 2026) 
 #   $ pip install onnx --upgrade

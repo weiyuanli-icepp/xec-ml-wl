@@ -10,14 +10,14 @@ These x86-based nodes use the system Anaconda module:
 
 ```bash
 $ module load anaconda/2024.08
-$ conda env create -f env_setting/xec-ml-wl-gpu.yml
+$ conda env create -f env/a100.yml
 
 # To update
-$ conda env update -f env_setting/xec-ml-wl-gpu.yml --prune
+$ conda env update -f env/a100.yml --prune
 
 # When changing the python version
 $ conda env remove -n xec-ml-wl
-$ conda env create -f xec-ml-wl-gpu.yml
+$ conda env create -f env/a100.yml
 ```
 
 ### 2. Grace-Hopper Nodes (gh-* partition)
@@ -41,7 +41,7 @@ $ bash Miniforge3-Linux-aarch64.sh -b -p $HOME/miniforge-arm
 
 ```bash
 $ source $HOME/miniforge-arm/bin/activate
-$ mamba env create -f env_setting/environment_gh.yml
+$ mamba env create -f env/gh.yml
 
 # Activate and verify
 $ conda activate xec-ml-wl-gh
@@ -55,12 +55,12 @@ $ python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA:
 $ source $HOME/miniforge-arm/bin/activate
 
 # Update existing environment
-$ mamba env update -f env_setting/environment_gh.yml --prune
+$ mamba env update -f env/gh.yml --prune
 
 # Or recreate from scratch (when changing Python version)
 $ mamba env remove -n xec-ml-wl-gh
 $ mamba clean -a -y  # Optional: clear cache
-$ mamba env create -f env_setting/environment_gh.yml
+$ mamba env create -f env/gh.yml
 ```
 
 ### 3. Prepare Batch Job
