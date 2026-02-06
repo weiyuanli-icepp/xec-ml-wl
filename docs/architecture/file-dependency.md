@@ -17,7 +17,7 @@ graph TD
         InpaintYaml(inpainter_config.yaml):::config
     end
 
-    %% -- Training & Scanning (Pink) --
+    %% -- Job Submission (Pink) --
     subgraph "Jobs (jobs/)"
         RunScan(run_scan.sh):::scan
         SubmitReg(submit_regressor.sh):::scan
@@ -149,7 +149,7 @@ graph TD
 |-------|----------|-------------|
 | 🟦 Light Blue | Core Library (`lib/`) | Main training engines, models, and utilities |
 | 🟨 Yellow | Configuration (`config/`) | YAML configuration files |
-| 🟪 Pink | Jobs (`jobs/`) | Job submission and hyperparameter scanning scripts |
+| 🟪 Pink | Jobs (`jobs/`) | SLURM job submission scripts |
 | 🟩 Green | Validation (`val_data/`) | Real data validation and inference scripts |
 | 🟣 Purple | Macros (`macro/`) | Utility scripts for export, visualization |
 | 🩵 Teal | Inpainter | Dead channel inpainting components |
