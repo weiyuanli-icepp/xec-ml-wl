@@ -1,12 +1,20 @@
+# Conda environment for XEC ML on Grace-Hopper (ARM64) nodes
+#
+# PyTorch ARM64+CUDA wheels are not available on conda channels,
+# so we use conda-forge for base packages and pip for PyTorch/PyG.
+#
+# Usage:
+#   source $HOME/miniforge-arm/bin/activate
+#   mamba env create -f env_setting/environment_gh.yml
+#   (when updating) mamba env update -f env_setting/environment_gh.yml --prune
+
 name: xec-ml-wl-gh
 channels:
-  - pyg
-  - pytorch
-  - nvidia
   - conda-forge
   - nodefaults
 dependencies:
   - python=3.12
+  - pip
 
   # --- Core ---
   - numpy
@@ -21,41 +29,41 @@ dependencies:
   - pyyaml
   - psutil
 
-  # --- Logging & Experiment Tracking ---
-  - mlflow
-  - mlflow-export-import
-  - tensorboard
-  
-  # --- GPU Libraries ---
-  # Conda-forge/PyTorch channel handles the ARM/CUDA compatibility
-  - pytorch=2.5.1
-  - torchvision=0.20.1
-  - torchaudio=2.5.1
-  - pytorch-cuda=12.4
-  
-  # --- PyTorch Geometric ---
-  - pyg
-  - pytorch-scatter
-  - pytorch-sparse
-  - pytorch-cluster
-  - pytorch-spline-conv
-  
   # --- HEP ---
   - uproot>=5.2
   - awkward>=2.6
   - vector>=1.4
-  
-  # --- Training ---
-  - pytorch-lightning>=2.4.0
-  - torchmetrics==1.5.0
-  - tensorboard>=2.17
-  
-  # --- Inference ---
-  - onnx>=1.17.0
-  - onnxruntime
 
-  # --- Comet ML ---
-  - pip
+  # --- Logging & Experiment Tracking ---
+  - mlflow
+  - mlflow-export-import
+  - tensorboard
+
+  # --- Pip packages ---
+  # PyTorch ARM64+CUDA only available via pip (not on conda channels)
   - pip:
+      # --- GPU Libraries ---
+      # PyTorch for CUDA 12.4 (ARM64 wheels)
+      - --extra-index-url https://download.pytorch.org/whl/cu124
+      - torch==2.5.1
+      - torchvision==0.20.1
+      - torchaudio==2.5.1
+
+      # --- PyTorch Geometric ---
+      - torch-scatter
+      - torch-sparse
+      - torch-cluster
+      - torch-spline-conv
+      - torch-geometric
+
+      # --- Training ---
+      - pytorch-lightning==2.4.0
+      - torchmetrics==1.5.0
+
+      # --- Inference ---
+      - onnx==1.17.0
+      - onnxruntime
+
+      # --- Other ---
       - comet-ml>=3.44
       - pymysql  # Database access for dead channel queries
