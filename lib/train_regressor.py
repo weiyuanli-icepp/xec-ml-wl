@@ -13,6 +13,7 @@ os.environ.setdefault("TORCHINDUCTOR_LOG_LEVEL", "WARNING")
 os.environ.setdefault("TRITON_PRINT_AUTOTUNING", "0")
 import time
 import tempfile
+from contextlib import nullcontext
 import numpy as np
 import pandas as pd
 import warnings
@@ -47,6 +48,10 @@ from .plotting import (
     plot_face_weights,
 )
 from .event_display import save_worst_case_events
+from .distributed import (
+    setup_ddp, cleanup_ddp, is_main_process,
+    reduce_metrics, wrap_ddp, barrier,
+)
 
 # ------------------------------------------------------------
 # Suppress torch.compile / Triton autotuning verbose output
@@ -222,7 +227,7 @@ def train_with_config(config_path: str, profile: bool = None):
 
     # Profile: CLI override takes precedence, otherwise use config
     enable_profile = profile if profile is not None else getattr(cfg.training, 'profile', False)
-    if enable_profile:
+    if enable_profile and is_main_process():
         print("[INFO] Training profiler enabled - timing breakdown will be shown per epoch.")
 
     # Get active tasks and their weights
@@ -232,12 +237,15 @@ def train_with_config(config_path: str, profile: bool = None):
     if not active_tasks:
         raise ValueError("No tasks enabled in config. Enable at least one task.")
 
-    print(f"[INFO] Active tasks: {active_tasks}")
-    print(f"[INFO] Task weights: {task_weights}")
+    if is_main_process():
+        print(f"[INFO] Active tasks: {active_tasks}")
+        print(f"[INFO] Task weights: {task_weights}")
 
-    # Device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[INFO] Using device: {device}")
+    # Device / DDP
+    rank, local_rank, world_size = setup_ddp()
+    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    if is_main_process():
+        print(f"[INFO] Using device: {device}" + (f" (world_size={world_size})" if world_size > 1 else ""))
 
     # Validate data paths before creating data loaders (use expand_path for consistency)
     validate_data_paths(cfg.data.train_path, cfg.data.val_path, expand_func=expand_path)
@@ -267,6 +275,7 @@ def train_with_config(config_path: str, profile: bool = None):
         num_workers=cfg.data.num_workers,
         num_threads=cfg.data.num_threads,
         prefetch_factor=getattr(cfg.data, 'prefetch_factor', 2),
+        rank=rank, world_size=world_size,
         **norm_kwargs
     )
 
@@ -276,6 +285,7 @@ def train_with_config(config_path: str, profile: bool = None):
         num_workers=cfg.data.num_workers,
         num_threads=cfg.data.num_threads,
         prefetch_factor=getattr(cfg.data, 'prefetch_factor', 2),
+        rank=rank, world_size=world_size,
         **norm_kwargs
     )
 
@@ -292,9 +302,16 @@ def train_with_config(config_path: str, profile: bool = None):
         hidden_dim=cfg.model.hidden_dim
     ).to(device)
     total_params, trainable_params = count_model_params(model)
-    print("[INFO] Regressor created:")
-    print(f"  - Total params: {total_params:,}")
-    print(f"  - Trainable params: {trainable_params:,}")
+    if is_main_process():
+        print("[INFO] Regressor created:")
+        print(f"  - Total params: {total_params:,}")
+        print(f"  - Trainable params: {trainable_params:,}")
+
+    # Keep unwrapped reference for checkpointing and EMA
+    model_without_ddp = model
+
+    # Wrap with DDP (before compile, after .to(device))
+    model = wrap_ddp(model, local_rank)
 
     # Optionally compile model (can be disabled or use different modes to reduce memory)
     # Auto-detect ARM architecture (GH nodes) and disable compile (Triton not supported)
@@ -304,17 +321,20 @@ def train_with_config(config_path: str, profile: bool = None):
     compile_fullgraph = getattr(cfg.training, 'compile_fullgraph', False)
 
     if is_arm and compile_mode and compile_mode not in ('false', 'none'):
-        print(f"[INFO] ARM architecture detected - disabling torch.compile (Triton not supported)")
+        if is_main_process():
+            print(f"[INFO] ARM architecture detected - disabling torch.compile (Triton not supported)")
         compile_mode = 'none'
 
     if compile_mode and compile_mode != 'false' and compile_mode != 'none':
         # Increase dynamo cache limit to avoid CacheLimitExceeded errors
         torch._dynamo.config.cache_size_limit = 64
         fg_str = "fullgraph" if compile_fullgraph else "partial"
-        print(f"[INFO] Compiling model with mode='{compile_mode}', {fg_str} (this may take a few minutes...)")
+        if is_main_process():
+            print(f"[INFO] Compiling model with mode='{compile_mode}', {fg_str} (this may take a few minutes...)")
         model = torch.compile(model, mode=compile_mode, fullgraph=compile_fullgraph, dynamic=False)
     else:
-        print("[INFO] Model compilation disabled (eager mode)")
+        if is_main_process():
+            print("[INFO] Model compilation disabled (eager mode)")
 
     # --- Optimizer ---
     decay, no_decay = [], []
@@ -334,18 +354,21 @@ def train_with_config(config_path: str, profile: bool = None):
     ema_model = None
     ema_decay = cfg.training.ema_decay
     if ema_decay > 0.0:
-        print(f"[INFO] Using EMA with decay={ema_decay}")
+        if is_main_process():
+            print(f"[INFO] Using EMA with decay={ema_decay}")
 
         def robust_ema_avg(averaged_model_parameter, model_parameter, num_averaged):
             return ema_decay * averaged_model_parameter + (1.0 - ema_decay) * model_parameter
 
-        ema_model = AveragedModel(model, avg_fn=robust_ema_avg, use_buffers=True)
+        # Build EMA from unwrapped model (no DDP wrapper)
+        ema_model = AveragedModel(model_without_ddp, avg_fn=robust_ema_avg, use_buffers=True)
         ema_model.to(device)
 
     # --- Loss Scaler (Auto Balance) ---
     loss_scaler = None
     if cfg.loss_balance == "auto":
-        print(f"[INFO] Using Automatic Loss Balancing.")
+        if is_main_process():
+            print(f"[INFO] Using Automatic Loss Balancing.")
         loss_scaler = AutomaticLossScaler(active_tasks).to(device)
         optimizer.add_param_group({"params": loss_scaler.parameters()})
 
@@ -364,7 +387,8 @@ def train_with_config(config_path: str, profile: bool = None):
             if isinstance(ckpt_probe, dict) and "epoch" in ckpt_probe and ckpt_probe.get("epoch", 0) > 0:
                 is_resuming = True
                 if warmup_epochs > 0:
-                    print(f"[INFO] Resuming from checkpoint - disabling warmup (was {warmup_epochs} epochs)")
+                    if is_main_process():
+                        print(f"[INFO] Resuming from checkpoint - disabling warmup (was {warmup_epochs} epochs)")
                     warmup_epochs = 0
             del ckpt_probe
         except Exception:
@@ -382,7 +406,8 @@ def train_with_config(config_path: str, profile: bool = None):
         scheduler_type = getattr(cfg.training, 'scheduler', 'cosine') if getattr(cfg.training, 'use_scheduler', True) else 'none'
 
     if scheduler_type == 'cosine':
-        print(f"[INFO] Using Cosine Annealing with {warmup_epochs} warmup epochs.")
+        if is_main_process():
+            print(f"[INFO] Using Cosine Annealing with {warmup_epochs} warmup epochs.")
         main_scheduler = CosineAnnealingLR(
             optimizer,
             T_max=cfg.training.epochs - warmup_epochs,
@@ -411,8 +436,9 @@ def train_with_config(config_path: str, profile: bool = None):
         pct_start = getattr(cfg.training, 'pct_start', 0.3)
         # Estimate steps per epoch (will be updated after first epoch if needed)
         # For now, use a placeholder - OneCycleLR will adjust
-        print(f"[INFO] Using OneCycleLR with max_lr={max_lr}, pct_start={pct_start}")
-        print(f"       Note: OneCycleLR requires knowing total steps. Using epoch-based stepping.")
+        if is_main_process():
+            print(f"[INFO] Using OneCycleLR with max_lr={max_lr}, pct_start={pct_start}")
+            print(f"       Note: OneCycleLR requires knowing total steps. Using epoch-based stepping.")
         # We'll step per epoch, so total_steps = epochs
         scheduler = OneCycleLR(
             optimizer,
@@ -429,7 +455,8 @@ def train_with_config(config_path: str, profile: bool = None):
         patience = getattr(cfg.training, 'lr_patience', 5)
         factor = getattr(cfg.training, 'lr_factor', 0.5)
         min_lr = getattr(cfg.training, 'lr_min', 1e-7)
-        print(f"[INFO] Using ReduceLROnPlateau with patience={patience}, factor={factor}, min_lr={min_lr}")
+        if is_main_process():
+            print(f"[INFO] Using ReduceLROnPlateau with patience={patience}, factor={factor}, min_lr={min_lr}")
         scheduler = ReduceLROnPlateau(
             optimizer,
             mode='min',
@@ -440,11 +467,13 @@ def train_with_config(config_path: str, profile: bool = None):
         )
 
     elif scheduler_type in ('none', None):
-        print("[INFO] No learning rate scheduler enabled.")
+        if is_main_process():
+            print("[INFO] No learning rate scheduler enabled.")
         scheduler = None
 
     else:
-        print(f"[WARN] Unknown scheduler type '{scheduler_type}', using no scheduler.")
+        if is_main_process():
+            print(f"[WARN] Unknown scheduler type '{scheduler_type}', using no scheduler.")
         scheduler = None
 
     # --- Resume from checkpoint ---
@@ -454,7 +483,8 @@ def train_with_config(config_path: str, profile: bool = None):
     mlflow_run_id = None
 
     if cfg.checkpoint.resume_from and os.path.exists(cfg.checkpoint.resume_from):
-        print(f"[INFO] Loading checkpoint: {cfg.checkpoint.resume_from}")
+        if is_main_process():
+            print(f"[INFO] Loading checkpoint: {cfg.checkpoint.resume_from}")
         checkpoint = torch.load(cfg.checkpoint.resume_from, map_location=device, weights_only=False)
 
         # Determine checkpoint type
@@ -477,8 +507,9 @@ def train_with_config(config_path: str, profile: bool = None):
             is_raw_encoder_checkpoint = True
 
         if is_full_regressor_checkpoint:
-            print(f"[INFO] Detected full regressor checkpoint. Resuming training state.")
-            model.load_state_dict(checkpoint["model_state_dict"])
+            if is_main_process():
+                print(f"[INFO] Detected full regressor checkpoint. Resuming training state.")
+            model_without_ddp.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             checkpoint_epoch = checkpoint["epoch"]
             best_val = checkpoint.get("best_val", float("inf"))
@@ -488,7 +519,8 @@ def train_with_config(config_path: str, profile: bool = None):
             reset_epoch = getattr(cfg.checkpoint, 'reset_epoch', False)
             if reset_epoch:
                 start_epoch = 1
-                print(f"[INFO] reset_epoch=True: Starting from epoch 1 (weights loaded from epoch {checkpoint_epoch})")
+                if is_main_process():
+                    print(f"[INFO] reset_epoch=True: Starting from epoch 1 (weights loaded from epoch {checkpoint_epoch})")
             else:
                 start_epoch = checkpoint_epoch + 1
 
@@ -498,8 +530,9 @@ def train_with_config(config_path: str, profile: bool = None):
                 if refresh_lr:
                     # Recreate scheduler for remaining epochs
                     remaining_epochs = cfg.training.epochs - start_epoch + 1
-                    print(f"[INFO] refresh_lr=True: Creating fresh scheduler with lr={cfg.training.lr}, "
-                          f"T_max={remaining_epochs} (epochs {start_epoch}-{cfg.training.epochs})")
+                    if is_main_process():
+                        print(f"[INFO] refresh_lr=True: Creating fresh scheduler with lr={cfg.training.lr}, "
+                              f"T_max={remaining_epochs} (epochs {start_epoch}-{cfg.training.epochs})")
                     if scheduler_type == 'cosine':
                         scheduler = CosineAnnealingLR(
                             optimizer,
@@ -509,7 +542,8 @@ def train_with_config(config_path: str, profile: bool = None):
                     # Note: OneCycleLR and Plateau don't need recreation as they adapt
                 else:
                     scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-                    print(f"[INFO] Restored scheduler state.")
+                    if is_main_process():
+                        print(f"[INFO] Restored scheduler state.")
 
             if ema_model is not None and "ema_state_dict" in checkpoint:
                 ema_model.load_state_dict(checkpoint["ema_state_dict"])
@@ -519,11 +553,13 @@ def train_with_config(config_path: str, profile: bool = None):
                 best_ema_state = checkpoint["best_ema_state"]
 
         elif is_mae_checkpoint:
-            print(f"[INFO] Detected MAE checkpoint. Loading encoder for fine-tuning.")
+            if is_main_process():
+                print(f"[INFO] Detected MAE checkpoint. Loading encoder for fine-tuning.")
             mae_state = checkpoint["model_state_dict"]
 
             if "ema_state_dict" in checkpoint and checkpoint["ema_state_dict"] is not None:
-                print(f"[INFO] Using EMA weights from MAE checkpoint.")
+                if is_main_process():
+                    print(f"[INFO] Using EMA weights from MAE checkpoint.")
                 mae_state = checkpoint["ema_state_dict"]
                 mae_state = {k.replace("module.", ""): v for k, v in mae_state.items()}
 
@@ -534,29 +570,32 @@ def train_with_config(config_path: str, profile: bool = None):
                     encoder_state[new_key] = value
 
             if encoder_state:
-                missing, unexpected = model.load_state_dict(encoder_state, strict=False)
-                print(f"[INFO] Loaded {len(encoder_state)} encoder weights from MAE.")
-                print(f"[INFO] Missing keys (expected for heads): {len(missing)}")
+                missing, unexpected = model_without_ddp.load_state_dict(encoder_state, strict=False)
+                if is_main_process():
+                    print(f"[INFO] Loaded {len(encoder_state)} encoder weights from MAE.")
+                    print(f"[INFO] Missing keys (expected for heads): {len(missing)}")
 
             if ema_model is not None:
-                ema_model.module.load_state_dict(model.state_dict())
+                ema_model.module.load_state_dict(model_without_ddp.state_dict())
                 if hasattr(ema_model, 'n_averaged'):
                     ema_model.n_averaged.zero_()
 
         elif is_raw_encoder_checkpoint:
-            print(f"[INFO] Detected raw encoder checkpoint. Loading for fine-tuning.")
+            if is_main_process():
+                print(f"[INFO] Detected raw encoder checkpoint. Loading for fine-tuning.")
             encoder_state = {}
             raw_state = checkpoint if not isinstance(checkpoint, dict) else checkpoint
             for key, value in raw_state.items():
                 new_key = "backbone." + key
                 encoder_state[new_key] = value
 
-            missing, unexpected = model.load_state_dict(encoder_state, strict=False)
-            print(f"[INFO] Loaded {len(encoder_state)} encoder weights.")
-            print(f"[INFO] Missing keys (expected for heads): {len(missing)}")
+            missing, unexpected = model_without_ddp.load_state_dict(encoder_state, strict=False)
+            if is_main_process():
+                print(f"[INFO] Loaded {len(encoder_state)} encoder weights.")
+                print(f"[INFO] Missing keys (expected for heads): {len(missing)}")
 
             if ema_model is not None:
-                ema_model.module.load_state_dict(model.state_dict())
+                ema_model.module.load_state_dict(model_without_ddp.state_dict())
                 if hasattr(ema_model, 'n_averaged'):
                     ema_model.n_averaged.zero_()
 
@@ -574,17 +613,19 @@ def train_with_config(config_path: str, profile: bool = None):
 
     # --- Force new MLflow run if requested ---
     if getattr(cfg.checkpoint, 'new_mlflow_run', False) and mlflow_run_id is not None:
-        print(f"[INFO] new_mlflow_run=True: Starting fresh MLflow run (ignoring run_id from checkpoint)")
+        if is_main_process():
+            print(f"[INFO] new_mlflow_run=True: Starting fresh MLflow run (ignoring run_id from checkpoint)")
         mlflow_run_id = None
 
-    # --- MLflow Setup ---
-    # Default to SQLite backend if MLFLOW_TRACKING_URI is not set
-    if not os.environ.get("MLFLOW_TRACKING_URI"):
-        default_uri = f"sqlite:///{os.getcwd()}/mlruns.db"
-        mlflow.set_tracking_uri(default_uri)
-        print(f"[INFO] MLflow tracking URI: {default_uri}")
-    mlflow.set_experiment(cfg.mlflow.experiment)
+    # --- MLflow Setup (rank 0 only) ---
     run_name = cfg.mlflow.run_name or time.strftime("run_%Y%m%d_%H%M%S")
+    if is_main_process():
+        # Default to SQLite backend if MLFLOW_TRACKING_URI is not set
+        if not os.environ.get("MLFLOW_TRACKING_URI"):
+            default_uri = f"sqlite:///{os.getcwd()}/mlruns.db"
+            mlflow.set_tracking_uri(default_uri)
+            print(f"[INFO] MLflow tracking URI: {default_uri}")
+        mlflow.set_experiment(cfg.mlflow.experiment)
 
     # --- Reweighting ---
     reweighter = None
@@ -615,20 +656,31 @@ def train_with_config(config_path: str, profile: bool = None):
             train_files = expand_path(cfg.data.train_path)
             reweighter.fit(train_files, cfg.data.tree_name, step_size=cfg.data.chunksize)
         else:
-            print("[INFO] No reweighting enabled.")
+            if is_main_process():
+                print("[INFO] No reweighting enabled.")
             reweighter = None  # Set to None so it won't be passed to run_epoch_stream
 
     # --- Training Loop ---
     # Disable MLflow's automatic system metrics (uses wall clock time)
     # We log our own system metrics with step=epoch for consistent x-axis
-    with mlflow.start_run(run_id=mlflow_run_id, run_name=run_name if not mlflow_run_id else None,
-                          log_system_metrics=False) as run:
-        mlflow_run_id = run.info.run_id
+    # Only rank 0 interacts with MLflow
+    mlflow_ctx = (
+        mlflow.start_run(run_id=mlflow_run_id, run_name=run_name if not mlflow_run_id else None,
+                         log_system_metrics=False)
+        if is_main_process()
+        else nullcontext()
+    )
+    with mlflow_ctx as run:
+        if is_main_process():
+            mlflow_run_id = run.info.run_id
         artifact_dir = os.path.abspath(os.path.join(cfg.checkpoint.save_dir, run_name))
         os.makedirs(artifact_dir, exist_ok=True)
 
+        # Determine no_sync context for gradient accumulation (skip AllReduce on intermediate steps)
+        no_sync_ctx = model.no_sync if world_size > 1 else None
+
         # Log config
-        if start_epoch == 1:
+        if start_epoch == 1 and is_main_process():
             mlflow.log_params({
                 "active_tasks": ",".join(active_tasks),
                 "batch_size": cfg.data.batch_size,
@@ -639,6 +691,7 @@ def train_with_config(config_path: str, profile: bool = None):
                 "trainable_params": trainable_params,
                 "loss_balance": cfg.loss_balance,
                 "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
+                "world_size": world_size,
             })
 
         best_state = None
@@ -664,8 +717,10 @@ def train_with_config(config_path: str, profile: bool = None):
                 ema_model=ema_model,
                 grad_clip=cfg.training.grad_clip,
                 grad_accum_steps=getattr(cfg.training, 'grad_accum_steps', 1),
-                profile=enable_profile,
+                profile=enable_profile and is_main_process(),
+                no_sync_ctx=no_sync_ctx,
             )
+            tr_metrics = reduce_metrics(tr_metrics, device)
 
             # === VALIDATION ===
             val_model = ema_model if ema_model is not None else model
@@ -680,6 +735,7 @@ def train_with_config(config_path: str, profile: bool = None):
                 channel_dropout_rate=0.0,
                 grad_clip=0.0,
             )
+            val_metrics = reduce_metrics(val_metrics, device)
 
             sec = time.time() - t0
             current_lr = optimizer.param_groups[0]['lr']
@@ -691,9 +747,13 @@ def train_with_config(config_path: str, profile: bool = None):
             if is_plateau_scheduler:
                 scheduler.step(val_loss)
 
-            print(f"[{ep:03d}] tr_loss {tr_loss:.2e} val_loss {val_loss:.2e} lr {current_lr:.2e} time {sec:.1f}s")
+            if is_main_process():
+                print(f"[{ep:03d}] tr_loss {tr_loss:.2e} val_loss {val_loss:.2e} lr {current_lr:.2e} time {sec:.1f}s")
 
-            # --- Logging ---
+            # --- Logging (rank 0 only) ---
+            if not is_main_process():
+                continue
+
             log_system_metrics_to_mlflow(
                 step=ep,
                 device=device,
@@ -739,14 +799,14 @@ def train_with_config(config_path: str, profile: bool = None):
 
             if val_loss < best_val:
                 best_val = val_loss
-                best_state = {k: v.detach().clone().cpu() for k, v in model.state_dict().items()}
+                best_state = {k: v.detach().clone().cpu() for k, v in model_without_ddp.state_dict().items()}
                 # Save best EMA state for final evaluation
                 if ema_model is not None:
                     best_ema_state = {k: v.detach().clone().cpu() for k, v in ema_model.state_dict().items()}
 
                 checkpoint_data = {
                     "epoch": ep,
-                    "model_state_dict": model.state_dict(),
+                    "model_state_dict": model_without_ddp.state_dict(),
                     "ema_state_dict": ema_model.state_dict() if ema_model else None,
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
@@ -779,7 +839,7 @@ def train_with_config(config_path: str, profile: bool = None):
             # Save last checkpoint
             checkpoint_data = {
                 "epoch": ep,
-                "model_state_dict": model.state_dict(),
+                "model_state_dict": model_without_ddp.state_dict(),
                 "ema_state_dict": ema_model.state_dict() if ema_model else None,
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
@@ -788,72 +848,75 @@ def train_with_config(config_path: str, profile: bool = None):
             }
             torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_last.pth"))
 
-        # --- Final Evaluation & Artifacts ---
-        # Use best model state for final evaluation and export
-        if ema_model is not None and best_ema_state is not None:
-            print("[INFO] Loading best EMA state for final evaluation.")
-            ema_model.load_state_dict(best_ema_state)
-            final_model = ema_model
-        elif best_state is not None:
-            print("[INFO] Loading best model state for final evaluation.")
-            model.load_state_dict(best_state)
-            final_model = model
-        else:
-            final_model = ema_model if ema_model is not None else model
+        # --- Final Evaluation & Artifacts (rank 0 only) ---
+        if is_main_process():
+            # Use best model state for final evaluation and export
+            if ema_model is not None and best_ema_state is not None:
+                print("[INFO] Loading best EMA state for final evaluation.")
+                ema_model.load_state_dict(best_ema_state)
+                final_model = ema_model
+            elif best_state is not None:
+                print("[INFO] Loading best model state for final evaluation.")
+                model_without_ddp.load_state_dict(best_state)
+                final_model = model_without_ddp
+            else:
+                final_model = ema_model if ema_model is not None else model_without_ddp
 
-        # Run final validation with best model
-        final_model.eval()
-        _, angle_pred, angle_true, extra_info, _ = run_epoch_stream(
-            final_model, optimizer, device, val_loader,
-            scaler=None,
-            train=False,
-            amp=False,
-            task_weights=task_weights,
-            reweighter=None,
-            channel_dropout_rate=0.0,
-            grad_clip=0.0,
-        )
-
-        # Get collected validation data
-        root_data = extra_info.get("root_data", {}) if extra_info else {}
-
-        # Save final validation artifacts (without epoch suffix)
-        if getattr(cfg.checkpoint, 'save_artifacts', True):
-            print("[INFO] Saving final validation artifacts...")
-            worst_events = extra_info.get("worst_events", []) if extra_info else []
-            save_validation_artifacts(
-                model=final_model,
-                angle_pred=angle_pred,
-                angle_true=angle_true,
-                root_data=root_data,
-                active_tasks=active_tasks,
-                artifact_dir=artifact_dir,
-                run_name=run_name,
-                epoch=None,  # No epoch suffix for final artifacts
-                worst_events=worst_events,
-            )
-        else:
-            print("[INFO] Skipping artifact saving (save_artifacts=false)")
-
-        # ONNX export
-        if cfg.export.onnx:
-            onnx_path = os.path.join(artifact_dir, cfg.export.onnx)
+            # Run final validation with best model
             final_model.eval()
-            dummy_input = torch.randn(1, 4760, 2, device=device)
-            try:
-                torch.onnx.export(
-                    final_model, dummy_input, onnx_path,
-                    export_params=True, opset_version=20,
-                    do_constant_folding=True,
-                    input_names=['input'], output_names=['output'],
-                    dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
-                )
-                mlflow.log_artifact(onnx_path)
-                print(f"[INFO] ONNX exported to {onnx_path}")
-            except Exception as e:
-                print(f"[WARN] ONNX export failed: {e}")
+            _, angle_pred, angle_true, extra_info, _ = run_epoch_stream(
+                final_model, optimizer, device, val_loader,
+                scaler=None,
+                train=False,
+                amp=False,
+                task_weights=task_weights,
+                reweighter=None,
+                channel_dropout_rate=0.0,
+                grad_clip=0.0,
+            )
 
-    print(f"[INFO] Training complete. Best val_loss: {best_val:.2e}")
+            # Get collected validation data
+            root_data = extra_info.get("root_data", {}) if extra_info else {}
+
+            # Save final validation artifacts (without epoch suffix)
+            if getattr(cfg.checkpoint, 'save_artifacts', True):
+                print("[INFO] Saving final validation artifacts...")
+                worst_events = extra_info.get("worst_events", []) if extra_info else []
+                save_validation_artifacts(
+                    model=final_model,
+                    angle_pred=angle_pred,
+                    angle_true=angle_true,
+                    root_data=root_data,
+                    active_tasks=active_tasks,
+                    artifact_dir=artifact_dir,
+                    run_name=run_name,
+                    epoch=None,  # No epoch suffix for final artifacts
+                    worst_events=worst_events,
+                )
+            else:
+                print("[INFO] Skipping artifact saving (save_artifacts=false)")
+
+            # ONNX export
+            if cfg.export.onnx:
+                onnx_path = os.path.join(artifact_dir, cfg.export.onnx)
+                final_model.eval()
+                dummy_input = torch.randn(1, 4760, 2, device=device)
+                try:
+                    torch.onnx.export(
+                        final_model, dummy_input, onnx_path,
+                        export_params=True, opset_version=20,
+                        do_constant_folding=True,
+                        input_names=['input'], output_names=['output'],
+                        dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
+                    )
+                    mlflow.log_artifact(onnx_path)
+                    print(f"[INFO] ONNX exported to {onnx_path}")
+                except Exception as e:
+                    print(f"[WARN] ONNX export failed: {e}")
+
+    cleanup_ddp()
+    if is_main_process():
+        print(f"[INFO] Training complete. Best val_loss: {best_val:.2e}")
     return best_val
 
 

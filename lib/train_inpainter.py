@@ -34,6 +34,7 @@ import glob
 import platform
 import mlflow
 import numpy as np
+from contextlib import nullcontext
 
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
@@ -51,6 +52,10 @@ from .geom_defs import (
     DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
 )
 from .config import load_inpainter_config
+from .distributed import (
+    setup_ddp, cleanup_ddp, is_main_process,
+    shard_file_list, reduce_metrics, wrap_ddp, barrier,
+)
 
 # Suppress common harmless warnings
 warnings.filterwarnings("ignore", message=".*To copy construct from a tensor.*", category=UserWarning)
@@ -403,25 +408,32 @@ Examples:
             return sorted(files)
         return [path]
 
+    # DDP setup
+    rank, local_rank, world_size = setup_ddp()
+    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if is_main_process():
+        print(f"[INFO] Using device: {device}" + (f" (world_size={world_size})" if world_size > 1 else ""))
+
     train_files = expand_path(train_root)
     val_files = expand_path(val_root) if val_root else []
 
-    print(f"[INFO] Training files: {len(train_files)}")
-    print(f"[INFO] Validation files: {len(val_files)}")
+    # Shard file lists across ranks
+    if world_size > 1:
+        train_files = shard_file_list(train_files, rank, world_size)
+        if val_files:
+            val_files = shard_file_list(val_files, rank, world_size)
+
+    if is_main_process():
+        print(f"[INFO] Training files: {len(train_files)}" + (f" (per rank)" if world_size > 1 else ""))
+        print(f"[INFO] Validation files: {len(val_files)}" + (f" (per rank)" if world_size > 1 else ""))
 
     # Validate data paths exist
     validate_data_paths(train_root, val_root, expand_func=expand_path)
 
     # Check artifact directory for existing files
     check_artifact_directory(save_path)
-
-    # Device setup
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        torch.cuda.empty_cache()
-    else:
-        device = torch.device("cpu")
-    print(f"[INFO] Using device: {device}")
 
     # Load encoder from MAE checkpoint or create from scratch
     if mae_checkpoint:
@@ -446,17 +458,25 @@ Examples:
         predict_channels=predict_channels
     ).to(device)
 
-    print(f"[INFO] Inpainter created:")
-    print(f"  - Total params: {model.get_num_total_params():,}")
-    print(f"  - Trainable params: {model.get_num_trainable_params():,}")
-    print(f"  - Encoder frozen: {freeze_encoder}")
-    print(f"  - Use local context: {use_local_context}")
-    print(f"  - Predict channels: {predict_channels}")
+    if is_main_process():
+        print(f"[INFO] Inpainter created:")
+        print(f"  - Total params: {model.get_num_total_params():,}")
+        print(f"  - Trainable params: {model.get_num_trainable_params():,}")
+        print(f"  - Encoder frozen: {freeze_encoder}")
+        print(f"  - Use local context: {use_local_context}")
+        print(f"  - Predict channels: {predict_channels}")
+
+    # Keep unwrapped reference for checkpointing and EMA
+    model_without_ddp = model
+
+    # Wrap with DDP (before compile, after .to(device))
+    model = wrap_ddp(model, local_rank)
 
     # torch.compile - auto-detect ARM architecture and disable (Triton not supported)
     is_arm = platform.machine() in ("aarch64", "arm64")
     if is_arm and compile_mode and compile_mode not in ('false', 'none'):
-        print(f"[INFO] ARM architecture detected - disabling torch.compile (Triton not supported)")
+        if is_main_process():
+            print(f"[INFO] ARM architecture detected - disabling torch.compile (Triton not supported)")
         compile_mode = 'none'
 
     if compile_mode and compile_mode not in ('false', 'none'):
@@ -468,27 +488,33 @@ Examples:
                 # Increase dynamo cache limit to avoid CacheLimitExceeded errors
                 torch._dynamo.config.cache_size_limit = 64
                 fg_str = "fullgraph" if compile_fullgraph else "partial"
-                print(f"[INFO] Compiling model with mode='{compile_mode}', {fg_str} (this may take a few minutes...)")
+                if is_main_process():
+                    print(f"[INFO] Compiling model with mode='{compile_mode}', {fg_str} (this may take a few minutes...)")
                 model = torch.compile(model, mode=compile_mode, fullgraph=compile_fullgraph, dynamic=False)
             except ImportError:
-                print("[INFO] Triton not available, skipping torch.compile.")
+                if is_main_process():
+                    print("[INFO] Triton not available, skipping torch.compile.")
             except Exception as e:
-                print(f"[WARN] torch.compile failed with error: {e}.")
-                print("[INFO] Proceeding with standard Eager mode.")
+                if is_main_process():
+                    print(f"[WARN] torch.compile failed with error: {e}.")
+                    print("[INFO] Proceeding with standard Eager mode.")
         else:
-            print("[INFO] Running on CPU: torch.compile is disabled for stability.")
+            if is_main_process():
+                print("[INFO] Running on CPU: torch.compile is disabled for stability.")
     else:
-        print("[INFO] torch.compile disabled via config.")
+        if is_main_process():
+            print("[INFO] torch.compile disabled via config.")
 
     # Optimizer (only trainable params)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay)
 
-    # Initialize EMA model if enabled
+    # Initialize EMA model if enabled (from unwrapped model)
     ema_model = None
     if ema_decay is not None and ema_decay > 0:
-        print(f"[INFO] EMA enabled with decay={ema_decay}")
-        ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
+        if is_main_process():
+            print(f"[INFO] EMA enabled with decay={ema_decay}")
+        ema_model = AveragedModel(model_without_ddp, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
 
     # Detect resume to auto-disable warmup
     # When resuming from a checkpoint, warmup is not needed since the model
@@ -497,7 +523,8 @@ Examples:
         try:
             ckpt_probe = torch.load(resume_from, map_location="cpu", weights_only=False)
             if isinstance(ckpt_probe, dict) and "epoch" in ckpt_probe and ckpt_probe.get("epoch", 0) > 0:
-                print(f"[INFO] Resuming from checkpoint - disabling warmup (was {warmup_epochs} epochs)")
+                if is_main_process():
+                    print(f"[INFO] Resuming from checkpoint - disabling warmup (was {warmup_epochs} epochs)")
                 warmup_epochs = 0
             del ckpt_probe
         except Exception:
@@ -507,7 +534,8 @@ Examples:
     scheduler = None
     if lr_scheduler == "cosine":
         if warmup_epochs >= epochs:
-            print(f"[WARN] warmup_epochs ({warmup_epochs}) >= epochs ({epochs}); disabling warmup.")
+            if is_main_process():
+                print(f"[WARN] warmup_epochs ({warmup_epochs}) >= epochs ({epochs}); disabling warmup.")
             warmup_epochs = 0
         if warmup_epochs > 0:
             main_scheduler = CosineAnnealingLR(optimizer, T_max=epochs - warmup_epochs, eta_min=lr_min)
@@ -522,10 +550,12 @@ Examples:
                 schedulers=[warmup_scheduler, main_scheduler],
                 milestones=[warmup_epochs],
             )
-            print(f"[INFO] Using CosineAnnealingLR with {warmup_epochs} warmup epochs (eta_min={lr_min})")
+            if is_main_process():
+                print(f"[INFO] Using CosineAnnealingLR with {warmup_epochs} warmup epochs (eta_min={lr_min})")
         else:
             scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr_min)
-            print(f"[INFO] Using CosineAnnealingLR with eta_min={lr_min}")
+            if is_main_process():
+                print(f"[INFO] Using CosineAnnealingLR with eta_min={lr_min}")
 
     # AMP scaler
     scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
@@ -535,10 +565,11 @@ Examples:
     best_val_loss = float('inf')
     mlflow_run_id = None
     if resume_from and os.path.exists(resume_from):
-        print(f"[INFO] Resuming from {resume_from}")
+        if is_main_process():
+            print(f"[INFO] Resuming from {resume_from}")
         checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
+            model_without_ddp.load_state_dict(checkpoint['model_state_dict'])
             if "optimizer_state_dict" in checkpoint:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             # Note: scheduler state is intentionally NOT restored to allow
@@ -547,13 +578,15 @@ Examples:
                 scaler.load_state_dict(checkpoint['scaler_state_dict'])
             if "ema_state_dict" in checkpoint and ema_model is not None:
                 ema_model.load_state_dict(checkpoint['ema_state_dict'])
-                print("[INFO] Loaded EMA state from checkpoint")
+                if is_main_process():
+                    print("[INFO] Loaded EMA state from checkpoint")
             start_epoch = checkpoint.get('epoch', 0) + 1
             best_val_loss = checkpoint.get('best_val_loss', float('inf'))
             mlflow_run_id = checkpoint.get('mlflow_run_id', None)
-            print(f"[INFO] Resumed from epoch {start_epoch}")
+            if is_main_process():
+                print(f"[INFO] Resumed from epoch {start_epoch}")
         else:
-            model.load_state_dict(checkpoint, strict=False)
+            model_without_ddp.load_state_dict(checkpoint, strict=False)
 
     # Check for valid epoch range
     if start_epoch >= epochs:
@@ -569,57 +602,71 @@ Examples:
 
     # Force new MLflow run if requested
     if mlflow_new_run and mlflow_run_id is not None:
-        print(f"[INFO] mlflow.new_run=true: Starting fresh MLflow run (ignoring run_id from checkpoint)")
+        if is_main_process():
+            print(f"[INFO] mlflow.new_run=true: Starting fresh MLflow run (ignoring run_id from checkpoint)")
         mlflow_run_id = None
 
-    # MLflow setup
-    # Default to SQLite backend if MLFLOW_TRACKING_URI is not set
-    if not os.environ.get("MLFLOW_TRACKING_URI"):
-        default_uri = f"sqlite:///{os.getcwd()}/mlruns.db"
-        mlflow.set_tracking_uri(default_uri)
-        print(f"[INFO] MLflow tracking URI: {default_uri}")
-    mlflow.set_experiment(mlflow_experiment)
+    # MLflow setup (rank 0 only)
     os.makedirs(save_path, exist_ok=True)
-
-    print(f"[INFO] Starting inpainter training")
-    print(f"  - Experiment: {mlflow_experiment}")
-    print(f"  - Run name: {mlflow_run_name}")
-    print(f"  - Mask ratio: {mask_ratio}")
+    if is_main_process():
+        # Default to SQLite backend if MLFLOW_TRACKING_URI is not set
+        if not os.environ.get("MLFLOW_TRACKING_URI"):
+            default_uri = f"sqlite:///{os.getcwd()}/mlruns.db"
+            mlflow.set_tracking_uri(default_uri)
+            print(f"[INFO] MLflow tracking URI: {default_uri}")
+        mlflow.set_experiment(mlflow_experiment)
+        print(f"[INFO] Starting inpainter training")
+        print(f"  - Experiment: {mlflow_experiment}")
+        print(f"  - Run name: {mlflow_run_name}")
+        print(f"  - Mask ratio: {mask_ratio}")
 
     # Disable MLflow's automatic system metrics (uses wall clock time)
     # We log our own system metrics with step=epoch for consistent x-axis
-    with mlflow.start_run(run_id=mlflow_run_id, run_name=mlflow_run_name if not mlflow_run_id else None,
-                          log_system_metrics=False) as run:
-        mlflow_run_id = run.info.run_id
-        # Log parameters
-        mlflow.log_params({
-            "train_root": train_root,
-            "val_root": val_root,
-            "mae_checkpoint": mae_checkpoint,
-            "save_path": save_path,
-            "epochs": epochs,
-            "batch_size": batch_size,
-            "chunksize": chunksize,
-            "mask_ratio": mask_ratio,
-            "freeze_encoder": freeze_encoder,
-            "predict_channels": ",".join(predict_channels),
-            "lr": lr,
-            "lr_scheduler": lr_scheduler,
-            "warmup_epochs": warmup_epochs,
-            "weight_decay": weight_decay,
-            "loss_fn": loss_fn,
-            "loss_beta": loss_beta,
-            "npho_weight": npho_weight,
-            "time_weight": time_weight,
-            "grad_clip": grad_clip,
-            "outer_mode": outer_mode,
-            "trainable_params": model.get_num_trainable_params(),
-            "total_params": model.get_num_total_params(),
-            "npho_scheme": npho_scheme,
-            "npho_loss_weight_enabled": npho_loss_weight_enabled,
-            "npho_loss_weight_alpha": npho_loss_weight_alpha,
-            "intensity_reweighting_enabled": intensity_reweighting_enabled,
-        })
+    # Only rank 0 interacts with MLflow
+    mlflow_ctx = (
+        mlflow.start_run(run_id=mlflow_run_id, run_name=mlflow_run_name if not mlflow_run_id else None,
+                         log_system_metrics=False)
+        if is_main_process()
+        else nullcontext()
+    )
+    with mlflow_ctx as run:
+        if is_main_process():
+            mlflow_run_id = run.info.run_id
+
+        # Determine no_sync context for gradient accumulation
+        no_sync_ctx = model.no_sync if world_size > 1 else None
+
+        # Log parameters (rank 0 only)
+        if is_main_process():
+            mlflow.log_params({
+                "train_root": train_root,
+                "val_root": val_root,
+                "mae_checkpoint": mae_checkpoint,
+                "save_path": save_path,
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "chunksize": chunksize,
+                "mask_ratio": mask_ratio,
+                "freeze_encoder": freeze_encoder,
+                "predict_channels": ",".join(predict_channels),
+                "lr": lr,
+                "lr_scheduler": lr_scheduler,
+                "warmup_epochs": warmup_epochs,
+                "weight_decay": weight_decay,
+                "loss_fn": loss_fn,
+                "loss_beta": loss_beta,
+                "npho_weight": npho_weight,
+                "time_weight": time_weight,
+                "grad_clip": grad_clip,
+                "outer_mode": outer_mode,
+                "trainable_params": model_without_ddp.get_num_trainable_params(),
+                "total_params": model_without_ddp.get_num_total_params(),
+                "npho_scheme": npho_scheme,
+                "npho_loss_weight_enabled": npho_loss_weight_enabled,
+                "npho_loss_weight_alpha": npho_loss_weight_alpha,
+                "intensity_reweighting_enabled": intensity_reweighting_enabled,
+                "world_size": world_size,
+            })
 
         # Training loop
         for epoch in range(start_epoch, epochs):
@@ -653,16 +700,18 @@ Examples:
                 track_metrics=track_train_metrics,
                 npho_threshold=npho_threshold,
                 use_npho_time_weight=use_npho_time_weight,
-                profile=profile,
+                profile=profile and is_main_process(),
                 log_invalid_npho=log_invalid_npho,
                 npho_scheme=npho_scheme,
                 npho_loss_weight_enabled=npho_loss_weight_enabled,
                 npho_loss_weight_alpha=npho_loss_weight_alpha,
+                no_sync_ctx=no_sync_ctx,
             )
+            train_metrics = reduce_metrics(train_metrics, device)
 
             # Update EMA model
             if ema_model is not None:
-                ema_model.update_parameters(model)
+                ema_model.update_parameters(model_without_ddp)
 
             # Validation (use EMA model if available)
             eval_model = ema_model if ema_model is not None else model
@@ -691,12 +740,15 @@ Examples:
                     prefetch_factor=prefetch_factor,
                     npho_threshold=npho_threshold,
                     use_npho_time_weight=use_npho_time_weight,
-                    profile=profile,
+                    profile=profile and is_main_process(),
                     log_invalid_npho=log_invalid_npho,
                     npho_scheme=npho_scheme,
                     npho_loss_weight_enabled=npho_loss_weight_enabled,
                     npho_loss_weight_alpha=npho_loss_weight_alpha,
                 )
+
+            if val_metrics:
+                val_metrics = reduce_metrics(val_metrics, device)
 
             dt = time.time() - t0
 
@@ -704,10 +756,22 @@ Examples:
             train_loss = train_metrics.get("total_loss", 0.0)
             val_loss = val_metrics.get("total_loss", 0.0) if val_metrics else 0.0
 
-            print(f"Epoch {epoch+1}/{epochs} | "
-                  f"Train Loss: {train_loss:.6f} | "
-                  f"Val Loss: {val_loss:.6f} | "
-                  f"Time: {dt:.1f}s")
+            # Learning rate
+            if scheduler is not None:
+                scheduler.step()
+                current_lr = scheduler.get_last_lr()[0]
+            else:
+                current_lr = optimizer.param_groups[0]["lr"]
+
+            if is_main_process():
+                print(f"Epoch {epoch+1}/{epochs} | "
+                      f"Train Loss: {train_loss:.6f} | "
+                      f"Val Loss: {val_loss:.6f} | "
+                      f"Time: {dt:.1f}s")
+
+            # --- Logging & checkpointing (rank 0 only) ---
+            if not is_main_process():
+                continue
 
             # MLflow logging
             for key, value in train_metrics.items():
@@ -716,13 +780,6 @@ Examples:
             if val_metrics:
                 for key, value in val_metrics.items():
                     mlflow.log_metric(f"val/{key}", value, step=epoch)
-
-            # Learning rate
-            if scheduler is not None:
-                scheduler.step()
-                current_lr = scheduler.get_last_lr()[0]
-            else:
-                current_lr = optimizer.param_groups[0]["lr"]
 
             # System metrics (standardized)
             log_system_metrics_to_mlflow(
@@ -742,7 +799,7 @@ Examples:
                 t_ckpt_start = time.time()
                 checkpoint_dict = {
                     'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
+                    'model_state_dict': model_without_ddp.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'scaler_state_dict': scaler.state_dict(),
                     'best_val_loss': best_val_loss,
@@ -798,7 +855,7 @@ Examples:
                     npho_scheme=npho_scheme,
                 ) as writer:
                     # Use EMA model for predictions if available
-                    pred_model = ema_model if ema_model is not None else model
+                    pred_model = ema_model if ema_model is not None else model_without_ddp
                     val_metrics_with_pred, _ = run_eval_inpainter(
                         pred_model, device,
                         val_files, "tree",
@@ -824,7 +881,7 @@ Examples:
                         prefetch_factor=prefetch_factor,
                         npho_threshold=npho_threshold,
                         use_npho_time_weight=use_npho_time_weight,
-                        profile=profile,
+                        profile=False,
                         log_invalid_npho=log_invalid_npho,
                         npho_scheme=npho_scheme,
                         npho_loss_weight_enabled=npho_loss_weight_enabled,
@@ -836,6 +893,8 @@ Examples:
                     print(f"  Saved predictions to {root_path} ({t_root_elapsed:.1f}s)")
                     mlflow.log_artifact(root_path)
 
+    cleanup_ddp()
+    if is_main_process():
         print(f"\n[INFO] Training complete!")
         print(f"  Best validation loss: {best_val_loss:.2e}")
         print(f"  Checkpoints saved to: {save_path}")
