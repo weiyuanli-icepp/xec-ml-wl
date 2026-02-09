@@ -14,6 +14,7 @@ import heapq
 import torch
 import torch.nn as nn
 import numpy as np
+from contextlib import nullcontext
 from torch.utils.data import TensorDataset, DataLoader
 import time
 import warnings
@@ -50,6 +51,7 @@ def run_epoch_stream(
     grad_clip=1.0,
     grad_accum_steps=1,
     profile=False,
+    no_sync_ctx=None,
 ):
     # Warn about deprecated legacy reweighting API
     if reweight_mode != "none" and reweighter is None:
@@ -252,10 +254,14 @@ def run_epoch_stream(
 
             profiler.start("backward")
             loss = loss / grad_accum_steps
-            if scaler is not None:
-                scaler.scale(loss).backward()
-            else:
-                loss.backward()
+            # Use no_sync on intermediate accumulation steps to skip AllReduce
+            is_sync_step = (accum_step + 1) % grad_accum_steps == 0
+            sync_ctx = nullcontext() if (no_sync_ctx is None or is_sync_step) else no_sync_ctx()
+            with sync_ctx:
+                if scaler is not None:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
             profiler.stop()
 
             accum_step += 1

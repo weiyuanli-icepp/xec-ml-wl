@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from typing import Optional
+from contextlib import nullcontext
 from torch.utils.data import DataLoader
 from ..dataset import XECStreamingDataset
 from ..utils import get_pointwise_loss_fn, SimpleProfiler
@@ -45,7 +46,8 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                   npho_scheme="log1p",
                   npho_loss_weight_enabled=False,
                   npho_loss_weight_alpha=0.5,
-                  intensity_reweighter=None):
+                  intensity_reweighter=None,
+                  no_sync_ctx=None):
     model.train()
     if scaler is None:
         scaler = torch.amp.GradScaler('cuda', enabled=amp)
@@ -385,7 +387,11 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
 
         profiler.start("backward")
         loss = loss / grad_accum_steps
-        scaler.scale(loss).backward()
+        # Use no_sync on intermediate accumulation steps to skip AllReduce
+        is_sync_step = accum_step % grad_accum_steps == (grad_accum_steps - 1)
+        sync_ctx = nullcontext() if (no_sync_ctx is None or is_sync_step) else no_sync_ctx()
+        with sync_ctx:
+            scaler.scale(loss).backward()
         profiler.stop()
 
         accum_step += 1

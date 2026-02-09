@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from typing import Dict, Optional, Tuple, List, Callable
+from contextlib import nullcontext
 from ..dataset import XECStreamingDataset
 from ..geom_defs import (
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
@@ -631,6 +632,7 @@ def run_epoch_inpainter(
     npho_loss_weight_enabled: bool = False,
     npho_loss_weight_alpha: float = 0.5,
     intensity_reweighter: Optional[object] = None,
+    no_sync_ctx=None,
 ) -> Dict[str, float]:
     """
     Run one training epoch for inpainter.
@@ -641,6 +643,7 @@ def run_epoch_inpainter(
                          If False, use forward() with per-face results (slower due to extraction overhead).
                          If None (default), auto-selects True since vectorized OuterSensorInpaintingHead
                          computes all sensors regardless of path.
+        no_sync_ctx: model.no_sync method for DDP gradient accumulation (None for single-GPU).
 
     Returns:
         metrics: dict of averaged metrics
@@ -821,10 +824,14 @@ def run_epoch_inpainter(
 
             profiler.start("backward")
             loss = loss / grad_accum_steps
-            if scaler is not None:
-                scaler.scale(loss).backward()
-            else:
-                loss.backward()
+            # Use no_sync on intermediate accumulation steps to skip AllReduce
+            is_sync_step = (accum_step + 1) % grad_accum_steps == 0
+            sync_ctx = nullcontext() if (no_sync_ctx is None or is_sync_step) else no_sync_ctx()
+            with sync_ctx:
+                if scaler is not None:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
             profiler.stop()
 
             profiler.start("optimizer")
