@@ -10,6 +10,7 @@
 #   TIME         - Job time limit (default: 23:00:00)
 #   RESUME_FROM  - Checkpoint to resume from (optional)
 #   DRY_RUN      - Set to 1 to show config without submitting
+#   NUM_GPUS     - Number of GPUs for DDP training (default: 1)
 
 set -euo pipefail
 
@@ -19,6 +20,7 @@ TIME="${TIME:-23:00:00}"
 RESUME_FROM="${RESUME_FROM:-}"
 RUN_NAME="${RUN_NAME:-}"
 DRY_RUN="${DRY_RUN:-0}"
+NUM_GPUS="${NUM_GPUS:-1}"
 
 # Validate config file exists
 if [[ ! -f "$CONFIG_PATH" ]]; then
@@ -123,6 +125,7 @@ if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
     echo ""
     echo "=== Job Settings ==="
     echo "  Partition:     $PARTITION"
+    echo "  GPUs:          $NUM_GPUS"
     echo "  Time limit:    $TIME"
     echo "  Environment:   $ENV_NAME"
     echo "  Log file:      $LOG_FILE"
@@ -208,7 +211,7 @@ echo "  Config:     $CONFIG_PATH"
 echo "  Run:        $RUN_NAME"
 echo "  Experiment: ${CFG_EXPERIMENT:-mae_pretraining}"
 echo "  Epochs:     ${CFG_EPOCHS:-?} | Batch: ${CFG_BATCH:-?} | Mask: ${CFG_MASK_RATIO:-?} | LR: ${CFG_LR:-?}"
-echo "  Partition:  $PARTITION | Time: $TIME"
+echo "  Partition:  $PARTITION | GPUs: $NUM_GPUS | Time: $TIME"
 [[ -n "$RESUME_FROM" ]] && echo "  Resume:     $RESUME_FROM"
 
 RESUME_FLAG=""
@@ -223,7 +226,7 @@ sbatch <<EOF
 #SBATCH --error=${LOG_FILE}
 #SBATCH --time=${TIME}
 #SBATCH --partition=${PARTITION}
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:${NUM_GPUS}
 #SBATCH --mem=64G
 #SBATCH --clusters=gmerlin7
 
@@ -267,12 +270,20 @@ export MLFLOW_TRACKING_URI="sqlite:///\$(pwd)/mlruns.db"
 # Create artifacts dir
 mkdir -p artifacts/${RUN_NAME}
 
-echo "[JOB] Starting MAE Pre-training..."
-python -m lib.train_mae \\
-    --config "${CONFIG_PATH}" \\
-    --save_path "artifacts/${RUN_NAME}" \\
-    --mlflow_run_name "${RUN_NAME}" \\
-    ${RESUME_FLAG}
+echo "[JOB] Starting MAE Pre-training (GPUs: ${NUM_GPUS})..."
+if [ "${NUM_GPUS}" -gt 1 ]; then
+    torchrun --nproc_per_node=${NUM_GPUS} -m lib.train_mae \\
+        --config "${CONFIG_PATH}" \\
+        --save_path "artifacts/${RUN_NAME}" \\
+        --mlflow_run_name "${RUN_NAME}" \\
+        ${RESUME_FLAG}
+else
+    python -m lib.train_mae \\
+        --config "${CONFIG_PATH}" \\
+        --save_path "artifacts/${RUN_NAME}" \\
+        --mlflow_run_name "${RUN_NAME}" \\
+        ${RESUME_FLAG}
+fi
 
 echo "[JOB] Finished."
 EOF

@@ -12,6 +12,7 @@
 #
 # Optional CLI overrides (empty = use config value):
 #   TRAIN_PATH, VAL_PATH, EPOCHS, LR, BATCH_SIZE, RESUME_FROM, etc.
+#   NUM_GPUS     - Number of GPUs for DDP training (default: 1)
 
 set -euo pipefail
 
@@ -23,6 +24,7 @@ RUN_NAME="${RUN_NAME:-}"
 PARTITION="${PARTITION:-a100-daily}"
 TIME="${TIME:-12:00:00}"
 DRY_RUN="${DRY_RUN:-0}"
+NUM_GPUS="${NUM_GPUS:-1}"
 
 # Optional overrides (empty string means no override)
 TRAIN_PATH="${TRAIN_PATH:-}"
@@ -162,6 +164,7 @@ if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
     echo ""
     echo "=== Job Settings ==="
     echo "  Partition:     $PARTITION"
+    echo "  GPUs:          $NUM_GPUS"
     echo "  Time limit:    $TIME"
     echo "  Environment:   $ENV_NAME"
     echo "  Log file:      $LOG_FILE"
@@ -278,7 +281,7 @@ echo "  Config:     $CONFIG_PATH"
 echo "  Run:        $RUN_NAME"
 echo "  Experiment: $EFF_EXPERIMENT"
 echo "  Epochs:     $EFF_EPOCHS | Batch: $EFF_BATCH | LR: $EFF_LR"
-echo "  Partition:  $PARTITION | Time: $TIME"
+echo "  Partition:  $PARTITION | GPUs: $NUM_GPUS | Time: $TIME"
 
 # Build CLI override arguments
 CLI_ARGS=""
@@ -315,7 +318,7 @@ sbatch <<EOF
 #SBATCH --error=${LOG_FILE}
 #SBATCH --time=${TIME}
 #SBATCH --partition=${PARTITION}
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:${NUM_GPUS}
 #SBATCH --mem=48G
 #SBATCH --clusters=gmerlin7
 
@@ -358,10 +361,16 @@ echo "[JOB] Config: ${CONFIG_PATH}"
 # Use SQLite backend for MLflow
 export MLFLOW_TRACKING_URI="sqlite:///\$(pwd)/mlruns.db"
 
-echo "[JOB] Starting Regressor training..."
-python -m lib.train_regressor \\
-    --config "${CONFIG_PATH}" \\
-    --run_name "${RUN_NAME}" ${CLI_ARGS}
+echo "[JOB] Starting Regressor training (GPUs: ${NUM_GPUS})..."
+if [ "${NUM_GPUS}" -gt 1 ]; then
+    torchrun --nproc_per_node=${NUM_GPUS} -m lib.train_regressor \\
+        --config "${CONFIG_PATH}" \\
+        --run_name "${RUN_NAME}" ${CLI_ARGS}
+else
+    python -m lib.train_regressor \\
+        --config "${CONFIG_PATH}" \\
+        --run_name "${RUN_NAME}" ${CLI_ARGS}
+fi
 
 echo "[JOB] Finished."
 EOF
