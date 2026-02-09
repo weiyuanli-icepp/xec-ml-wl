@@ -9,10 +9,10 @@
 **Solutions:**
 ```bash
 # Reduce batch size
-BATCH_SIZE=512 ./scan_param/submit_regressor.sh
+BATCH_SIZE=512 ./jobs/submit_regressor.sh
 
 # For MAE (decoder uses more memory)
-BATCH=1024 ./scan_param/submit_mae.sh
+BATCH=1024 ./jobs/submit_mae.sh
 
 # Use gradient accumulation for effective larger batch
 # effective_batch = batch_size × grad_accum_steps

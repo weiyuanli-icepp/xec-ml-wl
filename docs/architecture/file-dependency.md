@@ -18,7 +18,7 @@ graph TD
     end
 
     %% -- Training & Scanning (Pink) --
-    subgraph "HP-Scanning (scan_param/)"
+    subgraph "Jobs (jobs/)"
         RunScan(run_scan.sh):::scan
         SubmitReg(submit_regressor.sh):::scan
         RunReg(run_regressor.sh):::scan
@@ -145,7 +145,7 @@ graph TD
 |-------|----------|-------------|
 | 🟦 Light Blue | Core Library (`lib/`) | Main training engines, models, and utilities |
 | 🟨 Yellow | Configuration (`config/`) | YAML configuration files |
-| 🟪 Pink | HP-Scanning (`scan_param/`) | Job submission and hyperparameter scanning scripts |
+| 🟪 Pink | Jobs (`jobs/`) | Job submission and hyperparameter scanning scripts |
 | 🟩 Green | Validation (`val_data/`) | Real data validation and inference scripts |
 | 🟣 Purple | Macros (`macro/`) | Utility scripts for export, visualization |
 | 🩵 Teal | Inpainter | Dead channel inpainting components |

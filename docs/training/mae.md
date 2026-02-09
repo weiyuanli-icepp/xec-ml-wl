@@ -116,9 +116,9 @@ python -m lib.train_mae --config config/mae_config.yaml --epochs 50 --train_root
 
 ## 5. Running Pre-training
 
-Dedicated scripts are under `scan_param/` to streamline the MAE workflow.
+Dedicated scripts are under `jobs/` to streamline the MAE workflow.
 
-1. Configure the Run: Edit `scan_param/run_mae.sh` to set desired parameters:
+1. Configure the Run: Edit `jobs/run_mae.sh` to set desired parameters:
 
     - `ROOT_PATH`: Path to the dataset (wildcards supported)
     - `EPOCHS`: Number of pre-training epochs
@@ -128,7 +128,7 @@ Dedicated scripts are under `scan_param/` to streamline the MAE workflow.
 2. Submit the Job:
 
     ```bash
-    cd scan_param
+    cd jobs
     ./run_mae.sh
     ```
     This submits a SLURM job using `submit_mae.sh`
@@ -153,7 +153,7 @@ Dedicated scripts are under `scan_param/` to streamline the MAE workflow.
 
 Once pre-training is complete, load the learned encoder weights into the regression model:
 
-1. **Configure Regression**: Edit `scan_param/run_scan.sh`.
+1. **Configure Regression**: Edit `jobs/run_scan.sh`.
 2. **Set Resume Path**: Point the `RESUME_FROM` variable to your MAE checkpoint:
     ```bash
     RESUME_FROM="$HOME/meghome/xec-ml-wl/artifacts/<RUN_NAME>/mae_checkpoint_best.pth"

@@ -13,7 +13,7 @@ The submit scripts automatically detect CPU architecture and activate the correc
 ### 1. Quick Submission (Regressor)
 
 ```bash
-$ cd scan_param
+$ cd jobs
 
 # Edit run_regressor.sh to set your parameters, then:
 $ ./run_regressor.sh
