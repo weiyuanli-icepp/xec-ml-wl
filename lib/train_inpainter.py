@@ -54,7 +54,7 @@ from .geom_defs import (
 from .config import load_inpainter_config
 from .distributed import (
     setup_ddp, cleanup_ddp, is_main_process,
-    shard_file_list, reduce_metrics, wrap_ddp, barrier,
+    shard_file_list, reduce_metrics, wrap_ddp,
 )
 
 # Suppress common harmless warnings
@@ -418,6 +418,7 @@ Examples:
 
     train_files = expand_path(train_root)
     val_files = expand_path(val_root) if val_root else []
+    all_val_files = val_files  # Keep full list for prediction saving (rank 0)
 
     # Shard file lists across ranks
     if world_size > 1:
@@ -471,6 +472,7 @@ Examples:
 
     # Wrap with DDP (before compile, after .to(device))
     model = wrap_ddp(model, local_rank)
+    model_ddp = model  # Save DDP reference before compile (for .no_sync access)
 
     # torch.compile - auto-detect ARM architecture and disable (Triton not supported)
     is_arm = platform.machine() in ("aarch64", "arm64")
@@ -634,7 +636,7 @@ Examples:
             mlflow_run_id = run.info.run_id
 
         # Determine no_sync context for gradient accumulation
-        no_sync_ctx = model.no_sync if world_size > 1 else None
+        no_sync_ctx = model_ddp.no_sync if world_size > 1 else None
 
         # Log parameters (rank 0 only)
         if is_main_process():
@@ -841,7 +843,7 @@ Examples:
 
             # Save ROOT predictions every 10 epochs (and at end)
             root_save_interval = 10
-            if save_root_predictions and val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs):
+            if save_root_predictions and all_val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs):
                 t_root_start = time.time()
                 print(f"  Collecting predictions for ROOT output...")
                 with RootPredictionWriter(
@@ -858,7 +860,7 @@ Examples:
                     pred_model = ema_model if ema_model is not None else model_without_ddp
                     val_metrics_with_pred, _ = run_eval_inpainter(
                         pred_model, device,
-                        val_files, "tree",
+                        all_val_files, "tree",
                         batch_size=batch_size,
                         step_size=chunksize,
                         mask_ratio=mask_ratio,
@@ -893,11 +895,11 @@ Examples:
                     print(f"  Saved predictions to {root_path} ({t_root_elapsed:.1f}s)")
                     mlflow.log_artifact(root_path)
 
-    cleanup_ddp()
     if is_main_process():
         print(f"\n[INFO] Training complete!")
         print(f"  Best validation loss: {best_val_loss:.2e}")
         print(f"  Checkpoints saved to: {save_path}")
+    cleanup_ddp()
 
 
 if __name__ == "__main__":

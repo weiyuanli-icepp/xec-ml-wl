@@ -50,7 +50,7 @@ from .plotting import (
 from .event_display import save_worst_case_events
 from .distributed import (
     setup_ddp, cleanup_ddp, is_main_process,
-    reduce_metrics, wrap_ddp, barrier,
+    reduce_metrics, wrap_ddp,
 )
 
 # ------------------------------------------------------------
@@ -225,6 +225,10 @@ def train_with_config(config_path: str, profile: bool = None):
     # Load configuration
     cfg = load_config(config_path)
 
+    # Device / DDP (must be before any is_main_process() calls)
+    rank, local_rank, world_size = setup_ddp()
+    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+
     # Profile: CLI override takes precedence, otherwise use config
     enable_profile = profile if profile is not None else getattr(cfg.training, 'profile', False)
     if enable_profile and is_main_process():
@@ -240,10 +244,6 @@ def train_with_config(config_path: str, profile: bool = None):
     if is_main_process():
         print(f"[INFO] Active tasks: {active_tasks}")
         print(f"[INFO] Task weights: {task_weights}")
-
-    # Device / DDP
-    rank, local_rank, world_size = setup_ddp()
-    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
     if is_main_process():
         print(f"[INFO] Using device: {device}" + (f" (world_size={world_size})" if world_size > 1 else ""))
 
@@ -289,6 +289,19 @@ def train_with_config(config_path: str, profile: bool = None):
         **norm_kwargs
     )
 
+    # Full (unsharded) val loader for final evaluation artifacts (rank 0 only)
+    if world_size > 1:
+        val_loader_full = get_dataloader(
+            cfg.data.val_path,
+            batch_size=cfg.data.batch_size,
+            num_workers=cfg.data.num_workers,
+            num_threads=cfg.data.num_threads,
+            prefetch_factor=getattr(cfg.data, 'prefetch_factor', 2),
+            **norm_kwargs
+        )
+    else:
+        val_loader_full = val_loader
+
     # --- Model ---
     outer_fine_pool = tuple(cfg.model.outer_fine_pool) if cfg.model.outer_fine_pool else None
     base_regressor = XECEncoder(
@@ -312,6 +325,7 @@ def train_with_config(config_path: str, profile: bool = None):
 
     # Wrap with DDP (before compile, after .to(device))
     model = wrap_ddp(model, local_rank)
+    model_ddp = model  # Save DDP reference before compile (for .no_sync access)
 
     # Optionally compile model (can be disabled or use different modes to reduce memory)
     # Auto-detect ARM architecture (GH nodes) and disable compile (Triton not supported)
@@ -677,7 +691,7 @@ def train_with_config(config_path: str, profile: bool = None):
         os.makedirs(artifact_dir, exist_ok=True)
 
         # Determine no_sync context for gradient accumulation (skip AllReduce on intermediate steps)
-        no_sync_ctx = model.no_sync if world_size > 1 else None
+        no_sync_ctx = model_ddp.no_sync if world_size > 1 else None
 
         # Log config
         if start_epoch == 1 and is_main_process():
@@ -862,10 +876,10 @@ def train_with_config(config_path: str, profile: bool = None):
             else:
                 final_model = ema_model if ema_model is not None else model_without_ddp
 
-            # Run final validation with best model
+            # Run final validation with best model (use full val data, not sharded)
             final_model.eval()
             _, angle_pred, angle_true, extra_info, _ = run_epoch_stream(
-                final_model, optimizer, device, val_loader,
+                final_model, optimizer, device, val_loader_full,
                 scaler=None,
                 train=False,
                 amp=False,
@@ -914,9 +928,9 @@ def train_with_config(config_path: str, profile: bool = None):
                 except Exception as e:
                     print(f"[WARN] ONNX export failed: {e}")
 
-    cleanup_ddp()
     if is_main_process():
         print(f"[INFO] Training complete. Best val_loss: {best_val:.2e}")
+    cleanup_ddp()
     return best_val
 
 

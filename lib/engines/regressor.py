@@ -13,6 +13,7 @@ import math
 import heapq
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 import numpy as np
 from contextlib import nullcontext
 from torch.utils.data import TensorDataset, DataLoader
@@ -274,12 +275,22 @@ def run_epoch_stream(
                         scaler.unscale_(optimizer)
                         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                         max_grad_norm = max(max_grad_norm, grad_norm.item())
+                    # Sync loss_scaler gradients across DDP ranks (not part of DDP model)
+                    if loss_scaler is not None and dist.is_initialized():
+                        for p in loss_scaler.parameters():
+                            if p.grad is not None:
+                                dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     if grad_clip > 0:
                         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                         max_grad_norm = max(max_grad_norm, grad_norm.item())
+                    # Sync loss_scaler gradients across DDP ranks (not part of DDP model)
+                    if loss_scaler is not None and dist.is_initialized():
+                        for p in loss_scaler.parameters():
+                            if p.grad is not None:
+                                dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
                     optimizer.step()
 
                 if ema_model is not None:

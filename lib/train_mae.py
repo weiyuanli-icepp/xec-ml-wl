@@ -43,7 +43,7 @@ from .geom_defs import DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_TIME_SCA
 from .config import load_mae_config
 from .distributed import (
     setup_ddp, cleanup_ddp, is_main_process,
-    shard_file_list, reduce_metrics, wrap_ddp, barrier,
+    shard_file_list, reduce_metrics, wrap_ddp,
 )
 
 # Usage
@@ -397,6 +397,7 @@ Examples:
 
     train_files = expand_path(train_root)
     val_files = expand_path(val_root) if val_root else None
+    all_val_files = val_files  # Keep full list for prediction saving (rank 0)
 
     # Shard file lists across ranks
     if world_size > 1:
@@ -440,6 +441,7 @@ Examples:
 
     # Wrap with DDP (before compile, after .to(device))
     model = wrap_ddp(model, local_rank)
+    model_ddp = model  # Save DDP reference before compile (for .no_sync access)
 
     # torch.compile - auto-detect ARM architecture and disable (Triton not supported)
     is_arm = platform.machine() in ("aarch64", "arm64")
@@ -611,7 +613,7 @@ Examples:
             mlflow_run_id = run.info.run_id
 
         # Determine no_sync context for gradient accumulation
-        no_sync_ctx = model.no_sync if world_size > 1 else None
+        no_sync_ctx = model_ddp.no_sync if world_size > 1 else None
 
         if is_main_process():
             outer_mode_label = outer_mode
@@ -721,14 +723,11 @@ Examples:
 
             # --- VALIDATION ---
             val_metrics = {}
-            predictions = None
             eval_model = ema_model if ema_model is not None else model
             eval_model.eval()
 
             if val_files:
-                collect_preds = save_predictions and ((epoch + 1) % save_interval == 0 or (epoch + 1) == epochs)
-
-                result = run_eval_mae(
+                val_metrics = run_eval_mae(
                     eval_model, device, val_files, "tree",
                     batch_size=batch_size,
                     step_size=chunksize,
@@ -743,7 +742,7 @@ Examples:
                     npho_weight=npho_weight,
                     time_weight=time_weight,
                     auto_channel_weight=auto_channel_weight,
-                    collect_predictions=collect_preds,
+                    collect_predictions=False,
                     max_events=1000,
                     dataloader_workers=0,  # Dataset handles batching internally
                     dataset_workers=num_threads,
@@ -757,11 +756,6 @@ Examples:
                     npho_loss_weight_enabled=npho_loss_weight_enabled,
                     npho_loss_weight_alpha=npho_loss_weight_alpha,
                 )
-
-                if collect_preds:
-                    val_metrics, predictions = result
-                else:
-                    val_metrics = result
 
             if val_metrics:
                 val_metrics = reduce_metrics(val_metrics, device)
@@ -815,9 +809,38 @@ Examples:
                 lr=current_lr,
             )
 
-            # Save predictions
-            if predictions is not None:
+            # Save predictions (use full val files, not sharded)
+            if save_predictions and all_val_files and ((epoch + 1) % save_interval == 0 or (epoch + 1) == epochs):
                 try:
+                    _, predictions = run_eval_mae(
+                        eval_model, device, all_val_files, "tree",
+                        batch_size=batch_size,
+                        step_size=chunksize,
+                        npho_branch=npho_branch,
+                        time_branch=time_branch,
+                        npho_scale=npho_scale,
+                        npho_scale2=npho_scale2,
+                        time_scale=time_scale,
+                        time_shift=time_shift,
+                        sentinel_value=sentinel_value,
+                        loss_fn=loss_fn,
+                        npho_weight=npho_weight,
+                        time_weight=time_weight,
+                        auto_channel_weight=auto_channel_weight,
+                        collect_predictions=True,
+                        max_events=1000,
+                        dataloader_workers=0,
+                        dataset_workers=num_threads,
+                        prefetch_factor=prefetch_factor,
+                        npho_threshold=npho_threshold,
+                        use_npho_time_weight=use_npho_time_weight,
+                        track_mae_rmse=track_mae_rmse,
+                        profile=False,
+                        log_invalid_npho=log_invalid_npho,
+                        npho_scheme=npho_scheme,
+                        npho_loss_weight_enabled=npho_loss_weight_enabled,
+                        npho_loss_weight_alpha=npho_loss_weight_alpha,
+                    )
                     root_path = save_predictions_to_root(
                         predictions, save_path, epoch, run_id=mlflow_run_id,
                         predict_channels=predict_channels,
@@ -875,9 +898,9 @@ Examples:
                 print(f"Saved encoder weights to {encoder_path}")
                 mlflow.log_artifact(encoder_path)
 
-    cleanup_ddp()
     if is_main_process():
         print("[INFO] MAE Pre-training complete!")
+    cleanup_ddp()
 
 
 if __name__ == "__main__":
