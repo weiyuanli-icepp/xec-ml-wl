@@ -422,3 +422,5 @@ $$\mathrm{LR} = \mathrm{LR}_\mathrm{min} + \frac{1}{2} \Big(\mathrm{LR}_{\mathrm
 | MAE checkpoint | MAE | Yes | Full state restored |
 | Inpainter checkpoint | Inpainter | Yes | Full state restored |
 | Regressor checkpoint | MAE/Inpainter | No | Different model architecture |
+| Single-GPU checkpoint | Multi-GPU training | Yes | DDP saves unwrapped state_dict |
+| Multi-GPU checkpoint | Single-GPU training | Yes | No `module.` prefix in saved weights |

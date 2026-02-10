@@ -372,7 +372,38 @@ random.seed(42)
 torch.backends.cudnn.deterministic = True
 ```
 
-### 9. Grace-Hopper (GH) Node Specific Limitations
+### 9. Multi-GPU (DDP) Issues
+
+#### A. NCCL Initialization Failure
+
+**Symptom:** `RuntimeError: NCCL error` or process hangs during `init_process_group`
+
+**Solutions:**
+```bash
+# Ensure NCCL is available
+python -c "import torch; print(torch.cuda.nccl.version())"
+
+# Check that all GPUs are visible
+python -c "import torch; print(torch.cuda.device_count())"
+```
+
+If running on a SLURM cluster, ensure `--gres=gpu:N` matches `--nproc_per_node=N` in the `torchrun` command.
+
+#### B. Inconsistent Metrics Between Single and Multi-GPU
+
+**Cause:** With DDP, the effective batch size is `per_gpu_batch_size × num_gpus`. Larger effective batches may change convergence dynamics.
+
+**Solution:** Reduce per-GPU batch size to keep the same effective batch size, or adjust learning rate proportionally (linear scaling rule: `lr_new = lr_old × num_gpus`).
+
+#### C. Hanging at Epoch End
+
+**Symptom:** Training hangs after the forward/backward pass completes.
+
+**Cause:** A rank may have fewer batches than others (uneven data distribution), causing `dist.barrier()` or all-reduce to hang waiting for all ranks.
+
+**Solution:** The training code shards ROOT files round-robin across ranks. Ensure each rank has at least one file. With very few files, use single-GPU training.
+
+### 10. Grace-Hopper (GH) Node Specific Limitations
 
 Grace-Hopper nodes have several platform-specific constraints:
 
@@ -430,6 +461,17 @@ training:
 ---
 
 ## FAQ
+
+**Q: How do I train on multiple GPUs?**
+A: Set `NUM_GPUS` when submitting:
+```bash
+NUM_GPUS=4 ./jobs/submit_mae.sh
+```
+Or use `torchrun` directly:
+```bash
+torchrun --nproc_per_node=4 -m lib.train_mae --config config/mae_config.yaml
+```
+Single-GPU mode still works as before with `python -m lib.train_*`. Checkpoints are compatible between single and multi-GPU.
 
 **Q: Can I train on CPU?**
 A: Technically yes, but not recommended. Training is 50-100x slower. For debugging:

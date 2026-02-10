@@ -135,6 +135,23 @@ Dedicated scripts are under `jobs/` to streamline the MAE workflow.
 
 3. Output: Checkpoints will be saved to `~/meghome/xec-ml-wl/artifacts/<RUN_NAME>/`. The weights file is typically named `mae_checkpoint_best.pth`
 
+### Multi-GPU Training
+
+MAE pre-training supports multi-GPU via DDP for faster training:
+
+```bash
+# Submit with 4 GPUs
+NUM_GPUS=4 ./jobs/submit_mae.sh
+
+# Direct multi-GPU training
+torchrun --nproc_per_node=4 -m lib.train_mae --config config/mae_config.yaml
+
+# Dry run to verify settings
+NUM_GPUS=4 DRY_RUN=1 ./jobs/submit_mae.sh
+```
+
+ROOT file lists are sharded across GPUs (round-robin). Only rank 0 logs to MLflow and saves checkpoints. See [Regressor Training](regressor.md#4-multi-gpu-training-ddp) for full DDP details.
+
 ## 6. Metrics
 
 | Metric | Description |

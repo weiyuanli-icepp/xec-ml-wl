@@ -571,9 +571,8 @@ with uproot.recreate("predictions.root") as f:
 
 ### 2. Distributed Training
 
-- **DataParallel:** Simple multi-GPU (current partial support)
-- **DistributedDataParallel:** Efficient multi-GPU
-- **FSDP:** Memory-efficient for large models
+- **DistributedDataParallel:** ✅ Implemented via `lib/distributed.py`. Supports multi-GPU training with `torchrun` for all three training scripts (regressor, MAE, inpainter). Features: round-robin file sharding, rank-gated I/O, all-reduce metrics, `no_sync()` gradient accumulation, checkpoint compatibility.
+- **FSDP:** Memory-efficient for large models (not implemented)
 
 ### 3. Mixed Precision Training Improvements
 
@@ -595,4 +594,4 @@ with uproot.recreate("predictions.root") as f:
 
 ---
 
-*Last updated: February 2026 (added per-face decoder dimensions idea)*
+*Last updated: February 2026 (added DDP multi-GPU support)*

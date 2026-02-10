@@ -237,6 +237,24 @@ python -m lib.train_inpainter --config config/inpainter_config.yaml \
 ./macro/interactive_inpainter_train_config.sh
 ```
 
+### Multi-GPU Training
+
+Inpainter training supports multi-GPU via DDP:
+
+```bash
+# Submit with 4 GPUs
+NUM_GPUS=4 ./jobs/submit_inpainter.sh
+
+# Direct multi-GPU training
+torchrun --nproc_per_node=4 -m lib.train_inpainter --config config/inpainter_config.yaml \
+    --mae_checkpoint artifacts/mae/mae_checkpoint_best.pth
+
+# Dry run to verify settings
+NUM_GPUS=4 DRY_RUN=1 ./jobs/submit_inpainter.sh
+```
+
+ROOT file lists are sharded across GPUs. Only rank 0 logs to MLflow, saves checkpoints, and writes ROOT prediction files. See [Regressor Training](regressor.md#4-multi-gpu-training-ddp) for full DDP details.
+
 ## 4. Configuration
 
 Configure in `config/inpainter_config.yaml`:

@@ -45,7 +45,30 @@ $ python -m lib.train_regressor --config config/train_config.yaml
 $ python -m lib.train_regressor --config config/train_config.yaml --lr 1e-4 --epochs 30
 ```
 
-### 4. Optimization Best Practices
+### 4. Multi-GPU Training (DDP)
+
+All training scripts support multi-GPU training via PyTorch DistributedDataParallel. Set `NUM_GPUS` to enable:
+
+```bash
+# Submit with multiple GPUs
+$ NUM_GPUS=4 ./jobs/submit_regressor.sh
+
+# Direct multi-GPU training (without SLURM)
+$ torchrun --nproc_per_node=4 -m lib.train_regressor --config config/train_config.yaml
+
+# Single GPU still works as before
+$ python -m lib.train_regressor --config config/train_config.yaml
+```
+
+**Key behaviors with DDP:**
+- ROOT file lists are sharded across ranks (round-robin), so each GPU processes different files
+- Only rank 0 logs to MLflow, saves checkpoints, and prints progress
+- Metrics are all-reduced (averaged) across ranks before logging
+- Checkpoints are saved without `module.` prefix, so they are compatible with both single-GPU and multi-GPU
+- **Effective batch size** = `per_gpu_batch_size × num_gpus`. Reduce per-GPU batch size if needed
+- Gradient accumulation uses `model.no_sync()` on intermediate steps for efficiency
+
+### 5. Optimization Best Practices
 
 For GH nodes, use the following settings to maximize throughput:
 * **Batch Size**: 16384 (Uses ~65GB VRAM, ~70% capacity)

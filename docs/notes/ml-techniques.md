@@ -91,11 +91,59 @@ Paper: "The Road Less Scheduled" (Defazio et al., 2024)
 
 These are not currently implemented in the codebase but are promising alternatives for future experimentation.
 
-### 4. Automatic Mixed Precision (AMP)
+### 4. Distributed Data Parallel (DDP)
+
+Multi-GPU training using PyTorch's `DistributedDataParallel`. Centralized in `lib/distributed.py`.
+
+**How it works:**
+1. `torchrun` launches N processes (one per GPU), setting `RANK`, `LOCAL_RANK`, `WORLD_SIZE` env vars
+2. `setup_ddp()` initializes NCCL process group and assigns each process to its GPU
+3. ROOT file lists are sharded round-robin across ranks via `shard_file_list()`
+4. Model is wrapped with `DDP(model, device_ids=[local_rank])` after `.to(device)` but before `torch.compile()`
+5. During training, DDP automatically synchronizes gradients via AllReduce after each backward pass
+6. After engine functions return, metrics are averaged across ranks via `reduce_metrics()`
+7. Only rank 0 performs I/O: MLflow logging, checkpoint saving, printing
+
+**Key patterns:**
+```python
+# Model wrapping order
+model.to(device)
+model_without_ddp = model          # Keep unwrapped reference
+model = wrap_ddp(model, local_rank) # DDP wrapper
+model = torch.compile(model)        # Compile after DDP
+
+# Rank-gated I/O
+mlflow_ctx = mlflow.start_run(...) if is_main_process() else nullcontext()
+
+# Checkpoint saving (no module. prefix)
+torch.save(model_without_ddp.state_dict(), path)
+
+# EMA from unwrapped model
+ema_model = AveragedModel(model_without_ddp, ...)
+ema_model.update_parameters(model_without_ddp)
+```
+
+**Gradient accumulation with `no_sync()`:**
+
+When using gradient accumulation with DDP, `model.no_sync()` skips the AllReduce on intermediate micro-steps. Only the final accumulation step (before `optimizer.step()`) syncs gradients, reducing communication overhead:
+
+```python
+# Intermediate steps: no gradient sync
+with no_sync_ctx():
+    loss.backward()
+
+# Final step: normal backward triggers AllReduce
+loss.backward()
+optimizer.step()
+```
+
+**Backward compatibility:** When run with `python` (no `torchrun`), all DDP utilities are no-ops. Single-GPU training works unchanged.
+
+### 5. Automatic Mixed Precision (AMP)
 
 Uses `torch.cuda.amp` for faster training with FP16 forward pass while maintaining FP32 gradients.
 
-### 5. Vectorized Tensor Operations
+### 6. Vectorized Tensor Operations
 
 Replacing Python loops with vectorized tensor operations provides significant speedups, especially for operations that run multiple times per batch.
 
@@ -153,7 +201,7 @@ valid_mask[batch_idx, within_batch_idx] = True
 
 This optimization is implemented in `lib/models/inpainter.py` for both `FaceInpaintingHead` and `HexInpaintingHead`.
 
-### 6. Positional Encoding
+### 7. Positional Encoding
 
 Positional embeddings are essential for the Transformer to understand detector topology. Without them, attention is permutation-invariant and cannot distinguish which face is which.
 
@@ -632,6 +680,9 @@ If you need true sparse convolution (e.g., for 3D point clouds or extremely high
    - *Summary:* Learning rate schedule following cosine decay with optional warm restarts. We use single-cycle cosine with warmup.
 
 9. **Gradient Accumulation** - Standard technique for simulating larger batch sizes when GPU memory is limited. Effective batch size = `batch_size × grad_accum_steps`.
+
+10. **DistributedDataParallel (DDP)** - Li, S., et al. "PyTorch Distributed: Experiences on Accelerating Data Parallel Training." VLDB 2020.
+    - *Summary:* Multi-GPU training by replicating the model on each GPU with synchronized gradient updates via AllReduce. We use NCCL backend with round-robin file sharding for IterableDataset.
 
 ### Attention Mechanisms
 

@@ -285,6 +285,21 @@ CPU Memory ≈ num_workers × chunksize × ~50 bytes/event × prefetch_factor(2)
            ≈ 8 × 256000 × 50 × 2 ≈ 200 MB per worker ≈ 1.6 GB total
 ```
 
+### Multi-GPU Data Sharding
+
+When using DDP (multi-GPU training), ROOT file lists are sharded across ranks using round-robin assignment:
+
+```
+Files: [A.root, B.root, C.root, D.root, E.root, F.root]
+
+Rank 0: [A.root, C.root, E.root]
+Rank 1: [B.root, D.root, F.root]
+```
+
+Each rank independently streams its assigned files through the same pipeline above. This avoids `DistributedSampler` (which doesn't work with `IterableDataset`). The regressor uses `get_dataloader(rank=, world_size=)` for sharding; MAE and inpainter shard file lists before passing to engine functions via `shard_file_list()`.
+
+**Important:** Ensure you have at least as many ROOT files as GPUs. With fewer files than ranks, some ranks will have no data.
+
 ### Recommended Settings
 
 **Batch jobs (full resources):**

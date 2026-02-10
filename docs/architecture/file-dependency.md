@@ -47,6 +47,7 @@ graph TD
         Config(config.py):::lib
         Dataset(dataset.py):::lib
         TrainMae(train_mae.py):::lib
+        Distributed(distributed.py):::lib
 
         %% Inpainter Components (now in engines/ and models/)
         TrainInpaint(train_inpainter.py):::inpaint
@@ -99,6 +100,7 @@ graph TD
     TrainScript -->|Init| Model
     TrainScript -->|Load Config| Config
     TrainScript -->|Load Data| Dataset
+    TrainScript -->|DDP| Distributed
     TrainScript -->|Calc Weights| Reweight
     TrainScript -.->|Legacy| ReweightLegacy
     TrainScript -->|Saliency/RAM| Utils
@@ -108,12 +110,14 @@ graph TD
     %% 3. MAE Training Flow
     TrainMae -->|Runs Loop| EngineMae
     TrainMae -->|Init| ModelMae
+    TrainMae -->|DDP| Distributed
     ModelMae -->|Uses Encoder| Model
 
     %% 4. Inpainter Training Flow
     TrainInpaint -->|Runs Loop| EngineInpaint
     TrainInpaint -->|Init| ModelInpaint
     TrainInpaint -->|Load MAE| ModelMae
+    TrainInpaint -->|DDP| Distributed
     ModelInpaint -->|Uses Encoder| Model
     ModelInpaint --> Blocks
     InpaintScript --> TrainInpaint
@@ -168,3 +172,4 @@ graph TD
 | `lib/geom_utils.py` | Geometry utility functions (gather_face, etc.) |
 | `lib/config.py` | Configuration loading and dataclasses |
 | `lib/dataset.py` | XECStreamingDataset for ROOT file streaming |
+| `lib/distributed.py` | DDP utilities (setup, sharding, metric reduction, model wrapping) |
