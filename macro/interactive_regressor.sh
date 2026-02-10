@@ -3,7 +3,11 @@
 # 1. Make sure to load anaconda module
 # 2. Activate xec-ml-wl conda environment
 # 3. salloc --cluster=gmerlin7 --partition=a100-interactive --gres=gpu:1 --mem=64G --time=07:00:00
+#    (for multi-GPU: --gres=gpu:N)
 # 4. Run this script: ./interactive_regressor.sh
+#
+# Environment variables:
+#   NUM_GPUS  - Number of GPUs for DDP training (default: 1)
 
 # Conda activation for GH nodes (miniforge)
 HOSTNAME_SHORT="$(hostname -s 2>/dev/null || hostname)"
@@ -32,5 +36,12 @@ echo "Moved to directory $(pwd)"
 # Use SQLite backend for MLflow (consistent with submit scripts)
 export MLFLOW_TRACKING_URI="sqlite:///$(pwd)/mlruns.db"
 
-# Build command
-python -m lib.train_regressor --config ${CONFIG_PATH}
+NUM_GPUS="${NUM_GPUS:-1}"
+
+# Launch with torchrun for multi-GPU, plain python for single-GPU
+if [ "${NUM_GPUS}" -gt 1 ]; then
+    echo "Launching with torchrun (${NUM_GPUS} GPUs)..."
+    torchrun --nproc_per_node=${NUM_GPUS} -m lib.train_regressor --config ${CONFIG_PATH}
+else
+    python -m lib.train_regressor --config ${CONFIG_PATH}
+fi
