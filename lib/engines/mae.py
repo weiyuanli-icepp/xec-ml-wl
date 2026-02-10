@@ -1,4 +1,5 @@
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 import numpy as np
 from typing import Optional
@@ -414,8 +415,13 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
     # Stop any pending timer (last data_load_cpu started but not stopped)
     profiler.stop()
 
-    # Final optimizer step if gradients remain from incomplete accumulation
+    # Final optimizer step if gradients remain from incomplete accumulation.
+    # Previous backward passes used no_sync(), so model gradients are local-only.
     if accum_step % grad_accum_steps != 0:
+        if dist.is_initialized():
+            for p in model.parameters():
+                if p.grad is not None:
+                    dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
         if grad_clip > 0:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)

@@ -483,8 +483,14 @@ def run_epoch_stream(
         if hasattr(loader, 'dataset') and hasattr(loader.dataset, 'get_profile_report'):
             print(loader.dataset.get_profile_report())
 
-    # Final optimizer step if gradients remain from incomplete accumulation
+    # Final optimizer step if gradients remain from incomplete accumulation.
+    # Previous backward passes used no_sync(), so model gradients are local-only.
+    # Manually all-reduce them before stepping.
     if train and accum_step % grad_accum_steps != 0:
+        if dist.is_initialized():
+            for p in model.parameters():
+                if p.grad is not None:
+                    dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
         if scaler is not None:
             if grad_clip > 0:
                 scaler.unscale_(optimizer)

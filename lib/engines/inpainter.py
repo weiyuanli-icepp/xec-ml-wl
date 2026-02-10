@@ -3,6 +3,7 @@ Training and evaluation engine for dead channel inpainting.
 """
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 import numpy as np
 from typing import Dict, Optional, Tuple, List, Callable
@@ -895,8 +896,13 @@ def run_epoch_inpainter(
                 lines.append(f"  Throughput: {throughput:,.0f} events/s")
             print("\n".join(lines))
 
-    # Final optimizer step if grads remain
+    # Final optimizer step if grads remain from incomplete accumulation.
+    # Previous backward passes used no_sync(), so model gradients are local-only.
     if (accum_step % grad_accum_steps) != 0:
+        if dist.is_initialized():
+            for p in model.parameters():
+                if p.grad is not None:
+                    dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
         if scaler is not None:
             if grad_clip > 0:
                 scaler.unscale_(optimizer)
