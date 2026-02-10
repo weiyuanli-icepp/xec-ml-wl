@@ -489,11 +489,19 @@ def run_epoch_stream(
             if grad_clip > 0:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            if loss_scaler is not None and dist.is_initialized():
+                for p in loss_scaler.parameters():
+                    if p.grad is not None:
+                        dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
             scaler.step(optimizer)
             scaler.update()
         else:
             if grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            if loss_scaler is not None and dist.is_initialized():
+                for p in loss_scaler.parameters():
+                    if p.grad is not None:
+                        dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
             optimizer.step()
 
         if ema_model is not None:
