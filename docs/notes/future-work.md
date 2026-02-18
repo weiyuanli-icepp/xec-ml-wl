@@ -594,4 +594,70 @@ with uproot.recreate("predictions.root") as f:
 
 ---
 
-*Last updated: February 2026 (added DDP multi-GPU support)*
+---
+
+## H. Inpainter-Specific Future Work
+
+### 1. Encoder Fine-Tuning
+
+- **Progressive unfreezing**: Start with frozen encoder, then unfreeze last N layers
+- **Lower LR for encoder**: Use 10x lower learning rate for encoder vs heads
+- **Layer-wise LR decay**: Earlier layers get exponentially smaller LR
+
+### 2. Deeper/Wider Inpainting Heads
+
+- Current heads use 2 ConvNeXtV2 blocks with hidden_dim=64
+- Try 3-4 blocks and hidden_dim=128 for more capacity
+- Per-face head sizing: larger heads for Inner (4092 sensors) vs US/DS (144 sensors)
+
+### 3. Cross-Face Attention in Heads
+
+- Current heads operate independently per face
+- Add cross-attention between face heads: masked positions on one face attend to features from adjacent faces
+- Particularly useful for sensors near face boundaries
+
+### 4. Curriculum Learning (Variable Mask Ratio)
+
+- Start training with low mask ratio (1-2%) for easy reconstruction
+- Gradually increase to target ratio (5-10%) over epochs
+- May improve convergence and handle clustered dead channels better
+
+### 5. Skip Connections from Encoder
+
+- Current heads receive only the final latent token (1024-dim)
+- Add skip connections from intermediate encoder features
+- FPN-style: provide both coarse (global) and fine (local) features to heads
+
+### 6. Mask Pattern Conditioning
+
+- Concatenate binary mask as an additional input channel to heads
+- Provides explicit information about which sensors are dead
+- May help model learn different strategies for different mask patterns
+
+### 7. Ensemble Methods
+
+- Train multiple inpainters with different random seeds
+- Average predictions at inference for reduced variance
+- Use prediction disagreement as uncertainty estimate
+
+### 8. Iterative Refinement
+
+- For clustered dead channels, single-pass prediction may be poor
+- Multi-pass: predict masked values → use predictions as input → re-predict
+- 2-3 iterations typically sufficient for convergence
+
+### 9. Uncertainty Quantification
+
+- MC Dropout: enable dropout at inference, run multiple forward passes
+- Heteroscedastic regression: predict both mean and variance per sensor
+- Use uncertainty to flag unreliable predictions for downstream analysis
+
+### 10. Physics-Informed Loss
+
+- **Solid angle regularization**: predictions should roughly follow 1/r^2 pattern
+- **Smoothness prior**: neighboring sensor predictions should be locally smooth
+- **Energy conservation**: sum of predicted npho should be consistent with known event energy
+
+---
+
+*Last updated: February 2026 (added inpainter improvements and baselines)*

@@ -69,6 +69,7 @@ from lib.geom_defs import (
     DEFAULT_SENTINEL_VALUE, DEFAULT_NPHO_THRESHOLD
 )
 from lib.dataset import expand_path
+from lib.baselines import NeighborAverageBaseline, SolidAngleWeightedBaseline
 
 # Constants
 N_CHANNELS = 4760
@@ -186,6 +187,52 @@ def load_data(input_path: str, tree_name: str = "tree",
     return data
 
 
+def load_solid_angles(input_path: str, branch_name: str,
+                      tree_name: str = "tree",
+                      max_events: Optional[int] = None) -> np.ndarray:
+    """Load solid angles from ROOT file(s).
+
+    Args:
+        input_path: Path to ROOT file, directory, or glob pattern.
+        branch_name: Branch name for solid angle data.
+        tree_name: Name of the tree in ROOT files.
+        max_events: Maximum number of events to load (None = all).
+
+    Returns:
+        solid_angles: (N_events, 4760) array of solid angles.
+    """
+    file_list = expand_path(input_path)
+    all_sa = []
+    total_events = 0
+
+    for file_path in file_list:
+        if max_events and total_events >= max_events:
+            break
+
+        with uproot.open(file_path) as f:
+            tree = f[tree_name]
+            if branch_name not in tree.keys():
+                raise ValueError(
+                    f"Solid angle branch '{branch_name}' not found in {file_path}. "
+                    f"Available: {list(tree.keys())}"
+                )
+            sa_arr = tree[branch_name].array(library='np')
+
+            n_in_file = len(sa_arr)
+            if max_events:
+                remaining = max_events - total_events
+                if n_in_file > remaining:
+                    sa_arr = sa_arr[:remaining]
+                    n_in_file = remaining
+
+            all_sa.append(sa_arr)
+            total_events += n_in_file
+
+    solid_angles = np.concatenate(all_sa)
+    print(f"[INFO] Loaded solid angles from branch '{branch_name}': shape {solid_angles.shape}")
+    return solid_angles
+
+
 def normalize_data(npho: np.ndarray, time: np.ndarray,
                    npho_scale: float = DEFAULT_NPHO_SCALE,
                    npho_scale2: float = DEFAULT_NPHO_SCALE2,
@@ -288,7 +335,9 @@ def load_model(checkpoint_path: Optional[str] = None,
             outer_mode=config.get('outer_mode', 'finegrid'),
             outer_fine_pool=config.get('outer_fine_pool', None),
         )
-        model = XEC_Inpainter(encoder=encoder, predict_channels=predict_channels)
+        use_masked_attention = config.get('use_masked_attention', False)
+        model = XEC_Inpainter(encoder=encoder, predict_channels=predict_channels,
+                              use_masked_attention=use_masked_attention)
 
         # Load weights (prefer EMA)
         if 'ema_state_dict' in checkpoint:
@@ -347,6 +396,106 @@ def run_inference(model, model_type: str, x: np.ndarray, mask: np.ndarray,
                 all_preds[start:end] = pred_batch.cpu().numpy()
 
     return all_preds
+
+
+def run_baselines(x_original: np.ndarray, combined_mask: np.ndarray,
+                  artificial_mask: Optional[np.ndarray],
+                  dead_mask: np.ndarray,
+                  baseline_k: int = 1,
+                  solid_angles: Optional[np.ndarray] = None,
+                  run_numbers: Optional[np.ndarray] = None,
+                  event_numbers: Optional[np.ndarray] = None,
+                  ) -> Dict[str, List[Dict]]:
+    """Run baseline predictions and collect results per masked sensor.
+
+    Args:
+        x_original: (N, 4760, 2) normalized original data (before masking).
+        combined_mask: (N, 4760) bool mask (dead + artificial).
+        artificial_mask: (N, 4760) bool or None.
+        dead_mask: (4760,) bool.
+        baseline_k: k-hop parameter.
+        solid_angles: (N, 4760) solid angles or None.
+        run_numbers: optional run number per event.
+        event_numbers: optional event number per event.
+
+    Returns:
+        Dictionary with keys 'avg' (and optionally 'sa') mapping to lists
+        of per-sensor prediction dicts with keys:
+        pred_npho, truth_npho, error_npho, event_idx, sensor_id
+    """
+    x_npho = x_original[:, :, 0]  # (N, 4760) normalized npho, unmasked
+    n_events = x_npho.shape[0]
+
+    # --- Neighbor Average Baseline ---
+    print("[INFO] Running NeighborAverageBaseline...")
+    avg_baseline = NeighborAverageBaseline(k=baseline_k)
+    avg_preds_full = avg_baseline.predict(x_npho, combined_mask)  # (N, 4760)
+
+    baseline_results = {}
+
+    # Collect per-sensor results for avg baseline
+    avg_results = []
+    for i in range(n_events):
+        masked_sensors = np.where(combined_mask[i])[0]
+        for sensor_id in masked_sensors:
+            is_artificial = artificial_mask[i, sensor_id] if artificial_mask is not None else True
+            mask_type = 0 if is_artificial else 1
+
+            pred_npho = float(avg_preds_full[i, sensor_id])
+            truth_npho = float(x_original[i, sensor_id, 0])
+
+            if truth_npho == MODEL_SENTINEL or mask_type == 1:
+                error_npho = -999.0
+                if mask_type == 1:
+                    truth_npho = -999.0
+            else:
+                error_npho = pred_npho - truth_npho
+
+            avg_results.append({
+                'event_idx': i,
+                'sensor_id': int(sensor_id),
+                'mask_type': mask_type,
+                'pred_npho': pred_npho,
+                'truth_npho': truth_npho,
+                'error_npho': error_npho,
+            })
+    baseline_results['avg'] = avg_results
+
+    # --- Solid Angle Weighted Baseline ---
+    if solid_angles is not None:
+        print("[INFO] Running SolidAngleWeightedBaseline...")
+        sa_baseline = SolidAngleWeightedBaseline(k=baseline_k)
+        sa_preds_full = sa_baseline.predict(x_npho, combined_mask,
+                                            solid_angles=solid_angles)
+
+        sa_results = []
+        for i in range(n_events):
+            masked_sensors = np.where(combined_mask[i])[0]
+            for sensor_id in masked_sensors:
+                is_artificial = artificial_mask[i, sensor_id] if artificial_mask is not None else True
+                mask_type = 0 if is_artificial else 1
+
+                pred_npho = float(sa_preds_full[i, sensor_id])
+                truth_npho = float(x_original[i, sensor_id, 0])
+
+                if truth_npho == MODEL_SENTINEL or mask_type == 1:
+                    error_npho = -999.0
+                    if mask_type == 1:
+                        truth_npho = -999.0
+                else:
+                    error_npho = pred_npho - truth_npho
+
+                sa_results.append({
+                    'event_idx': i,
+                    'sensor_id': int(sensor_id),
+                    'mask_type': mask_type,
+                    'pred_npho': pred_npho,
+                    'truth_npho': truth_npho,
+                    'error_npho': error_npho,
+                })
+        baseline_results['sa'] = sa_results
+
+    return baseline_results
 
 
 def collect_predictions(predictions: np.ndarray, x_original: np.ndarray,
@@ -489,13 +638,40 @@ def compute_metrics(predictions: List[Dict], predict_channels: List[str] = None)
     return metrics
 
 
+def compute_baseline_metrics(baseline_predictions: List[Dict]) -> Dict:
+    """Compute metrics for a single baseline from its prediction list.
+
+    Args:
+        baseline_predictions: List of dicts with keys error_npho, mask_type.
+
+    Returns:
+        Dictionary of metrics (npho_mae, npho_rmse, npho_bias).
+    """
+    with_truth = [p for p in baseline_predictions
+                  if p['mask_type'] == 0 and p['error_npho'] > -999]
+
+    metrics = {'n_with_truth': len(with_truth)}
+
+    if with_truth:
+        err = np.array([p['error_npho'] for p in with_truth])
+        metrics.update({
+            'npho_mae': np.mean(np.abs(err)),
+            'npho_rmse': np.sqrt(np.mean(err ** 2)),
+            'npho_bias': np.mean(err),
+            'npho_68pct': np.percentile(np.abs(err), 68),
+        })
+
+    return metrics
+
+
 def save_predictions(predictions: List[Dict], output_path: str,
                      run_number: Optional[int] = None,
                      predict_channels: List[str] = None,
                      npho_scale: float = DEFAULT_NPHO_SCALE,
                      npho_scale2: float = DEFAULT_NPHO_SCALE2,
                      time_scale: float = DEFAULT_TIME_SCALE,
-                     time_shift: float = DEFAULT_TIME_SHIFT):
+                     time_shift: float = DEFAULT_TIME_SHIFT,
+                     baseline_results: Optional[Dict[str, List[Dict]]] = None):
     """
     Save predictions to ROOT file with metadata.
 
@@ -505,6 +681,7 @@ def save_predictions(predictions: List[Dict], output_path: str,
         run_number: Run number for dead channel pattern
         predict_channels: List of predicted channels (['npho'] or ['npho', 'time'])
         npho_scale, npho_scale2, time_scale, time_shift: Normalization parameters
+        baseline_results: Optional dict from run_baselines() with keys 'avg' and/or 'sa'
     """
     if not predictions:
         print("[WARNING] No predictions to save")
@@ -534,6 +711,21 @@ def save_predictions(predictions: List[Dict], output_path: str,
     if run_number is not None:
         branches['dead_pattern_run'] = np.full(len(predictions), run_number, dtype=np.int32)
 
+    # Add baseline branches (same length as ML predictions, one entry per masked sensor)
+    if baseline_results is not None:
+        if 'avg' in baseline_results:
+            avg_list = baseline_results['avg']
+            branches['baseline_avg_npho'] = np.array(
+                [p['pred_npho'] for p in avg_list], dtype=np.float32)
+            branches['baseline_avg_error_npho'] = np.array(
+                [p['error_npho'] for p in avg_list], dtype=np.float32)
+        if 'sa' in baseline_results:
+            sa_list = baseline_results['sa']
+            branches['baseline_sa_npho'] = np.array(
+                [p['pred_npho'] for p in sa_list], dtype=np.float32)
+            branches['baseline_sa_error_npho'] = np.array(
+                [p['error_npho'] for p in sa_list], dtype=np.float32)
+
     # Metadata for downstream analysis scripts
     metadata = {
         'predict_channels': np.array([','.join(predict_channels)], dtype='U32'),
@@ -551,8 +743,17 @@ def save_predictions(predictions: List[Dict], output_path: str,
     print(f"[INFO] Metadata: predict_channels={predict_channels}")
 
 
-def print_summary(metrics: Dict, is_real_data: bool, run_number: Optional[int]):
-    """Print metrics summary."""
+def print_summary(metrics: Dict, is_real_data: bool, run_number: Optional[int],
+                  baseline_metrics: Optional[Dict[str, Dict]] = None):
+    """Print metrics summary.
+
+    Args:
+        metrics: ML model metrics from compute_metrics().
+        is_real_data: Whether this is real data mode.
+        run_number: Run number for dead channel pattern.
+        baseline_metrics: Optional dict mapping baseline name ('avg', 'sa')
+                          to their metric dicts from compute_baseline_metrics().
+    """
     print("\n" + "=" * 70)
     print("INPAINTER VALIDATION RESULTS")
     print("=" * 70)
@@ -586,6 +787,42 @@ def print_summary(metrics: Dict, is_real_data: bool, run_number: Optional[int]):
                 if metrics.get(f'{face_name}_time_mae') is not None:
                     line += f", time_MAE={metrics[f'{face_name}_time_mae']:.4f}"
                 print(line)
+
+    # --- Baseline comparison ---
+    if baseline_metrics:
+        print("\n" + "-" * 70)
+        print("BASELINE COMPARISON (npho, normalized space)")
+        print("-" * 70)
+
+        # Print individual baseline metrics
+        baseline_name_map = {
+            'avg': 'Neighbor Avg (k-hop)',
+            'sa': 'Solid Angle Weighted',
+        }
+        for bname, bmetrics in baseline_metrics.items():
+            label = baseline_name_map.get(bname, bname)
+            if bmetrics.get('npho_mae') is not None:
+                print(f"\n  {label}:")
+                print(f"    MAE={bmetrics['npho_mae']:.4f}, "
+                      f"RMSE={bmetrics['npho_rmse']:.4f}, "
+                      f"Bias={bmetrics['npho_bias']:.4f}, "
+                      f"68%={bmetrics['npho_68pct']:.4f}")
+            else:
+                print(f"\n  {label}: no predictions with ground truth")
+
+        # Side-by-side comparison table
+        if metrics.get('npho_mae') is not None:
+            print(f"\n  {'Method':<26} {'MAE':>8} {'RMSE':>8} {'Bias':>8} {'68%':>8}")
+            print(f"  {'-'*26} {'-'*8} {'-'*8} {'-'*8} {'-'*8}")
+            print(f"  {'ML Model':<26} {metrics['npho_mae']:>8.4f} "
+                  f"{metrics['npho_rmse']:>8.4f} {metrics['npho_bias']:>8.4f} "
+                  f"{metrics['npho_68pct']:>8.4f}")
+            for bname, bmetrics in baseline_metrics.items():
+                label = baseline_name_map.get(bname, bname)
+                if bmetrics.get('npho_mae') is not None:
+                    print(f"  {label:<26} {bmetrics['npho_mae']:>8.4f} "
+                          f"{bmetrics['npho_rmse']:>8.4f} {bmetrics['npho_bias']:>8.4f} "
+                          f"{bmetrics['npho_68pct']:>8.4f}")
 
     print("=" * 70)
 
@@ -637,6 +874,15 @@ def main():
                         help="Device (default: cpu)")
     parser.add_argument("--tree-name", type=str, default="tree",
                         help="TTree name in ROOT file (default: tree)")
+
+    # Baselines
+    parser.add_argument("--baselines", action="store_true",
+                        help="Enable rule-based baseline computation alongside ML")
+    parser.add_argument("--solid-angle-branch", type=str, default=None,
+                        help="Branch name in ROOT file for solid angles "
+                             "(enables solid-angle-weighted baseline)")
+    parser.add_argument("--baseline-k", type=int, default=1,
+                        help="k-hop parameter for baseline neighbor search (default: 1)")
 
     args = parser.parse_args()
 
@@ -705,7 +951,32 @@ def main():
         predict_channels=predict_channels
     )
 
-    # Collect results
+    # --- Run baselines (if requested) ---
+    baseline_results = None
+    baseline_metrics_dict = None
+    if args.baselines:
+        # Load solid angles if branch is provided
+        solid_angles = None
+        if args.solid_angle_branch:
+            solid_angles = load_solid_angles(
+                args.input, args.solid_angle_branch,
+                tree_name=args.tree_name, max_events=args.max_events
+            )
+
+        baseline_results = run_baselines(
+            x_original, combined_mask, artificial_mask, dead_mask,
+            baseline_k=args.baseline_k,
+            solid_angles=solid_angles,
+            run_numbers=data.get('run'),
+            event_numbers=data.get('event'),
+        )
+
+        # Compute baseline metrics
+        baseline_metrics_dict = {}
+        for bname, bpreds in baseline_results.items():
+            baseline_metrics_dict[bname] = compute_baseline_metrics(bpreds)
+
+    # Collect ML results
     print("[INFO] Collecting predictions...")
     pred_list = collect_predictions(
         predictions, x_original, combined_mask, artificial_mask, dead_mask,
@@ -714,28 +985,35 @@ def main():
         predict_channels=predict_channels
     )
 
-    # Compute metrics
+    # Compute ML metrics
     metrics = compute_metrics(pred_list, predict_channels=predict_channels)
 
-    # Print summary
-    print_summary(metrics, args.real_data, args.run)
+    # Print summary (with optional baseline comparison)
+    print_summary(metrics, args.real_data, args.run,
+                  baseline_metrics=baseline_metrics_dict)
 
     # Save outputs
     run_str = str(args.run) if args.run else "custom"
     mode_str = "real" if args.real_data else "mc"
 
-    # Predictions ROOT file
+    # Predictions ROOT file (with optional baseline branches)
     pred_file = os.path.join(args.output, f"predictions_{mode_str}_run{run_str}.root")
     save_predictions(pred_list, pred_file, run_number=args.run,
-                     predict_channels=predict_channels)
+                     predict_channels=predict_channels,
+                     baseline_results=baseline_results)
 
-    # Metrics CSV
+    # Metrics CSV (include baseline metrics if available)
     metrics_file = os.path.join(args.output, f"metrics_{mode_str}_run{run_str}.csv")
     with open(metrics_file, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(['metric', 'value'])
         for k, v in sorted(metrics.items()):
             writer.writerow([k, v])
+        # Append baseline metrics with prefixed keys
+        if baseline_metrics_dict:
+            for bname, bmetrics in baseline_metrics_dict.items():
+                for k, v in sorted(bmetrics.items()):
+                    writer.writerow([f'baseline_{bname}_{k}', v])
     print(f"[INFO] Saved metrics to {metrics_file}")
 
     # Dead channel list

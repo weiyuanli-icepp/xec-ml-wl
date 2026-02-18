@@ -131,6 +131,17 @@ def load_predictions(input_path: str) -> Tuple[Dict[str, np.ndarray], Dict]:
         print(f"[INFO] pred_time branch missing - switching to npho-only mode")
         metadata['predict_channels'] = ['npho']
 
+    # Detect baseline branches
+    has_avg = 'baseline_avg_npho' in data
+    has_sa = 'baseline_sa_npho' in data
+    if has_avg or has_sa:
+        baselines = []
+        if has_avg:
+            baselines.append('neighbor_avg')
+        if has_sa:
+            baselines.append('solid_angle')
+        print(f"[INFO] Baseline data found: {', '.join(baselines)}")
+
     return data, metadata
 
 
@@ -276,6 +287,157 @@ def compute_detailed_metrics(data: Dict[str, np.ndarray], sentinel_value: float 
         metrics['dead_stats'] = dead_stats
 
     return metrics
+
+
+def compute_baseline_metrics(data: Dict[str, np.ndarray],
+                              sentinel_value: float = DEFAULT_SENTINEL_VALUE) -> Dict:
+    """Compute metrics for baseline predictions found in data.
+
+    Returns dict mapping baseline name ('avg', 'sa') to their metrics.
+    """
+    has_mask_type = 'mask_type' in data
+    if has_mask_type:
+        eval_mask = (data['mask_type'] == 0) & (data['error_npho'] > -999)
+    else:
+        eval_mask = data['error_npho'] > -999
+
+    baseline_metrics = {}
+
+    for prefix, label in [('baseline_avg', 'avg'), ('baseline_sa', 'sa')]:
+        error_key = f'{prefix}_error_npho'
+        pred_key = f'{prefix}_npho'
+        if error_key not in data:
+            continue
+
+        err = data[error_key][eval_mask]
+        if len(err) == 0:
+            continue
+
+        global_m = {
+            'n': len(err),
+            'npho_mae': np.mean(np.abs(err)),
+            'npho_rmse': np.sqrt(np.mean(err ** 2)),
+            'npho_bias': np.mean(err),
+            'npho_std': np.std(err),
+            'npho_68pct': np.percentile(np.abs(err), 68),
+            'npho_95pct': np.percentile(np.abs(err), 95),
+        }
+
+        # Per-face
+        per_face = {}
+        for face_int, face_name in FACE_INT_TO_NAME.items():
+            face_mask = eval_mask & (data['face'] == face_int)
+            if face_mask.sum() == 0:
+                continue
+            face_err = data[error_key][face_mask]
+            per_face[face_name] = {
+                'n': len(face_err),
+                'npho_mae': np.mean(np.abs(face_err)),
+                'npho_rmse': np.sqrt(np.mean(face_err ** 2)),
+                'npho_bias': np.mean(face_err),
+                'npho_68pct': np.percentile(np.abs(face_err), 68),
+            }
+
+        baseline_metrics[label] = {'global': global_m, 'per_face': per_face}
+
+    return baseline_metrics
+
+
+def plot_baseline_comparison(data: Dict[str, np.ndarray], output_dir: str,
+                              has_mask_type: bool, baseline_metrics: Dict,
+                              npho_scale: float, npho_scale2: float):
+    """Plot ML vs baseline comparison: overlay residuals and per-face bar chart."""
+    if not HAS_MATPLOTLIB or not baseline_metrics:
+        return
+
+    if has_mask_type:
+        valid = (data['mask_type'] == 0) & (data['error_npho'] > -999)
+    else:
+        valid = data['error_npho'] > -999
+
+    if valid.sum() == 0:
+        return
+
+    # --- Overlay residual distributions ---
+    n_baselines = len(baseline_metrics)
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    # ML residuals
+    err_ml = data['error_npho'][valid]
+    ax.hist(err_ml, bins=100, range=(-0.3, 0.4), density=True, alpha=0.5,
+            color='blue', label=f'ML (MAE={np.mean(np.abs(err_ml)):.4f})')
+
+    colors = {'avg': 'orange', 'sa': 'green'}
+    labels = {'avg': 'Neighbor Avg', 'sa': 'Solid Angle'}
+    for bname in ['avg', 'sa']:
+        error_key = f'baseline_{bname}_error_npho'
+        if error_key not in data:
+            continue
+        err_b = data[error_key][valid]
+        ax.hist(err_b, bins=100, range=(-0.3, 0.4), density=True, alpha=0.4,
+                color=colors.get(bname, 'gray'),
+                label=f'{labels.get(bname, bname)} (MAE={np.mean(np.abs(err_b)):.4f})')
+
+    ax.axvline(0, color='red', linestyle='--', alpha=0.5)
+    ax.set_xlim(-0.3, 0.4)
+    ax.set_xlabel('Npho Error (pred - truth) [normalized]')
+    ax.set_ylabel('Density')
+    ax.set_title('Residual Comparison: ML vs Baselines')
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'baseline_residual_overlay.pdf'))
+    plt.close()
+
+    # --- Per-face MAE comparison bar chart ---
+    faces = list(FACE_INT_TO_NAME.values())
+    methods = ['ML'] + [labels.get(b, b) for b in baseline_metrics.keys()]
+    method_colors = ['blue'] + [colors.get(b, 'gray') for b in baseline_metrics.keys()]
+
+    # Gather ML per-face MAEs
+    ml_maes = []
+    for face_int, face_name in FACE_INT_TO_NAME.items():
+        face_mask = valid & (data['face'] == face_int)
+        if face_mask.sum() > 0:
+            ml_maes.append(np.mean(np.abs(data['error_npho'][face_mask])))
+        else:
+            ml_maes.append(0)
+
+    all_maes = [ml_maes]
+    for bname, bm in baseline_metrics.items():
+        bmaes = []
+        for face_name in faces:
+            if face_name in bm['per_face']:
+                bmaes.append(bm['per_face'][face_name]['npho_mae'])
+            else:
+                bmaes.append(0)
+        all_maes.append(bmaes)
+
+    x = np.arange(len(faces))
+    n_methods = len(methods)
+    width = 0.8 / n_methods
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for i, (method_name, maes, color) in enumerate(zip(methods, all_maes, method_colors)):
+        offset = (i - n_methods / 2 + 0.5) * width
+        bars = ax.bar(x + offset, maes, width, label=method_name, color=color, alpha=0.7)
+        for bar in bars:
+            h = bar.get_height()
+            if h > 0:
+                ax.annotate(f'{h:.4f}', xy=(bar.get_x() + bar.get_width() / 2, h),
+                            xytext=(0, 2), textcoords="offset points",
+                            ha='center', va='bottom', fontsize=6, rotation=45)
+
+    ax.set_xlabel('Face')
+    ax.set_ylabel('Npho MAE (normalized)')
+    ax.set_title('Per-Face Npho MAE: ML vs Baselines')
+    ax.set_xticks(x)
+    ax.set_xticklabels(faces)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'baseline_per_face_comparison.pdf'))
+    plt.close()
+
+    print("[INFO] Saved baseline_residual_overlay.pdf + baseline_per_face_comparison.pdf")
 
 
 def plot_residual_distributions(data: Dict[str, np.ndarray], output_dir: str,
@@ -754,7 +916,8 @@ def save_metrics_csv(metrics: Dict, output_dir: str):
         print("[INFO] Saved dead_channel_stats.csv")
 
 
-def print_report(metrics: Dict, predict_time: bool = True):
+def print_report(metrics: Dict, predict_time: bool = True,
+                 baseline_metrics: Optional[Dict] = None):
     """Print metrics report to console."""
     print("\n" + "=" * 70)
     print("INPAINTER ANALYSIS REPORT")
@@ -826,6 +989,39 @@ def print_report(metrics: Dict, predict_time: bool = True):
             print(f"Time: mean={d['pred_time_mean']:.4f}, std={d['pred_time_std']:.4f}, "
                   f"range=[{d['pred_time_min']:.4f}, {d['pred_time_max']:.4f}]")
 
+    # Baseline comparison
+    if baseline_metrics and 'global' in metrics:
+        baseline_name_map = {'avg': 'Neighbor Avg', 'sa': 'Solid Angle'}
+        print(f"\n--- ML vs Baselines (npho, normalized) ---")
+        print(f"{'Method':<20} {'MAE':>8} {'RMSE':>8} {'Bias':>8} {'68%':>8} {'95%':>8}")
+        print("-" * 58)
+        g = metrics['global']
+        print(f"{'ML Model':<20} {g['npho_mae']:>8.4f} {g['npho_rmse']:>8.4f} "
+              f"{g['npho_bias']:>8.4f} {g['npho_68pct']:>8.4f} {g['npho_95pct']:>8.4f}")
+        for bname, bm in baseline_metrics.items():
+            bg = bm['global']
+            label = baseline_name_map.get(bname, bname)
+            print(f"{label:<20} {bg['npho_mae']:>8.4f} {bg['npho_rmse']:>8.4f} "
+                  f"{bg['npho_bias']:>8.4f} {bg['npho_68pct']:>8.4f} {bg['npho_95pct']:>8.4f}")
+
+        # Per-face comparison
+        print(f"\n--- Per-Face MAE: ML vs Baselines ---")
+        header = f"{'Face':<8} {'ML':>10}"
+        for bname in baseline_metrics:
+            header += f" {baseline_name_map.get(bname, bname):>14}"
+        print(header)
+        print("-" * len(header))
+        for face_name in FACE_NAMES:
+            ml_mae = metrics['per_face'].get(face_name, {}).get('npho_mae', np.nan)
+            line = f"{face_name:<8} {ml_mae:>10.4f}" if not np.isnan(ml_mae) else f"{face_name:<8} {'N/A':>10}"
+            for bname, bm in baseline_metrics.items():
+                b_mae = bm['per_face'].get(face_name, {}).get('npho_mae', np.nan)
+                if not np.isnan(b_mae):
+                    line += f" {b_mae:>14.4f}"
+                else:
+                    line += f" {'N/A':>14}"
+            print(line)
+
     print("=" * 70)
 
 
@@ -879,11 +1075,32 @@ def main():
     print("[INFO] Computing metrics...")
     metrics = compute_detailed_metrics(data, sentinel_value=args.sentinel, predict_time=predict_time)
 
+    # Compute baseline metrics (auto-detected from data branches)
+    baseline_metrics = compute_baseline_metrics(data, sentinel_value=args.sentinel)
+    if baseline_metrics:
+        print(f"[INFO] Baseline metrics computed for: {', '.join(baseline_metrics.keys())}")
+
     # Print report
-    print_report(metrics, predict_time=predict_time)
+    print_report(metrics, predict_time=predict_time, baseline_metrics=baseline_metrics or None)
 
     # Save metrics
     save_metrics_csv(metrics, args.output)
+
+    # Save baseline metrics CSV if available
+    if baseline_metrics:
+        import csv
+        baseline_name_map = {'avg': 'neighbor_avg', 'sa': 'solid_angle'}
+        with open(os.path.join(args.output, 'baseline_metrics.csv'), 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['method', 'scope', 'metric', 'value'])
+            for bname, bm in baseline_metrics.items():
+                method = baseline_name_map.get(bname, bname)
+                for k, v in bm['global'].items():
+                    writer.writerow([method, 'global', k, v])
+                for face_name, fm in bm['per_face'].items():
+                    for k, v in fm.items():
+                        writer.writerow([method, face_name, k, v])
+        print("[INFO] Saved baseline_metrics.csv")
 
     # Generate plots
     if not args.no_plots and HAS_MATPLOTLIB:
@@ -899,6 +1116,9 @@ def main():
                                     npho_scale, npho_scale2,
                                     time_scale, time_shift, predict_time=predict_time)
         plot_metrics_summary(metrics, args.output, args.sentinel, predict_time=predict_time)
+        if baseline_metrics:
+            plot_baseline_comparison(data, args.output, has_mask_type,
+                                      baseline_metrics, npho_scale, npho_scale2)
 
     print(f"\n[INFO] Analysis complete! Results saved to {args.output}/")
 
