@@ -39,13 +39,18 @@ class InpainterScriptableWrapper(nn.Module):
     """
     TorchScript-compatible wrapper for XEC_Inpainter.
 
-    Uses the forward_full_output() method which returns fixed-size (B, 4760, 2) tensor,
+    Uses the forward_full_output() method which returns fixed-size tensor,
     enabling clean TorchScript export without dynamic tensor size issues.
+
+    Output shape depends on predict_channels:
+    - ["npho"]:          (B, 4760, 1) — npho only
+    - ["npho", "time"]:  (B, 4760, 2) — npho + time
     """
 
     def __init__(self, inpainter: XEC_Inpainter):
         super().__init__()
         self.inpainter = inpainter
+        self.out_channels = inpainter.out_channels
 
     def forward(self, x_input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
@@ -54,15 +59,18 @@ class InpainterScriptableWrapper(nn.Module):
             mask: (B, 4760) - binary mask (1 = masked/dead, 0 = valid)
 
         Returns:
-            output: (B, 4760, 2) - tensor with inpainted values at masked positions,
-                    original values preserved at unmasked positions
+            output: (B, 4760, C) - tensor with inpainted values at masked positions,
+                    original values preserved at unmasked positions.
+                    C = out_channels (1 for npho-only, 2 for npho+time).
         """
         # Use fixed-size output method for clean TorchScript export
-        pred_all = self.inpainter.forward_full_output(x_input, mask)
+        pred_all = self.inpainter.forward_full_output(x_input, mask)  # (B, 4760, C)
 
         # Combine: use predictions at masked positions, original at unmasked
-        mask_expanded = mask.bool().unsqueeze(-1).expand_as(x_input)
-        output = torch.where(mask_expanded, pred_all, x_input)
+        # Slice x_input to match out_channels (e.g., only npho channel for npho-only)
+        x_ref = x_input[:, :, :self.out_channels]
+        mask_expanded = mask.bool().unsqueeze(-1).expand_as(x_ref)
+        output = torch.where(mask_expanded, pred_all, x_ref)
 
         return output
 
@@ -89,8 +97,21 @@ def load_inpainter_checkpoint(checkpoint_path, prefer_ema=True):
     outer_fine_pool = config.get("outer_fine_pool", (3, 3))
     sentinel_value = config.get("sentinel_value", -5.0)
     time_mask_ratio_scale = config.get("time_mask_ratio_scale", 1.0)
+    predict_channels = config.get("predict_channels", ["npho", "time"])
+    use_masked_attention = config.get("use_masked_attention", False)
+    head_type = config.get("head_type", "per_face")
+    sensor_positions_file = config.get("sensor_positions_file", None)
+    cross_attn_k = config.get("cross_attn_k", 16)
+    cross_attn_hidden = config.get("cross_attn_hidden", 64)
+    cross_attn_latent_dim = config.get("cross_attn_latent_dim", 128)
+    cross_attn_pos_dim = config.get("cross_attn_pos_dim", 96)
 
     print(f"[INFO] Model config: outer_mode={outer_mode}, outer_fine_pool={outer_fine_pool}")
+    print(f"[INFO]   predict_channels={predict_channels}, head_type={head_type}")
+    if head_type == "cross_attention":
+        print(f"[INFO]   sensor_positions_file={sensor_positions_file}")
+    else:
+        print(f"[INFO]   use_masked_attention={use_masked_attention}")
 
     # Create encoder
     encoder = XECEncoder(
@@ -104,7 +125,15 @@ def load_inpainter_checkpoint(checkpoint_path, prefer_ema=True):
         encoder=encoder,
         freeze_encoder=True,
         sentinel_value=sentinel_value,
-        time_mask_ratio_scale=time_mask_ratio_scale
+        time_mask_ratio_scale=time_mask_ratio_scale,
+        predict_channels=predict_channels,
+        use_masked_attention=use_masked_attention,
+        head_type=head_type,
+        sensor_positions_file=sensor_positions_file,
+        cross_attn_k=cross_attn_k,
+        cross_attn_hidden=cross_attn_hidden,
+        cross_attn_latent_dim=cross_attn_latent_dim,
+        cross_attn_pos_dim=cross_attn_pos_dim,
     )
 
     # Load weights
@@ -181,7 +210,9 @@ NOTE: ONNX export is NOT supported due to nn.TransformerEncoder's fused kernel.
     trace_batch = args.trace_batch_size
     trace_mask_per_event = args.trace_mask_per_event
 
+    out_channels = inpainter.out_channels
     print(f"[INFO] Tracing with batch_size={trace_batch}, ~{trace_mask_per_event} masked per event")
+    print(f"[INFO] Output channels: {out_channels} ({inpainter.predict_channels})")
     print(f"[INFO] Using fixed-size output method (forward_full_output) for clean tracing")
 
     dummy_input = torch.randn(trace_batch, 4760, 2)

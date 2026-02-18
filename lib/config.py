@@ -39,6 +39,16 @@ class TaskConfig:
 
 
 @dataclass
+class FiducialConfig:
+    """Fiducial volume cut on first interaction point (uvwTruth)."""
+    enabled: bool = False
+    u_max: float = 23.9    # |u| < u_max [cm]
+    v_max: float = 67.9    # |v| < v_max [cm]
+    w_min: float = 0.0     # w >= w_min [cm]
+    w_max: Optional[float] = None  # w <= w_max [cm], null = no upper bound
+
+
+@dataclass
 class DataConfig:
     """Data configuration."""
     train_path: str = ""
@@ -52,6 +62,7 @@ class DataConfig:
     npho_branch: str = "npho"  # Input branch for photon counts
     time_branch: str = "relative_time"  # Input branch for timing
     log_invalid_npho: bool = True  # Log warning when invalid npho values detected
+    fiducial: FiducialConfig = field(default_factory=FiducialConfig)
 
 
 @dataclass
@@ -188,7 +199,11 @@ def load_config(config_path: str, warn_missing: bool = True, auto_update: bool =
     # Data
     if 'data' in raw_config:
         for k, v in raw_config['data'].items():
-            if hasattr(config.data, k):
+            if k == 'fiducial' and isinstance(v, dict):
+                for fk, fv in v.items():
+                    if hasattr(config.data.fiducial, fk):
+                        setattr(config.data.fiducial, fk, fv)
+            elif hasattr(config.data, k):
                 setattr(config.data, k, v)
 
     # Normalization
@@ -625,9 +640,17 @@ class InpainterModelConfig:
     outer_mode: str = "finegrid"
     outer_fine_pool: Optional[List[int]] = None
     mask_ratio: float = 0.05  # Default 5% for realistic dead channel density
-    predict_channels: List[str] = field(default_factory=lambda: ["npho", "time"])  # Output channels to predict
+    predict_channels: List[str] = field(default_factory=lambda: ["npho"])  # Output channels to predict
     freeze_encoder: bool = True  # Freeze encoder from MAE
     use_local_context: bool = True  # Use local neighbor context for inpainting
+    use_masked_attention: bool = False  # Use attention-based heads for masked positions
+    # Cross-attention unified head settings
+    head_type: str = "per_face"  # "per_face" or "cross_attention"
+    sensor_positions_file: Optional[str] = None  # Required for cross_attention head
+    cross_attn_k: int = 16  # Number of KNN neighbors
+    cross_attn_hidden: int = 64  # Hidden dim for local attention
+    cross_attn_latent_dim: int = 128  # Projection dim for latent cross-attention
+    cross_attn_pos_dim: int = 96  # Sinusoidal position encoding dim (num_bands*2*3)
 
 
 @dataclass

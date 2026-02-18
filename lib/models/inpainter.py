@@ -7,6 +7,8 @@ Architecture:
 - Local context (neighboring sensors) + global context (latent tokens)
 """
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,6 +24,7 @@ from ..geom_defs import (
     CENTRAL_COARSE_IDS, DEFAULT_SENTINEL_VALUE
 )
 from ..geom_utils import gather_face, build_outer_fine_grid_tensor, gather_hex_nodes
+from ..sensor_geometry import load_sensor_positions, build_sensor_face_ids, build_knn_graph
 
 
 class FaceInpaintingHead(nn.Module):
@@ -653,6 +656,588 @@ class OuterSensorInpaintingHead(nn.Module):
         return all_preds, self.sensor_ids
 
 
+class MaskedAttentionFaceHead(nn.Module):
+    """
+    Attention-based inpainting head for rectangular faces (Inner, US, DS).
+
+    Predicts only at masked positions by attention-pooling CNN features from
+    unmasked k-hop neighbors. Follows the OuterSensorInpaintingHead pattern.
+
+    Args:
+        face_h: Height of the face grid
+        face_w: Width of the face grid
+        latent_dim: Dimension of input latent vector
+        hidden_dim: Hidden dimension for CNN layers
+        use_local_context: If True, uses local CNN + latent. If False, latent only.
+        out_channels: Number of output channels
+        k: Number of hops for neighbor lookup (k=2 gives up to 24 neighbors)
+    """
+    def __init__(self, face_h, face_w, latent_dim=1024, hidden_dim=64,
+                 use_local_context=True, out_channels=2, k=2):
+        super().__init__()
+        self.face_h = face_h
+        self.face_w = face_w
+        self.hidden_dim = hidden_dim
+        self.out_channels = out_channels
+        self.use_local_context = use_local_context
+
+        # Latent projection (shared)
+        self.latent_proj = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim),
+            nn.GELU(),
+        )
+
+        if use_local_context:
+            # CNN feature extractor (shared between both paths)
+            self.local_encoder = nn.Sequential(
+                nn.Conv2d(2 + hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                nn.GroupNorm(8, hidden_dim),
+                nn.GELU(),
+                ConvNeXtV2Block(dim=hidden_dim, drop_path=0.0),
+                ConvNeXtV2Block(dim=hidden_dim, drop_path=0.0),
+            )
+        else:
+            self.global_decoder = nn.Sequential(
+                nn.ConvTranspose2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                nn.GroupNorm(8, hidden_dim),
+                nn.GELU(),
+                nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                nn.GELU(),
+            )
+
+        # Attention pooling weight
+        self.attn_weight = nn.Linear(hidden_dim, 1)
+
+        # Masked-position prediction head (attended features + latent -> prediction)
+        self.masked_pred_head = nn.Sequential(
+            nn.Linear(hidden_dim + hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, out_channels),
+        )
+
+        # Pre-compute k-hop neighbor indices
+        self._build_neighbor_lookup(k)
+
+    def _build_neighbor_lookup(self, k):
+        """Pre-compute k-hop box neighbor indices for each grid position."""
+        H, W = self.face_h, self.face_w
+        max_nbrs = (2 * k + 1) ** 2 - 1
+
+        nbr_indices = torch.zeros(H * W, max_nbrs, dtype=torch.long)
+        nbr_counts = torch.zeros(H * W, dtype=torch.long)
+
+        for r in range(H):
+            for c in range(W):
+                pos = r * W + c
+                nbrs = []
+                for dr in range(-k, k + 1):
+                    for dc in range(-k, k + 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        rr, cc = r + dr, c + dc
+                        if 0 <= rr < H and 0 <= cc < W:
+                            nbrs.append(rr * W + cc)
+                nbr_counts[pos] = len(nbrs)
+                if nbrs:
+                    nbr_indices[pos, :len(nbrs)] = torch.tensor(nbrs, dtype=torch.long)
+
+        self.register_buffer("nbr_indices", nbr_indices)
+        self.register_buffer("nbr_counts", nbr_counts)
+        self.max_nbrs = max_nbrs
+
+    def _extract_features(self, face_tensor, latent_token):
+        """Shared feature extraction: CNN + latent conditioning."""
+        B, C, H, W = face_tensor.shape
+        latent_cond = self.latent_proj(latent_token)
+        latent_spatial = latent_cond.view(B, -1, 1, 1).expand(-1, -1, H, W)
+
+        if self.use_local_context:
+            x = torch.cat([face_tensor, latent_spatial], dim=1)
+            features = self.local_encoder(x)  # (B, hidden_dim, H, W)
+        else:
+            features = self.global_decoder(latent_spatial)
+
+        return features, latent_cond
+
+    def forward(self, face_tensor, latent_token, mask_2d):
+        """
+        Attention-based forward: predicts only at masked positions.
+
+        For each masked position, gathers CNN features of unmasked k-hop
+        neighbors, applies attention pooling, and predicts via MLP.
+        """
+        B, C, H, W = face_tensor.shape
+        device = face_tensor.device
+
+        features, latent_cond = self._extract_features(face_tensor, latent_token)
+        features_flat = features.view(B, self.hidden_dim, -1).permute(0, 2, 1)  # (B, H*W, hidden_dim)
+        mask_flat = mask_2d.view(B, -1)  # (B, H*W)
+
+        num_masked_per_sample = mask_flat.sum(dim=1).int()
+        max_masked = num_masked_per_sample.max().item()
+
+        if max_masked == 0:
+            return (
+                torch.zeros(B, 0, self.out_channels, device=device, dtype=face_tensor.dtype),
+                torch.zeros(B, 0, 2, dtype=torch.long, device=device),
+                torch.zeros(B, 0, dtype=torch.bool, device=device),
+            )
+
+        batch_idx, pos_idx = mask_flat.nonzero(as_tuple=True)
+
+        # Neighbor indices for each masked position
+        nbrs = self.nbr_indices[pos_idx]  # (total_masked, max_nbrs)
+        counts = self.nbr_counts[pos_idx]
+
+        # Valid neighbors: in range AND unmasked
+        slot_range = torch.arange(self.max_nbrs, device=device).unsqueeze(0)
+        in_range = slot_range < counts.unsqueeze(1)
+
+        batch_expand = batch_idx.unsqueeze(1).expand(-1, self.max_nbrs)
+        nbr_is_masked = mask_flat[batch_expand, nbrs].bool()
+        valid_nbrs = in_range & ~nbr_is_masked
+
+        # Gather neighbor features (vectorized)
+        nbr_features = features_flat[batch_expand, nbrs]  # (total_masked, max_nbrs, hidden_dim)
+
+        # Attention pooling
+        attn_logits = self.attn_weight(nbr_features).squeeze(-1)
+        attn_logits = attn_logits.masked_fill(~valid_nbrs, -1e4)
+        attn_weights = F.softmax(attn_logits, dim=-1)
+        attended = (attn_weights.unsqueeze(-1) * nbr_features).sum(dim=1)
+
+        # Predict: concat attended features + latent
+        latent_for_masked = latent_cond[batch_idx]
+        combined = torch.cat([attended, latent_for_masked], dim=-1)
+        preds = self.masked_pred_head(combined)
+
+        # Scatter into padded output
+        cumsum = torch.zeros(B + 1, device=device, dtype=torch.long)
+        cumsum[1:] = num_masked_per_sample.cumsum(0)
+        within_batch_idx = torch.arange(len(batch_idx), device=device) - cumsum[batch_idx]
+
+        pred_masked = torch.zeros(B, max_masked, self.out_channels, device=device, dtype=preds.dtype)
+        pred_masked[batch_idx, within_batch_idx] = preds
+
+        mask_indices = torch.zeros(B, max_masked, 2, dtype=torch.long, device=device)
+        mask_indices[batch_idx, within_batch_idx, 0] = pos_idx // W
+        mask_indices[batch_idx, within_batch_idx, 1] = pos_idx % W
+
+        valid_mask = torch.zeros(B, max_masked, dtype=torch.bool, device=device)
+        valid_mask[batch_idx, within_batch_idx] = True
+
+        return pred_masked, mask_indices, valid_mask
+
+
+class MaskedAttentionHexHead(nn.Module):
+    """
+    Attention-based inpainting head for hexagonal faces (Top, Bottom PMTs).
+
+    Same concept as MaskedAttentionFaceHead but uses GNN features and
+    k-hop graph neighbors from HEX_EDGE_INDEX_NP.
+    """
+    def __init__(self, num_nodes, edge_index, latent_dim=1024, hidden_dim=96,
+                 use_local_context=True, out_channels=2, k=2):
+        super().__init__()
+        self.num_nodes = num_nodes
+        self.hidden_dim = hidden_dim
+        self.out_channels = out_channels
+        self.use_local_context = use_local_context
+
+        if not torch.is_tensor(edge_index):
+            edge_index = torch.from_numpy(edge_index)
+        self.register_buffer("edge_index", edge_index.long())
+
+        # Latent projection (shared)
+        self.latent_proj = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim),
+            nn.GELU(),
+        )
+
+        if use_local_context:
+            self.input_proj = nn.Linear(2 + hidden_dim, hidden_dim)
+            self.gnn_layers = nn.ModuleList([
+                HexNeXtBlock(dim=hidden_dim, drop_path=0.0)
+                for _ in range(3)
+            ])
+        else:
+            self.global_decoder = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.GELU(),
+            )
+
+        # Attention pooling weight
+        self.attn_weight = nn.Linear(hidden_dim, 1)
+
+        # Masked-position prediction head (attended features + latent)
+        self.masked_pred_head = nn.Sequential(
+            nn.Linear(hidden_dim + hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, out_channels),
+        )
+
+        # Pre-compute k-hop graph neighbors
+        self._build_neighbor_lookup(edge_index, k)
+
+    def _build_neighbor_lookup(self, edge_index, k):
+        """Pre-compute k-hop graph neighbors using BFS."""
+        if torch.is_tensor(edge_index):
+            ei = edge_index.numpy()
+        else:
+            ei = edge_index
+
+        src, dst, types = ei[0], ei[1], ei[2]
+        real = types != 0
+        src_real, dst_real = src[real], dst[real]
+
+        # Build adjacency list
+        adj = [[] for _ in range(self.num_nodes)]
+        for s, d in zip(src_real, dst_real):
+            adj[s].append(d)
+
+        # BFS k-hop for each node
+        all_neighbors = []
+        for node in range(self.num_nodes):
+            visited = {node}
+            frontier = [node]
+            for _ in range(k):
+                next_frontier = []
+                for u in frontier:
+                    for v in adj[u]:
+                        if v not in visited:
+                            visited.add(v)
+                            next_frontier.append(v)
+                frontier = next_frontier
+            visited.discard(node)
+            all_neighbors.append(sorted(visited))
+
+        max_nbrs = max(len(n) for n in all_neighbors) if all_neighbors else 0
+        nbr_indices = torch.zeros(self.num_nodes, max(max_nbrs, 1), dtype=torch.long)
+        nbr_counts = torch.zeros(self.num_nodes, dtype=torch.long)
+
+        for node, nbrs in enumerate(all_neighbors):
+            nbr_counts[node] = len(nbrs)
+            if nbrs:
+                nbr_indices[node, :len(nbrs)] = torch.tensor(nbrs, dtype=torch.long)
+
+        self.register_buffer("nbr_indices", nbr_indices)
+        self.register_buffer("nbr_counts", nbr_counts)
+        self.max_nbrs = max(max_nbrs, 1)
+
+    def _extract_features(self, node_features, latent_token):
+        """Shared GNN feature extraction."""
+        B, N, C = node_features.shape
+        latent_cond = self.latent_proj(latent_token)  # (B, hidden_dim)
+
+        if self.use_local_context:
+            latent_expanded = latent_cond.unsqueeze(1).expand(-1, N, -1)
+            x = torch.cat([node_features, latent_expanded], dim=-1)
+            x = self.input_proj(x)
+            for layer in self.gnn_layers:
+                x = layer(x, self.edge_index)
+        else:
+            x = self.global_decoder(latent_cond)
+            x = x.unsqueeze(1).expand(-1, N, -1)
+
+        return x, latent_cond  # x: (B, N, hidden_dim)
+
+    def forward(self, node_features, latent_token, node_mask):
+        """Attention-based forward: predicts only at masked nodes."""
+        B, N, C = node_features.shape
+        device = node_features.device
+
+        features, latent_cond = self._extract_features(node_features, latent_token)
+
+        num_masked_per_sample = node_mask.sum(dim=1).int()
+        max_masked = num_masked_per_sample.max().item()
+
+        if max_masked == 0:
+            return (
+                torch.zeros(B, 0, self.out_channels, device=device, dtype=node_features.dtype),
+                torch.zeros(B, 0, dtype=torch.long, device=device),
+                torch.zeros(B, 0, dtype=torch.bool, device=device),
+            )
+
+        batch_idx, node_idx = node_mask.nonzero(as_tuple=True)
+
+        # Neighbor indices
+        nbrs = self.nbr_indices[node_idx]  # (total_masked, max_nbrs)
+        counts = self.nbr_counts[node_idx]
+
+        slot_range = torch.arange(self.max_nbrs, device=device).unsqueeze(0)
+        in_range = slot_range < counts.unsqueeze(1)
+
+        batch_expand = batch_idx.unsqueeze(1).expand(-1, self.max_nbrs)
+        nbr_is_masked = node_mask[batch_expand, nbrs].bool()
+        valid_nbrs = in_range & ~nbr_is_masked
+
+        # Gather neighbor features (vectorized)
+        nbr_features = features[batch_expand, nbrs]  # (total_masked, max_nbrs, hidden_dim)
+
+        # Attention pooling
+        attn_logits = self.attn_weight(nbr_features).squeeze(-1)
+        attn_logits = attn_logits.masked_fill(~valid_nbrs, -1e4)
+        attn_weights = F.softmax(attn_logits, dim=-1)
+        attended = (attn_weights.unsqueeze(-1) * nbr_features).sum(dim=1)
+
+        # Predict
+        latent_for_masked = latent_cond[batch_idx]
+        combined = torch.cat([attended, latent_for_masked], dim=-1)
+        preds = self.masked_pred_head(combined)
+
+        # Scatter into padded output
+        cumsum = torch.zeros(B + 1, device=device, dtype=torch.long)
+        cumsum[1:] = num_masked_per_sample.cumsum(0)
+        within_batch_idx = torch.arange(len(batch_idx), device=device) - cumsum[batch_idx]
+
+        pred_masked = torch.zeros(B, max_masked, self.out_channels, device=device, dtype=preds.dtype)
+        pred_masked[batch_idx, within_batch_idx] = preds
+
+        mask_indices = torch.zeros(B, max_masked, dtype=torch.long, device=device)
+        mask_indices[batch_idx, within_batch_idx] = node_idx
+
+        valid_mask = torch.zeros(B, max_masked, dtype=torch.bool, device=device)
+        valid_mask[batch_idx, within_batch_idx] = True
+
+        return pred_masked, mask_indices, valid_mask
+
+
+def _sinusoidal_position_encoding(positions, num_bands=16):
+    """
+    Sinusoidal 3D position encoding.
+
+    Applies 1D sinusoidal encoding to each coordinate (x, y, z) independently,
+    then concatenates. Output dimension = num_bands * 2 (sin+cos) * 3 (xyz).
+
+    Args:
+        positions: (N, 3) tensor of 3D coordinates
+        num_bands: number of frequency bands per coordinate
+
+    Returns:
+        encoding: (N, num_bands * 2 * 3) tensor
+    """
+    # Frequency bands: exponentially spaced from 2^0 to 2^(num_bands-1)
+    freq_bands = 2.0 ** torch.linspace(0, num_bands - 1, num_bands,
+                                        device=positions.device,
+                                        dtype=positions.dtype)  # (num_bands,)
+
+    encodings = []
+    for dim in range(3):
+        coord = positions[:, dim:dim + 1]  # (N, 1)
+        # Scale coordinates to reasonable range for sinusoidal encoding
+        # Multiply by frequency bands: (N, 1) * (num_bands,) -> (N, num_bands)
+        scaled = coord * freq_bands.unsqueeze(0) * (math.pi / 100.0)
+        encodings.append(torch.sin(scaled))
+        encodings.append(torch.cos(scaled))
+
+    return torch.cat(encodings, dim=-1)  # (N, num_bands * 2 * 3)
+
+
+class CrossAttentionInpaintingHead(nn.Module):
+    """
+    Unified cross-attention inpainting head that replaces per-face attention heads.
+
+    For each masked sensor:
+    1. Query from sinusoidal 3D position embedding + face ID embedding
+    2. Local attention: k-nearest neighbors by 3D distance (cross-face)
+    3. Global cross-attention: attend to all 6 latent tokens
+    4. Predict via MLP from concatenated local + global features
+
+    Args:
+        sensor_positions_file: Path to sensor_positions.txt (N x y z format)
+        k: Number of nearest neighbors for local attention
+        hidden_dim: Hidden dimension for local attention features
+        latent_dim: Dimension of encoder latent tokens (typically 1024)
+        latent_proj_dim: Projection dimension for latent tokens in cross-attention
+        pos_dim: Dimension of sinusoidal position encoding (num_bands * 2 * 3)
+        face_embed_dim: Dimension of learnable face ID embedding
+        out_channels: Number of output channels (1 for npho-only, 2 for npho+time)
+        n_heads: Number of attention heads for global cross-attention
+    """
+
+    def __init__(self, sensor_positions_file, k=16, hidden_dim=64,
+                 latent_dim=1024, latent_proj_dim=128, pos_dim=96,
+                 face_embed_dim=32, out_channels=1, n_heads=4):
+        super().__init__()
+        self.k = k
+        self.hidden_dim = hidden_dim
+        self.latent_dim = latent_dim
+        self.latent_proj_dim = latent_proj_dim
+        self.pos_dim = pos_dim
+        self.face_embed_dim = face_embed_dim
+        self.out_channels = out_channels
+        self.n_heads = n_heads
+        self.num_bands = pos_dim // 6  # pos_dim = num_bands * 2 * 3
+
+        # --- Precompute geometry (registered buffers) ---
+        import numpy as np
+        positions_np = load_sensor_positions(sensor_positions_file)
+        knn_np = build_knn_graph(positions_np, k)
+        face_ids_np = build_sensor_face_ids()
+
+        self.register_buffer("sensor_positions",
+                             torch.from_numpy(positions_np).float())  # (4760, 3)
+        self.register_buffer("knn_indices",
+                             torch.from_numpy(knn_np).long())  # (4760, k)
+        self.register_buffer("face_ids",
+                             torch.from_numpy(face_ids_np).long())  # (4760,)
+
+        # Precompute sinusoidal position embeddings
+        pos_embed = _sinusoidal_position_encoding(
+            torch.from_numpy(positions_np).float(), self.num_bands
+        )
+        self.register_buffer("pos_embed", pos_embed)  # (4760, pos_dim)
+
+        # --- Learnable parameters ---
+        # Face ID embedding (6 faces)
+        self.face_embedding = nn.Embedding(6, face_embed_dim)
+
+        query_dim = pos_dim + face_embed_dim
+
+        # --- Local attention (KNN neighbors) ---
+        # Input features for each neighbor: 2 (npho, time) + pos_dim + face_embed_dim
+        neighbor_feat_dim = 2 + pos_dim + face_embed_dim
+        self.neighbor_proj = nn.Linear(neighbor_feat_dim, hidden_dim)
+        self.query_proj_local = nn.Linear(query_dim, hidden_dim)
+        # Scaled dot-product attention (single-head for local)
+        self.local_attn_scale = hidden_dim ** -0.5
+
+        # --- Global cross-attention (to 6 latent tokens) ---
+        self.latent_proj = nn.Linear(latent_dim, latent_proj_dim)
+        self.latent_face_proj = nn.Linear(face_embed_dim, latent_proj_dim)
+        self.query_proj_global = nn.Linear(query_dim, latent_proj_dim)
+
+        assert latent_proj_dim % n_heads == 0, (
+            f"latent_proj_dim ({latent_proj_dim}) must be divisible by n_heads ({n_heads})"
+        )
+        self.head_dim = latent_proj_dim // n_heads
+        # Multi-head attention projections for K, V
+        self.k_proj = nn.Linear(latent_proj_dim, latent_proj_dim)
+        self.v_proj = nn.Linear(latent_proj_dim, latent_proj_dim)
+        self.global_out_proj = nn.Linear(latent_proj_dim, latent_proj_dim)
+
+        # --- Prediction MLP ---
+        mlp_input_dim = hidden_dim + latent_proj_dim
+        self.pred_mlp = nn.Sequential(
+            nn.LayerNorm(mlp_input_dim),
+            nn.Linear(mlp_input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, out_channels),
+        )
+
+    def forward(self, x_flat, latent_seq, mask):
+        """
+        Args:
+            x_flat: (B, 4760, 2) sensor values with masked positions as sentinel
+            latent_seq: (B, num_tokens, latent_dim) all latent tokens from encoder
+            mask: (B, 4760) binary mask (1=masked, 0=valid)
+
+        Returns:
+            pred_all: (B, 4760, out_channels) predictions (only masked positions filled)
+        """
+        B, N, C = x_flat.shape
+        device = x_flat.device
+
+        # Output tensor (zeros for unmasked, predictions for masked)
+        pred_all = torch.zeros(B, N, self.out_channels, device=device,
+                               dtype=x_flat.dtype)
+
+        # 1. Identify masked positions (flat indexing across batch)
+        # batch_idx: which sample, sensor_idx: which sensor
+        batch_idx, sensor_idx = mask.nonzero(as_tuple=True)
+        total_masked = batch_idx.shape[0]
+
+        if total_masked == 0:
+            return pred_all
+
+        # 2. Build queries: pos_embed + face_embed for each masked sensor
+        # pos_embed is shared across batch (precomputed buffer)
+        query_pos = self.pos_embed[sensor_idx]  # (total_masked, pos_dim)
+        query_face = self.face_embedding(self.face_ids[sensor_idx])  # (total_masked, face_embed_dim)
+        query = torch.cat([query_pos, query_face], dim=-1)  # (total_masked, pos_dim + face_embed_dim)
+
+        # 3. LOCAL ATTENTION: KNN neighbors by 3D distance
+        # Get neighbor indices for each masked sensor
+        nbr_indices = self.knn_indices[sensor_idx]  # (total_masked, k)
+
+        # Gather neighbor raw features from x_flat
+        nbr_batch = batch_idx.unsqueeze(1).expand(-1, self.k)  # (total_masked, k)
+        nbr_values = x_flat[nbr_batch, nbr_indices]  # (total_masked, k, 2)
+
+        # Neighbor position and face embeddings
+        nbr_pos = self.pos_embed[nbr_indices]  # (total_masked, k, pos_dim)
+        nbr_face = self.face_embedding(self.face_ids[nbr_indices])  # (total_masked, k, face_embed_dim)
+
+        # Concatenate neighbor features
+        nbr_feat = torch.cat([nbr_values, nbr_pos, nbr_face], dim=-1)  # (total_masked, k, neighbor_feat_dim)
+        nbr_feat = self.neighbor_proj(nbr_feat)  # (total_masked, k, hidden_dim)
+
+        # Check which neighbors are masked (exclude from attention)
+        nbr_is_masked = mask[nbr_batch, nbr_indices].bool()  # (total_masked, k)
+
+        # Scaled dot-product attention
+        q_local = self.query_proj_local(query)  # (total_masked, hidden_dim)
+        attn_logits = torch.bmm(
+            nbr_feat, q_local.unsqueeze(-1)
+        ).squeeze(-1) * self.local_attn_scale  # (total_masked, k)
+
+        # Mask out masked neighbors
+        attn_logits = attn_logits.masked_fill(nbr_is_masked, -1e4)
+        attn_weights = F.softmax(attn_logits, dim=-1)  # (total_masked, k)
+
+        # Weighted sum
+        local_feat = (attn_weights.unsqueeze(-1) * nbr_feat).sum(dim=1)  # (total_masked, hidden_dim)
+
+        # 4. GLOBAL CROSS-ATTENTION: attend to all 6 latent tokens
+        # We use the first 6 tokens from latent_seq (one per face)
+        num_tokens = latent_seq.shape[1]
+        # Project latent tokens
+        latent_proj = self.latent_proj(latent_seq)  # (B, num_tokens, latent_proj_dim)
+
+        # Add face-specific bias to latent tokens
+        # Create face embeddings for tokens 0..num_tokens-1
+        # Token order matches encoder face order: typically inner, us, ds, outer, top, bot
+        token_face_ids = torch.arange(num_tokens, device=device).clamp(max=5)
+        token_face_embed = self.face_embedding(token_face_ids)  # (num_tokens, face_embed_dim)
+        latent_face_bias = self.latent_face_proj(token_face_embed)  # (num_tokens, latent_proj_dim)
+        latent_kv = latent_proj + latent_face_bias.unsqueeze(0)  # (B, num_tokens, latent_proj_dim)
+
+        # Gather latent tokens for each masked sensor's batch
+        latent_for_masked = latent_kv[batch_idx]  # (total_masked, num_tokens, latent_proj_dim)
+
+        # Multi-head attention
+        q_global = self.query_proj_global(query)  # (total_masked, latent_proj_dim)
+        k_global = self.k_proj(latent_for_masked)  # (total_masked, num_tokens, latent_proj_dim)
+        v_global = self.v_proj(latent_for_masked)  # (total_masked, num_tokens, latent_proj_dim)
+
+        # Reshape for multi-head: (total_masked, n_heads, ..., head_dim)
+        q_mh = q_global.view(total_masked, self.n_heads, self.head_dim)
+        k_mh = k_global.view(total_masked, num_tokens, self.n_heads, self.head_dim).permute(0, 2, 1, 3)
+        v_mh = v_global.view(total_masked, num_tokens, self.n_heads, self.head_dim).permute(0, 2, 1, 3)
+
+        # Attention: (total_masked, n_heads, 1, head_dim) @ (total_masked, n_heads, head_dim, num_tokens)
+        attn_global = torch.matmul(
+            q_mh.unsqueeze(2), k_mh.transpose(-2, -1)
+        ) * (self.head_dim ** -0.5)  # (total_masked, n_heads, 1, num_tokens)
+        attn_global = F.softmax(attn_global, dim=-1)
+
+        # Weighted sum: (total_masked, n_heads, 1, head_dim)
+        global_feat = torch.matmul(attn_global, v_mh).squeeze(2)  # (total_masked, n_heads, head_dim)
+        global_feat = global_feat.reshape(total_masked, self.latent_proj_dim)
+        global_feat = self.global_out_proj(global_feat)  # (total_masked, latent_proj_dim)
+
+        # 5. PREDICT: MLP(concat(local, global))
+        combined = torch.cat([local_feat, global_feat], dim=-1)  # (total_masked, hidden_dim + latent_proj_dim)
+        preds = self.pred_mlp(combined)  # (total_masked, out_channels)
+
+        # Scatter predictions back to output
+        pred_all[batch_idx, sensor_idx] = preds
+
+        return pred_all
+
+
 class XEC_Inpainter(nn.Module):
     """
     Dead channel inpainting model.
@@ -669,15 +1254,32 @@ class XEC_Inpainter(nn.Module):
                           in addition to global latent. If False, only global latent is used
                           (similar to MAE decoder). Set to False for ablation studies.
         predict_channels: List of channels to predict (["npho"] or ["npho", "time"])
+        use_masked_attention: If True, use attention-based heads that predict only at
+                             masked positions (MaskedAttentionFaceHead/HexHead).
+        head_type: "per_face" (default) or "cross_attention" for unified cross-attention head.
+        sensor_positions_file: Path to sensor_positions.txt (required for cross_attention).
+        cross_attn_k: Number of KNN neighbors for cross-attention head.
+        cross_attn_hidden: Hidden dimension for local attention in cross-attention head.
+        cross_attn_latent_dim: Projection dimension for latent tokens in cross-attention.
+        cross_attn_pos_dim: Dimension of sinusoidal position encoding.
     """
     def __init__(self, encoder: XECEncoder, freeze_encoder: bool = True, sentinel_value: float = DEFAULT_SENTINEL_VALUE,
-                 time_mask_ratio_scale: float = 1.0, use_local_context: bool = True, predict_channels=None):
+                 time_mask_ratio_scale: float = 1.0, use_local_context: bool = True, predict_channels=None,
+                 use_masked_attention: bool = False,
+                 head_type: str = "per_face",
+                 sensor_positions_file: str = None,
+                 cross_attn_k: int = 16,
+                 cross_attn_hidden: int = 64,
+                 cross_attn_latent_dim: int = 128,
+                 cross_attn_pos_dim: int = 96):
         super().__init__()
         self.encoder = encoder
         self.freeze_encoder = freeze_encoder
         self.sentinel_value = sentinel_value
         self.time_mask_ratio_scale = time_mask_ratio_scale
         self.use_local_context = use_local_context
+        self.use_masked_attention = use_masked_attention
+        self.head_type = head_type
 
         # Configurable output channels
         self.predict_channels = predict_channels if predict_channels is not None else ["npho", "time"]
@@ -690,42 +1292,91 @@ class XEC_Inpainter(nn.Module):
 
         latent_dim = encoder.face_embed_dim  # 1024
 
-        # Inpainting heads for each face
-        self.head_inner = FaceInpaintingHead(93, 44, latent_dim=latent_dim, use_local_context=use_local_context,
-                                              out_channels=self.out_channels)
-        self.head_us = FaceInpaintingHead(24, 6, latent_dim=latent_dim, use_local_context=use_local_context,
-                                           out_channels=self.out_channels)
-        self.head_ds = FaceInpaintingHead(24, 6, latent_dim=latent_dim, use_local_context=use_local_context,
-                                           out_channels=self.out_channels)
-
-        # Outer face head - sensor-level for finegrid mode, grid-level otherwise
-        if encoder.outer_fine:
-            # Use sensor-level head for finegrid mode
-            self.head_outer_sensor = OuterSensorInpaintingHead(
+        if head_type == "cross_attention":
+            # --- Unified cross-attention head (replaces all per-face heads) ---
+            if sensor_positions_file is None:
+                raise ValueError(
+                    "sensor_positions_file is required when head_type='cross_attention'"
+                )
+            self.cross_attn_head = CrossAttentionInpaintingHead(
+                sensor_positions_file=sensor_positions_file,
+                k=cross_attn_k,
+                hidden_dim=cross_attn_hidden,
                 latent_dim=latent_dim,
-                hidden_dim=64,
-                pool_kernel=encoder.outer_fine_pool,
-                use_local_context=use_local_context,
-                out_channels=self.out_channels
+                latent_proj_dim=cross_attn_latent_dim,
+                pos_dim=cross_attn_pos_dim,
+                out_channels=self.out_channels,
             )
-            self.head_outer = None  # Not used in finegrid mode
-        else:
-            # Use grid-level head for split/coarse mode
-            self.head_outer = FaceInpaintingHead(9, 24, latent_dim=latent_dim, use_local_context=use_local_context,
-                                                  out_channels=self.out_channels)
+            # No per-face heads needed
+            self.head_inner = None
+            self.head_us = None
+            self.head_ds = None
+            self.head_outer = None
             self.head_outer_sensor = None
+            self.head_top = None
+            self.head_bot = None
+        else:
+            # --- Per-face heads (existing code) ---
+            self.cross_attn_head = None
 
-        # Hex face heads
-        num_hex_top = len(flatten_hex_rows(TOP_HEX_ROWS))
-        num_hex_bot = len(flatten_hex_rows(BOTTOM_HEX_ROWS))
-        edge_index = torch.from_numpy(HEX_EDGE_INDEX_NP).long()
+            # Inpainting heads for rectangular faces
+            if use_masked_attention:
+                self.head_inner = MaskedAttentionFaceHead(93, 44, latent_dim=latent_dim,
+                                                           use_local_context=use_local_context,
+                                                           out_channels=self.out_channels)
+                self.head_us = MaskedAttentionFaceHead(24, 6, latent_dim=latent_dim,
+                                                        use_local_context=use_local_context,
+                                                        out_channels=self.out_channels)
+                self.head_ds = MaskedAttentionFaceHead(24, 6, latent_dim=latent_dim,
+                                                        use_local_context=use_local_context,
+                                                        out_channels=self.out_channels)
+            else:
+                self.head_inner = FaceInpaintingHead(93, 44, latent_dim=latent_dim,
+                                                      use_local_context=use_local_context,
+                                                      out_channels=self.out_channels)
+                self.head_us = FaceInpaintingHead(24, 6, latent_dim=latent_dim,
+                                                   use_local_context=use_local_context,
+                                                   out_channels=self.out_channels)
+                self.head_ds = FaceInpaintingHead(24, 6, latent_dim=latent_dim,
+                                                   use_local_context=use_local_context,
+                                                   out_channels=self.out_channels)
 
-        self.head_top = HexInpaintingHead(num_hex_top, edge_index, latent_dim=latent_dim, use_local_context=use_local_context,
-                                           out_channels=self.out_channels)
-        self.head_bot = HexInpaintingHead(num_hex_bot, edge_index, latent_dim=latent_dim, use_local_context=use_local_context,
-                                           out_channels=self.out_channels)
+            # Outer face head - sensor-level for finegrid mode, grid-level otherwise
+            if encoder.outer_fine:
+                self.head_outer_sensor = OuterSensorInpaintingHead(
+                    latent_dim=latent_dim,
+                    hidden_dim=64,
+                    pool_kernel=encoder.outer_fine_pool,
+                    use_local_context=use_local_context,
+                    out_channels=self.out_channels
+                )
+                self.head_outer = None
+            else:
+                self.head_outer = FaceInpaintingHead(9, 24, latent_dim=latent_dim, use_local_context=use_local_context,
+                                                      out_channels=self.out_channels)
+                self.head_outer_sensor = None
 
-        # Store face index maps for gathering
+            # Hex face heads
+            num_hex_top = len(flatten_hex_rows(TOP_HEX_ROWS))
+            num_hex_bot = len(flatten_hex_rows(BOTTOM_HEX_ROWS))
+            edge_index = torch.from_numpy(HEX_EDGE_INDEX_NP).long()
+
+            if use_masked_attention:
+                self.head_top = MaskedAttentionHexHead(num_hex_top, edge_index, latent_dim=latent_dim,
+                                                        use_local_context=use_local_context,
+                                                        out_channels=self.out_channels)
+                self.head_bot = MaskedAttentionHexHead(num_hex_bot, edge_index, latent_dim=latent_dim,
+                                                        use_local_context=use_local_context,
+                                                        out_channels=self.out_channels)
+            else:
+                self.head_top = HexInpaintingHead(num_hex_top, edge_index, latent_dim=latent_dim,
+                                                   use_local_context=use_local_context,
+                                                   out_channels=self.out_channels)
+                self.head_bot = HexInpaintingHead(num_hex_bot, edge_index, latent_dim=latent_dim,
+                                                   use_local_context=use_local_context,
+                                                   out_channels=self.out_channels)
+
+        # Store face index maps for gathering (needed for per-face paths and forward())
         self.register_buffer("inner_idx", torch.from_numpy(INNER_INDEX_MAP).long())
         self.register_buffer("us_idx", torch.from_numpy(US_INDEX_MAP).long())
         self.register_buffer("ds_idx", torch.from_numpy(DS_INDEX_MAP).long())
@@ -964,23 +1615,58 @@ class XEC_Inpainter(nn.Module):
         """Returns total number of parameters."""
         return sum(p.numel() for p in self.parameters())
 
+    def _scatter_face_attention(self, pred_all, pred, indices, valid, face_idx_flat, face_w):
+        """Scatter attention-based face predictions back to global sensor indices.
+
+        Args:
+            pred_all: (B, 4760, C) output tensor to write into
+            pred: (B, max_masked, C) predictions at masked positions
+            indices: (B, max_masked, 2) face-local (h, w) indices
+            valid: (B, max_masked) bool mask for padding
+            face_idx_flat: (H*W,) mapping from face-local flat index to global sensor ID
+            face_w: width of the face grid (for h*W+w computation)
+        """
+        if not valid.any():
+            return
+        B = pred_all.shape[0]
+        device = pred_all.device
+        face_pos = indices[:, :, 0] * face_w + indices[:, :, 1]  # (B, max_masked)
+        global_ids = face_idx_flat[face_pos]  # (B, max_masked)
+        batch_range = torch.arange(B, device=device).unsqueeze(1).expand_as(global_ids)
+        pred_all[batch_range[valid], global_ids[valid]] = pred[valid]
+
+    def _scatter_hex_attention(self, pred_all, pred, indices, valid, hex_global_indices):
+        """Scatter attention-based hex predictions back to global sensor indices.
+
+        Args:
+            pred_all: (B, 4760, C) output tensor to write into
+            pred: (B, max_masked, C) predictions at masked nodes
+            indices: (B, max_masked) face-local node indices
+            valid: (B, max_masked) bool mask for padding
+            hex_global_indices: (N,) mapping from local node index to global sensor ID
+        """
+        if not valid.any():
+            return
+        B = pred_all.shape[0]
+        device = pred_all.device
+        global_ids = hex_global_indices[indices]  # (B, max_masked)
+        batch_range = torch.arange(B, device=device).unsqueeze(1).expand_as(global_ids)
+        pred_all[batch_range[valid], global_ids[valid]] = pred[valid]
+
     def forward_full_output(self, x_batch, mask):
         """
-        Forward pass that returns predictions for ALL 4760 sensors (fixed size output).
+        Forward pass that returns a fixed-size (B, 4760, C) output tensor.
 
-        This method is designed for TorchScript export where fixed tensor sizes are required.
-        Unlike forward() which returns variable-length masked predictions, this returns
-        a fixed (B, 4760, 2) tensor with predictions for every sensor position.
+        For standard heads: predicts all positions via head.forward_full(), then scatters.
+        For attention heads: predicts only masked positions via head.forward(), then scatters.
+        In both cases, only predictions at masked positions are meaningful.
 
         Args:
             x_batch: (B, 4760, 2) or (B, N, 2) - sensor values
             mask: (B, 4760) - binary mask (1 = masked/dead, 0 = valid)
 
         Returns:
-            pred_all: (B, 4760, 2) - predictions for all sensor positions
-                      Note: Only predictions at masked positions are meaningful.
-                      Predictions at valid (unmasked) positions are computed but
-                      should be ignored (original values should be used instead).
+            pred_all: (B, 4760, C) - predictions (meaningful only at masked positions)
         """
         B = x_batch.shape[0]
         device = x_batch.device
@@ -1020,72 +1706,135 @@ class XEC_Inpainter(nn.Module):
             top_idx = len(cnn_names)
         bot_idx = top_idx + 1
 
-        # Process each face and scatter back to flat indices
+        if self.head_type == "cross_attention":
+            # === Cross-attention path: single unified call for all faces ===
+            pred_all = self.cross_attn_head(x_masked, latent_seq, mask)
 
-        # Inner face (93×44 = 4092 sensors) - compute first to get dtype for output tensor
-        inner_tensor = gather_face(x_masked, INNER_INDEX_MAP)  # (B, 2, 93, 44)
-        inner_latent = latent_seq[:, name_to_idx["inner"]]
-        inner_pred = self.head_inner.forward_full(inner_tensor, inner_latent)  # (B, 93, 44, 2)
+        elif self.use_masked_attention:
+            # === Attention path: predict only at masked positions, scatter to output ===
+            # Initialize with zeros; only masked positions will be filled
+            # Use float32 for initialization, AMP autocast handles dtype inside heads
+            pred_all = torch.zeros(B, 4760, self.out_channels, device=device)
 
-        # Initialize output tensor with same dtype as predictions (important for AMP)
-        pred_all = torch.zeros(B, 4760, self.out_channels, device=device, dtype=inner_pred.dtype)
+            # Inner face
+            inner_tensor = gather_face(x_masked, INNER_INDEX_MAP)
+            inner_mask_flat = mask[:, self.inner_idx.flatten()]
+            inner_mask_2d = inner_mask_flat.view(B, 93, 44)
+            inner_latent = latent_seq[:, name_to_idx["inner"]]
+            pred, idx, valid = self.head_inner(inner_tensor, inner_latent, inner_mask_2d)
+            self._scatter_face_attention(pred_all, pred, idx, valid, self.inner_idx.flatten(), 44)
 
-        # Scatter back to flat indices
-        inner_flat_idx = self.inner_idx.flatten()  # (93*44,)
-        pred_all[:, inner_flat_idx, :] = inner_pred.reshape(B, -1, self.out_channels)
+            # US face
+            us_tensor = gather_face(x_masked, US_INDEX_MAP)
+            us_mask_flat = mask[:, self.us_idx.flatten()]
+            us_mask_2d = us_mask_flat.view(B, 24, 6)
+            us_latent = latent_seq[:, name_to_idx["us"]]
+            pred, idx, valid = self.head_us(us_tensor, us_latent, us_mask_2d)
+            self._scatter_face_attention(pred_all, pred, idx, valid, self.us_idx.flatten(), 6)
 
-        # US face (24×6 = 144 sensors)
-        us_tensor = gather_face(x_masked, US_INDEX_MAP)  # (B, 2, 24, 6)
-        us_latent = latent_seq[:, name_to_idx["us"]]
-        us_pred = self.head_us.forward_full(us_tensor, us_latent)  # (B, 24, 6, 2)
-        us_flat_idx = self.us_idx.flatten()
-        pred_all[:, us_flat_idx, :] = us_pred.reshape(B, -1, self.out_channels)
+            # DS face
+            ds_tensor = gather_face(x_masked, DS_INDEX_MAP)
+            ds_mask_flat = mask[:, self.ds_idx.flatten()]
+            ds_mask_2d = ds_mask_flat.view(B, 24, 6)
+            ds_latent = latent_seq[:, name_to_idx["ds"]]
+            pred, idx, valid = self.head_ds(ds_tensor, ds_latent, ds_mask_2d)
+            self._scatter_face_attention(pred_all, pred, idx, valid, self.ds_idx.flatten(), 6)
 
-        # DS face (24×6 = 144 sensors)
-        ds_tensor = gather_face(x_masked, DS_INDEX_MAP)  # (B, 2, 24, 6)
-        ds_latent = latent_seq[:, name_to_idx["ds"]]
-        ds_pred = self.head_ds.forward_full(ds_tensor, ds_latent)  # (B, 24, 6, out_channels)
-        ds_flat_idx = self.ds_idx.flatten()
-        pred_all[:, ds_flat_idx, :] = ds_pred.reshape(B, -1, self.out_channels)
+            # Outer face (already attention-based, unchanged)
+            outer_latent = latent_seq[:, outer_idx]
+            if self.encoder.outer_fine and self.head_outer_sensor is not None:
+                outer_tensor = build_outer_fine_grid_tensor(
+                    x_masked, pool_kernel=self.encoder.outer_fine_pool, sentinel_value=self.sentinel_value)
+                outer_sensor_ids_tensor = torch.tensor(OUTER_ALL_SENSOR_IDS, device=device, dtype=torch.long)
+                outer_sensor_mask = mask[:, outer_sensor_ids_tensor]
+                pred, sensor_ids, valid = self.head_outer_sensor(outer_tensor, outer_latent, outer_sensor_mask)
+                if valid.any():
+                    batch_range = torch.arange(B, device=device).unsqueeze(1).expand_as(sensor_ids)
+                    pred_all[batch_range[valid], sensor_ids[valid]] = pred[valid]
+            else:
+                outer_tensor = gather_face(x_masked, OUTER_COARSE_FULL_INDEX_MAP)
+                outer_mask_flat = mask[:, self.outer_coarse_idx.flatten()]
+                outer_mask_2d = outer_mask_flat.view(B, 9, 24)
+                outer_latent_token = outer_latent
+                pred, idx, valid = self.head_outer(outer_tensor, outer_latent_token, outer_mask_2d)
+                self._scatter_face_attention(pred_all, pred, idx, valid, self.outer_coarse_idx.flatten(), 24)
 
-        # Outer face
-        outer_latent = latent_seq[:, outer_idx]
+            # Top hex face
+            top_nodes = gather_hex_nodes(x_masked, self.top_hex_indices)
+            top_mask = mask[:, self.top_hex_indices]
+            top_latent = latent_seq[:, top_idx]
+            pred, idx, valid = self.head_top(top_nodes, top_latent, top_mask)
+            self._scatter_hex_attention(pred_all, pred, idx, valid, self.top_hex_indices)
 
-        if self.encoder.outer_fine and self.head_outer_sensor is not None:
-            # Sensor-level prediction for finegrid mode (234 sensors)
-            outer_tensor = build_outer_fine_grid_tensor(x_masked, pool_kernel=self.encoder.outer_fine_pool, sentinel_value=self.sentinel_value)
-            outer_pred, outer_sensor_ids = self.head_outer_sensor.forward_full(outer_tensor, outer_latent)  # (B, 234, 2)
-            # Scatter back using sensor IDs
-            pred_all[:, outer_sensor_ids, :] = outer_pred
+            # Bottom hex face
+            bot_nodes = gather_hex_nodes(x_masked, self.bottom_hex_indices)
+            bot_mask = mask[:, self.bottom_hex_indices]
+            bot_latent = latent_seq[:, bot_idx]
+            pred, idx, valid = self.head_bot(bot_nodes, bot_latent, bot_mask)
+            self._scatter_hex_attention(pred_all, pred, idx, valid, self.bottom_hex_indices)
+
         else:
-            # Grid-level prediction for split/coarse mode (9×24 = 216 sensors)
-            outer_tensor = gather_face(x_masked, OUTER_COARSE_FULL_INDEX_MAP)  # (B, 2, 9, 24)
-            outer_pred = self.head_outer.forward_full(outer_tensor, outer_latent)  # (B, 9, 24, out_channels)
-            outer_flat_idx = self.outer_coarse_idx.flatten()
-            pred_all[:, outer_flat_idx, :] = outer_pred.reshape(B, -1, self.out_channels)
+            # === Standard path: predict all positions via forward_full ===
 
-        # Top hex face
-        top_nodes = gather_hex_nodes(x_masked, self.top_hex_indices)  # (B, num_top, 2)
-        top_latent = latent_seq[:, top_idx]
-        top_pred = self.head_top.forward_full(top_nodes, top_latent)  # (B, num_top, 2)
-        pred_all[:, self.top_hex_indices, :] = top_pred
+            # Inner face (93×44 = 4092 sensors) - compute first to get dtype
+            inner_tensor = gather_face(x_masked, INNER_INDEX_MAP)  # (B, 2, 93, 44)
+            inner_latent = latent_seq[:, name_to_idx["inner"]]
+            inner_pred = self.head_inner.forward_full(inner_tensor, inner_latent)  # (B, 93, 44, C)
 
-        # Bottom hex face
-        bot_nodes = gather_hex_nodes(x_masked, self.bottom_hex_indices)  # (B, num_bot, 2)
-        bot_latent = latent_seq[:, bot_idx]
-        bot_pred = self.head_bot.forward_full(bot_nodes, bot_latent)  # (B, num_bot, out_channels)
-        pred_all[:, self.bottom_hex_indices, :] = bot_pred
+            # Initialize output tensor with same dtype as predictions (important for AMP)
+            pred_all = torch.zeros(B, 4760, self.out_channels, device=device, dtype=inner_pred.dtype)
+
+            inner_flat_idx = self.inner_idx.flatten()
+            pred_all[:, inner_flat_idx, :] = inner_pred.reshape(B, -1, self.out_channels)
+
+            # US face (24×6 = 144 sensors)
+            us_tensor = gather_face(x_masked, US_INDEX_MAP)
+            us_latent = latent_seq[:, name_to_idx["us"]]
+            us_pred = self.head_us.forward_full(us_tensor, us_latent)
+            pred_all[:, self.us_idx.flatten(), :] = us_pred.reshape(B, -1, self.out_channels)
+
+            # DS face (24×6 = 144 sensors)
+            ds_tensor = gather_face(x_masked, DS_INDEX_MAP)
+            ds_latent = latent_seq[:, name_to_idx["ds"]]
+            ds_pred = self.head_ds.forward_full(ds_tensor, ds_latent)
+            pred_all[:, self.ds_idx.flatten(), :] = ds_pred.reshape(B, -1, self.out_channels)
+
+            # Outer face
+            outer_latent = latent_seq[:, outer_idx]
+            if self.encoder.outer_fine and self.head_outer_sensor is not None:
+                outer_tensor = build_outer_fine_grid_tensor(
+                    x_masked, pool_kernel=self.encoder.outer_fine_pool, sentinel_value=self.sentinel_value)
+                outer_pred, outer_sensor_ids = self.head_outer_sensor.forward_full(outer_tensor, outer_latent)
+                pred_all[:, outer_sensor_ids, :] = outer_pred
+            else:
+                outer_tensor = gather_face(x_masked, OUTER_COARSE_FULL_INDEX_MAP)
+                outer_pred = self.head_outer.forward_full(outer_tensor, outer_latent)
+                pred_all[:, self.outer_coarse_idx.flatten(), :] = outer_pred.reshape(B, -1, self.out_channels)
+
+            # Top hex face
+            top_nodes = gather_hex_nodes(x_masked, self.top_hex_indices)
+            top_latent = latent_seq[:, top_idx]
+            top_pred = self.head_top.forward_full(top_nodes, top_latent)
+            pred_all[:, self.top_hex_indices, :] = top_pred
+
+            # Bottom hex face
+            bot_nodes = gather_hex_nodes(x_masked, self.bottom_hex_indices)
+            bot_latent = latent_seq[:, bot_idx]
+            bot_pred = self.head_bot.forward_full(bot_nodes, bot_latent)
+            pred_all[:, self.bottom_hex_indices, :] = bot_pred
 
         return pred_all
 
     def forward_training(self, x_batch, mask_ratio=0.05, npho_threshold_norm=None):
         """
-        Forward pass optimized for training with fixed-size outputs.
+        Forward pass for training with fixed-size (B, 4760, C) output.
 
-        This method is faster than forward() because:
-        1. Uses forward_full_output() which avoids dynamic indexing
-        2. Returns fixed-size tensors that are better for GPU parallelization
-        3. Loss computation can use simple masked indexing
+        Calls forward_full_output() which internally:
+        - Standard heads: predict all positions via CNN/GNN forward_full()
+        - Attention heads: predict only masked positions via attention forward(),
+          scatter into the output tensor (unmasked positions are zeros)
+
+        In both cases, loss should only be computed at masked positions.
 
         Args:
             x_batch: (B, 4760, 2) or (B, N, 2) - sensor values
@@ -1093,10 +1842,9 @@ class XEC_Inpainter(nn.Module):
             npho_threshold_norm: threshold in normalized npho space for stratified masking
 
         Returns:
-            pred_all: (B, 4760, 2) - predictions for all sensor positions
+            pred_all: (B, 4760, C) - predictions (meaningful only at masked positions)
             original_values: (B, 4760, 2) - original values (for loss computation)
             mask: (B, 4760) - binary mask of randomly-masked positions (1 = masked)
-                  Loss should only be computed at masked positions.
         """
         B = x_batch.shape[0]
 
@@ -1111,11 +1859,3 @@ class XEC_Inpainter(nn.Module):
         pred_all = self.forward_full_output(x_masked, mask)
 
         return pred_all, original_values, mask
-
-    def get_num_trainable_params(self):
-        """Returns number of trainable parameters."""
-        return sum(p.numel() for p in self.parameters() if p.requires_grad)
-
-    def get_num_total_params(self):
-        """Returns total number of parameters."""
-        return sum(p.numel() for p in self.parameters())

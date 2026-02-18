@@ -270,6 +270,13 @@ Examples:
         predict_channels = cfg.model.predict_channels
         # --global_only disables local context (ablation study)
         use_local_context = not args.global_only and getattr(cfg.model, "use_local_context", True)
+        use_masked_attention = getattr(cfg.model, "use_masked_attention", False)
+        head_type = getattr(cfg.model, "head_type", "per_face")
+        sensor_positions_file = getattr(cfg.model, "sensor_positions_file", None)
+        cross_attn_k = getattr(cfg.model, "cross_attn_k", 16)
+        cross_attn_hidden = getattr(cfg.model, "cross_attn_hidden", 64)
+        cross_attn_latent_dim = getattr(cfg.model, "cross_attn_latent_dim", 128)
+        cross_attn_pos_dim = getattr(cfg.model, "cross_attn_pos_dim", 96)
 
         lr = float(args.lr if args.lr is not None else cfg.training.lr)
         lr_scheduler = args.lr_scheduler or getattr(cfg.training, "lr_scheduler", None)
@@ -355,6 +362,13 @@ Examples:
         freeze_encoder = not args.finetune_encoder  # Default: frozen
         use_local_context = not args.global_only  # Default: True (use local context)
         predict_channels = ["npho", "time"]  # Default: predict both channels
+        use_masked_attention = False
+        head_type = "per_face"
+        sensor_positions_file = None
+        cross_attn_k = 16
+        cross_attn_hidden = 64
+        cross_attn_latent_dim = 128
+        cross_attn_pos_dim = 96
 
         lr = args.lr or 1e-4
         lr_scheduler = args.lr_scheduler
@@ -456,7 +470,14 @@ Examples:
         encoder, freeze_encoder=freeze_encoder, sentinel_value=sentinel_value,
         time_mask_ratio_scale=time_mask_ratio_scale,
         use_local_context=use_local_context,
-        predict_channels=predict_channels
+        predict_channels=predict_channels,
+        use_masked_attention=use_masked_attention,
+        head_type=head_type,
+        sensor_positions_file=sensor_positions_file,
+        cross_attn_k=cross_attn_k,
+        cross_attn_hidden=cross_attn_hidden,
+        cross_attn_latent_dim=cross_attn_latent_dim,
+        cross_attn_pos_dim=cross_attn_pos_dim,
     ).to(device)
 
     if is_main_process():
@@ -466,6 +487,13 @@ Examples:
         print(f"  - Encoder frozen: {freeze_encoder}")
         print(f"  - Use local context: {use_local_context}")
         print(f"  - Predict channels: {predict_channels}")
+        print(f"  - Head type: {head_type}")
+        if head_type == "cross_attention":
+            print(f"  - Sensor positions: {sensor_positions_file}")
+            print(f"  - Cross-attn K={cross_attn_k}, hidden={cross_attn_hidden}, "
+                  f"latent_dim={cross_attn_latent_dim}, pos_dim={cross_attn_pos_dim}")
+        else:
+            print(f"  - Masked attention heads: {use_masked_attention}")
 
     # Keep unwrapped reference for checkpointing and EMA
     model_without_ddp = model
@@ -667,6 +695,8 @@ Examples:
                 "npho_loss_weight_enabled": npho_loss_weight_enabled,
                 "npho_loss_weight_alpha": npho_loss_weight_alpha,
                 "intensity_reweighting_enabled": intensity_reweighting_enabled,
+                "use_masked_attention": use_masked_attention,
+                "head_type": head_type,
                 "world_size": world_size,
             })
 
@@ -812,6 +842,13 @@ Examples:
                         'mask_ratio': mask_ratio,
                         'freeze_encoder': freeze_encoder,
                         'predict_channels': list(predict_channels),
+                        'use_masked_attention': use_masked_attention,
+                        'head_type': head_type,
+                        'sensor_positions_file': sensor_positions_file,
+                        'cross_attn_k': cross_attn_k,
+                        'cross_attn_hidden': cross_attn_hidden,
+                        'cross_attn_latent_dim': cross_attn_latent_dim,
+                        'cross_attn_pos_dim': cross_attn_pos_dim,
                         # Normalization parameters (critical for inference)
                         'npho_scale': float(npho_scale),
                         'npho_scale2': float(npho_scale2),

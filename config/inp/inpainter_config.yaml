@@ -38,8 +38,21 @@ model:
   time_mask_ratio_scale: 1.0        # Scale factor for masking valid-time sensors (>1.0 to prefer masking valid-time)
   freeze_encoder: false             # Freeze encoder, train only inpainting heads
   use_local_context: true           # Use local neighbor context for inpainting (disable for ablation)
-  predict_channels: ["npho", "time"]  # Output channels to predict: ["npho"] or ["npho", "time"]
+  predict_channels: ["npho"]           # Output channels to predict: ["npho"] or ["npho", "time"]
                                       # Use ["npho"] for faster training when time prediction is not needed
+  use_masked_attention: false          # Use attention-based heads that predict only at masked positions
+  # === Cross-Attention Unified Head ===
+  # Set head_type to "cross_attention" to use a single unified head that:
+  # - Queries all 6 latent tokens via cross-attention (global context)
+  # - Uses cross-face k-nearest neighbors by 3D distance (local context)
+  # - Embeds sensor 3D positions via sinusoidal encoding
+  # - Embeds face IDs (0-5) to learn SiPM/PMT scale differences
+  head_type: "per_face"               # "per_face" or "cross_attention"
+  # sensor_positions_file: "lib/sensor_positions.txt"  # Required for cross_attention
+  # cross_attn_k: 16                  # Number of KNN neighbors for local attention
+  # cross_attn_hidden: 64             # Hidden dimension for local attention
+  # cross_attn_latent_dim: 128        # Projection dimension for latent cross-attention
+  # cross_attn_pos_dim: 96            # Sinusoidal position encoding dimension
 
 # === Training Configuration ===
 training:
