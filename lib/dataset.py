@@ -59,7 +59,8 @@ class XECStreamingDataset(IterableDataset):
                  load_truth_branches=True,
                  shuffle=False,
                  profile=False,
-                 npho_scheme="log1p"):
+                 npho_scheme="log1p",
+                 fiducial=None):
         super().__init__()
 
         # I/O profiling
@@ -118,6 +119,9 @@ class XECStreamingDataset(IterableDataset):
             npho_scale2=npho_scale2
         )
         self.npho_scheme = npho_scheme
+
+        # Fiducial volume cut (only meaningful when load_truth_branches=True)
+        self.fiducial = fiducial
 
         # Logging for invalid npho values (unexpected data issues)
         self.log_invalid_npho = log_invalid_npho
@@ -327,6 +331,19 @@ class XECStreamingDataset(IterableDataset):
             # Concatenate all sub-chunks
             x_all = np.concatenate(x_parts, axis=0)
             t_all = {k: np.concatenate(v, axis=0) for k, v in t_parts.items()}
+
+            # Apply fiducial volume cut (only when truth branches are loaded)
+            if self.fiducial is not None and "uvwFI" in t_all:
+                uvw = t_all["uvwFI"]  # shape (N, 3)
+                mask = (
+                    (np.abs(uvw[:, 0]) < self.fiducial.u_max) &
+                    (np.abs(uvw[:, 1]) < self.fiducial.v_max) &
+                    (uvw[:, 2] >= self.fiducial.w_min)
+                )
+                if self.fiducial.w_max is not None:
+                    mask &= (uvw[:, 2] <= self.fiducial.w_max)
+                x_all = x_all[mask]
+                t_all = {k: v[mask] for k, v in t_all.items()}
 
             # Shuffle within chunk if enabled
             num_samples = len(x_all)

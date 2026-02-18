@@ -14,6 +14,14 @@ data:
   npho_branch: "npho"      # Input branch for photon counts (or "npho")
   time_branch: "relative_time"      # Input branch for timing (or "time")
   log_invalid_npho: true  # or false to disable
+  # Fiducial volume cut on first interaction point (uvwTruth).
+  # Events outside this volume are dropped during training.
+  fiducial:
+    enabled: false
+    u_max: 23.9     # |u| < u_max [cm]
+    v_max: 67.9     # |v| < v_max [cm]
+    w_min: 0.0      # w >= w_min [cm]
+    w_max: null      # w <= w_max [cm], null = no upper bound
 
 # === Input Normalization ===
 normalization:

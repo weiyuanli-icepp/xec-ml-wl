@@ -255,6 +255,13 @@ def train_with_config(config_path: str, profile: bool = None):
     artifact_dir = os.path.abspath(os.path.join(cfg.checkpoint.save_dir, run_name))
     check_artifact_directory(artifact_dir)
 
+    # --- Fiducial Volume Cut ---
+    fiducial = cfg.data.fiducial if cfg.data.fiducial.enabled else None
+    if fiducial is not None and is_main_process():
+        print(f"[INFO] Fiducial volume cut enabled:")
+        print(f"  |u| < {fiducial.u_max} cm, |v| < {fiducial.v_max} cm, w >= {fiducial.w_min} cm"
+              + (f", w <= {fiducial.w_max} cm" if fiducial.w_max is not None else ""))
+
     # --- Data Loaders ---
     norm_kwargs = {
         "npho_scale": cfg.normalization.npho_scale,
@@ -267,6 +274,7 @@ def train_with_config(config_path: str, profile: bool = None):
         "time_branch": getattr(cfg.data, "time_branch", "relative_time"),
         "log_invalid_npho": getattr(cfg.data, "log_invalid_npho", True),
         "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
+        "fiducial": fiducial,
     }
 
     train_loader = get_dataloader(
@@ -695,7 +703,7 @@ def train_with_config(config_path: str, profile: bool = None):
 
         # Log config
         if start_epoch == 1 and is_main_process():
-            mlflow.log_params({
+            log_params = {
                 "active_tasks": ",".join(active_tasks),
                 "batch_size": cfg.data.batch_size,
                 "lr": cfg.training.lr,
@@ -706,7 +714,16 @@ def train_with_config(config_path: str, profile: bool = None):
                 "loss_balance": cfg.loss_balance,
                 "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
                 "world_size": world_size,
-            })
+                "fiducial_enabled": cfg.data.fiducial.enabled,
+            }
+            if cfg.data.fiducial.enabled:
+                log_params.update({
+                    "fiducial_u_max": cfg.data.fiducial.u_max,
+                    "fiducial_v_max": cfg.data.fiducial.v_max,
+                    "fiducial_w_min": cfg.data.fiducial.w_min,
+                    "fiducial_w_max": cfg.data.fiducial.w_max,
+                })
+            mlflow.log_params(log_params)
 
         best_state = None
 
@@ -1183,11 +1200,16 @@ if __name__ == "__main__":
     # Save merged config to temp file for train_with_config
     def config_to_dict(cfg):
         """Convert config dataclass to dict for YAML serialization."""
+        import dataclasses
+        def _to_dict(obj):
+            if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+                return {k: _to_dict(v) for k, v in obj.__dict__.items()}
+            return obj
         result = {}
         for section in ["data", "normalization", "model", "training", "checkpoint", "mlflow", "export"]:
             if hasattr(cfg, section):
                 obj = getattr(cfg, section)
-                result[section] = {k: v for k, v in obj.__dict__.items()}
+                result[section] = _to_dict(obj)
         result["loss_balance"] = cfg.loss_balance
         # Tasks
         result["tasks"] = {}
