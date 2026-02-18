@@ -129,6 +129,10 @@ checkpoint:
   reset_epoch: false                # Reset epoch counter to 0 when resuming
   refresh_lr: false                 # Reset learning rate scheduler when resuming
 
+# === Distributed Training ===
+distributed:
+  num_gpus: 1                       # Number of GPUs (1 = single-GPU, >1 = DDP multi-GPU)
+
 # === MLflow ===
 mlflow:
   experiment: "gamma_angle"

@@ -12,7 +12,7 @@
 #
 # Optional CLI overrides (empty = use config value):
 #   TRAIN_PATH, VAL_PATH, EPOCHS, LR, BATCH_SIZE, RESUME_FROM, etc.
-#   NUM_GPUS     - Number of GPUs for DDP training (default: 1)
+#   NUM_GPUS     - Number of GPUs for DDP training (overrides config if set)
 
 set -euo pipefail
 
@@ -24,7 +24,7 @@ RUN_NAME="${RUN_NAME:-}"
 PARTITION="${PARTITION:-a100-daily}"
 TIME="${TIME:-12:00:00}"
 DRY_RUN="${DRY_RUN:-0}"
-NUM_GPUS="${NUM_GPUS:-1}"
+NUM_GPUS="${NUM_GPUS:-}"  # Empty = read from config
 
 # Optional overrides (empty string means no override)
 TRAIN_PATH="${TRAIN_PATH:-}"
@@ -123,6 +123,18 @@ CFG_RUN_NAME=$(yaml_get "run_name" "$CONFIG_PATH")
 # Export
 CFG_ONNX=$(yaml_get "onnx" "$CONFIG_PATH")
 
+# Distributed
+CFG_NUM_GPUS=$(yaml_get "num_gpus" "$CONFIG_PATH")
+
+# Use NUM_GPUS from env, or from config, or default to 1
+if [[ -z "$NUM_GPUS" ]]; then
+    if [[ -n "$CFG_NUM_GPUS" && "$CFG_NUM_GPUS" != "null" ]]; then
+        NUM_GPUS="$CFG_NUM_GPUS"
+    else
+        NUM_GPUS="1"
+    fi
+fi
+
 # Use RUN_NAME from env, or from config, or generate timestamp
 if [[ -z "$RUN_NAME" ]]; then
     if [[ -n "$CFG_RUN_NAME" && "$CFG_RUN_NAME" != "null" ]]; then
@@ -137,6 +149,71 @@ if [[ -z "$RESUME_FROM" && -n "$CFG_RESUME_FROM" && "$CFG_RESUME_FROM" != "null"
     RESUME_FROM="$CFG_RESUME_FROM"
 fi
 
+# === Path Validation ===
+# Helper to expand ~ and check if path exists (file, directory, or glob pattern)
+check_path() {
+    local path="$1"
+    local desc="$2"
+    local required="$3"  # "required" or "optional"
+
+    # Skip if empty and optional
+    if [[ -z "$path" || "$path" == "null" ]]; then
+        if [[ "$required" == "required" ]]; then
+            echo "[ERROR] $desc is not set"
+            return 1
+        fi
+        return 0
+    fi
+
+    # Expand ~ to $HOME
+    local expanded="${path/#\~/$HOME}"
+
+    # Check if file or directory exists, or if glob pattern matches
+    if [[ -e "$expanded" ]]; then
+        return 0
+    elif compgen -G "$expanded" > /dev/null 2>&1; then
+        return 0  # Glob pattern matches
+    else
+        echo "[ERROR] $desc not found: $path"
+        return 1
+    fi
+}
+
+VALIDATION_FAILED=0
+
+# Check train path
+if ! check_path "$CFG_TRAIN_PATH" "Train path" "required"; then
+    VALIDATION_FAILED=1
+fi
+
+# Check val path (optional but warn if missing)
+if ! check_path "$CFG_VAL_PATH" "Validation path" "optional"; then
+    echo "[WARN] Validation path not found, validation will be skipped"
+fi
+
+# Check resume checkpoint if specified
+if [[ -n "$RESUME_FROM" ]]; then
+    if ! check_path "$RESUME_FROM" "Resume checkpoint" "required"; then
+        VALIDATION_FAILED=1
+    fi
+fi
+
+# Check save directory is writable
+SAVE_DIR_EXPANDED="${CFG_SAVE_DIR/#\~/$HOME}"
+SAVE_DIR_EXPANDED="${SAVE_DIR_EXPANDED:-artifacts}"
+if [[ ! -d "$SAVE_DIR_EXPANDED" ]]; then
+    mkdir -p "$SAVE_DIR_EXPANDED" 2>/dev/null || {
+        echo "[ERROR] Cannot create save directory: $SAVE_DIR_EXPANDED"
+        VALIDATION_FAILED=1
+    }
+fi
+
+if [[ "$VALIDATION_FAILED" -eq 1 ]]; then
+    echo ""
+    echo "[ABORT] Fix the above errors before submitting."
+    exit 1
+fi
+
 # Determine environment based on partition
 if [[ "$PARTITION" == gh* ]]; then
     ENV_NAME="xec-ml-wl-gh"
@@ -144,7 +221,7 @@ else
     ENV_NAME="xec-ml-wl"
 fi
 
-LOG_DIR="slurm_logs"
+LOG_DIR="$HOME/meghome/xec-ml-wl/log"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/${RUN_NAME}_%j.out"
 

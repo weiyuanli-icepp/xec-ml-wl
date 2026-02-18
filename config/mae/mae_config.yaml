@@ -91,6 +91,10 @@ checkpoint:
   save_predictions: false           # Save sensor-level predictions to ROOT file
   new_mlflow_run: false             # Create new MLflow run when resuming (vs continue existing)
 
+# === Distributed Training ===
+distributed:
+  num_gpus: 1                       # Number of GPUs (1 = single-GPU, >1 = DDP multi-GPU)
+
 # === MLflow ===
 mlflow:
   experiment: "mae_pretraining"

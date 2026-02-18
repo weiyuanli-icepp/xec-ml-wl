@@ -92,6 +92,10 @@ checkpoint:
   save_predictions: true            # Write ROOT outputs during validation
   new_mlflow_run: false             # Create new MLflow run when resuming (vs continue existing)
 
+# === Distributed Training ===
+distributed:
+  num_gpus: 1                       # Number of GPUs (1 = single-GPU, >1 = DDP multi-GPU)
+
 # === MLflow ===
 mlflow:
   experiment: "inpainting"

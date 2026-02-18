@@ -8,11 +8,54 @@
 set -euo pipefail
 
 RUN_NAME="${1:-inference_run}"
-ONNX_MODEL="${2}"
-INPUT_ROOT="${3}"
-OUTPUT_ROOT="${4}"
+ONNX_MODEL="${2:-}"
+INPUT_ROOT="${3:-}"
+OUTPUT_ROOT="${4:-}"
 PARTITION="${5:-a100-daily}"
 TIME="${6:-02:00:00}"
+
+# === Argument Validation ===
+VALIDATION_FAILED=0
+
+if [[ -z "$ONNX_MODEL" ]]; then
+    echo "[ERROR] ONNX_MODEL is required (argument 2)"
+    VALIDATION_FAILED=1
+elif [[ ! -f "$ONNX_MODEL" ]]; then
+    echo "[ERROR] ONNX model not found: $ONNX_MODEL"
+    VALIDATION_FAILED=1
+fi
+
+if [[ -z "$INPUT_ROOT" ]]; then
+    echo "[ERROR] INPUT_ROOT is required (argument 3)"
+    VALIDATION_FAILED=1
+elif [[ ! -f "$INPUT_ROOT" && ! -d "$INPUT_ROOT" ]]; then
+    # Check if it's a glob pattern
+    if ! compgen -G "$INPUT_ROOT" > /dev/null 2>&1; then
+        echo "[ERROR] Input ROOT file not found: $INPUT_ROOT"
+        VALIDATION_FAILED=1
+    fi
+fi
+
+if [[ -z "$OUTPUT_ROOT" ]]; then
+    echo "[ERROR] OUTPUT_ROOT is required (argument 4)"
+    VALIDATION_FAILED=1
+else
+    # Check output directory is writable
+    OUTPUT_DIR="$(dirname "$OUTPUT_ROOT")"
+    if [[ ! -d "$OUTPUT_DIR" ]]; then
+        mkdir -p "$OUTPUT_DIR" 2>/dev/null || {
+            echo "[ERROR] Cannot create output directory: $OUTPUT_DIR"
+            VALIDATION_FAILED=1
+        }
+    fi
+fi
+
+if [[ "$VALIDATION_FAILED" -eq 1 ]]; then
+    echo ""
+    echo "Usage: ./submit_inference.sh RUN_NAME ONNX_MODEL INPUT_ROOT OUTPUT_ROOT [PARTITION] [TIME]"
+    echo "[ABORT] Fix the above errors before submitting."
+    exit 1
+fi
 
 # Optional: Npho/Time scaling (Must match training!)
 NPHO_SCALE="${NPHO_SCALE:-1.0}"
@@ -30,7 +73,7 @@ else
     ENV_NAME="xec-ml-wl"
 fi
 
-LOG_DIR="slurm_logs"
+LOG_DIR="$HOME/meghome/xec-ml-wl/log"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/infer_${RUN_NAME}_%j.out"
 
