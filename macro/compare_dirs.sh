@@ -1,12 +1,12 @@
 #!/bin/bash
-# compare_dirs.sh - Compare files between two directories by size
+# compare_dirs.sh - Compare files between two directories by size (fast version)
 #
 # Usage:
 #   ./compare_dirs.sh DIR1 DIR2
 #   ./compare_dirs.sh  # Uses default paths
 #
 # Options:
-#   --checksum    Use MD5 checksum instead of size (slower but more accurate)
+#   --checksum    Use MD5 checksum instead of size (much slower)
 
 set -euo pipefail
 
@@ -46,87 +46,63 @@ fi
 echo "Comparing: $DIR1"
 echo "     with: $DIR2"
 if [[ "$USE_CHECKSUM" == true ]]; then
-    echo "    mode: checksum (MD5)"
+    echo "    mode: checksum (MD5) - this will be slow"
 else
-    echo "    mode: size"
+    echo "    mode: size (fast)"
 fi
 echo ""
 
-# Count total files first
-echo "Counting files..."
-total_files=$(find "$DIR1" -type f | wc -l)
-echo "Found $total_files files in DIR1"
-echo ""
+# Create temp files for comparison
+TMPDIR="${TMPDIR:-/tmp}"
+LIST1=$(mktemp "$TMPDIR/compare_dir1.XXXXXX")
+LIST2=$(mktemp "$TMPDIR/compare_dir2.XXXXXX")
+trap "rm -f '$LIST1' '$LIST2'" EXIT
 
-# Find all files in DIR1, compare with DIR2
-diff_count=0
-match_count=0
-missing_count=0
-processed=0
-
-while IFS= read -r -d '' file1; do
-    ((processed++))
-    # Show progress every 1000 files
-    if (( processed % 1000 == 0 )); then
-        echo "[PROGRESS] $processed / $total_files files checked..."
-    fi
-    rel_path="${file1#$DIR1/}"
-    file2="$DIR2/$rel_path"
-
-    if [[ -f "$file2" ]]; then
-        if [[ "$USE_CHECKSUM" == true ]]; then
-            hash1=$(md5sum "$file1" | cut -d' ' -f1)
-            hash2=$(md5sum "$file2" | cut -d' ' -f1)
-            if [[ "$hash1" == "$hash2" ]]; then
-                ((match_count++))
-            else
-                echo "[DIFF] $rel_path"
-                echo "       DIR1: $hash1"
-                echo "       DIR2: $hash2"
-                ((diff_count++))
-            fi
-        else
-            # Use stat -c for Linux, fallback to stat -f for macOS
-            size1=$(stat -c%s "$file1" 2>/dev/null || stat -f%z "$file1")
-            size2=$(stat -c%s "$file2" 2>/dev/null || stat -f%z "$file2")
-
-            if [[ "$size1" -eq "$size2" ]]; then
-                ((match_count++))
-            else
-                echo "[DIFF] $rel_path: $size1 vs $size2 bytes"
-                ((diff_count++))
-            fi
-        fi
-    else
-        echo "[MISSING in DIR2] $rel_path"
-        ((missing_count++))
-    fi
-done < <(find "$DIR1" -type f -print0)
-
-echo "[PROGRESS] Checked all $processed files in DIR1"
-echo "Checking for files only in DIR2..."
-
-# Check for files only in DIR2
-while IFS= read -r -d '' file2; do
-    rel_path="${file2#$DIR2/}"
-    file1="$DIR1/$rel_path"
-
-    if [[ ! -f "$file1" ]]; then
-        echo "[MISSING in DIR1] $rel_path"
-        ((missing_count++))
-    fi
-done < <(find "$DIR2" -type f -print0)
+if [[ "$USE_CHECKSUM" == true ]]; then
+    echo "Building file list with checksums for DIR1... (this takes a while)"
+    (cd "$DIR1" && find . -type f -exec md5sum {} \; | sort) > "$LIST1"
+    echo "Building file list with checksums for DIR2..."
+    (cd "$DIR2" && find . -type f -exec md5sum {} \; | sort) > "$LIST2"
+else
+    echo "Building file list for DIR1..."
+    (cd "$DIR1" && find . -type f -printf '%p %s\n' | sort) > "$LIST1"
+    echo "Building file list for DIR2..."
+    (cd "$DIR2" && find . -type f -printf '%p %s\n' | sort) > "$LIST2"
+fi
 
 echo ""
-echo "=== Summary ==="
-echo "  Matching:  $match_count"
-echo "  Different: $diff_count"
-echo "  Missing:   $missing_count"
+echo "Files in DIR1: $(wc -l < "$LIST1")"
+echo "Files in DIR2: $(wc -l < "$LIST2")"
+echo ""
 
-if [[ "$diff_count" -eq 0 && "$missing_count" -eq 0 ]]; then
+# Compare
+echo "=== Differences ==="
+DIFF_OUTPUT=$(diff "$LIST1" "$LIST2" || true)
+
+if [[ -z "$DIFF_OUTPUT" ]]; then
+    echo "(none)"
     echo ""
     echo "Directories are identical."
     exit 0
 else
+    # Parse diff output
+    only_in_dir1=0
+    only_in_dir2=0
+    different=0
+
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^\<\  ]]; then
+            echo "[ONLY in DIR1] ${line#< }"
+            ((only_in_dir1++))
+        elif [[ "$line" =~ ^\>\  ]]; then
+            echo "[ONLY in DIR2] ${line#> }"
+            ((only_in_dir2++))
+        fi
+    done <<< "$DIFF_OUTPUT"
+
+    echo ""
+    echo "=== Summary ==="
+    echo "  Only in DIR1: $only_in_dir1"
+    echo "  Only in DIR2: $only_in_dir2"
     exit 1
 fi
