@@ -198,7 +198,18 @@ def load_inpainter_model(checkpoint_path: str, device: str = 'cpu'):
     )
 
     # Create inpainter with predict_channels
-    model = XEC_Inpainter(encoder=encoder, predict_channels=predict_channels)
+    head_type = config.get('head_type', 'per_face')
+    model = XEC_Inpainter(
+        encoder=encoder,
+        predict_channels=predict_channels,
+        use_masked_attention=config.get('use_masked_attention', False),
+        head_type=head_type,
+        sensor_positions_file=config.get('sensor_positions_file', None),
+        cross_attn_k=config.get('cross_attn_k', 16),
+        cross_attn_hidden=config.get('cross_attn_hidden', 64),
+        cross_attn_latent_dim=config.get('cross_attn_latent_dim', 128),
+        cross_attn_pos_dim=config.get('cross_attn_pos_dim', 96),
+    )
 
     # Load weights
     if 'model_state_dict' in checkpoint:
@@ -240,6 +251,8 @@ def run_inference(model: XEC_Inpainter, x: np.ndarray,
     n_events = len(x)
     all_predictions = []
 
+    head_type = getattr(model, 'head_type', 'per_face')
+
     model.eval()
     with torch.no_grad():
         for start_idx in tqdm(range(0, n_events, batch_size), desc="Inference"):
@@ -248,17 +261,27 @@ def run_inference(model: XEC_Inpainter, x: np.ndarray,
             x_batch = torch.tensor(x[start_idx:end_idx], device=device)
             mask_batch = torch.tensor(mask[start_idx:end_idx], device=device)
 
-            # Run model - returns (results_dict, original_values, mask)
-            results, _, _ = model(x_batch, mask=mask_batch)
-
-            # Store results for this batch
-            batch_preds = {
-                'batch_start': start_idx,
-                'batch_end': end_idx,
-                'results': {k: {kk: vv.cpu().numpy() if torch.is_tensor(vv) else vv
-                               for kk, vv in v.items()}
-                           for k, v in results.items()}
-            }
+            if head_type == "cross_attention":
+                # Cross-attention: use forward_full_output for flat (B, 4760, C) output
+                pred_all = model.forward_full_output(x_batch, mask_batch)
+                batch_preds = {
+                    'batch_start': start_idx,
+                    'batch_end': end_idx,
+                    'pred_all': pred_all.cpu().numpy(),
+                    'mask': mask_batch.cpu().numpy(),
+                    'is_flat': True,
+                }
+            else:
+                # Per-face: use forward() for results dict
+                results, _, _ = model(x_batch, mask=mask_batch)
+                batch_preds = {
+                    'batch_start': start_idx,
+                    'batch_end': end_idx,
+                    'results': {k: {kk: vv.cpu().numpy() if torch.is_tensor(vv) else vv
+                                   for kk, vv in v.items()}
+                               for k, v in results.items()},
+                    'is_flat': False,
+                }
             all_predictions.append(batch_preds)
 
     return all_predictions
@@ -292,9 +315,77 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
 
     all_preds = []
 
+    # Build sensor_id → face_name mapping for flat predictions
+    _face_id_to_name = None
+
     for batch in predictions:
         start_idx = batch['batch_start']
         end_idx = batch['batch_end']
+
+        if batch.get('is_flat', False):
+            # Cross-attention: flat (B, 4760, C) predictions
+            pred_all = batch['pred_all']
+            mask_np = batch['mask']
+            B = pred_all.shape[0]
+
+            # Lazily build face mapping
+            if _face_id_to_name is None:
+                from lib.sensor_geometry import build_sensor_face_ids
+                _sensor_face_ids = build_sensor_face_ids()
+                _face_id_to_name_map = {0: "inner", 1: "us", 2: "ds",
+                                        3: "outer", 4: "top", 5: "bot"}
+
+            for b in range(B):
+                event_idx = start_idx + b
+                masked_sensors = np.where(mask_np[b] > 0.5)[0]
+
+                for sensor_id in masked_sensors:
+                    sensor_id = int(sensor_id)
+                    face_name = _face_id_to_name_map[int(_sensor_face_ids[sensor_id])]
+
+                    pred_npho_norm = float(pred_all[b, sensor_id, pred_npho_idx])
+                    pred_npho = pred_npho_norm / npho_scale if npho_scale != 0 else pred_npho_norm
+
+                    if predict_time and pred_time_idx is not None and pred_all.shape[2] > pred_time_idx:
+                        pred_time_norm = float(pred_all[b, sensor_id, pred_time_idx])
+                        pred_time = (pred_time_norm - time_shift) / time_scale if time_scale != 0 else pred_time_norm
+                    else:
+                        pred_time = -999.0
+
+                    truth_npho_norm = float(x_original[event_idx, sensor_id, 0])
+                    truth_time_norm = float(x_original[event_idx, sensor_id, 1])
+
+                    if truth_npho_norm == MODEL_SENTINEL or abs(truth_npho_norm) > 1e9:
+                        truth_npho = -999.0
+                        error_npho = -999.0
+                    else:
+                        truth_npho = truth_npho_norm / npho_scale if npho_scale != 0 else truth_npho_norm
+                        error_npho = pred_npho - truth_npho
+
+                    if not predict_time:
+                        truth_time = -999.0
+                        error_time = -999.0
+                    elif truth_time_norm == MODEL_SENTINEL or abs(truth_time_norm) > 1e9:
+                        truth_time = -999.0
+                        error_time = -999.0
+                    else:
+                        truth_time = (truth_time_norm - time_shift) / time_scale if time_scale != 0 else truth_time_norm
+                        error_time = pred_time - truth_time
+
+                    all_preds.append({
+                        'event_idx': event_idx,
+                        'sensor_id': sensor_id,
+                        'face': face_name,
+                        'truth_npho': truth_npho,
+                        'truth_time': truth_time,
+                        'pred_npho': pred_npho,
+                        'pred_time': pred_time,
+                        'error_npho': error_npho,
+                        'error_time': error_time,
+                    })
+            continue
+
+        # Per-face: results dict format
         results = batch['results']
 
         for face_name in ['inner', 'us', 'ds', 'outer', 'top', 'bot']:

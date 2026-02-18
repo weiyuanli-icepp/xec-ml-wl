@@ -336,8 +336,19 @@ def load_model(checkpoint_path: Optional[str] = None,
             outer_fine_pool=config.get('outer_fine_pool', None),
         )
         use_masked_attention = config.get('use_masked_attention', False)
-        model = XEC_Inpainter(encoder=encoder, predict_channels=predict_channels,
-                              use_masked_attention=use_masked_attention)
+        head_type = config.get('head_type', 'per_face')
+        sensor_positions_file = config.get('sensor_positions_file', None)
+        model = XEC_Inpainter(
+            encoder=encoder,
+            predict_channels=predict_channels,
+            use_masked_attention=use_masked_attention,
+            head_type=head_type,
+            sensor_positions_file=sensor_positions_file,
+            cross_attn_k=config.get('cross_attn_k', 16),
+            cross_attn_hidden=config.get('cross_attn_hidden', 64),
+            cross_attn_latent_dim=config.get('cross_attn_latent_dim', 128),
+            cross_attn_pos_dim=config.get('cross_attn_pos_dim', 96),
+        )
 
         # Load weights (prefer EMA)
         if 'ema_state_dict' in checkpoint:
