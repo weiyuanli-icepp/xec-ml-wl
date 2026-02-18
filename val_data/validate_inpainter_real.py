@@ -66,13 +66,13 @@ from lib.geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
     OUTER_COARSE_FULL_INDEX_MAP, TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
     flatten_hex_rows,
-    DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
+    DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_TIME
 )
 
 # Constants
 N_CHANNELS = 4760
 REAL_DATA_SENTINEL = 1e10  # Sentinel value used in PrepareRealData.C
-MODEL_SENTINEL = DEFAULT_SENTINEL_VALUE  # Sentinel value expected by model (-5.0)
+MODEL_SENTINEL_TIME = DEFAULT_SENTINEL_TIME  # Sentinel value expected by model (-5.0)
 
 # Flatten hex rows to get sensor indices
 TOP_HEX_FLAT_INDICES = flatten_hex_rows(TOP_HEX_ROWS)
@@ -186,7 +186,7 @@ def detect_dead_from_data(npho: np.ndarray, relative_time: np.ndarray,
 
 
 def convert_sentinel_values(data: np.ndarray, from_sentinel: float = REAL_DATA_SENTINEL,
-                            to_sentinel: float = MODEL_SENTINEL,
+                            to_sentinel: float = MODEL_SENTINEL_TIME,
                             threshold: float = 1e9) -> np.ndarray:
     """
     Convert sentinel values from real data format to model format.
@@ -389,7 +389,7 @@ def prepare_model_input(npho: np.ndarray, relative_time: np.ndarray,
                         npho_scale2: float = DEFAULT_NPHO_SCALE2,
                         time_scale: float = DEFAULT_TIME_SCALE,
                         time_shift: float = DEFAULT_TIME_SHIFT,
-                        sentinel: float = MODEL_SENTINEL) -> np.ndarray:
+                        sentinel: float = MODEL_SENTINEL_TIME) -> np.ndarray:
     """
     Prepare input tensor for the model.
 
@@ -421,7 +421,7 @@ def prepare_model_input(npho: np.ndarray, relative_time: np.ndarray,
 
     # Npho: log1p(npho / npho_scale) / npho_scale2
     # Allow negatives through; only clamp domain-breaking values
-    npho_sentinel = -0.5  # Separate sentinel for npho channel
+    npho_sentinel = -1.0  # Separate sentinel for npho channel
     domain_min = -npho_scale * 0.999
     mask_domain_break = npho_valid & (npho_clean < domain_min)
     npho_safe = np.where(mask_domain_break, 0.0, npho_clean)
@@ -1079,7 +1079,7 @@ def main():
     combined_mask |= artificial_mask  # Plus artificial
 
     # Mask the input
-    x_input[combined_mask] = MODEL_SENTINEL
+    x_input[combined_mask] = MODEL_SENTINEL_TIME
 
     # Determine device (default: cpu for compatibility)
     device = args.device if args.device else 'cpu'

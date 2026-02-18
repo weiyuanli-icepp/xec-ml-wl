@@ -15,7 +15,7 @@ from ..geom_defs import (
     TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows,
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
     DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT,
-    DEFAULT_SENTINEL_VALUE, DEFAULT_NPHO_THRESHOLD
+    DEFAULT_SENTINEL_TIME, DEFAULT_NPHO_THRESHOLD
 )
 from ..normalization import NphoTransform
 
@@ -26,7 +26,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                   npho_branch="npho", time_branch="relative_time",
                   npho_scale=DEFAULT_NPHO_SCALE, npho_scale2=DEFAULT_NPHO_SCALE2,
                   time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT,
-                  sentinel_value=DEFAULT_SENTINEL_VALUE,
+                  sentinel_time=DEFAULT_SENTINEL_TIME,
                   channel_dropout_rate=0.1,
                   loss_fn="mse",
                   npho_weight=1.0,
@@ -49,7 +49,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                   npho_loss_weight_alpha=0.5,
                   intensity_reweighter=None,
                   no_sync_ctx=None,
-                  npho_sentinel_value=-0.5):
+                  sentinel_npho=-1.0):
     model.train()
     if scaler is None:
         scaler = torch.amp.GradScaler('cuda', enabled=amp)
@@ -135,14 +135,14 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
         npho_scale2=npho_scale2,
         time_scale=time_scale,
         time_shift=time_shift,
-        sentinel_value=sentinel_value,
+        sentinel_time=sentinel_time,
         npho_threshold=npho_threshold,
         num_workers=dataset_workers,
         log_invalid_npho=log_invalid_npho,
         load_truth_branches=False,  # MAE doesn't need truth branches
         profile=profile,
         npho_scheme=npho_scheme,
-        npho_sentinel_value=npho_sentinel_value,
+        sentinel_npho=sentinel_npho,
     )
 
     loader = DataLoader(
@@ -166,8 +166,8 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
             profiler.stop()
 
             # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
-            # Already-invalid sensors have time == sentinel_value and are NOT in mask
-            already_invalid = (x_in[:, :, 1] == sentinel_value)  # (B, N)
+            # Already-invalid sensors have time == sentinel_time and are NOT in mask
+            already_invalid = (x_in[:, :, 1] == sentinel_time)  # (B, N)
             total_valid_sensors += (~already_invalid).sum()
             total_randomly_masked += mask.sum().long()
 
@@ -177,7 +177,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                 outer_target = build_outer_fine_grid_tensor(
                     x_in,
                     pool_kernel=model.encoder.outer_fine_pool,
-                    sentinel_value=getattr(model, "sentinel_value", None)
+                    sentinel_time=getattr(model, "sentinel_time", None)
                 )
             else:
                 outer_target = gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP)
@@ -503,7 +503,7 @@ def run_eval_mae(model, device, root_files, tree_name,
                  npho_branch="npho", time_branch="relative_time",
                  npho_scale=DEFAULT_NPHO_SCALE, npho_scale2=DEFAULT_NPHO_SCALE2,
                  time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT,
-                 sentinel_value=DEFAULT_SENTINEL_VALUE,
+                 sentinel_time=DEFAULT_SENTINEL_TIME,
                  loss_fn="mse",
                  npho_weight=1.0,
                  time_weight=1.0,
@@ -520,7 +520,7 @@ def run_eval_mae(model, device, root_files, tree_name,
                  npho_scheme="log1p",
                  npho_loss_weight_enabled=False,
                  npho_loss_weight_alpha=0.5,
-                 npho_sentinel_value=-0.5):
+                 sentinel_npho=-1.0):
     """
     Evaluate MAE model on validation data.
 
@@ -699,14 +699,14 @@ def run_eval_mae(model, device, root_files, tree_name,
         npho_scale2=npho_scale2,
         time_scale=time_scale,
         time_shift=time_shift,
-        sentinel_value=sentinel_value,
+        sentinel_time=sentinel_time,
         npho_threshold=npho_threshold,
         num_workers=dataset_workers,
         log_invalid_npho=log_invalid_npho,
         load_truth_branches=False,  # MAE doesn't need truth branches
         profile=profile,
         npho_scheme=npho_scheme,
-        npho_sentinel_value=npho_sentinel_value,
+        sentinel_npho=sentinel_npho,
     )
 
     loader = DataLoader(
@@ -730,7 +730,7 @@ def run_eval_mae(model, device, root_files, tree_name,
                 x_masked, mask = model.random_masking(x_in, npho_threshold_norm=npho_threshold_norm)
 
                 # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
-                already_invalid = (x_in[:, :, 1] == sentinel_value)  # (B, N)
+                already_invalid = (x_in[:, :, 1] == sentinel_time)  # (B, N)
                 total_valid_sensors += (~already_invalid).sum()
                 total_randomly_masked += mask.sum().long()
 
@@ -762,7 +762,7 @@ def run_eval_mae(model, device, root_files, tree_name,
                     "inner": gather_face(x_in, INNER_INDEX_MAP),
                     "us":    gather_face(x_in, US_INDEX_MAP),
                     "ds":    gather_face(x_in, DS_INDEX_MAP),
-                    "outer": build_outer_fine_grid_tensor(x_in, model.encoder.outer_fine_pool, sentinel_value=getattr(model, "sentinel_value", None)) if getattr(model.encoder, "outer_fine", False) else gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP),
+                    "outer": build_outer_fine_grid_tensor(x_in, model.encoder.outer_fine_pool, sentinel_time=getattr(model, "sentinel_time", None)) if getattr(model.encoder, "outer_fine", False) else gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP),
                     "top":   gather_hex_nodes(x_in, top_indices).permute(0, 2, 1),
                     "bot":   gather_hex_nodes(x_in, bot_indices).permute(0, 2, 1)
                 }

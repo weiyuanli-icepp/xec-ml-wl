@@ -139,7 +139,7 @@ DEFAULT_NPHO_SCALE     = 0.58      # Npho log transform scale
 DEFAULT_NPHO_SCALE2    = 1.0       # Secondary npho scale
 DEFAULT_TIME_SCALE     = 6.5e-8    # Time normalization (seconds)
 DEFAULT_TIME_SHIFT     = 0.5       # Time offset after scaling
-DEFAULT_SENTINEL_VALUE = -5.0      # Marker for invalid/masked sensors
+DEFAULT_SENTINEL_TIME = -1.0      # Marker for invalid/masked sensors
 ```
 
 **New Scheme** (in `config/mae_config.yaml` and `config/inpainter_config.yaml`):
@@ -148,7 +148,7 @@ npho_scale     = 1000       # Npho log transform scale
 npho_scale2    = 4.08       # Secondary npho scale
 time_scale     = 1.14e-7    # Time normalization (seconds)
 time_shift     = -0.46      # Time offset after scaling
-sentinel_value = -1.0       # Marker for invalid/masked sensors
+sentinel_time = -1.0       # Marker for invalid/masked sensors
 ```
 
 **Important:** Models trained with different normalization schemes are **not compatible**. MAE pretraining and downstream fine-tuning must use the same scheme.
@@ -164,5 +164,5 @@ time_norm = (time_raw / time_scale) - time_shift
 # Invalid sensors
 if invalid:
     npho_norm = 0.0
-    time_norm = sentinel_value
+    time_norm = sentinel_time
 ```

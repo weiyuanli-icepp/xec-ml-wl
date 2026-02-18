@@ -62,7 +62,7 @@ The MAE uses **invalid-aware masking** to properly handle already-invalid sensor
 
 ```python
 # Pseudocode for invalid-aware masking
-already_invalid = (time == sentinel_value)  # Sensors without valid data
+already_invalid = (time == sentinel_time)  # Sensors without valid data
 valid_sensors = ~already_invalid
 
 # Only mask from valid sensors
@@ -70,7 +70,7 @@ num_to_mask = int(valid_sensors.sum() * mask_ratio)
 mask = random_select(valid_sensors, num_to_mask)
 
 # Apply sentinel to masked positions
-x_masked[mask] = sentinel_value
+x_masked[mask] = sentinel_time
 
 # Loss computed only on `mask` (not on already_invalid)
 ```
@@ -238,7 +238,7 @@ training:
     npho_threshold: 100.0      # Min npho for conditional time loss
 ```
 
-**Note:** Use the **new normalization scheme** (npho_scale=1000, sentinel_value=-1.0) for MAE pretraining. See [Data Pipeline](../architecture/data-pipeline.md) for details.
+**Note:** Use the **new normalization scheme** (npho_scale=1000, sentinel_time=-1.0) for MAE pretraining. See [Data Pipeline](../architecture/data-pipeline.md) for details.
 
 ## MAE/Inpainter-Specific Parameters
 

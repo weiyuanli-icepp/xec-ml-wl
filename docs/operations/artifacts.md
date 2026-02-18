@@ -115,7 +115,7 @@ The ROOT file includes a `metadata` tree with a single entry containing model co
 - `predict_channels` - Comma-separated list of predicted channels (e.g., `"npho"` or `"npho,time"`)
 - `npho_scale` - Normalization scale for npho
 - `time_scale` - Normalization scale for time
-- `sentinel_value` - Value used for invalid/masked sensors
+- `sentinel_time` - Value used for invalid/masked sensors
 
 Downstream macros auto-detect the prediction mode from this metadata.
 
@@ -169,7 +169,7 @@ The ROOT file includes a `metadata` tree with a single entry containing model co
 - `predict_channels` - Comma-separated list of predicted channels (e.g., `"npho"` or `"npho,time"`)
 - `npho_scale` - Normalization scale for npho
 - `time_scale` - Normalization scale for time
-- `sentinel_value` - Value used for invalid/masked sensors
+- `sentinel_time` - Value used for invalid/masked sensors
 
 Downstream macros (e.g., `macro/analyze_inpainter.py`, `val_data/analyze_inpainter.py`) auto-detect the prediction mode from this metadata and skip time-related analysis when only npho is predicted.
 

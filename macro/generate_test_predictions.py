@@ -29,7 +29,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from lib.geom_defs import (
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
-    DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE,
+    DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_TIME,
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
     OUTER_COARSE_FULL_INDEX_MAP, TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
     flatten_hex_rows
@@ -41,7 +41,7 @@ def normalize_input(raw_npho, raw_time,
                     npho_scale2=DEFAULT_NPHO_SCALE2,
                     time_scale=DEFAULT_TIME_SCALE,
                     time_shift=DEFAULT_TIME_SHIFT,
-                    sentinel_value=DEFAULT_SENTINEL_VALUE):
+                    sentinel_time=DEFAULT_SENTINEL_TIME):
     """Apply normalization to raw input data."""
     mask_npho_bad = (raw_npho <= 0.0) | (raw_npho > 9e9) | np.isnan(raw_npho)
     mask_time_bad = mask_npho_bad | (np.abs(raw_time) > 9e9) | np.isnan(raw_time)
@@ -51,18 +51,18 @@ def normalize_input(raw_npho, raw_time,
     time_norm = (raw_time / time_scale) - time_shift
 
     npho_norm[mask_npho_bad] = 0.0
-    time_norm[mask_time_bad] = sentinel_value
+    time_norm[mask_time_bad] = sentinel_time
 
     return npho_norm, time_norm
 
 
-def generate_random_mask(n_sensors, mask_ratio=0.6, sentinel_value=DEFAULT_SENTINEL_VALUE, time_norm=None):
+def generate_random_mask(n_sensors, mask_ratio=0.6, sentinel_time=DEFAULT_SENTINEL_TIME, time_norm=None):
     """Generate random mask, excluding already-invalid sensors."""
     mask = np.zeros(n_sensors, dtype=np.float32)
 
     # Identify valid sensors (not already sentinel)
     if time_norm is not None:
-        valid = time_norm != sentinel_value
+        valid = time_norm != sentinel_time
     else:
         valid = np.ones(n_sensors, dtype=bool)
 
@@ -137,7 +137,7 @@ def generate_mae_predictions(input_file, output_file, tree_name="tree",
                              mask_ratio=0.6, error_scale=0.1, max_events=100,
                              npho_scale=DEFAULT_NPHO_SCALE, npho_scale2=DEFAULT_NPHO_SCALE2,
                              time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT,
-                             sentinel_value=DEFAULT_SENTINEL_VALUE):
+                             sentinel_time=DEFAULT_SENTINEL_TIME):
     """Generate MAE-style predictions ROOT file."""
     print(f"Generating MAE predictions from: {input_file}")
     print(f"  Output: {output_file}")
@@ -173,17 +173,17 @@ def generate_mae_predictions(input_file, output_file, tree_name="tree",
             raw_npho, raw_time,
             npho_scale=npho_scale, npho_scale2=npho_scale2,
             time_scale=time_scale, time_shift=time_shift,
-            sentinel_value=sentinel_value
+            sentinel_time=sentinel_time
         )
 
         # Generate mask
-        mask = generate_random_mask(len(npho_norm), mask_ratio, sentinel_value, time_norm)
+        mask = generate_random_mask(len(npho_norm), mask_ratio, sentinel_time, time_norm)
 
         # Create masked input
         masked_npho = npho_norm.copy()
         masked_time = time_norm.copy()
         masked_npho[mask > 0.5] = 0.0
-        masked_time[mask > 0.5] = sentinel_value
+        masked_time[mask > 0.5] = sentinel_time
 
         # Generate predictions
         pred_npho = generate_pseudo_prediction(npho_norm, mask, error_scale)
@@ -242,7 +242,7 @@ def generate_inpainter_predictions(input_file, output_file, tree_name="tree",
                                    mask_ratio=0.6, error_scale=0.1, max_events=100,
                                    npho_scale=DEFAULT_NPHO_SCALE, npho_scale2=DEFAULT_NPHO_SCALE2,
                                    time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT,
-                                   sentinel_value=DEFAULT_SENTINEL_VALUE):
+                                   sentinel_time=DEFAULT_SENTINEL_TIME):
     """Generate inpainter-style predictions ROOT file."""
     print(f"Generating inpainter predictions from: {input_file}")
     print(f"  Output: {output_file}")
@@ -293,11 +293,11 @@ def generate_inpainter_predictions(input_file, output_file, tree_name="tree",
             raw_npho, raw_time,
             npho_scale=npho_scale, npho_scale2=npho_scale2,
             time_scale=time_scale, time_shift=time_shift,
-            sentinel_value=sentinel_value
+            sentinel_time=sentinel_time
         )
 
         # Generate mask
-        mask = generate_random_mask(len(npho_norm), mask_ratio, sentinel_value, time_norm)
+        mask = generate_random_mask(len(npho_norm), mask_ratio, sentinel_time, time_norm)
 
         # Get masked sensor indices
         masked_indices = np.where(mask > 0.5)[0]
@@ -337,7 +337,7 @@ def generate_inpainter_predictions(input_file, output_file, tree_name="tree",
     meta_npho_scale2 = np.array([npho_scale2], dtype=np.float32)
     meta_time_scale = np.array([time_scale], dtype=np.float32)
     meta_time_shift = np.array([time_shift], dtype=np.float32)
-    meta_sentinel = np.array([sentinel_value], dtype=np.float32)
+    meta_sentinel = np.array([sentinel_time], dtype=np.float32)
 
     with uproot.recreate(output_file) as f:
         # Main predictions tree - define with types, then extend
@@ -428,7 +428,7 @@ Examples:
     parser.add_argument("--npho_scale2", type=float, default=DEFAULT_NPHO_SCALE2)
     parser.add_argument("--time_scale", type=float, default=DEFAULT_TIME_SCALE)
     parser.add_argument("--time_shift", type=float, default=DEFAULT_TIME_SHIFT)
-    parser.add_argument("--sentinel_value", type=float, default=DEFAULT_SENTINEL_VALUE)
+    parser.add_argument("--sentinel_time", type=float, default=DEFAULT_SENTINEL_TIME)
 
     args = parser.parse_args()
 
@@ -457,7 +457,7 @@ Examples:
             npho_scale2=args.npho_scale2,
             time_scale=args.time_scale,
             time_shift=args.time_shift,
-            sentinel_value=args.sentinel_value,
+            sentinel_time=args.sentinel_time,
         )
 
     if args.mode in ["inpainter", "both"]:
@@ -473,7 +473,7 @@ Examples:
             npho_scale2=args.npho_scale2,
             time_scale=args.time_scale,
             time_shift=args.time_shift,
-            sentinel_value=args.sentinel_value,
+            sentinel_time=args.sentinel_time,
         )
 
     print("\nDone! Test with:")

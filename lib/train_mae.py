@@ -39,7 +39,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from .models import XECEncoder, XEC_MAE
 from .engines import run_epoch_mae, run_eval_mae
 from .utils import count_model_params, log_system_metrics_to_mlflow, validate_data_paths, check_artifact_directory
-from .geom_defs import DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
+from .geom_defs import DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_TIME
 from .config import load_mae_config
 from .distributed import (
     setup_ddp, cleanup_ddp, is_main_process,
@@ -189,7 +189,7 @@ Examples:
     parser.add_argument("--npho_scale2",    type=float, default=None)
     parser.add_argument("--time_scale",     type=float, default=None)
     parser.add_argument("--time_shift",     type=float, default=None)
-    parser.add_argument("--sentinel_value", type=float, default=None)
+    parser.add_argument("--sentinel_time", type=float, default=None)
 
     parser.add_argument("--outer_mode",           type=str, default=None, choices=["split", "finegrid"])
     parser.add_argument("--outer_fine_pool",      type=int, nargs=2, default=None)
@@ -261,8 +261,8 @@ Examples:
         npho_scale2 = float(args.npho_scale2 if args.npho_scale2 is not None else cfg.normalization.npho_scale2)
         time_scale = float(args.time_scale if args.time_scale is not None else cfg.normalization.time_scale)
         time_shift = float(args.time_shift if args.time_shift is not None else cfg.normalization.time_shift)
-        sentinel_value = float(args.sentinel_value if args.sentinel_value is not None else cfg.normalization.sentinel_value)
-        npho_sentinel_value = float(getattr(cfg.normalization, 'npho_sentinel_value', -0.5))
+        sentinel_time = float(args.sentinel_time if args.sentinel_time is not None else cfg.normalization.sentinel_time)
+        sentinel_npho = float(getattr(cfg.normalization, 'sentinel_npho', -1.0))
         outer_mode = args.outer_mode or cfg.model.outer_mode
         outer_fine_pool = args.outer_fine_pool or cfg.model.outer_fine_pool
         mask_ratio = args.mask_ratio if args.mask_ratio is not None else cfg.model.mask_ratio
@@ -337,8 +337,8 @@ Examples:
         npho_scale2 = args.npho_scale2 or DEFAULT_NPHO_SCALE2
         time_scale = args.time_scale or DEFAULT_TIME_SCALE
         time_shift = args.time_shift or DEFAULT_TIME_SHIFT
-        sentinel_value = args.sentinel_value or DEFAULT_SENTINEL_VALUE
-        npho_sentinel_value = -0.5
+        sentinel_time = args.sentinel_time or DEFAULT_SENTINEL_TIME
+        sentinel_npho = -1.0
         outer_mode = args.outer_mode or "finegrid"
         outer_fine_pool = args.outer_fine_pool
         mask_ratio = args.mask_ratio or 0.6
@@ -427,9 +427,9 @@ Examples:
 
     model = XEC_MAE(
         encoder, mask_ratio=mask_ratio, learn_channel_logvars=auto_channel_weight,
-        sentinel_value=sentinel_value, time_mask_ratio_scale=time_mask_ratio_scale,
+        sentinel_time=sentinel_time, time_mask_ratio_scale=time_mask_ratio_scale,
         predict_channels=predict_channels, decoder_dim=decoder_dim,
-        npho_sentinel_value=npho_sentinel_value
+        sentinel_npho=sentinel_npho
     ).to(device)
     total_params, trainable_params = count_model_params(model)
     if is_main_process():
@@ -655,7 +655,7 @@ Examples:
                 "npho_scale2": npho_scale2,
                 "time_scale": time_scale,
                 "time_shift": time_shift,
-                "sentinel_value": sentinel_value,
+                "sentinel_time": sentinel_time,
                 "outer_mode": outer_mode_label,
                 "mask_ratio": mask_ratio,
                 "decoder_dim": decoder_dim,
@@ -695,7 +695,7 @@ Examples:
                 npho_scale2=npho_scale2,
                 time_scale=time_scale,
                 time_shift=time_shift,
-                sentinel_value=sentinel_value,
+                sentinel_time=sentinel_time,
                 loss_fn=loss_fn,
                 npho_weight=npho_weight,
                 time_weight=time_weight,
@@ -717,7 +717,7 @@ Examples:
                 npho_loss_weight_enabled=npho_loss_weight_enabled,
                 npho_loss_weight_alpha=npho_loss_weight_alpha,
                 no_sync_ctx=no_sync_ctx,
-                npho_sentinel_value=npho_sentinel_value,
+                sentinel_npho=sentinel_npho,
             )
             train_metrics = reduce_metrics(train_metrics, device)
 
@@ -741,7 +741,7 @@ Examples:
                     npho_scale2=npho_scale2,
                     time_scale=time_scale,
                     time_shift=time_shift,
-                    sentinel_value=sentinel_value,
+                    sentinel_time=sentinel_time,
                     loss_fn=loss_fn,
                     npho_weight=npho_weight,
                     time_weight=time_weight,
@@ -759,7 +759,7 @@ Examples:
                     npho_scheme=npho_scheme,
                     npho_loss_weight_enabled=npho_loss_weight_enabled,
                     npho_loss_weight_alpha=npho_loss_weight_alpha,
-                    npho_sentinel_value=npho_sentinel_value,
+                    sentinel_npho=sentinel_npho,
                 )
 
             if val_metrics:
@@ -827,7 +827,7 @@ Examples:
                         npho_scale2=npho_scale2,
                         time_scale=time_scale,
                         time_shift=time_shift,
-                        sentinel_value=sentinel_value,
+                        sentinel_time=sentinel_time,
                         loss_fn=loss_fn,
                         npho_weight=npho_weight,
                         time_weight=time_weight,
@@ -845,7 +845,7 @@ Examples:
                         npho_scheme=npho_scheme,
                         npho_loss_weight_enabled=npho_loss_weight_enabled,
                         npho_loss_weight_alpha=npho_loss_weight_alpha,
-                        npho_sentinel_value=npho_sentinel_value,
+                        sentinel_npho=sentinel_npho,
                     )
                     root_path = save_predictions_to_root(
                         predictions, save_path, epoch, run_id=mlflow_run_id,

@@ -19,7 +19,7 @@ from .geom_defs import (
     DEFAULT_NPHO_SCALE2,
     DEFAULT_TIME_SCALE,
     DEFAULT_TIME_SHIFT,
-    DEFAULT_SENTINEL_VALUE,
+    DEFAULT_SENTINEL_TIME,
     DEFAULT_NPHO_THRESHOLD
 )
 from .normalization import NphoTransform
@@ -39,7 +39,7 @@ class XECStreamingDataset(IterableDataset):
         step_size: Number of events to load per chunk from ROOT file.
         npho_branch: Branch name for photon counts.
         time_branch: Branch name for timing.
-        npho_scale, npho_scale2, time_scale, time_shift, sentinel_value: Normalization params.
+        npho_scale, npho_scale2, time_scale, time_shift, sentinel_time: Normalization params.
         npho_threshold: Minimum npho for valid timing (sensors below have sentinel time).
         num_workers: Number of threads for parallel CPU preprocessing.
         log_invalid_npho: Log warning when invalid npho values detected.
@@ -52,7 +52,7 @@ class XECStreamingDataset(IterableDataset):
                  npho_scale=DEFAULT_NPHO_SCALE,
                  npho_scale2=DEFAULT_NPHO_SCALE2,
                  time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT,
-                 sentinel_value=DEFAULT_SENTINEL_VALUE,
+                 sentinel_time=DEFAULT_SENTINEL_TIME,
                  npho_threshold=DEFAULT_NPHO_THRESHOLD,
                  num_workers=8,
                  log_invalid_npho=True,
@@ -61,7 +61,7 @@ class XECStreamingDataset(IterableDataset):
                  profile=False,
                  npho_scheme="log1p",
                  fiducial=None,
-                 npho_sentinel_value=-0.5):
+                 sentinel_npho=-1.0):
         super().__init__()
 
         # I/O profiling
@@ -111,7 +111,7 @@ class XECStreamingDataset(IterableDataset):
 
         # Normalization parameters
         # npho_threshold: sensors with raw_npho < threshold have valid npho but invalid time
-        self.scales = (npho_scale, npho_scale2, time_scale, time_shift, sentinel_value, npho_threshold)
+        self.scales = (npho_scale, npho_scale2, time_scale, time_shift, sentinel_time, npho_threshold)
 
         # Create NphoTransform for configurable npho normalization
         self.npho_transform = NphoTransform(
@@ -120,7 +120,7 @@ class XECStreamingDataset(IterableDataset):
             npho_scale2=npho_scale2
         )
         self.npho_scheme = npho_scheme
-        self.npho_sentinel_value = npho_sentinel_value
+        self.sentinel_npho = sentinel_npho
 
         # Fiducial volume cut (only meaningful when load_truth_branches=True)
         self.fiducial = fiducial
@@ -196,7 +196,7 @@ class XECStreamingDataset(IterableDataset):
         Normalize a subset of the chunk in a separate thread.
 
         Normalization scheme:
-        - npho > 9e9 or isnan: truly invalid (dead/missing sensor) → npho_sentinel_value
+        - npho > 9e9 or isnan: truly invalid (dead/missing sensor) → sentinel_npho
         - npho below transform domain minimum: domain-breaking → 0.0
         - npho < npho_threshold: npho valid, time set to sentinel (timing unreliable)
         - otherwise: normal normalization for both (negative npho values allowed)
@@ -204,7 +204,7 @@ class XECStreamingDataset(IterableDataset):
         Sensors with npho < npho_threshold have unreliable timing (uncertainty ~ 1/sqrt(npho)).
         """
         n_sc, n_sc2, t_sc, t_sh, sent, npho_thresh = self.scales
-        npho_sent = self.npho_sentinel_value
+        npho_sent = self.sentinel_npho
 
         # Input Normalization
         raw_n = arr_subset[self.input_branches[0]].astype("float32")
@@ -415,7 +415,7 @@ def get_dataloader(file_path, batch_size=1024, num_workers=4, num_threads=4, pre
         rank: Current process rank for DDP file sharding (default 0).
         world_size: Total number of processes for DDP file sharding (default 1).
         **kwargs: Additional arguments passed to XECStreamingDataset
-                  (e.g., npho_scale, time_scale, sentinel_value, etc.)
+                  (e.g., npho_scale, time_scale, sentinel_time, etc.)
 
     Returns:
         DataLoader instance.

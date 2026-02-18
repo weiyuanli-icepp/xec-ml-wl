@@ -53,7 +53,7 @@ def test_mae(data_path, device, num_batches=5, profile=False, npho_scheme="log1p
     from lib.models.regressor import XECEncoder
     from lib.engines.mae import run_epoch_mae
     from lib.dataset import XECStreamingDataset
-    from lib.geom_defs import DEFAULT_SENTINEL_VALUE
+    from lib.geom_defs import DEFAULT_SENTINEL_TIME
     import uproot
 
     print(f"Normalization scheme: {npho_scheme}")
@@ -83,12 +83,12 @@ def test_mae(data_path, device, num_batches=5, profile=False, npho_scheme="log1p
     for x_batch, _ in debug_dataset:
         npho = x_batch[:, :, 0]
         time = x_batch[:, :, 1]
-        sentinel_count = (time == DEFAULT_SENTINEL_VALUE).sum().item()
+        sentinel_count = (time == DEFAULT_SENTINEL_TIME).sum().item()
         total_count = time.numel()
         print(f"  Batch shape: {x_batch.shape}")
         print(f"  Npho range: [{npho.min():.4f}, {npho.max():.4f}]")
         print(f"  Time range: [{time.min():.4f}, {time.max():.4f}]")
-        print(f"  Sentinel value: {DEFAULT_SENTINEL_VALUE}")
+        print(f"  Sentinel value: {DEFAULT_SENTINEL_TIME}")
         print(f"  Sensors with sentinel time: {sentinel_count}/{total_count} ({100*sentinel_count/total_count:.1f}%)")
         break
     debug_dataset.shutdown()

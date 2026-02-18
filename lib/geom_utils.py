@@ -44,14 +44,14 @@ def gather_hex_nodes(x_batch: torch.Tensor, flat_indices: torch.Tensor) -> torch
     vals = torch.index_select(x_batch, 1, safe_indices)
     return vals
 
-def build_outer_fine_grid_tensor(x_batch: torch.Tensor, pool_kernel=None, sentinel_value: float = None) -> torch.Tensor:
+def build_outer_fine_grid_tensor(x_batch: torch.Tensor, pool_kernel=None, sentinel_time: float = None) -> torch.Tensor:
     """
     Build outer face fine grid tensor from sensor data.
 
     Args:
         x_batch: (B, N, C) sensor data where C=2 (npho, time)
         pool_kernel: optional (h, w) pooling kernel size
-        sentinel_value: value marking invalid time measurements (for masked pooling)
+        sentinel_time: value marking invalid time measurements (for masked pooling)
 
     Returns:
         fine_grid: (B, C, H, W) fine grid tensor, optionally pooled
@@ -123,9 +123,9 @@ def build_outer_fine_grid_tensor(x_batch: torch.Tensor, pool_kernel=None, sentin
         # Time: masked average pooling (only average valid values)
         time_values = fine_grid[:, 1:, :, :]
 
-        if sentinel_value is not None:
+        if sentinel_time is not None:
             # Create validity mask (1 = valid, 0 = invalid)
-            time_valid = (time_values != sentinel_value).float()
+            time_valid = (time_values != sentinel_time).float()
 
             # Sum of valid values (avg_pool gives mean, multiply by pool_size to get sum)
             time_masked = time_values * time_valid
@@ -138,7 +138,7 @@ def build_outer_fine_grid_tensor(x_batch: torch.Tensor, pool_kernel=None, sentin
             time_pooled = torch.where(
                 valid_count > 0,
                 time_sum / valid_count.clamp(min=1),
-                torch.full_like(time_sum, sentinel_value)
+                torch.full_like(time_sum, sentinel_time)
             )
         else:
             # No sentinel value provided, use regular pooling

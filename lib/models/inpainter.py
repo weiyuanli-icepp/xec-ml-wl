@@ -21,7 +21,7 @@ from ..geom_defs import (
     TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
     HEX_EDGE_INDEX_NP, OUTER_FINE_H, OUTER_FINE_W, flatten_hex_rows,
     OUTER_SENSOR_TO_FINEGRID, OUTER_ALL_SENSOR_IDS, OUTER_SENSOR_ID_TO_IDX,
-    CENTRAL_COARSE_IDS, DEFAULT_SENTINEL_VALUE
+    CENTRAL_COARSE_IDS, DEFAULT_SENTINEL_TIME
 )
 from ..geom_utils import gather_face, build_outer_fine_grid_tensor, gather_hex_nodes
 from ..sensor_geometry import load_sensor_positions, build_sensor_face_ids, build_knn_graph
@@ -1265,7 +1265,7 @@ class XEC_Inpainter(nn.Module):
     Args:
         encoder: Pre-trained XECEncoder to extract global features.
         freeze_encoder: If True, encoder weights are frozen during training.
-        sentinel_value: Value used to mark invalid/masked sensors.
+        sentinel_time: Value used to mark invalid/masked sensors.
         time_mask_ratio_scale: Scaling factor for stratified masking of valid-time sensors.
         use_local_context: If True (default), inpainting heads use local neighbor values
                           in addition to global latent. If False, only global latent is used
@@ -1280,7 +1280,7 @@ class XEC_Inpainter(nn.Module):
         cross_attn_latent_dim: Projection dimension for latent tokens in cross-attention.
         cross_attn_pos_dim: Dimension of sinusoidal position encoding.
     """
-    def __init__(self, encoder: XECEncoder, freeze_encoder: bool = True, sentinel_value: float = DEFAULT_SENTINEL_VALUE,
+    def __init__(self, encoder: XECEncoder, freeze_encoder: bool = True, sentinel_time: float = DEFAULT_SENTINEL_TIME,
                  time_mask_ratio_scale: float = 1.0, use_local_context: bool = True, predict_channels=None,
                  use_masked_attention: bool = False,
                  head_type: str = "per_face",
@@ -1289,12 +1289,12 @@ class XEC_Inpainter(nn.Module):
                  cross_attn_hidden: int = 64,
                  cross_attn_latent_dim: int = 128,
                  cross_attn_pos_dim: int = 96,
-                 npho_sentinel_value: float = -0.5):
+                 sentinel_npho: float = -1.0):
         super().__init__()
         self.encoder = encoder
         self.freeze_encoder = freeze_encoder
-        self.sentinel_value = sentinel_value
-        self.npho_sentinel_value = npho_sentinel_value
+        self.sentinel_time = sentinel_time
+        self.sentinel_npho = sentinel_npho
         self.time_mask_ratio_scale = time_mask_ratio_scale
         self.use_local_context = use_local_context
         self.use_masked_attention = use_masked_attention
@@ -1432,7 +1432,7 @@ class XEC_Inpainter(nn.Module):
         Args:
             x_flat: (B, 4760, 2) - flat sensor values (npho, time)
             mask_ratio: fraction of valid sensors to mask
-            sentinel: value used to mark invalid/masked sensors (defaults to self.sentinel_value)
+            sentinel: value used to mark invalid/masked sensors (defaults to self.sentinel_time)
             npho_threshold_norm: threshold in normalized npho space for stratified masking.
                                 If provided and time_mask_ratio_scale != 1.0, valid-time sensors
                                 (npho > threshold) are more likely to be masked.
@@ -1449,19 +1449,19 @@ class XEC_Inpainter(nn.Module):
         loss mask since we don't have ground truth for them.
         """
         if sentinel is None:
-            sentinel = self.sentinel_value
+            sentinel = self.sentinel_time
 
         B, N, C = x_flat.shape
         device = x_flat.device
 
         # Identify already-invalid sensors based on which channels we're predicting
         # - If predicting time: time==sentinel means sensor is invalid (can't predict time)
-        # - If only predicting npho: only exclude sensors where npho==npho_sentinel_value
+        # - If only predicting npho: only exclude sensors where npho==sentinel_npho
         #   (sensors with valid npho but invalid time should still be maskable for npho)
         if "time" in self.predict_channels:
             already_invalid = (x_flat[:, :, 1] == sentinel)  # (B, N)
         else:
-            already_invalid = (x_flat[:, :, 0] == self.npho_sentinel_value)  # (B, N)
+            already_invalid = (x_flat[:, :, 0] == self.sentinel_npho)  # (B, N)
 
         # Count valid sensors per sample
         valid_count = (~already_invalid).sum(dim=1)  # (B,)
@@ -1495,12 +1495,12 @@ class XEC_Inpainter(nn.Module):
         mask.scatter_(1, ids_shuffle, should_mask)
 
         # Apply masking values to randomly-masked positions
-        # - npho (channel 0): set to npho_sentinel_value (same as dead channel representation)
+        # - npho (channel 0): set to sentinel_npho (same as dead channel representation)
         # - time (channel 1): set to sentinel (distinguishes invalid from t=0)
         # Note: already-invalid sensors already have appropriate values in x_flat
         x_masked = x_flat.clone()
         mask_bool = mask.bool()  # (B, N)
-        x_masked[:, :, 0].masked_fill_(mask_bool, self.npho_sentinel_value)  # npho -> npho sentinel
+        x_masked[:, :, 0].masked_fill_(mask_bool, self.sentinel_npho)  # npho -> npho sentinel
         x_masked[:, :, 1].masked_fill_(mask_bool, sentinel)                 # time -> sentinel
 
         return x_masked, mask
@@ -1535,8 +1535,8 @@ class XEC_Inpainter(nn.Module):
         else:
             x_masked = x_flat.clone()
             mask_bool = mask.bool()  # (B, N)
-            x_masked[:, :, 0].masked_fill_(mask_bool, self.npho_sentinel_value)  # npho -> npho sentinel
-            x_masked[:, :, 1].masked_fill_(mask_bool, self.sentinel_value)       # time -> sentinel
+            x_masked[:, :, 0].masked_fill_(mask_bool, self.sentinel_npho)  # npho -> npho sentinel
+            x_masked[:, :, 1].masked_fill_(mask_bool, self.sentinel_time)       # time -> sentinel
 
         # Cross-attention path: delegate to forward_full_output (operates on all sensors)
         if self.head_type == "cross_attention":
@@ -1548,9 +1548,9 @@ class XEC_Inpainter(nn.Module):
         # to prevent sentinel values from leaking into neighboring features
         # Check validity based on which channels we're predicting (consistent with random_masking)
         if "time" in self.predict_channels:
-            already_invalid = (x_flat[:, :, 1] == self.sentinel_value)  # (B, N)
+            already_invalid = (x_flat[:, :, 1] == self.sentinel_time)  # (B, N)
         else:
-            already_invalid = (x_flat[:, :, 0] == self.npho_sentinel_value)  # (B, N)
+            already_invalid = (x_flat[:, :, 0] == self.sentinel_npho)  # (B, N)
         encoder_mask = (mask.bool() | already_invalid).float()
 
         with torch.set_grad_enabled(not self.freeze_encoder):
@@ -1601,7 +1601,7 @@ class XEC_Inpainter(nn.Module):
         if self.encoder.outer_fine and self.head_outer_sensor is not None:
             # Sensor-level prediction for finegrid mode
             # Build outer finegrid tensor (without pooling - the head handles that)
-            outer_tensor = build_outer_fine_grid_tensor(x_masked, pool_kernel=self.encoder.outer_fine_pool, sentinel_value=self.sentinel_value)
+            outer_tensor = build_outer_fine_grid_tensor(x_masked, pool_kernel=self.encoder.outer_fine_pool, sentinel_time=self.sentinel_time)
 
             # Build sensor-level mask (B, 234) indexed by OUTER_ALL_SENSOR_IDS order
             outer_sensor_ids_tensor = torch.tensor(OUTER_ALL_SENSOR_IDS, device=device, dtype=torch.long)
@@ -1714,20 +1714,20 @@ class XEC_Inpainter(nn.Module):
         x_flat = x_batch if x_batch.dim() == 3 else x_batch.view(B, -1, 2)
 
         # Apply masking
-        # - npho (channel 0): set to npho_sentinel_value (same as dead channel representation)
+        # - npho (channel 0): set to sentinel_npho (same as dead channel representation)
         # - time (channel 1): set to sentinel (distinguishes invalid from t=0)
         x_masked = x_flat.clone()
         mask_bool = mask.bool()  # (B, N)
-        x_masked[:, :, 0].masked_fill_(mask_bool, self.npho_sentinel_value)  # npho -> npho sentinel
-        x_masked[:, :, 1].masked_fill_(mask_bool, self.sentinel_value)       # time -> sentinel
+        x_masked[:, :, 0].masked_fill_(mask_bool, self.sentinel_npho)  # npho -> npho sentinel
+        x_masked[:, :, 1].masked_fill_(mask_bool, self.sentinel_time)       # time -> sentinel
 
         # Get encoder features (with masked input and FCMAE-style masking)
         # Include both randomly-masked AND already-invalid sensors in the encoder mask
         # Check validity based on which channels we're predicting (consistent with random_masking)
         if "time" in self.predict_channels:
-            already_invalid = (x_flat[:, :, 1] == self.sentinel_value)  # (B, N)
+            already_invalid = (x_flat[:, :, 1] == self.sentinel_time)  # (B, N)
         else:
-            already_invalid = (x_flat[:, :, 0] == self.npho_sentinel_value)  # (B, N)
+            already_invalid = (x_flat[:, :, 0] == self.sentinel_npho)  # (B, N)
         encoder_mask = (mask.bool() | already_invalid).float()
 
         with torch.set_grad_enabled(not self.freeze_encoder):
@@ -1784,7 +1784,7 @@ class XEC_Inpainter(nn.Module):
             outer_latent = latent_seq[:, outer_idx]
             if self.encoder.outer_fine and self.head_outer_sensor is not None:
                 outer_tensor = build_outer_fine_grid_tensor(
-                    x_masked, pool_kernel=self.encoder.outer_fine_pool, sentinel_value=self.sentinel_value)
+                    x_masked, pool_kernel=self.encoder.outer_fine_pool, sentinel_time=self.sentinel_time)
                 outer_sensor_ids_tensor = torch.tensor(OUTER_ALL_SENSOR_IDS, device=device, dtype=torch.long)
                 outer_sensor_mask = mask[:, outer_sensor_ids_tensor]
                 pred, sensor_ids, valid = self.head_outer_sensor(outer_tensor, outer_latent, outer_sensor_mask)
@@ -1843,7 +1843,7 @@ class XEC_Inpainter(nn.Module):
             outer_latent = latent_seq[:, outer_idx]
             if self.encoder.outer_fine and self.head_outer_sensor is not None:
                 outer_tensor = build_outer_fine_grid_tensor(
-                    x_masked, pool_kernel=self.encoder.outer_fine_pool, sentinel_value=self.sentinel_value)
+                    x_masked, pool_kernel=self.encoder.outer_fine_pool, sentinel_time=self.sentinel_time)
                 outer_pred, outer_sensor_ids = self.head_outer_sensor.forward_full(outer_tensor, outer_latent)
                 pred_all[:, outer_sensor_ids, :] = outer_pred
             else:

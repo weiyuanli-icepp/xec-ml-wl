@@ -63,7 +63,7 @@ The script auto-detects tasks from the ONNX model outputs and saves predictions 
 | `npho_scale2` | 4.08 | Npho scale2 divisor |
 | `time_scale` | 1.14e-7 | Time normalization scale |
 | `time_shift` | -0.46 | Time shift after scaling |
-| `sentinel_value` | -1.0 | Value for invalid channels |
+| `sentinel_time` | -1.0 | Value for invalid channels |
 
 Override if your model was trained with different values:
 

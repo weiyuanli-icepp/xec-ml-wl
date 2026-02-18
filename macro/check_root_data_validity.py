@@ -30,7 +30,7 @@ from lib.geom_defs import (
     DEFAULT_NPHO_SCALE2,
     DEFAULT_TIME_SCALE,
     DEFAULT_TIME_SHIFT,
-    DEFAULT_SENTINEL_VALUE,
+    DEFAULT_SENTINEL_TIME,
     DEFAULT_NPHO_THRESHOLD,
 )
 
@@ -42,9 +42,9 @@ def preprocess_chunk(
     npho_scale2: float,
     time_scale: float,
     time_shift: float,
-    sentinel_value: float,
+    sentinel_time: float,
     npho_threshold: float,
-    npho_sentinel_value: float = -0.5,
+    sentinel_npho: float = -1.0,
 ) -> Dict:
     """
     Apply the same preprocessing as XECStreamingDataset._process_sub_chunk.
@@ -68,12 +68,12 @@ def preprocess_chunk(
     # Normalize npho: log1p transform (allow negatives through)
     raw_npho_safe = np.where(mask_npho_invalid | mask_domain_break, 0.0, raw_npho)
     npho_norm = np.log1p(raw_npho_safe / npho_scale) / npho_scale2
-    npho_norm[mask_npho_invalid] = npho_sentinel_value  # dead channel → npho sentinel
+    npho_norm[mask_npho_invalid] = sentinel_npho  # dead channel → npho sentinel
     npho_norm[mask_domain_break] = 0.0                  # domain break → zero signal
 
     # Normalize time: linear transform
     time_norm = (raw_time / time_scale) - time_shift
-    time_norm[mask_time_invalid] = sentinel_value
+    time_norm[mask_time_invalid] = sentinel_time
 
     return {
         "npho_norm": npho_norm,
@@ -94,7 +94,7 @@ def check_single_file(
     npho_scale2: float = DEFAULT_NPHO_SCALE2,
     time_scale: float = DEFAULT_TIME_SCALE,
     time_shift: float = DEFAULT_TIME_SHIFT,
-    sentinel_value: float = DEFAULT_SENTINEL_VALUE,
+    sentinel_time: float = DEFAULT_SENTINEL_TIME,
     npho_threshold: float = DEFAULT_NPHO_THRESHOLD,
     verbose: bool = False,
     max_events: int = None,
@@ -162,7 +162,7 @@ def check_single_file(
             proc = preprocess_chunk(
                 raw_npho, raw_time,
                 npho_scale, npho_scale2, time_scale, time_shift,
-                sentinel_value, npho_threshold
+                sentinel_time, npho_threshold
             )
 
             # === Check for issues AFTER preprocessing ===
@@ -172,8 +172,8 @@ def check_single_file(
             time_norm = proc["time_norm"]
 
             # Valid (non-sentinel) positions
-            valid_npho_mask = npho_norm != sentinel_value
-            valid_time_mask = time_norm != sentinel_value
+            valid_npho_mask = npho_norm != sentinel_time
+            valid_time_mask = time_norm != sentinel_time
 
             npho_valid = npho_norm[valid_npho_mask]
             time_valid = time_norm[valid_time_mask]
@@ -388,8 +388,8 @@ def main():
     parser.add_argument(
         "--sentinel",
         type=float,
-        default=DEFAULT_SENTINEL_VALUE,
-        help=f"Sentinel value (default: {DEFAULT_SENTINEL_VALUE})"
+        default=DEFAULT_SENTINEL_TIME,
+        help=f"Sentinel value (default: {DEFAULT_SENTINEL_TIME})"
     )
     parser.add_argument(
         "--npho-threshold",
@@ -449,7 +449,7 @@ def main():
             npho_scale2=args.npho_scale2,
             time_scale=args.time_scale,
             time_shift=args.time_shift,
-            sentinel_value=args.sentinel,
+            sentinel_time=args.sentinel,
             npho_threshold=args.npho_threshold,
             verbose=args.verbose,
             max_events=args.max_events if args.max_events > 0 else None,

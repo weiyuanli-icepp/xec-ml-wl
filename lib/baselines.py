@@ -22,7 +22,7 @@ from .geom_defs import (
     HEX_EDGE_INDEX_NP,
     flatten_hex_rows,
     OUTER_ALL_SENSOR_IDS,
-    DEFAULT_SENTINEL_VALUE,
+    DEFAULT_SENTINEL_TIME,
 )
 
 N_SENSORS = 4760
@@ -286,7 +286,7 @@ class NeighborAverageBaseline:
         ----------
         x_npho : ndarray, shape (N_events, 4760)
             Normalised npho values.  Masked positions may contain the
-            sentinel value (DEFAULT_SENTINEL_VALUE = -1.0) or 0.
+            sentinel value (DEFAULT_SENTINEL_TIME = -1.0) or 0.
         mask : ndarray, shape (N_events, 4760)
             Boolean array where True marks a masked / dead channel.
 

@@ -42,7 +42,7 @@ except ImportError:
 from lib.geom_defs import (
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
     DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT,
-    DEFAULT_SENTINEL_VALUE
+    DEFAULT_SENTINEL_TIME
 )
 
 FACE_NAMES = ['inner', 'us', 'ds', 'outer', 'top', 'bot']
@@ -155,14 +155,14 @@ def denormalize_time(time_norm: np.ndarray, time_scale: float, time_shift: float
     return (time_norm + time_shift) * time_scale
 
 
-def compute_detailed_metrics(data: Dict[str, np.ndarray], sentinel_value: float = DEFAULT_SENTINEL_VALUE,
+def compute_detailed_metrics(data: Dict[str, np.ndarray], sentinel_time: float = DEFAULT_SENTINEL_TIME,
                              predict_time: bool = True) -> Dict:
     """
     Compute detailed metrics from predictions.
 
     Args:
         data: Prediction data dict
-        sentinel_value: Sentinel value for invalid time
+        sentinel_time: Sentinel value for invalid time
         predict_time: Whether time was predicted (if False, skip time metrics)
     """
     metrics = {}
@@ -214,7 +214,7 @@ def compute_detailed_metrics(data: Dict[str, np.ndarray], sentinel_value: float 
         err_time = data['error_time'][eval_mask]
 
         # Time metrics excluding invalid sensors (where truth_time == sentinel)
-        valid_time_mask = eval_mask & (data['truth_time'] != sentinel_value)
+        valid_time_mask = eval_mask & (data['truth_time'] != sentinel_time)
         err_time_valid = data['error_time'][valid_time_mask]
 
         metrics['global'].update({
@@ -252,7 +252,7 @@ def compute_detailed_metrics(data: Dict[str, np.ndarray], sentinel_value: float 
 
         if predict_time and 'error_time' in data:
             face_err_time = data['error_time'][face_mask]
-            face_valid_time_mask = face_mask & (data['truth_time'] != sentinel_value)
+            face_valid_time_mask = face_mask & (data['truth_time'] != sentinel_time)
             face_err_time_valid = data['error_time'][face_valid_time_mask]
 
             face_metrics.update({
@@ -290,7 +290,7 @@ def compute_detailed_metrics(data: Dict[str, np.ndarray], sentinel_value: float 
 
 
 def compute_baseline_metrics(data: Dict[str, np.ndarray],
-                              sentinel_value: float = DEFAULT_SENTINEL_VALUE) -> Dict:
+                              sentinel_time: float = DEFAULT_SENTINEL_TIME) -> Dict:
     """Compute metrics for baseline predictions found in data.
 
     Returns dict mapping baseline name ('avg', 'sa') to their metrics.
@@ -444,7 +444,7 @@ def plot_residual_distributions(data: Dict[str, np.ndarray], output_dir: str,
                                  has_mask_type: bool,
                                  npho_scale: float, npho_scale2: float,
                                  time_scale: float, time_shift: float,
-                                 sentinel_value: float, predict_time: bool = True):
+                                 sentinel_time: float, predict_time: bool = True):
     """Plot residual distributions (normalized and denormalized)."""
     if not HAS_MATPLOTLIB:
         return
@@ -815,7 +815,7 @@ def plot_scatter_truth_vs_pred(data: Dict[str, np.ndarray], output_dir: str,
         print("[INFO] Saved scatter_truth_vs_pred.pdf and scatter_truth_vs_pred_denorm.pdf")
 
 
-def plot_metrics_summary(metrics: Dict, output_dir: str, sentinel_value: float, predict_time: bool = True):
+def plot_metrics_summary(metrics: Dict, output_dir: str, sentinel_time: float, predict_time: bool = True):
     """Plot bar chart of per-face metrics."""
     if not HAS_MATPLOTLIB:
         return
@@ -1048,8 +1048,8 @@ def main():
                         help=f"Time scale for denormalization (default: {DEFAULT_TIME_SCALE})")
     parser.add_argument("--time-shift", type=float, default=DEFAULT_TIME_SHIFT,
                         help=f"Time shift for denormalization (default: {DEFAULT_TIME_SHIFT})")
-    parser.add_argument("--sentinel", type=float, default=DEFAULT_SENTINEL_VALUE,
-                        help=f"Sentinel value for invalid sensors (default: {DEFAULT_SENTINEL_VALUE})")
+    parser.add_argument("--sentinel", type=float, default=DEFAULT_SENTINEL_TIME,
+                        help=f"Sentinel value for invalid sensors (default: {DEFAULT_SENTINEL_TIME})")
 
     args = parser.parse_args()
 
@@ -1073,10 +1073,10 @@ def main():
 
     # Compute metrics
     print("[INFO] Computing metrics...")
-    metrics = compute_detailed_metrics(data, sentinel_value=args.sentinel, predict_time=predict_time)
+    metrics = compute_detailed_metrics(data, sentinel_time=args.sentinel, predict_time=predict_time)
 
     # Compute baseline metrics (auto-detected from data branches)
-    baseline_metrics = compute_baseline_metrics(data, sentinel_value=args.sentinel)
+    baseline_metrics = compute_baseline_metrics(data, sentinel_time=args.sentinel)
     if baseline_metrics:
         print(f"[INFO] Baseline metrics computed for: {', '.join(baseline_metrics.keys())}")
 

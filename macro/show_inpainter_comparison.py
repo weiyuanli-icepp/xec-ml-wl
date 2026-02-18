@@ -27,7 +27,7 @@ try:
     from lib.event_display import plot_mae_comparison
     from lib.geom_defs import (
         DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
-        DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE,
+        DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_TIME,
         DEFAULT_NPHO_THRESHOLD, OUTER_ALL_SENSOR_IDS
     )
     from lib.dataset import expand_path
@@ -69,7 +69,7 @@ def normalize_input(raw_npho, raw_time,
                     npho_scale2=DEFAULT_NPHO_SCALE2,
                     time_scale=DEFAULT_TIME_SCALE,
                     time_shift=DEFAULT_TIME_SHIFT,
-                    sentinel_value=DEFAULT_SENTINEL_VALUE,
+                    sentinel_time=DEFAULT_SENTINEL_TIME,
                     npho_scheme="log1p"):
     """
     Apply the same normalization as training to raw input data.
@@ -88,7 +88,7 @@ def normalize_input(raw_npho, raw_time,
     time_norm = (raw_time / time_scale) - time_shift
 
     npho_norm[mask_npho_bad] = 0.0
-    time_norm[mask_time_bad] = sentinel_value
+    time_norm[mask_time_bad] = sentinel_time
 
     return npho_norm, time_norm
 
@@ -135,7 +135,7 @@ Examples:
     parser.add_argument("--npho_scale2", type=float, default=None)
     parser.add_argument("--time_scale", type=float, default=None)
     parser.add_argument("--time_shift", type=float, default=None)
-    parser.add_argument("--sentinel_value", type=float, default=None)
+    parser.add_argument("--sentinel_time", type=float, default=None)
 
     # Input branch names
     parser.add_argument("--npho_branch", type=str, default="npho")
@@ -291,19 +291,19 @@ Examples:
     npho_scale2 = args.npho_scale2 if args.npho_scale2 is not None else metadata.get("npho_scale2", DEFAULT_NPHO_SCALE2)
     time_scale = args.time_scale if args.time_scale is not None else metadata.get("time_scale", DEFAULT_TIME_SCALE)
     time_shift = args.time_shift if args.time_shift is not None else metadata.get("time_shift", DEFAULT_TIME_SHIFT)
-    sentinel_value = args.sentinel_value if args.sentinel_value is not None else metadata.get("sentinel_value", DEFAULT_SENTINEL_VALUE)
+    sentinel_time = args.sentinel_time if args.sentinel_time is not None else metadata.get("sentinel_value", DEFAULT_SENTINEL_TIME)
     npho_scheme = metadata.get("npho_scheme", "log1p")
 
     if metadata:
         print(f"  Using normalization from predictions file:")
         print(f"    npho_scale={npho_scale}, npho_scale2={npho_scale2}")
         print(f"    time_scale={time_scale}, time_shift={time_shift}")
-        print(f"    sentinel_value={sentinel_value}, npho_scheme={npho_scheme}")
+        print(f"    sentinel_time={sentinel_time}, npho_scheme={npho_scheme}")
     else:
         print(f"  Warning: No metadata found in predictions file, using defaults")
         print(f"    npho_scale={npho_scale}, npho_scale2={npho_scale2}")
         print(f"    time_scale={time_scale}, time_shift={time_shift}")
-        print(f"    sentinel_value={sentinel_value}, npho_scheme={npho_scheme}")
+        print(f"    sentinel_time={sentinel_time}, npho_scheme={npho_scheme}")
 
     # --- Load original data ---
     print(f"Loading original data from: {args.original}")
@@ -356,7 +356,7 @@ Examples:
         npho_scale2=npho_scale2,
         time_scale=time_scale,
         time_shift=time_shift,
-        sentinel_value=sentinel_value,
+        sentinel_time=sentinel_time,
         npho_scheme=npho_scheme
     )
 
@@ -518,7 +518,7 @@ Examples:
     # x_masked: input with masked sensors set to sentinel
     x_masked = x_truth.copy()
     x_masked[sensor_ids, 0] = 0.0  # npho = 0 for masked
-    x_masked[sensor_ids, 1] = sentinel_value  # time = sentinel for masked
+    x_masked[sensor_ids, 1] = sentinel_time  # time = sentinel for masked
 
     # x_pred: truth with masked sensors replaced by predictions
     x_pred = x_truth.copy()

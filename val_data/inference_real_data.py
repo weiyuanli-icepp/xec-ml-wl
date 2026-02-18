@@ -36,7 +36,7 @@ from lib.geom_defs import (
     DEFAULT_NPHO_SCALE2,
     DEFAULT_TIME_SCALE,
     DEFAULT_TIME_SHIFT,
-    DEFAULT_SENTINEL_VALUE,
+    DEFAULT_SENTINEL_TIME,
     DEFAULT_NPHO_THRESHOLD,
 )
 
@@ -68,12 +68,12 @@ def get_opening_angle_deg(theta1, phi1, theta2, phi2):
 
 def normalize_input(npho_raw, time_raw,
                     npho_scale, npho_scale2, time_scale, time_shift,
-                    sentinel_value, npho_threshold, npho_sentinel_value=-0.5):
+                    sentinel_time, npho_threshold, sentinel_npho=-1.0):
     """
     Normalize input data matching the training preprocessing in dataset.py.
 
     Normalization scheme:
-    - npho > 9e9 or isnan: truly invalid (dead/missing sensor) → npho_sentinel_value
+    - npho > 9e9 or isnan: truly invalid (dead/missing sensor) → sentinel_npho
     - npho below domain minimum: domain-breaking → 0.0
     - npho < npho_threshold: npho valid, time set to sentinel (timing unreliable)
     - otherwise: normal normalization for both (negative npho values allowed)
@@ -93,12 +93,12 @@ def normalize_input(npho_raw, time_raw,
     # Normalize npho: log1p transform (allow negatives through)
     npho_safe = np.where(mask_npho_invalid | mask_domain_break, 0.0, npho_raw)
     npho_norm = np.log1p(npho_safe / npho_scale) / npho_scale2
-    npho_norm[mask_npho_invalid] = npho_sentinel_value  # dead channel → npho sentinel
+    npho_norm[mask_npho_invalid] = sentinel_npho  # dead channel → npho sentinel
     npho_norm[mask_domain_break] = 0.0                  # domain break → zero signal
 
     # Normalize time: linear transform
     time_norm = (time_raw / time_scale) - time_shift
-    time_norm[mask_time_invalid] = sentinel_value
+    time_norm[mask_time_invalid] = sentinel_time
 
     return np.stack([npho_norm, time_norm], axis=-1).astype(np.float32)
 
@@ -130,8 +130,8 @@ def main():
                         help=f"Time scale (default: {DEFAULT_TIME_SCALE})")
     parser.add_argument("--time_shift", type=float, default=DEFAULT_TIME_SHIFT,
                         help=f"Time shift (default: {DEFAULT_TIME_SHIFT})")
-    parser.add_argument("--sentinel_value", type=float, default=DEFAULT_SENTINEL_VALUE,
-                        help=f"Sentinel value for invalid channels (default: {DEFAULT_SENTINEL_VALUE})")
+    parser.add_argument("--sentinel_time", type=float, default=DEFAULT_SENTINEL_TIME,
+                        help=f"Sentinel value for invalid time channels (default: {DEFAULT_SENTINEL_TIME})")
     parser.add_argument("--npho_threshold", type=float, default=DEFAULT_NPHO_THRESHOLD,
                         help=f"Npho threshold for valid timing (default: {DEFAULT_NPHO_THRESHOLD})")
 
@@ -256,7 +256,7 @@ def main():
                 npho_raw, time_raw,
                 args.npho_scale, args.npho_scale2,
                 args.time_scale, args.time_shift,
-                args.sentinel_value, args.npho_threshold
+                args.sentinel_time, args.npho_threshold
             )
 
             # --- B. Inference ---

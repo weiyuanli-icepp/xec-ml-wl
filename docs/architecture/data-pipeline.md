@@ -52,7 +52,7 @@ There are currently **two normalization schemes** in use:
 | `npho_scale2` | 1.0 | 4.08 | Second scale factor |
 | `time_scale` | 6.5e-8 | 1.14e-7 | Time normalization (seconds) |
 | `time_shift` | 0.5 | -0.46 | Time offset after scaling |
-| `sentinel_value` | -5.0 | -1.0 | Invalid sensor marker |
+| `sentinel_time` | -5.0 | -1.0 | Invalid sensor marker |
 
 **Important:** When using MAE pretraining for fine-tuning, ensure all downstream models use the **same** normalization scheme as the MAE.
 
@@ -131,14 +131,14 @@ mask_time_invalid = mask_npho_invalid | (raw_npho < npho_threshold) | (abs(raw_t
 **Invalid Sensor Handling:**
 | Channel | Invalid Value | Reason |
 |---------|---------------|--------|
-| Npho | `sentinel_value` | Invalid sensors marked distinctively |
-| Time | `sentinel_value` | Distinctive value far from valid range (~0 after normalization) |
+| Npho | `sentinel_time` | Invalid sensors marked distinctively |
+| Time | `sentinel_time` | Distinctive value far from valid range (~0 after normalization) |
 
 **Low-Npho Sensors (0 < npho < threshold):**
 | Channel | Treatment | Reason |
 |---------|-----------|--------|
 | Npho | Normalized normally | Npho measurement is still valid |
-| Time | `sentinel_value` | Timing unreliable at low photon counts |
+| Time | `sentinel_time` | Timing unreliable at low photon counts |
 
 ### 4. Sentinel Value System
 
@@ -152,7 +152,7 @@ The **sentinel value** marks sensors where timing information is unavailable:
 **Detection in Models:**
 ```python
 # Identify already-invalid sensors
-already_invalid = (x[:, :, 1] == sentinel_value)  # Check time channel
+already_invalid = (x[:, :, 1] == sentinel_time)  # Check time channel
 ```
 
 **Masking (Invalid-Aware) (MAE/Inpainter):**
@@ -187,7 +187,7 @@ After normalization with the **new scheme** (npho_scale=1000):
 | `npho_scheme` | `normalization.npho_scheme` | - | log1p | Normalization scheme (log1p/anscombe/sqrt/linear) |
 | `time_scale` | `normalization.time_scale` | 6.5e-8 | 1.14e-7 | Time scale (seconds) |
 | `time_shift` | `normalization.time_shift` | 0.5 | -0.46 | Time offset after scaling |
-| `sentinel_value` | `normalization.sentinel_value` | -5.0 | -1.0 | Invalid sensor marker |
+| `sentinel_time` | `normalization.sentinel_time` | -5.0 | -1.0 | Invalid sensor marker |
 | `npho_threshold` | `normalization.npho_threshold` | - | 100 | Min npho for valid timing |
 
 **Important:** All training paths (Regressor, MAE, Inpainter) must use the **same normalization parameters** for the encoder to work correctly. The inpainter must match the MAE's normalization.

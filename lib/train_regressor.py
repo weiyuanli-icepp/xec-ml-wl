@@ -268,7 +268,7 @@ def train_with_config(config_path: str, profile: bool = None):
         "npho_scale2": cfg.normalization.npho_scale2,
         "time_scale": cfg.normalization.time_scale,
         "time_shift": cfg.normalization.time_shift,
-        "sentinel_value": cfg.normalization.sentinel_value,
+        "sentinel_time": cfg.normalization.sentinel_time,
         "step_size": cfg.data.chunksize,
         "npho_branch": getattr(cfg.data, "npho_branch", "relative_npho"),
         "time_branch": getattr(cfg.data, "time_branch", "relative_time"),
@@ -991,7 +991,7 @@ Examples:
     parser.add_argument("--npho_scale2", type=float, default=None)
     parser.add_argument("--time_scale", type=float, default=None)
     parser.add_argument("--time_shift", type=float, default=None)
-    parser.add_argument("--sentinel_value", type=float, default=None)
+    parser.add_argument("--sentinel_time", type=float, default=None)
     parser.add_argument("--npho_scheme", type=str, default=None,
                         choices=["log1p", "anscombe", "sqrt", "linear"],
                         help="Normalization scheme for npho (default: from config)")
@@ -1075,8 +1075,8 @@ def apply_cli_overrides(cfg, args):
         cfg.normalization.time_scale = args.time_scale
     if args.time_shift is not None:
         cfg.normalization.time_shift = args.time_shift
-    if args.sentinel_value is not None:
-        cfg.normalization.sentinel_value = args.sentinel_value
+    if args.sentinel_time is not None:
+        cfg.normalization.sentinel_time = args.sentinel_time
     if args.npho_scheme is not None:
         cfg.normalization.npho_scheme = args.npho_scheme
 
@@ -1163,7 +1163,7 @@ def collect_cli_overrides(args):
     override_args = [
         "train_path", "val_path", "tree", "batch_size", "chunksize",
         "num_workers", "num_threads", "npho_scale", "npho_scale2",
-        "time_scale", "time_shift", "sentinel_value", "npho_scheme",
+        "time_scale", "time_shift", "sentinel_time", "npho_scheme",
         "outer_mode", "outer_fine_pool", "hidden_dim", "drop_path_rate",
         "epochs", "lr", "weight_decay", "warmup_epochs", "ema_decay",
         "channel_dropout_rate", "grad_clip", "grad_accum_steps", "compile",

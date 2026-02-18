@@ -16,7 +16,7 @@ import uproot
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from lib.geom_defs import (
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
-    DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE
+    DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_TIME
 )
 
 
@@ -25,7 +25,7 @@ def normalize_input(raw_npho, raw_time,
                     npho_scale2=DEFAULT_NPHO_SCALE2,
                     time_scale=DEFAULT_TIME_SCALE,
                     time_shift=DEFAULT_TIME_SHIFT,
-                    sentinel_value=DEFAULT_SENTINEL_VALUE):
+                    sentinel_time=DEFAULT_SENTINEL_TIME):
     """Apply normalization to raw input data."""
     mask_npho_bad = (raw_npho <= 0.0) | (raw_npho > 9e9) | np.isnan(raw_npho)
     mask_time_bad = mask_npho_bad | (np.abs(raw_time) > 9e9) | np.isnan(raw_time)
@@ -35,7 +35,7 @@ def normalize_input(raw_npho, raw_time,
     time_norm = (raw_time / time_scale) - time_shift
 
     npho_norm[mask_npho_bad] = 0.0
-    time_norm[mask_time_bad] = sentinel_value
+    time_norm[mask_time_bad] = sentinel_time
 
     return npho_norm, time_norm
 
@@ -77,7 +77,7 @@ def main():
         npho_scale2 = metadata.get("npho_scale2", DEFAULT_NPHO_SCALE2)
         time_scale = metadata.get("time_scale", DEFAULT_TIME_SCALE)
         time_shift = metadata.get("time_shift", DEFAULT_TIME_SHIFT)
-        sentinel_value = metadata.get("sentinel_value", DEFAULT_SENTINEL_VALUE)
+        sentinel_time = metadata.get("sentinel_value", DEFAULT_SENTINEL_TIME)
 
         # Load predictions
         tree = f["tree"]
@@ -128,7 +128,7 @@ def main():
         raw_npho, raw_time,
         npho_scale=npho_scale, npho_scale2=npho_scale2,
         time_scale=time_scale, time_shift=time_shift,
-        sentinel_value=sentinel_value
+        sentinel_time=sentinel_time
     )
 
     # --- Compare truth values ---

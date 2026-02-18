@@ -54,7 +54,7 @@ CFG_NPHO_SCALE=$(yaml_get "npho_scale" "$CONFIG_PATH")
 CFG_NPHO_SCALE2=$(yaml_get "npho_scale2" "$CONFIG_PATH")
 CFG_TIME_SCALE=$(yaml_get "time_scale" "$CONFIG_PATH")
 CFG_TIME_SHIFT=$(yaml_get "time_shift" "$CONFIG_PATH")
-CFG_SENTINEL=$(yaml_get "sentinel_value" "$CONFIG_PATH")
+CFG_SENTINEL=$(yaml_get "sentinel_time" "$CONFIG_PATH")
 
 # Model
 CFG_OUTER_MODE=$(yaml_get "outer_mode" "$CONFIG_PATH")

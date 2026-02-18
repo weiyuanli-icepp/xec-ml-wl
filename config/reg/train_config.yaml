@@ -29,8 +29,8 @@ normalization:
   npho_scale2: 1.0
   time_scale: 6.5e-8
   time_shift: 0.5
-  sentinel_value: -5.0
-  npho_sentinel_value: -0.5           # Sentinel for dead/masked npho channel
+  sentinel_time: -5.0
+  sentinel_npho: -1.0           # Sentinel for dead/masked npho channel
   # Normalization scheme for npho:
   #   "log1p" (default), "anscombe", "sqrt", "linear"
   npho_scheme: "log1p"

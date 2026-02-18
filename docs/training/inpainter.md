@@ -200,7 +200,7 @@ Output: Predicted (npho, time) at masked positions only
 
 The inpainter uses **invalid-aware masking** to handle already-invalid sensors in the data:
 
-- **Already-invalid sensors** (where `time == sentinel_value`) are excluded from the random masking pool
+- **Already-invalid sensors** (where `time == sentinel_time`) are excluded from the random masking pool
 - **Random masking** is applied only to valid sensors at the specified `mask_ratio`
 - **Loss computation** uses only randomly-masked positions (where ground truth exists)
 - **actual_mask_ratio** metric tracks the effective masking: `randomly_masked / valid_sensors`

@@ -27,7 +27,7 @@ from lib.config import load_config
 from lib.train_regressor import save_validation_artifacts
 from lib.geom_defs import (
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
-    DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_VALUE,
+    DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_TIME,
 )
 
 
@@ -98,13 +98,13 @@ def main():
         npho_scale2 = cfg.normalization.npho_scale2
         time_scale = cfg.normalization.time_scale
         time_shift = cfg.normalization.time_shift
-        sentinel_value = cfg.normalization.sentinel_value
+        sentinel_time = cfg.normalization.sentinel_time
     else:
         npho_scale = DEFAULT_NPHO_SCALE
         npho_scale2 = DEFAULT_NPHO_SCALE2
         time_scale = DEFAULT_TIME_SCALE
         time_shift = DEFAULT_TIME_SHIFT
-        sentinel_value = DEFAULT_SENTINEL_VALUE
+        sentinel_time = DEFAULT_SENTINEL_TIME
 
     # Get model params
     if cfg:
@@ -143,7 +143,7 @@ def main():
         npho_scale2=npho_scale2,
         time_scale=time_scale,
         time_shift=time_shift,
-        sentinel_value=sentinel_value,
+        sentinel_time=sentinel_time,
         load_truth_branches=True,
     )
 

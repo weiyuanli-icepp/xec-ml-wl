@@ -12,7 +12,7 @@ from ..dataset import XECStreamingDataset
 from ..geom_defs import (
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
     DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT,
-    DEFAULT_SENTINEL_VALUE, DEFAULT_NPHO_THRESHOLD
+    DEFAULT_SENTINEL_TIME, DEFAULT_NPHO_THRESHOLD
 )
 from ..utils import SimpleProfiler
 from ..normalization import NphoTransform
@@ -611,7 +611,7 @@ def run_epoch_inpainter(
     npho_scale2: float = DEFAULT_NPHO_SCALE2,
     time_scale: float = DEFAULT_TIME_SCALE,
     time_shift: float = DEFAULT_TIME_SHIFT,
-    sentinel_value: float = DEFAULT_SENTINEL_VALUE,
+    sentinel_time: float = DEFAULT_SENTINEL_TIME,
     loss_fn: str = "smooth_l1",
     loss_beta: float = 1.0,
     npho_weight: float = 1.0,
@@ -634,7 +634,7 @@ def run_epoch_inpainter(
     npho_loss_weight_alpha: float = 0.5,
     intensity_reweighter: Optional[object] = None,
     no_sync_ctx=None,
-    npho_sentinel_value: float = -0.5,
+    sentinel_npho: float = -1.0,
 ) -> Dict[str, float]:
     """
     Run one training epoch for inpainter.
@@ -728,12 +728,12 @@ def run_epoch_inpainter(
             npho_scheme=npho_scheme,
             time_scale=time_scale,
             time_shift=time_shift,
-            sentinel_value=sentinel_value,
+            sentinel_time=sentinel_time,
             num_workers=dataset_workers,
             log_invalid_npho=log_invalid_npho,
             load_truth_branches=False,  # Inpainter doesn't need truth branches
             profile=profile,
-            npho_sentinel_value=npho_sentinel_value,
+            sentinel_npho=sentinel_npho,
         )
 
         loader = torch.utils.data.DataLoader(
@@ -772,8 +772,8 @@ def run_epoch_inpainter(
             profiler.stop()
 
             # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
-            # Already-invalid sensors have time == sentinel_value and are NOT in mask
-            already_invalid = (original_values[:, :, 1] == sentinel_value)  # (B, N)
+            # Already-invalid sensors have time == sentinel_time and are NOT in mask
+            already_invalid = (original_values[:, :, 1] == sentinel_time)  # (B, N)
             total_valid_sensors += (~already_invalid).sum()
             total_randomly_masked += mask.sum().long()
 
@@ -953,7 +953,7 @@ def run_eval_inpainter(
     npho_scale2: float = DEFAULT_NPHO_SCALE2,
     time_scale: float = DEFAULT_TIME_SCALE,
     time_shift: float = DEFAULT_TIME_SHIFT,
-    sentinel_value: float = DEFAULT_SENTINEL_VALUE,
+    sentinel_time: float = DEFAULT_SENTINEL_TIME,
     loss_fn: str = "smooth_l1",
     loss_beta: float = 1.0,
     npho_weight: float = 1.0,
@@ -972,7 +972,7 @@ def run_eval_inpainter(
     npho_scheme: str = "log1p",
     npho_loss_weight_enabled: bool = False,
     npho_loss_weight_alpha: float = 0.5,
-    npho_sentinel_value: float = -0.5,
+    sentinel_npho: float = -1.0,
 ) -> Dict[str, float]:
     """
     Run evaluation for inpainter.
@@ -1074,12 +1074,12 @@ def run_eval_inpainter(
                 npho_scheme=npho_scheme,
                 time_scale=time_scale,
                 time_shift=time_shift,
-                sentinel_value=sentinel_value,
+                sentinel_time=sentinel_time,
                 num_workers=dataset_workers,
                 log_invalid_npho=log_invalid_npho,
                 load_truth_branches=False,  # Inpainter doesn't need truth branches
                 profile=profile,
-                npho_sentinel_value=npho_sentinel_value,
+                sentinel_npho=sentinel_npho,
             )
 
             loader = torch.utils.data.DataLoader(
@@ -1136,7 +1136,7 @@ def run_eval_inpainter(
                 profiler.stop()
 
                 # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
-                already_invalid = (original_values[:, :, 1] == sentinel_value)  # (B, N)
+                already_invalid = (original_values[:, :, 1] == sentinel_time)  # (B, N)
                 total_valid_sensors += (~already_invalid).sum()
                 total_randomly_masked += mask.sum().long()
 
@@ -1420,7 +1420,7 @@ class RootPredictionWriter:
     def __init__(self, save_path: str, epoch: int, run_id: str = None, tree_name: str = "tree",
                  npho_scale: float = None, npho_scale2: float = None,
                  time_scale: float = None, time_shift: float = None,
-                 sentinel_value: float = None,
+                 sentinel_time: float = None,
                  predict_channels: List[str] = None,
                  npho_scheme: str = None):
         import os
@@ -1438,7 +1438,7 @@ class RootPredictionWriter:
         self.npho_scale2 = npho_scale2
         self.time_scale = time_scale
         self.time_shift = time_shift
-        self.sentinel_value = sentinel_value
+        self.sentinel_time = sentinel_time
 
         # Store predict_channels
         self.predict_channels = predict_channels if predict_channels is not None else ['npho', 'time']
@@ -1480,7 +1480,7 @@ class RootPredictionWriter:
             "npho_scale2": np.array([self.npho_scale2 if self.npho_scale2 is not None else np.nan], dtype=np.float64),
             "time_scale": np.array([self.time_scale if self.time_scale is not None else np.nan], dtype=np.float64),
             "time_shift": np.array([self.time_shift if self.time_shift is not None else np.nan], dtype=np.float64),
-            "sentinel_value": np.array([self.sentinel_value if self.sentinel_value is not None else np.nan], dtype=np.float64),
+            "sentinel_time": np.array([self.sentinel_time if self.sentinel_time is not None else np.nan], dtype=np.float64),
             "npho_scheme": np.array([self.npho_scheme], dtype='U32'),
         }
         self._file["metadata"] = metadata
@@ -1546,7 +1546,7 @@ def save_predictions_to_root(predictions: List[Dict], save_path: str, epoch: int
                              predict_channels: List[str] = None,
                              npho_scale: float = None, npho_scale2: float = None,
                              time_scale: float = None, time_shift: float = None,
-                             sentinel_value: float = None,
+                             sentinel_time: float = None,
                              npho_scheme: str = None):
     """
     Save inpainter predictions to a ROOT file.
@@ -1557,7 +1557,7 @@ def save_predictions_to_root(predictions: List[Dict], save_path: str, epoch: int
         epoch: epoch number
         run_id: optional MLflow run ID
         predict_channels: list of predicted channels (['npho'] or ['npho', 'time'])
-        npho_scale, npho_scale2, time_scale, time_shift, sentinel_value: normalization params for metadata
+        npho_scale, npho_scale2, time_scale, time_shift, sentinel_time: normalization params for metadata
         npho_scheme: Normalization scheme for npho ('log1p', 'anscombe', 'sqrt', 'linear')
 
     Returns:
@@ -1570,7 +1570,7 @@ def save_predictions_to_root(predictions: List[Dict], save_path: str, epoch: int
                               predict_channels=predict_channels,
                               npho_scale=npho_scale, npho_scale2=npho_scale2,
                               time_scale=time_scale, time_shift=time_shift,
-                              sentinel_value=sentinel_value,
+                              sentinel_time=sentinel_time,
                               npho_scheme=npho_scheme) as writer:
         writer.write(predictions)
         if writer.count == 0:

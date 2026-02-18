@@ -151,11 +151,11 @@ class XECEncoder(nn.Module):
     Extracts face-level features and fuses them via transformer.
     Use with XECMultiHeadModel for regression tasks.
     """
-    def __init__(self, outer_mode="finegrid", outer_fine_pool=None, drop_path_rate=0.0, sentinel_value=None):
+    def __init__(self, outer_mode="finegrid", outer_fine_pool=None, drop_path_rate=0.0, sentinel_time=None):
         super().__init__()
         self.outer_mode = outer_mode
         self.outer_fine_pool = outer_fine_pool
-        self.sentinel_value = sentinel_value  # For masked pooling of invalid time values
+        self.sentinel_time = sentinel_time  # For masked pooling of invalid time values
 
         input_channels = 2  # Npho, Time
         
@@ -271,7 +271,7 @@ class XECEncoder(nn.Module):
             tokens.append(self.backbone(faces[name], face_mask))
 
         if self.outer_fine:
-            outer_fine = build_outer_fine_grid_tensor(x_flat, pool_kernel=self.outer_fine_pool, sentinel_value=self.sentinel_value)
+            outer_fine = build_outer_fine_grid_tensor(x_flat, pool_kernel=self.outer_fine_pool, sentinel_time=self.sentinel_time)
             # Build outer fine mask from coarse mask
             outer_fine_mask = None
             if mask is not None:
