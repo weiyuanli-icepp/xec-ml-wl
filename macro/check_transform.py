@@ -78,7 +78,7 @@ def analyze_file(file_path, npho_threshold=None, npho_scheme="log1p"):
     #  a) It has no photons (Npho <= 0)  <-- Links Time to Npho
     #  b) Time is NaN
     #  c) Time is an error code (> 9e9)
-    mask_inv = (raw_npho <= 0.0) | np.isnan(raw_time) | (np.abs(raw_time) > 9.0e9)
+    mask_inv = (raw_npho > 9.0e9) | np.isnan(raw_npho) | np.isnan(raw_time) | (np.abs(raw_time) > 9.0e9)
 
     # 1b. Define time-valid mask (npho > threshold for meaningful time)
     mask_time_valid = (raw_npho > npho_threshold) & ~mask_inv
@@ -87,7 +87,7 @@ def analyze_file(file_path, npho_threshold=None, npho_scheme="log1p"):
     n_inv = np.sum(mask_inv)
     n_time_valid = np.sum(mask_time_valid)
     print(f"Total Sensors: {n_total}")
-    print(f"Invalid Sensors (Npho<=0 or ErrorCode): {n_inv} ({n_inv/n_total*100:.1f}%)")
+    print(f"Invalid Sensors (dead/missing/ErrorCode): {n_inv} ({n_inv/n_total*100:.1f}%)")
     print(f"Time-valid Sensors (Npho>{npho_threshold}): {n_time_valid} ({n_time_valid/n_total*100:.1f}%)")
 
     # 2. Transform TIME

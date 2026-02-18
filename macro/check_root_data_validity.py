@@ -44,6 +44,7 @@ def preprocess_chunk(
     time_shift: float,
     sentinel_value: float,
     npho_threshold: float,
+    npho_sentinel_value: float = -0.5,
 ) -> Dict:
     """
     Apply the same preprocessing as XECStreamingDataset._process_sub_chunk.
@@ -67,8 +68,8 @@ def preprocess_chunk(
     # Normalize npho: log1p transform (allow negatives through)
     raw_npho_safe = np.where(mask_npho_invalid | mask_domain_break, 0.0, raw_npho)
     npho_norm = np.log1p(raw_npho_safe / npho_scale) / npho_scale2
-    npho_norm[mask_npho_invalid] = sentinel_value  # dead channel
-    npho_norm[mask_domain_break] = 0.0             # domain break → zero signal
+    npho_norm[mask_npho_invalid] = npho_sentinel_value  # dead channel → npho sentinel
+    npho_norm[mask_domain_break] = 0.0                  # domain break → zero signal
 
     # Normalize time: linear transform
     time_norm = (raw_time / time_scale) - time_shift

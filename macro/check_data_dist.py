@@ -41,7 +41,7 @@ def analyze_events(file_path, start_event, num_events):
         return
 
     # 2. Preprocess (Same logic as engine)
-    mask_inv = np.isnan(raw_time) | (raw_npho <= 0.0)
+    mask_inv = np.isnan(raw_time) | (raw_npho > 9.0e9) | np.isnan(raw_npho)
     
     # Check for outliers
     n_outliers = np.sum(np.abs(raw_time) > 9.0e9)
