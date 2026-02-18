@@ -240,9 +240,9 @@ class XEC_MAE(nn.Module):
         # - time (channel 1): set to sentinel (distinguishes invalid from t=0)
         # Note: already-invalid sensors already have appropriate values in x
         x_masked = x.clone()
-        mask_bool = mask.bool()
-        x_masked[mask_bool, 0] = 0.0       # npho -> 0
-        x_masked[mask_bool, 1] = sentinel  # time -> sentinel
+        mask_bool = mask.bool()  # (B, N)
+        x_masked[:, :, 0].masked_fill_(mask_bool, 0.0)       # npho -> 0
+        x_masked[:, :, 1].masked_fill_(mask_bool, sentinel)  # time -> sentinel
 
         return x_masked, mask
     
