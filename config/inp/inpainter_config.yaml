@@ -23,6 +23,7 @@ normalization:
   time_scale: 1.14e-7
   time_shift: -0.46
   sentinel_value: -1.0
+  npho_sentinel_value: -0.5           # Sentinel for dead/masked npho channel
   # Normalization scheme for npho:
   #   "log1p" (default) - log1p(x/scale)/scale2, good for wide dynamic range
   #   "anscombe" - 2*sqrt(x + 3/8), variance stabilization for Poisson data

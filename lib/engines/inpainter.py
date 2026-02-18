@@ -634,6 +634,7 @@ def run_epoch_inpainter(
     npho_loss_weight_alpha: float = 0.5,
     intensity_reweighter: Optional[object] = None,
     no_sync_ctx=None,
+    npho_sentinel_value: float = -0.5,
 ) -> Dict[str, float]:
     """
     Run one training epoch for inpainter.
@@ -732,6 +733,7 @@ def run_epoch_inpainter(
             log_invalid_npho=log_invalid_npho,
             load_truth_branches=False,  # Inpainter doesn't need truth branches
             profile=profile,
+            npho_sentinel_value=npho_sentinel_value,
         )
 
         loader = torch.utils.data.DataLoader(
@@ -970,6 +972,7 @@ def run_eval_inpainter(
     npho_scheme: str = "log1p",
     npho_loss_weight_enabled: bool = False,
     npho_loss_weight_alpha: float = 0.5,
+    npho_sentinel_value: float = -0.5,
 ) -> Dict[str, float]:
     """
     Run evaluation for inpainter.
@@ -1076,6 +1079,7 @@ def run_eval_inpainter(
                 log_invalid_npho=log_invalid_npho,
                 load_truth_branches=False,  # Inpainter doesn't need truth branches
                 profile=profile,
+                npho_sentinel_value=npho_sentinel_value,
             )
 
             loader = torch.utils.data.DataLoader(

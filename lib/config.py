@@ -73,6 +73,7 @@ class NormalizationConfig:
     time_scale: float = DEFAULT_TIME_SCALE
     time_shift: float = DEFAULT_TIME_SHIFT
     sentinel_value: float = DEFAULT_SENTINEL_VALUE
+    npho_sentinel_value: float = -0.5  # Sentinel for dead/masked npho channel
     # Normalization scheme for npho: "log1p" (default), "anscombe", "sqrt", "linear"
     npho_scheme: str = "log1p"
 

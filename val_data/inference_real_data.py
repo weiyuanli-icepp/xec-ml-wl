@@ -68,28 +68,33 @@ def get_opening_angle_deg(theta1, phi1, theta2, phi2):
 
 def normalize_input(npho_raw, time_raw,
                     npho_scale, npho_scale2, time_scale, time_shift,
-                    sentinel_value, npho_threshold):
+                    sentinel_value, npho_threshold, npho_sentinel_value=-0.5):
     """
     Normalize input data matching the training preprocessing in dataset.py.
 
     Normalization scheme:
-    - npho > 9e9 or npho < 0 or isnan: invalid (sentinel for both)
+    - npho > 9e9 or isnan: truly invalid (dead/missing sensor) → npho_sentinel_value
+    - npho below domain minimum: domain-breaking → 0.0
     - npho < npho_threshold: npho valid, time set to sentinel (timing unreliable)
-    - otherwise: normal normalization for both
+    - otherwise: normal normalization for both (negative npho values allowed)
 
     npho_norm = log1p(npho / npho_scale) / npho_scale2
     time_norm = time / time_scale - time_shift
     """
-    # Identify invalid npho values
-    mask_npho_invalid = (npho_raw > 9e9) | (npho_raw < 0) | np.isnan(npho_raw)
+    # True invalids: dead/missing sensors, corrupted data
+    mask_npho_invalid = (npho_raw > 9e9) | np.isnan(npho_raw)
+    # Domain-breaking values for log1p
+    domain_min = -npho_scale * 0.999
+    mask_domain_break = (~mask_npho_invalid) & (npho_raw < domain_min)
 
     # Identify invalid time values
     mask_time_invalid = mask_npho_invalid | (npho_raw < npho_threshold) | (np.abs(time_raw) > 9e9) | np.isnan(time_raw)
 
-    # Normalize npho: log1p transform
-    npho_safe = np.where(mask_npho_invalid, 0.0, np.maximum(npho_raw, 0.0))
+    # Normalize npho: log1p transform (allow negatives through)
+    npho_safe = np.where(mask_npho_invalid | mask_domain_break, 0.0, npho_raw)
     npho_norm = np.log1p(npho_safe / npho_scale) / npho_scale2
-    npho_norm[mask_npho_invalid] = sentinel_value
+    npho_norm[mask_npho_invalid] = npho_sentinel_value  # dead channel → npho sentinel
+    npho_norm[mask_domain_break] = 0.0                  # domain break → zero signal
 
     # Normalize time: linear transform
     time_norm = (time_raw / time_scale) - time_shift

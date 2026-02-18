@@ -121,12 +121,14 @@ class XEC_MAE(nn.Module):
     """
     def __init__(self, encoder: XECEncoder, mask_ratio=0.6, learn_channel_logvars: bool = False,
                  sentinel_value: float = DEFAULT_SENTINEL_VALUE, time_mask_ratio_scale: float = 1.0,
-                 predict_channels=None, decoder_dim: int = 128):
+                 predict_channels=None, decoder_dim: int = 128,
+                 npho_sentinel_value: float = -0.5):
         super().__init__()
         self.encoder = encoder
         self.mask_ratio = mask_ratio
         self.learn_channel_logvars = learn_channel_logvars
         self.sentinel_value = sentinel_value
+        self.npho_sentinel_value = npho_sentinel_value
         self.time_mask_ratio_scale = time_mask_ratio_scale
         self.decoder_dim = decoder_dim
 
@@ -197,12 +199,12 @@ class XEC_MAE(nn.Module):
 
         # Identify already-invalid sensors based on which channels we're predicting
         # - If predicting time: time==sentinel means sensor is invalid (can't predict time)
-        # - If only predicting npho: only exclude sensors where npho==sentinel
+        # - If only predicting npho: only exclude sensors where npho==npho_sentinel_value
         #   (sensors with valid npho but invalid time should still be maskable for npho)
         if "time" in self.predict_channels:
             already_invalid = (x[:, :, 1] == sentinel)  # (B, N)
         else:
-            already_invalid = (x[:, :, 0] == sentinel)  # (B, N)
+            already_invalid = (x[:, :, 0] == self.npho_sentinel_value)  # (B, N)
 
         # Count valid sensors per sample
         valid_count = (~already_invalid).sum(dim=1)  # (B,)
@@ -236,13 +238,13 @@ class XEC_MAE(nn.Module):
         mask.scatter_(1, ids_shuffle, should_mask)
 
         # Apply masking values to randomly-masked positions
-        # - npho (channel 0): set to 0 (neutral for convolutions, physically meaningful)
+        # - npho (channel 0): set to npho_sentinel_value (same as dead channel representation)
         # - time (channel 1): set to sentinel (distinguishes invalid from t=0)
         # Note: already-invalid sensors already have appropriate values in x
         x_masked = x.clone()
         mask_bool = mask.bool()  # (B, N)
-        x_masked[:, :, 0].masked_fill_(mask_bool, 0.0)       # npho -> 0
-        x_masked[:, :, 1].masked_fill_(mask_bool, sentinel)  # time -> sentinel
+        x_masked[:, :, 0].masked_fill_(mask_bool, self.npho_sentinel_value)  # npho -> npho sentinel
+        x_masked[:, :, 1].masked_fill_(mask_bool, sentinel)                 # time -> sentinel
 
         return x_masked, mask
     
@@ -269,7 +271,7 @@ class XEC_MAE(nn.Module):
             if "time" in self.predict_channels:
                 already_invalid = (x_batch[:, :, 1] == self.sentinel_value)  # (B, N)
             else:
-                already_invalid = (x_batch[:, :, 0] == self.sentinel_value)  # (B, N)
+                already_invalid = (x_batch[:, :, 0] == self.npho_sentinel_value)  # (B, N)
             encoder_mask = (mask.bool() | already_invalid).float()
         else:
             encoder_mask = None
@@ -307,7 +309,7 @@ class XEC_MAE(nn.Module):
                 if "time" in self.predict_channels:
                     already_invalid = (x_batch[:, :, 1] == self.sentinel_value)
                 else:
-                    already_invalid = (x_batch[:, :, 0] == self.sentinel_value)
+                    already_invalid = (x_batch[:, :, 0] == self.npho_sentinel_value)
                 encoder_mask = (mask.bool() | already_invalid).float()
             else:
                 encoder_mask = None

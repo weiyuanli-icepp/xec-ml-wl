@@ -420,11 +420,15 @@ def prepare_model_input(npho: np.ndarray, relative_time: np.ndarray,
     time_valid = time_clean != sentinel
 
     # Npho: log1p(npho / npho_scale) / npho_scale2
-    # Clip npho to avoid negative values in log1p
-    npho_clipped = np.maximum(npho_clean, 0)
+    # Allow negatives through; only clamp domain-breaking values
+    npho_sentinel = -0.5  # Separate sentinel for npho channel
+    domain_min = -npho_scale * 0.999
+    mask_domain_break = npho_valid & (npho_clean < domain_min)
+    npho_safe = np.where(mask_domain_break, 0.0, npho_clean)
     npho_normalized = np.where(npho_valid,
-                               np.log1p(npho_clipped / npho_scale) / npho_scale2,
-                               sentinel)
+                               np.log1p(npho_safe / npho_scale) / npho_scale2,
+                               npho_sentinel)
+    npho_normalized[mask_domain_break] = 0.0
 
     # Time: time / time_scale - time_shift (matching dataset.py normalization)
     # Note: The formula in geom_defs.py is: time_norm = (raw_time / TIME_SCALE) - TIME_SHIFT

@@ -95,7 +95,8 @@ def load_inpainter_checkpoint(checkpoint_path, prefer_ema=True):
     # Get model config
     outer_mode = config.get("outer_mode", "finegrid")
     outer_fine_pool = config.get("outer_fine_pool", (3, 3))
-    sentinel_value = config.get("sentinel_value", -5.0)
+    sentinel_value = config.get("sentinel_value", -1.0)
+    npho_sentinel_value = config.get("npho_sentinel_value", -0.5)
     time_mask_ratio_scale = config.get("time_mask_ratio_scale", 1.0)
     predict_channels = config.get("predict_channels", ["npho", "time"])
     use_masked_attention = config.get("use_masked_attention", False)
@@ -134,6 +135,7 @@ def load_inpainter_checkpoint(checkpoint_path, prefer_ema=True):
         cross_attn_hidden=cross_attn_hidden,
         cross_attn_latent_dim=cross_attn_latent_dim,
         cross_attn_pos_dim=cross_attn_pos_dim,
+        npho_sentinel_value=npho_sentinel_value,
     )
 
     # Load weights

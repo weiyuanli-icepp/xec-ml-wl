@@ -48,7 +48,8 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                   npho_loss_weight_enabled=False,
                   npho_loss_weight_alpha=0.5,
                   intensity_reweighter=None,
-                  no_sync_ctx=None):
+                  no_sync_ctx=None,
+                  npho_sentinel_value=-0.5):
     model.train()
     if scaler is None:
         scaler = torch.amp.GradScaler('cuda', enabled=amp)
@@ -141,6 +142,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
         load_truth_branches=False,  # MAE doesn't need truth branches
         profile=profile,
         npho_scheme=npho_scheme,
+        npho_sentinel_value=npho_sentinel_value,
     )
 
     loader = DataLoader(
@@ -517,7 +519,8 @@ def run_eval_mae(model, device, root_files, tree_name,
                  log_invalid_npho=True,
                  npho_scheme="log1p",
                  npho_loss_weight_enabled=False,
-                 npho_loss_weight_alpha=0.5):
+                 npho_loss_weight_alpha=0.5,
+                 npho_sentinel_value=-0.5):
     """
     Evaluate MAE model on validation data.
 
@@ -703,6 +706,7 @@ def run_eval_mae(model, device, root_files, tree_name,
         load_truth_branches=False,  # MAE doesn't need truth branches
         profile=profile,
         npho_scheme=npho_scheme,
+        npho_sentinel_value=npho_sentinel_value,
     )
 
     loader = DataLoader(

@@ -97,11 +97,13 @@ def analyze_file(file_path, npho_threshold=None, npho_scheme="log1p"):
     trans_time[mask_inv] = SENTINEL_VAL
     
     # 3. Transform NPHO using NphoTransform
-    clean_npho = np.maximum(raw_npho, 0.0)
     npho_transform = NphoTransform(scheme=npho_scheme, npho_scale=NPHO_SCALE, npho_scale2=NPHO_SCALE2)
+    domain_min = npho_transform.domain_min()
+    mask_domain_break = (~mask_inv) & (raw_npho < domain_min)
+    clean_npho = np.where(mask_inv | mask_domain_break, 0.0, raw_npho)
     trans_npho = npho_transform.forward(clean_npho)
-    # Ensure invalid Npho stays 0.0
     trans_npho[mask_inv] = 0.0
+    trans_npho[mask_domain_break] = 0.0
 
     # 4. Statistics (Signal Only)
     # Signal = anything NOT the sentinel value
@@ -199,8 +201,7 @@ def compare_all_schemes(file_path, npho_threshold=None):
         print(f"Error: {e}"); return
 
     # Define invalid mask
-    mask_inv = (raw_npho <= 0.0) | np.isnan(raw_npho) | (raw_npho > 9.0e9)
-    clean_npho = np.maximum(raw_npho, 0.0)
+    mask_inv = (raw_npho > 9.0e9) | np.isnan(raw_npho)
 
     # Transform with each scheme
     schemes = ["log1p", "anscombe", "sqrt", "linear"]
@@ -209,8 +210,12 @@ def compare_all_schemes(file_path, npho_threshold=None):
 
     for scheme in schemes:
         npho_transform = NphoTransform(scheme=scheme, npho_scale=NPHO_SCALE, npho_scale2=NPHO_SCALE2)
+        domain_min = npho_transform.domain_min()
+        mask_domain_break = (~mask_inv) & (raw_npho < domain_min)
+        clean_npho = np.where(mask_inv | mask_domain_break, 0.0, raw_npho)
         trans = npho_transform.forward(clean_npho)
         trans[mask_inv] = 0.0
+        trans[mask_domain_break] = 0.0
         transforms[scheme] = trans
 
     # Plotting

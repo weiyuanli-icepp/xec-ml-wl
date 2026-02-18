@@ -55,7 +55,7 @@ class NphoTransform:
 
         Args:
             raw_npho: Raw photon counts (numpy array or torch tensor).
-                     Expected to be non-negative (negative values clamped to 0).
+                     Values must be above domain_min() for the chosen scheme.
 
         Returns:
             Normalized values in the same type as input.
@@ -160,6 +160,19 @@ class NphoTransform:
             f"NphoTransform(scheme='{self.scheme}', "
             f"npho_scale={self.npho_scale}, npho_scale2={self.npho_scale2})"
         )
+
+    def domain_min(self) -> float:
+        """Minimum raw npho value that the transform can handle without NaN."""
+        if self.scheme == "log1p":
+            return -self.npho_scale * 0.999
+        elif self.scheme == "sqrt":
+            return 0.0
+        elif self.scheme == "anscombe":
+            return -0.375
+        elif self.scheme == "linear":
+            return -float('inf')
+        else:
+            raise ValueError(f"Unknown scheme: {self.scheme}")
 
     def convert_threshold(self, raw_threshold: float) -> float:
         """

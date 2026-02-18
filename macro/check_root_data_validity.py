@@ -50,8 +50,11 @@ def preprocess_chunk(
 
     Returns dict with preprocessed data and diagnostic info.
     """
-    # Identify invalid npho values (same logic as dataset.py)
-    mask_npho_invalid = (raw_npho > 9e9) | (raw_npho < -npho_scale) | np.isnan(raw_npho)
+    # Identify truly invalid npho values (same logic as dataset.py)
+    mask_npho_invalid = (raw_npho > 9e9) | np.isnan(raw_npho)
+    # Domain-breaking values for log1p
+    domain_min = -npho_scale * 0.999
+    mask_domain_break = (~mask_npho_invalid) & (raw_npho < domain_min)
 
     # Identify invalid time values
     mask_time_invalid = (
@@ -61,10 +64,11 @@ def preprocess_chunk(
         np.isnan(raw_time)
     )
 
-    # Normalize npho: log1p transform
-    raw_npho_safe = np.where(mask_npho_invalid, 0.0, np.maximum(raw_npho, 0.0))
+    # Normalize npho: log1p transform (allow negatives through)
+    raw_npho_safe = np.where(mask_npho_invalid | mask_domain_break, 0.0, raw_npho)
     npho_norm = np.log1p(raw_npho_safe / npho_scale) / npho_scale2
-    npho_norm[mask_npho_invalid] = sentinel_value
+    npho_norm[mask_npho_invalid] = sentinel_value  # dead channel
+    npho_norm[mask_domain_break] = 0.0             # domain break → zero signal
 
     # Normalize time: linear transform
     time_norm = (raw_time / time_scale) - time_shift

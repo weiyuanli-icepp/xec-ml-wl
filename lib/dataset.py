@@ -60,7 +60,8 @@ class XECStreamingDataset(IterableDataset):
                  shuffle=False,
                  profile=False,
                  npho_scheme="log1p",
-                 fiducial=None):
+                 fiducial=None,
+                 npho_sentinel_value=-0.5):
         super().__init__()
 
         # I/O profiling
@@ -119,6 +120,7 @@ class XECStreamingDataset(IterableDataset):
             npho_scale2=npho_scale2
         )
         self.npho_scheme = npho_scheme
+        self.npho_sentinel_value = npho_sentinel_value
 
         # Fiducial volume cut (only meaningful when load_truth_branches=True)
         self.fiducial = fiducial
@@ -194,24 +196,26 @@ class XECStreamingDataset(IterableDataset):
         Normalize a subset of the chunk in a separate thread.
 
         Normalization scheme:
-        - npho > 9e9 or npho < -npho_scale or isnan: invalid (sentinel for both)
+        - npho > 9e9 or isnan: truly invalid (dead/missing sensor) → npho_sentinel_value
+        - npho below transform domain minimum: domain-breaking → 0.0
         - npho < npho_threshold: npho valid, time set to sentinel (timing unreliable)
-        - otherwise: normal normalization for both
+        - otherwise: normal normalization for both (negative npho values allowed)
 
-        The log1p transform requires raw_npho/npho_scale > -1, i.e., raw_npho > -npho_scale.
         Sensors with npho < npho_threshold have unreliable timing (uncertainty ~ 1/sqrt(npho)).
         """
         n_sc, n_sc2, t_sc, t_sh, sent, npho_thresh = self.scales
+        npho_sent = self.npho_sentinel_value
 
         # Input Normalization
         raw_n = arr_subset[self.input_branches[0]].astype("float32")
         raw_t = arr_subset[self.input_branches[1]].astype("float32")
 
-        # Identify invalid npho values:
-        # - raw_npho > 9e9: sentinel in data (missing/dead sensor)
-        # - raw_npho < -npho_scale: would break log1p (log of negative)
-        # - isnan: corrupted data
-        mask_npho_invalid = (raw_n > 9e9) | (raw_n < -n_sc) | np.isnan(raw_n)
+        # True invalids: dead/missing sensors, corrupted data
+        mask_npho_invalid = (raw_n > 9e9) | np.isnan(raw_n)
+
+        # Domain-breaking values: would cause NaN in transform
+        domain_min = self.npho_transform.domain_min()
+        mask_domain_break = (~mask_npho_invalid) & (raw_n < domain_min)
 
         # Log unexpected invalid npho values (these indicate data issues)
         if log_invalid and np.any(mask_npho_invalid):
@@ -239,10 +243,11 @@ class XECStreamingDataset(IterableDataset):
         mask_time_invalid = mask_npho_invalid | (raw_n < npho_thresh) | (np.abs(raw_t) > 9e9) | np.isnan(raw_t)
 
         # Normalize npho using configurable transform
-        # For invalid npho, use 0 temporarily to avoid transform issues, then set to sentinel
-        raw_n_safe = np.where(mask_npho_invalid, 0.0, np.maximum(raw_n, 0.0))  # Also clamp small negatives
+        # Safe input: invalid → 0 (placeholder), domain-break → 0, else keep raw (including negatives)
+        raw_n_safe = np.where(mask_npho_invalid | mask_domain_break, 0.0, raw_n)
         n_norm = self.npho_transform.forward(raw_n_safe)
-        n_norm[mask_npho_invalid] = sent
+        n_norm[mask_npho_invalid] = npho_sent  # dead channel → npho sentinel
+        n_norm[mask_domain_break] = 0.0        # domain break → zero signal
 
         # Normalize time: linear transform
         t_norm = (raw_t / t_sc) - t_sh

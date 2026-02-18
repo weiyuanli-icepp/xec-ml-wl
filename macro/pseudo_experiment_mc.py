@@ -209,6 +209,7 @@ def load_inpainter_model(checkpoint_path: str, device: str = 'cpu'):
         cross_attn_hidden=config.get('cross_attn_hidden', 64),
         cross_attn_latent_dim=config.get('cross_attn_latent_dim', 128),
         cross_attn_pos_dim=config.get('cross_attn_pos_dim', 96),
+        npho_sentinel_value=config.get('npho_sentinel_value', -0.5),
     )
 
     # Load weights

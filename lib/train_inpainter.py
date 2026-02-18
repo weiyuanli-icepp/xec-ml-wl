@@ -259,6 +259,7 @@ Examples:
         time_scale = float(args.time_scale if args.time_scale is not None else cfg.normalization.time_scale)
         time_shift = float(args.time_shift if args.time_shift is not None else cfg.normalization.time_shift)
         sentinel_value = float(args.sentinel_value if args.sentinel_value is not None else cfg.normalization.sentinel_value)
+        npho_sentinel_value = float(getattr(cfg.normalization, 'npho_sentinel_value', -0.5))
 
         outer_mode = args.outer_mode or cfg.model.outer_mode
         outer_fine_pool = args.outer_fine_pool or cfg.model.outer_fine_pool
@@ -354,6 +355,7 @@ Examples:
         time_scale = args.time_scale or DEFAULT_TIME_SCALE
         time_shift = args.time_shift or DEFAULT_TIME_SHIFT
         sentinel_value = args.sentinel_value or DEFAULT_SENTINEL_VALUE
+        npho_sentinel_value = -0.5
 
         outer_mode = args.outer_mode or "finegrid"
         outer_fine_pool = args.outer_fine_pool  # None means no pooling
@@ -478,6 +480,7 @@ Examples:
         cross_attn_hidden=cross_attn_hidden,
         cross_attn_latent_dim=cross_attn_latent_dim,
         cross_attn_pos_dim=cross_attn_pos_dim,
+        npho_sentinel_value=npho_sentinel_value,
     ).to(device)
 
     if is_main_process():
@@ -738,6 +741,7 @@ Examples:
                 npho_loss_weight_enabled=npho_loss_weight_enabled,
                 npho_loss_weight_alpha=npho_loss_weight_alpha,
                 no_sync_ctx=no_sync_ctx,
+                npho_sentinel_value=npho_sentinel_value,
             )
             train_metrics = reduce_metrics(train_metrics, device)
 
@@ -777,6 +781,7 @@ Examples:
                     npho_scheme=npho_scheme,
                     npho_loss_weight_enabled=npho_loss_weight_enabled,
                     npho_loss_weight_alpha=npho_loss_weight_alpha,
+                    npho_sentinel_value=npho_sentinel_value,
                 )
 
             if val_metrics:
@@ -857,6 +862,7 @@ Examples:
                         'sentinel_value': float(sentinel_value),
                         'npho_branch': npho_branch,
                         'time_branch': time_branch,
+                        'npho_sentinel_value': float(npho_sentinel_value),
                     }
                 }
                 if scheduler is not None:
@@ -925,6 +931,7 @@ Examples:
                         npho_scheme=npho_scheme,
                         npho_loss_weight_enabled=npho_loss_weight_enabled,
                         npho_loss_weight_alpha=npho_loss_weight_alpha,
+                        npho_sentinel_value=npho_sentinel_value,
                     )
                 root_path = writer.filepath if writer.count > 0 else None
                 t_root_elapsed = time.time() - t_root_start

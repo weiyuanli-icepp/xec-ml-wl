@@ -53,7 +53,11 @@ def analyze_events(file_path, start_event, num_events):
     
     # --- Handle Npho ---
     proc_npho = raw_npho.copy()
-    proc_npho = np.maximum(proc_npho, 0.0) 
+    # Domain-break filter: values that would cause NaN in log1p(x/scale)
+    # For log1p with implicit scale=1, domain min is > -1
+    mask_domain_break = (~mask_inv) & (proc_npho < -0.999)
+    proc_npho[mask_inv] = 0.0
+    proc_npho[mask_domain_break] = 0.0
     proc_npho = np.log1p(proc_npho)
 
     # 3. Statistics (Signal Only)

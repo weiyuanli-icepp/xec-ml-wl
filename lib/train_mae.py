@@ -262,6 +262,7 @@ Examples:
         time_scale = float(args.time_scale if args.time_scale is not None else cfg.normalization.time_scale)
         time_shift = float(args.time_shift if args.time_shift is not None else cfg.normalization.time_shift)
         sentinel_value = float(args.sentinel_value if args.sentinel_value is not None else cfg.normalization.sentinel_value)
+        npho_sentinel_value = float(getattr(cfg.normalization, 'npho_sentinel_value', -0.5))
         outer_mode = args.outer_mode or cfg.model.outer_mode
         outer_fine_pool = args.outer_fine_pool or cfg.model.outer_fine_pool
         mask_ratio = args.mask_ratio if args.mask_ratio is not None else cfg.model.mask_ratio
@@ -337,6 +338,7 @@ Examples:
         time_scale = args.time_scale or DEFAULT_TIME_SCALE
         time_shift = args.time_shift or DEFAULT_TIME_SHIFT
         sentinel_value = args.sentinel_value or DEFAULT_SENTINEL_VALUE
+        npho_sentinel_value = -0.5
         outer_mode = args.outer_mode or "finegrid"
         outer_fine_pool = args.outer_fine_pool
         mask_ratio = args.mask_ratio or 0.6
@@ -426,7 +428,8 @@ Examples:
     model = XEC_MAE(
         encoder, mask_ratio=mask_ratio, learn_channel_logvars=auto_channel_weight,
         sentinel_value=sentinel_value, time_mask_ratio_scale=time_mask_ratio_scale,
-        predict_channels=predict_channels, decoder_dim=decoder_dim
+        predict_channels=predict_channels, decoder_dim=decoder_dim,
+        npho_sentinel_value=npho_sentinel_value
     ).to(device)
     total_params, trainable_params = count_model_params(model)
     if is_main_process():
@@ -714,6 +717,7 @@ Examples:
                 npho_loss_weight_enabled=npho_loss_weight_enabled,
                 npho_loss_weight_alpha=npho_loss_weight_alpha,
                 no_sync_ctx=no_sync_ctx,
+                npho_sentinel_value=npho_sentinel_value,
             )
             train_metrics = reduce_metrics(train_metrics, device)
 
@@ -755,6 +759,7 @@ Examples:
                     npho_scheme=npho_scheme,
                     npho_loss_weight_enabled=npho_loss_weight_enabled,
                     npho_loss_weight_alpha=npho_loss_weight_alpha,
+                    npho_sentinel_value=npho_sentinel_value,
                 )
 
             if val_metrics:
@@ -840,6 +845,7 @@ Examples:
                         npho_scheme=npho_scheme,
                         npho_loss_weight_enabled=npho_loss_weight_enabled,
                         npho_loss_weight_alpha=npho_loss_weight_alpha,
+                        npho_sentinel_value=npho_sentinel_value,
                     )
                     root_path = save_predictions_to_root(
                         predictions, save_path, epoch, run_id=mlflow_run_id,

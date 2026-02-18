@@ -74,6 +74,7 @@ from lib.baselines import NeighborAverageBaseline, SolidAngleWeightedBaseline
 # Constants
 N_CHANNELS = 4760
 MODEL_SENTINEL = DEFAULT_SENTINEL_VALUE
+MODEL_NPHO_SENTINEL = -0.5
 
 # Face index maps
 TOP_HEX_FLAT = flatten_hex_rows(TOP_HEX_ROWS)
@@ -239,16 +240,21 @@ def normalize_data(npho: np.ndarray, time: np.ndarray,
                    time_scale: float = DEFAULT_TIME_SCALE,
                    time_shift: float = DEFAULT_TIME_SHIFT,
                    sentinel: float = MODEL_SENTINEL,
-                   npho_threshold: float = DEFAULT_NPHO_THRESHOLD) -> np.ndarray:
+                   npho_threshold: float = DEFAULT_NPHO_THRESHOLD,
+                   npho_sentinel: float = -0.5) -> np.ndarray:
     """Normalize data to model input format."""
-    # Invalid detection
-    mask_npho_invalid = (npho > 9e9) | (npho < -npho_scale) | np.isnan(npho)
+    # True invalids: dead/missing sensors, corrupted data
+    mask_npho_invalid = (npho > 9e9) | np.isnan(npho)
+    # Domain-breaking values for log1p
+    domain_min = -npho_scale * 0.999
+    mask_domain_break = (~mask_npho_invalid) & (npho < domain_min)
     mask_time_invalid = mask_npho_invalid | (npho < npho_threshold) | (np.abs(time) > 9e9) | np.isnan(time)
 
-    # Normalize npho: log1p transform
-    npho_safe = np.where(mask_npho_invalid, 0.0, np.maximum(npho, 0.0))
+    # Normalize npho: log1p transform (allow negatives through)
+    npho_safe = np.where(mask_npho_invalid | mask_domain_break, 0.0, npho)
     npho_norm = np.log1p(npho_safe / npho_scale) / npho_scale2
-    npho_norm[mask_npho_invalid] = sentinel
+    npho_norm[mask_npho_invalid] = npho_sentinel
+    npho_norm[mask_domain_break] = 0.0
 
     # Normalize time: linear transform
     time_norm = (time / time_scale) - time_shift
@@ -286,8 +292,8 @@ def create_artificial_mask(x: np.ndarray, n_artificial: int,
     artificial_mask = np.zeros((n_events, N_CHANNELS), dtype=bool)
 
     for i in range(n_events):
-        # Valid = not dead AND has valid data (npho != sentinel)
-        valid = ~dead_mask & (x[i, :, 0] != MODEL_SENTINEL)
+        # Valid = not dead AND has valid data (npho != npho sentinel)
+        valid = ~dead_mask & (x[i, :, 0] != MODEL_NPHO_SENTINEL)
         valid_indices = np.where(valid)[0]
 
         if len(valid_indices) > n_artificial:
@@ -348,6 +354,7 @@ def load_model(checkpoint_path: Optional[str] = None,
             cross_attn_hidden=config.get('cross_attn_hidden', 64),
             cross_attn_latent_dim=config.get('cross_attn_latent_dim', 128),
             cross_attn_pos_dim=config.get('cross_attn_pos_dim', 96),
+            npho_sentinel_value=config.get('npho_sentinel_value', MODEL_NPHO_SENTINEL),
         )
 
         # Load weights (prefer EMA)
@@ -455,7 +462,7 @@ def run_baselines(x_original: np.ndarray, combined_mask: np.ndarray,
             pred_npho = float(avg_preds_full[i, sensor_id])
             truth_npho = float(x_original[i, sensor_id, 0])
 
-            if truth_npho == MODEL_SENTINEL or mask_type == 1:
+            if truth_npho == MODEL_NPHO_SENTINEL or mask_type == 1:
                 error_npho = -999.0
                 if mask_type == 1:
                     truth_npho = -999.0
@@ -489,7 +496,7 @@ def run_baselines(x_original: np.ndarray, combined_mask: np.ndarray,
                 pred_npho = float(sa_preds_full[i, sensor_id])
                 truth_npho = float(x_original[i, sensor_id, 0])
 
-                if truth_npho == MODEL_SENTINEL or mask_type == 1:
+                if truth_npho == MODEL_NPHO_SENTINEL or mask_type == 1:
                     error_npho = -999.0
                     if mask_type == 1:
                         truth_npho = -999.0
@@ -560,7 +567,7 @@ def collect_predictions(predictions: np.ndarray, x_original: np.ndarray,
             truth_time = float(x_original[i, sensor_id, 1])
 
             # Check if truth is valid
-            if truth_npho == MODEL_SENTINEL or mask_type == 1:
+            if truth_npho == MODEL_NPHO_SENTINEL or mask_type == 1:
                 error_npho = -999.0
                 error_time = -999.0
                 if mask_type == 1:
@@ -934,15 +941,17 @@ def main():
         artificial_mask, combined_mask = create_artificial_mask(
             x_input, args.n_artificial, dead_mask, seed=args.seed
         )
-        # Apply combined mask to input
-        x_input[combined_mask] = MODEL_SENTINEL
+        # Apply combined mask to input (per-channel sentinels)
+        x_input[combined_mask, 0] = MODEL_NPHO_SENTINEL  # npho -> npho sentinel
+        x_input[combined_mask, 1] = MODEL_SENTINEL        # time -> time sentinel
     else:
         # MC pseudo-experiment: apply dead pattern to clean MC
         print("[INFO] MC mode: applying dead channel pattern")
         artificial_mask = None
         combined_mask = np.zeros((n_events, N_CHANNELS), dtype=bool)
         combined_mask[:, dead_mask] = True
-        x_input[combined_mask] = MODEL_SENTINEL
+        x_input[combined_mask, 0] = MODEL_NPHO_SENTINEL  # npho -> npho sentinel
+        x_input[combined_mask, 1] = MODEL_SENTINEL        # time -> time sentinel
 
     n_masked = combined_mask.sum()
     print(f"[INFO] Total masked sensors: {n_masked:,} ({n_masked/(n_events*N_CHANNELS)*100:.2f}%)")
