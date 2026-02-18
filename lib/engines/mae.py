@@ -166,8 +166,11 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
             profiler.stop()
 
             # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
-            # Already-invalid sensors have time == sentinel_time and are NOT in mask
-            already_invalid = (x_in[:, :, 1] == sentinel_time)  # (B, N)
+            # Already-invalid sensors are NOT in mask
+            if predict_time:
+                already_invalid = (x_in[:, :, 1] == sentinel_time)  # (B, N)
+            else:
+                already_invalid = (x_in[:, :, 0] == sentinel_npho)  # (B, N)
             total_valid_sensors += (~already_invalid).sum()
             total_randomly_masked += mask.sum().long()
 
@@ -730,7 +733,10 @@ def run_eval_mae(model, device, root_files, tree_name,
                 x_masked, mask = model.random_masking(x_in, npho_threshold_norm=npho_threshold_norm)
 
                 # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
-                already_invalid = (x_in[:, :, 1] == sentinel_time)  # (B, N)
+                if predict_time:
+                    already_invalid = (x_in[:, :, 1] == sentinel_time)  # (B, N)
+                else:
+                    already_invalid = (x_in[:, :, 0] == sentinel_npho)  # (B, N)
                 total_valid_sensors += (~already_invalid).sum()
                 total_randomly_masked += mask.sum().long()
 

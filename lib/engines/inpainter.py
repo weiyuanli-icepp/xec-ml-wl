@@ -772,8 +772,11 @@ def run_epoch_inpainter(
             profiler.stop()
 
             # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
-            # Already-invalid sensors have time == sentinel_time and are NOT in mask
-            already_invalid = (original_values[:, :, 1] == sentinel_time)  # (B, N)
+            # Already-invalid sensors are NOT in mask
+            if "time" in predict_channels:
+                already_invalid = (original_values[:, :, 1] == sentinel_time)  # (B, N)
+            else:
+                already_invalid = (original_values[:, :, 0] == sentinel_npho)  # (B, N)
             total_valid_sensors += (~already_invalid).sum()
             total_randomly_masked += mask.sum().long()
 
@@ -1136,7 +1139,10 @@ def run_eval_inpainter(
                 profiler.stop()
 
                 # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
-                already_invalid = (original_values[:, :, 1] == sentinel_time)  # (B, N)
+                if "time" in predict_channels:
+                    already_invalid = (original_values[:, :, 1] == sentinel_time)  # (B, N)
+                else:
+                    already_invalid = (original_values[:, :, 0] == sentinel_npho)  # (B, N)
                 total_valid_sensors += (~already_invalid).sum()
                 total_randomly_masked += mask.sum().long()
 

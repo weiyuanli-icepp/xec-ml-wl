@@ -845,6 +845,17 @@ def train_with_config(config_path: str, profile: bool = None):
                     "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
                     "best_val": best_val,
                     "mlflow_run_id": mlflow_run_id,
+                    "config": {
+                        "outer_mode": cfg.model.outer_mode,
+                        "outer_fine_pool": list(outer_fine_pool) if outer_fine_pool else None,
+                        "npho_scale": float(cfg.normalization.npho_scale),
+                        "npho_scale2": float(cfg.normalization.npho_scale2),
+                        "time_scale": float(cfg.normalization.time_scale),
+                        "time_shift": float(cfg.normalization.time_shift),
+                        "sentinel_time": float(cfg.normalization.sentinel_time),
+                        "sentinel_npho": float(cfg.normalization.sentinel_npho),
+                        "active_tasks": active_tasks,
+                    },
                 }
                 torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_best.pth"))
                 print(f"   [info] New best val_loss: {best_val:.2e}")
@@ -878,6 +889,17 @@ def train_with_config(config_path: str, profile: bool = None):
                 "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
                 "best_val": best_val,
                 "mlflow_run_id": mlflow_run_id,
+                "config": {
+                    "outer_mode": cfg.model.outer_mode,
+                    "outer_fine_pool": list(outer_fine_pool) if outer_fine_pool else None,
+                    "npho_scale": float(cfg.normalization.npho_scale),
+                    "npho_scale2": float(cfg.normalization.npho_scale2),
+                    "time_scale": float(cfg.normalization.time_scale),
+                    "time_shift": float(cfg.normalization.time_shift),
+                    "sentinel_time": float(cfg.normalization.sentinel_time),
+                    "sentinel_npho": float(cfg.normalization.sentinel_npho),
+                    "active_tasks": active_tasks,
+                },
             }
             torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_last.pth"))
 
