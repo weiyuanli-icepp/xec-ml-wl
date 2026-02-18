@@ -316,7 +316,8 @@ def train_with_config(config_path: str, profile: bool = None):
     base_regressor = XECEncoder(
         outer_mode=cfg.model.outer_mode,
         outer_fine_pool=outer_fine_pool,
-        drop_path_rate=cfg.model.drop_path_rate
+        drop_path_rate=cfg.model.drop_path_rate,
+        sentinel_time=cfg.normalization.sentinel_time,
     )
     model = XECMultiHeadModel(
         base_regressor,

@@ -72,7 +72,7 @@ from lib.geom_defs import (
 # Constants
 N_CHANNELS = 4760
 REAL_DATA_SENTINEL = 1e10  # Sentinel value used in PrepareRealData.C
-MODEL_SENTINEL_TIME = DEFAULT_SENTINEL_TIME  # Sentinel value expected by model (-5.0)
+MODEL_SENTINEL_TIME = DEFAULT_SENTINEL_TIME  # Sentinel value expected by model (-1.0)
 MODEL_SENTINEL_NPHO = -1.0  # Npho sentinel (matches dataset.py default)
 
 # Flatten hex rows to get sensor indices

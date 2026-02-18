@@ -131,7 +131,7 @@ mask_time_invalid = mask_npho_invalid | (raw_npho < npho_threshold) | (abs(raw_t
 **Invalid Sensor Handling:**
 | Channel | Invalid Value | Reason |
 |---------|---------------|--------|
-| Npho | `sentinel_time` | Invalid sensors marked distinctively |
+| Npho | `sentinel_npho` | Invalid sensors marked distinctively |
 | Time | `sentinel_time` | Distinctive value far from valid range (~0 after normalization) |
 
 **Low-Npho Sensors (0 < npho < threshold):**
@@ -167,6 +167,7 @@ After normalization with the **legacy scheme** (npho_scale=0.58):
 | Channel | Valid Range | Mean | Std |
 |---------|-------------|------|-----|
 | Npho (normalized) | [0, ~3] | ~0.5 | ~0.5 |
+| Npho (invalid) | -1.0 | - | - |
 | Time (normalized) | [-1, 1] | ~0 | ~0.3 |
 | Time (invalid) | -5.0 | - | - |
 
@@ -175,6 +176,7 @@ After normalization with the **new scheme** (npho_scale=1000):
 | Channel | Valid Range | Mean | Std |
 |---------|-------------|------|-----|
 | Npho (normalized) | [0, ~2.5] | ~1.0 | ~0.7 |
+| Npho (invalid) | -1.0 | - | - |
 | Time (normalized) | [-1.5, 1.5] | ~0 | ~0.4 |
 | Time (invalid) | -1.0 | - | - |
 
@@ -187,7 +189,8 @@ After normalization with the **new scheme** (npho_scale=1000):
 | `npho_scheme` | `normalization.npho_scheme` | - | log1p | Normalization scheme (log1p/anscombe/sqrt/linear) |
 | `time_scale` | `normalization.time_scale` | 6.5e-8 | 1.14e-7 | Time scale (seconds) |
 | `time_shift` | `normalization.time_shift` | 0.5 | -0.46 | Time offset after scaling |
-| `sentinel_time` | `normalization.sentinel_time` | -5.0 | -1.0 | Invalid sensor marker |
+| `sentinel_time` | `normalization.sentinel_time` | -5.0 | -1.0 | Invalid time sensor marker |
+| `sentinel_npho` | `normalization.sentinel_npho` | -1.0 | -1.0 | Invalid npho sensor marker |
 | `npho_threshold` | `normalization.npho_threshold` | - | 100 | Min npho for valid timing |
 
 **Important:** All training paths (Regressor, MAE, Inpainter) must use the **same normalization parameters** for the encoder to work correctly. The inpainter must match the MAE's normalization.

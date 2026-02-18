@@ -41,7 +41,8 @@ def normalize_input(raw_npho, raw_time,
                     npho_scale2=DEFAULT_NPHO_SCALE2,
                     time_scale=DEFAULT_TIME_SCALE,
                     time_shift=DEFAULT_TIME_SHIFT,
-                    sentinel_time=DEFAULT_SENTINEL_TIME):
+                    sentinel_time=DEFAULT_SENTINEL_TIME,
+                    sentinel_npho=-1.0):
     """Apply normalization to raw input data."""
     mask_npho_bad = (raw_npho <= 0.0) | (raw_npho > 9e9) | np.isnan(raw_npho)
     mask_time_bad = mask_npho_bad | (np.abs(raw_time) > 9e9) | np.isnan(raw_time)
@@ -50,7 +51,7 @@ def normalize_input(raw_npho, raw_time,
     npho_norm = np.log1p(raw_npho_safe / npho_scale) / npho_scale2
     time_norm = (raw_time / time_scale) - time_shift
 
-    npho_norm[mask_npho_bad] = 0.0
+    npho_norm[mask_npho_bad] = sentinel_npho
     time_norm[mask_time_bad] = sentinel_time
 
     return npho_norm, time_norm
@@ -137,7 +138,8 @@ def generate_mae_predictions(input_file, output_file, tree_name="tree",
                              mask_ratio=0.6, error_scale=0.1, max_events=100,
                              npho_scale=DEFAULT_NPHO_SCALE, npho_scale2=DEFAULT_NPHO_SCALE2,
                              time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT,
-                             sentinel_time=DEFAULT_SENTINEL_TIME):
+                             sentinel_time=DEFAULT_SENTINEL_TIME,
+                             sentinel_npho=-1.0):
     """Generate MAE-style predictions ROOT file."""
     print(f"Generating MAE predictions from: {input_file}")
     print(f"  Output: {output_file}")
@@ -182,7 +184,7 @@ def generate_mae_predictions(input_file, output_file, tree_name="tree",
         # Create masked input
         masked_npho = npho_norm.copy()
         masked_time = time_norm.copy()
-        masked_npho[mask > 0.5] = 0.0
+        masked_npho[mask > 0.5] = sentinel_npho
         masked_time[mask > 0.5] = sentinel_time
 
         # Generate predictions
@@ -242,7 +244,8 @@ def generate_inpainter_predictions(input_file, output_file, tree_name="tree",
                                    mask_ratio=0.6, error_scale=0.1, max_events=100,
                                    npho_scale=DEFAULT_NPHO_SCALE, npho_scale2=DEFAULT_NPHO_SCALE2,
                                    time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT,
-                                   sentinel_time=DEFAULT_SENTINEL_TIME):
+                                   sentinel_time=DEFAULT_SENTINEL_TIME,
+                                   sentinel_npho=-1.0):
     """Generate inpainter-style predictions ROOT file."""
     print(f"Generating inpainter predictions from: {input_file}")
     print(f"  Output: {output_file}")
@@ -429,8 +432,10 @@ Examples:
     parser.add_argument("--time_scale", type=float, default=DEFAULT_TIME_SCALE)
     parser.add_argument("--time_shift", type=float, default=DEFAULT_TIME_SHIFT)
     parser.add_argument("--sentinel_time", type=float, default=DEFAULT_SENTINEL_TIME)
+    parser.add_argument("--sentinel_npho", type=float, default=-1.0)
 
     args = parser.parse_args()
+    sentinel_npho = args.sentinel_npho
 
     if not os.path.exists(args.input_file):
         print(f"Error: Input file not found: {args.input_file}")
@@ -458,6 +463,7 @@ Examples:
             time_scale=args.time_scale,
             time_shift=args.time_shift,
             sentinel_time=args.sentinel_time,
+            sentinel_npho=sentinel_npho,
         )
 
     if args.mode in ["inpainter", "both"]:
@@ -474,6 +480,7 @@ Examples:
             time_scale=args.time_scale,
             time_shift=args.time_shift,
             sentinel_time=args.sentinel_time,
+            sentinel_npho=sentinel_npho,
         )
 
     print("\nDone! Test with:")

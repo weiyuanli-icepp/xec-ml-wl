@@ -879,6 +879,8 @@ Examples:
                         'mask_ratio': mask_ratio,
                         'decoder_dim': decoder_dim,
                         'predict_channels': list(predict_channels),
+                        'sentinel_time': float(sentinel_time),
+                        'sentinel_npho': float(sentinel_npho),
                     }
                 }
                 if ema_model is not None:

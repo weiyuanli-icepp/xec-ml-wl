@@ -69,8 +69,9 @@ valid_sensors = ~already_invalid
 num_to_mask = int(valid_sensors.sum() * mask_ratio)
 mask = random_select(valid_sensors, num_to_mask)
 
-# Apply sentinel to masked positions
-x_masked[mask] = sentinel_time
+# Apply sentinel to masked positions (per-channel)
+x_masked[:, :, 0][mask] = sentinel_npho  # npho channel
+x_masked[:, :, 1][mask] = sentinel_time   # time channel
 
 # Loss computed only on `mask` (not on already_invalid)
 ```

@@ -52,12 +52,13 @@ from lib.geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
     OUTER_COARSE_FULL_INDEX_MAP, TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
     flatten_hex_rows,
-    DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_TIME
+    DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_TIME,
+    DEFAULT_NPHO_THRESHOLD,
 )
 
 # Constants
 N_CHANNELS = 4760
-MODEL_SENTINEL_TIME = DEFAULT_SENTINEL_TIME  # -5.0
+MODEL_SENTINEL_TIME = DEFAULT_SENTINEL_TIME  # -1.0
 MODEL_SENTINEL_NPHO = -1.0  # Npho sentinel (matches dataset.py default)
 
 # Flatten hex rows to get sensor indices
@@ -145,30 +146,51 @@ def get_dead_channels(run_number: int = None,
 
 def prepare_model_input(relative_npho: np.ndarray, relative_time: np.ndarray,
                         npho_scale: float = DEFAULT_NPHO_SCALE,
+                        npho_scale2: float = DEFAULT_NPHO_SCALE2,
                         time_scale: float = DEFAULT_TIME_SCALE,
                         time_shift: float = DEFAULT_TIME_SHIFT,
-                        sentinel: float = MODEL_SENTINEL_TIME) -> np.ndarray:
+                        sentinel_time: float = MODEL_SENTINEL_TIME,
+                        sentinel_npho: float = MODEL_SENTINEL_NPHO,
+                        npho_threshold: float = DEFAULT_NPHO_THRESHOLD) -> np.ndarray:
     """
     Prepare input tensor for the model.
 
+    Applies the same normalization as the training pipeline (dataset.py):
+    - npho: log1p(raw / npho_scale) / npho_scale2
+    - time: raw / time_scale - time_shift
+
     Args:
-        relative_npho: Normalized npho
-        relative_time: Normalized time
-        npho_scale, time_scale, time_shift: Normalization parameters
-        sentinel: Sentinel value for invalid channels
+        relative_npho: Raw npho values (N, 4760)
+        relative_time: Raw time values (N, 4760)
+        npho_scale, npho_scale2: Npho normalization parameters
+        time_scale, time_shift: Time normalization parameters
+        sentinel_time: Sentinel for invalid time channels
+        sentinel_npho: Sentinel for invalid npho channels
+        npho_threshold: Minimum npho for reliable timing
 
     Returns:
         Input array (N, 4760, 2)
     """
-    # Apply normalization (matching training preprocessing)
-    npho_valid = (relative_npho >= 0) & (relative_npho != sentinel) & (np.abs(relative_npho) < 1e9)
-    time_valid = (relative_time >= 0) & (relative_time != sentinel) & (np.abs(relative_time) < 1e9)
+    # True invalids: dead/missing sensors, corrupted data
+    mask_npho_invalid = (relative_npho > 9e9) | np.isnan(relative_npho)
+    # Domain-breaking values for log1p
+    domain_min = -npho_scale * 0.999
+    mask_domain_break = (~mask_npho_invalid) & (relative_npho < domain_min)
+    mask_time_invalid = (mask_npho_invalid | (relative_npho < npho_threshold) |
+                         (np.abs(relative_time) > 9e9) | np.isnan(relative_time))
 
-    npho_normalized = np.where(npho_valid, relative_npho * npho_scale, sentinel)
-    time_normalized = np.where(time_valid, relative_time * time_scale + time_shift, sentinel)
+    # Normalize npho: log1p transform (allow negatives through)
+    npho_safe = np.where(mask_npho_invalid | mask_domain_break, 0.0, relative_npho)
+    npho_norm = np.log1p(npho_safe / npho_scale) / npho_scale2
+    npho_norm[mask_npho_invalid] = sentinel_npho
+    npho_norm[mask_domain_break] = 0.0
+
+    # Normalize time: linear transform
+    time_norm = (relative_time / time_scale) - time_shift
+    time_norm[mask_time_invalid] = sentinel_time
 
     # Stack into (N, 4760, 2)
-    x = np.stack([npho_normalized, time_normalized], axis=-1)
+    x = np.stack([npho_norm, time_norm], axis=-1)
 
     return x.astype(np.float32)
 
@@ -633,6 +655,8 @@ def main():
     # Normalization
     parser.add_argument("--npho-scale", type=float, default=DEFAULT_NPHO_SCALE,
                         help=f"Npho normalization scale (default: {DEFAULT_NPHO_SCALE})")
+    parser.add_argument("--npho-scale2", type=float, default=DEFAULT_NPHO_SCALE2,
+                        help=f"Npho normalization scale2 (default: {DEFAULT_NPHO_SCALE2})")
     parser.add_argument("--time-scale", type=float, default=DEFAULT_TIME_SCALE,
                         help=f"Time normalization scale (default: {DEFAULT_TIME_SCALE})")
     parser.add_argument("--time-shift", type=float, default=DEFAULT_TIME_SHIFT,
@@ -668,8 +692,9 @@ def main():
     x_input = prepare_model_input(
         data['relative_npho'], data['relative_time'],
         npho_scale=args.npho_scale,
+        npho_scale2=args.npho_scale2,
         time_scale=args.time_scale,
-        time_shift=args.time_shift
+        time_shift=args.time_shift,
     )
 
     # Store original for ground truth

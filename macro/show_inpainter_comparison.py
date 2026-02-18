@@ -70,6 +70,7 @@ def normalize_input(raw_npho, raw_time,
                     time_scale=DEFAULT_TIME_SCALE,
                     time_shift=DEFAULT_TIME_SHIFT,
                     sentinel_time=DEFAULT_SENTINEL_TIME,
+                    sentinel_npho=-1.0,
                     npho_scheme="log1p"):
     """
     Apply the same normalization as training to raw input data.
@@ -87,7 +88,7 @@ def normalize_input(raw_npho, raw_time,
     # Normalize time
     time_norm = (raw_time / time_scale) - time_shift
 
-    npho_norm[mask_npho_bad] = 0.0
+    npho_norm[mask_npho_bad] = sentinel_npho
     time_norm[mask_time_bad] = sentinel_time
 
     return npho_norm, time_norm
@@ -517,7 +518,7 @@ Examples:
 
     # x_masked: input with masked sensors set to sentinel
     x_masked = x_truth.copy()
-    x_masked[sensor_ids, 0] = 0.0  # npho = 0 for masked
+    x_masked[sensor_ids, 0] = -1.0  # npho = sentinel_npho for masked
     x_masked[sensor_ids, 1] = sentinel_time  # time = sentinel for masked
 
     # x_pred: truth with masked sensors replaced by predictions

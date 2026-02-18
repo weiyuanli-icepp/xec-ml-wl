@@ -148,7 +148,8 @@ npho_scale     = 1000       # Npho log transform scale
 npho_scale2    = 4.08       # Secondary npho scale
 time_scale     = 1.14e-7    # Time normalization (seconds)
 time_shift     = -0.46      # Time offset after scaling
-sentinel_time = -1.0       # Marker for invalid/masked sensors
+sentinel_time = -1.0       # Marker for invalid/masked time sensors
+sentinel_npho = -1.0       # Marker for invalid/masked npho sensors
 ```
 
 **Important:** Models trained with different normalization schemes are **not compatible**. MAE pretraining and downstream fine-tuning must use the same scheme.
@@ -163,6 +164,6 @@ time_norm = (time_raw / time_scale) - time_shift
 
 # Invalid sensors
 if invalid:
-    npho_norm = 0.0
+    npho_norm = sentinel_npho
     time_norm = sentinel_time
 ```

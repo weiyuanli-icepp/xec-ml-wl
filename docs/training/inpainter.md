@@ -427,7 +427,7 @@ python macro/export_onnx_inpainter.py checkpoint.pth --no-ema --output model.pt
 **Inputs:**
 | Name | Shape | Description |
 |------|-------|-------------|
-| `input` | `(B, 4760, 2)` | Sensor data `[npho, time]` with dead channels as sentinel (-5.0) |
+| `input` | `(B, 4760, 2)` | Sensor data `[npho, time]` with dead channels as sentinels (sentinel_npho=-1.0 for npho, sentinel_time=-1.0 for time) |
 | `mask` | `(B, 4760)` | Binary mask: 1 = masked/dead, 0 = valid |
 
 **Output:**
@@ -653,7 +653,7 @@ Use `macro/PrepareRealData.C` to generate input ROOT files:
 | `energyReco`, `timeReco` | Reconstructed energy/time |
 | `xyzRecoFI[3]`, `uvwRecoFI[3]` | First interaction position |
 
-**Note:** PrepareRealData.C uses `1e10` as sentinel for invalid values. The validation script converts this to `-5.0` (model sentinel) automatically.
+**Note:** PrepareRealData.C uses `1e10` as sentinel for invalid values. The validation script converts this to `-1.0` (model sentinel) automatically.
 
 ### 9.3 Running Validation
 

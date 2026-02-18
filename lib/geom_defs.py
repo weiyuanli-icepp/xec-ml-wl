@@ -158,6 +158,7 @@ DEFAULT_NPHO_SCALE2    =  4.08
 DEFAULT_TIME_SCALE     =  1.14e-7
 DEFAULT_TIME_SHIFT     = -0.46
 DEFAULT_SENTINEL_TIME = -1.0
+DEFAULT_SENTINEL_NPHO = -1.0
 
 # Conditional Time Loss Threshold
 # Time loss is only computed for sensors where npho > threshold (raw scale).
