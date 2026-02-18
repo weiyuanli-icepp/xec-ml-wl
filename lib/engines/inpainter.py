@@ -992,8 +992,13 @@ def run_eval_inpainter(
 
     # Auto-select fast forward: always True (see run_epoch_inpainter comment)
     # Exception: collect_predictions requires the results dict from standard forward
+    # (but cross-attention always uses fast path since it has no per-face heads)
+    head_type = getattr(model, 'head_type', 'per_face')
     if use_fast_forward is None:
-        use_fast_forward = not collect_predictions
+        if head_type == "cross_attention":
+            use_fast_forward = True
+        else:
+            use_fast_forward = not collect_predictions
 
     from ..geom_defs import INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP, OUTER_COARSE_FULL_INDEX_MAP
     from ..geom_defs import TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows
@@ -1113,7 +1118,8 @@ def run_eval_inpainter(
 
                 profiler.start("forward")
                 # Use fast path only if not collecting predictions (which needs the results dict)
-                use_fast = use_fast_forward and not collect_predictions
+                # Exception: cross-attention always uses fast path (no per-face results dict)
+                use_fast = use_fast_forward and (not collect_predictions or head_type == "cross_attention")
                 with torch.amp.autocast('cuda', enabled=True):
                     if use_fast:
                         pred_all, original_values, mask = model.forward_training(
@@ -1184,128 +1190,156 @@ def run_eval_inpainter(
                     profiler.start("pred_collect")
                     B = x_batch.shape[0]
                     original_np = original_values.cpu().numpy()
-                    outer_target_np = None
-                    outer_grid_w = None
-                    # Only build outer_target for legacy grid-level mode
-                    if outer_fine and "outer" in results and not results["outer"].get("is_sensor_level", False):
-                        from ..geom_utils import build_outer_fine_grid_tensor
-                        outer_target = build_outer_fine_grid_tensor(
-                            original_values, pool_kernel=outer_fine_pool
-                        )
-                        outer_target_np = outer_target.permute(0, 2, 3, 1).cpu().numpy()
-                        outer_grid_w = outer_target_np.shape[2]
 
-                    # Process each face and collect predictions
-                    for face_name in ["inner", "us", "ds", "outer", "top", "bot"]:
-                        if face_name not in results:
-                            continue
+                    if head_type == "cross_attention":
+                        # Flat prediction collection from pred_all (B, 4760, C)
+                        pred_np = pred_all.cpu().numpy()
+                        mask_np = mask.cpu().numpy()
+                        # Map sensor_id → face name
+                        _face_id_to_name = {0: "inner", 1: "us", 2: "ds", 3: "outer", 4: "top", 5: "bot"}
+                        from ..sensor_geometry import build_sensor_face_ids
+                        _sensor_face_ids = build_sensor_face_ids()
 
-                        face_result = results[face_name]
-                        pred = face_result["pred"].cpu().numpy()  # (B, max_masked, 2)
-                        valid = face_result["valid"].cpu().numpy()  # (B, max_masked)
+                        for b in range(B):
+                            masked_sensors = np.where(mask_np[b] > 0.5)[0]
+                            for sensor_id in masked_sensors:
+                                face_name = _face_id_to_name[int(_sensor_face_ids[sensor_id])]
+                                pred_dict = {
+                                    "event_idx": event_base + b,
+                                    "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
+                                    "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
+                                    "sensor_id": int(sensor_id),
+                                    "face": face_name,
+                                    "truth_npho": float(original_np[b, sensor_id, 0]),
+                                    "truth_time": float(original_np[b, sensor_id, 1]),
+                                    "pred_npho": float(pred_np[b, sensor_id, 0]),
+                                    "pred_time": float(pred_np[b, sensor_id, 1]) if pred_np.shape[2] > 1 else 0.0,
+                                }
+                                batch_predictions.append(pred_dict)
+                    else:
+                        # Per-face prediction collection from results dict
+                        outer_target_np = None
+                        outer_grid_w = None
+                        # Only build outer_target for legacy grid-level mode
+                        if outer_fine and "outer" in results and not results["outer"].get("is_sensor_level", False):
+                            from ..geom_utils import build_outer_fine_grid_tensor
+                            outer_target = build_outer_fine_grid_tensor(
+                                original_values, pool_kernel=outer_fine_pool
+                            )
+                            outer_target_np = outer_target.permute(0, 2, 3, 1).cpu().numpy()
+                            outer_grid_w = outer_target_np.shape[2]
 
-                        # Check if this is sensor-level prediction (new outer face behavior)
-                        is_sensor_level = face_result.get("is_sensor_level", False)
+                        # Process each face and collect predictions
+                        for face_name in ["inner", "us", "ds", "outer", "top", "bot"]:
+                            if face_name not in results:
+                                continue
 
-                        if face_name in ["top", "bot"]:
-                            indices = face_result["indices"].cpu().numpy()  # (B, max_masked)
-                            hex_indices = face_index_maps_np[face_name]
+                            face_result = results[face_name]
+                            pred = face_result["pred"].cpu().numpy()  # (B, max_masked, 2)
+                            valid = face_result["valid"].cpu().numpy()  # (B, max_masked)
 
-                            for b in range(B):
-                                n_valid = int(valid[b].sum())
-                                if n_valid == 0:
-                                    continue
+                            # Check if this is sensor-level prediction (new outer face behavior)
+                            is_sensor_level = face_result.get("is_sensor_level", False)
 
-                                node_idx = indices[b, :n_valid]
-                                flat_idx = hex_indices[node_idx]
+                            if face_name in ["top", "bot"]:
+                                indices = face_result["indices"].cpu().numpy()  # (B, max_masked)
+                                hex_indices = face_index_maps_np[face_name]
 
-                                for i in range(n_valid):
-                                    sensor_id = int(flat_idx[i])
-                                    pred_dict = {
-                                        "event_idx": event_base + b,
-                                        "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
-                                        "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
-                                        "sensor_id": sensor_id,
-                                        "face": face_name,
-                                        "truth_npho": float(original_np[b, sensor_id, 0]),
-                                        "truth_time": float(original_np[b, sensor_id, 1]),
-                                        "pred_npho": float(pred[b, i, 0]),
-                                        "pred_time": float(pred[b, i, 1]),
-                                    }
-                                    batch_predictions.append(pred_dict)
-                        elif is_sensor_level:
-                            # Sensor-level outer face: sensor_ids contains flat sensor indices
-                            sensor_ids = face_result["sensor_ids"].cpu().numpy()  # (B, max_masked)
+                                for b in range(B):
+                                    n_valid = int(valid[b].sum())
+                                    if n_valid == 0:
+                                        continue
 
-                            for b in range(B):
-                                n_valid = int(valid[b].sum())
-                                if n_valid == 0:
-                                    continue
+                                    node_idx = indices[b, :n_valid]
+                                    flat_idx = hex_indices[node_idx]
 
-                                for i in range(n_valid):
-                                    sensor_id = int(sensor_ids[b, i])
-                                    pred_dict = {
-                                        "event_idx": event_base + b,
-                                        "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
-                                        "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
-                                        "sensor_id": sensor_id,
-                                        "face": face_name,
-                                        "truth_npho": float(original_np[b, sensor_id, 0]),
-                                        "truth_time": float(original_np[b, sensor_id, 1]),
-                                        "pred_npho": float(pred[b, i, 0]),
-                                        "pred_time": float(pred[b, i, 1]),
-                                    }
-                                    batch_predictions.append(pred_dict)
-                        else:
-                            # Grid-level faces: indices contains (h, w) pairs
-                            indices = face_result["indices"].cpu().numpy()  # (B, max_masked, 2)
-                            if face_name == "outer" and outer_fine:
-                                if outer_target_np is None:
-                                    continue
-
-                            for b in range(B):
-                                n_valid = int(valid[b].sum())
-                                if n_valid == 0:
-                                    continue
-
-                                h_idx = indices[b, :n_valid, 0]
-                                w_idx = indices[b, :n_valid, 1]
-                                if face_name == "outer" and outer_fine:
-                                    # Legacy grid-level outer fine
-                                    truth_vals = outer_target_np[b, h_idx, w_idx]
                                     for i in range(n_valid):
-                                        sensor_id = int(h_idx[i] * outer_grid_w + w_idx[i])
+                                        sensor_id = int(flat_idx[i])
                                         pred_dict = {
                                             "event_idx": event_base + b,
                                             "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
                                             "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
                                             "sensor_id": sensor_id,
                                             "face": face_name,
-                                            "truth_npho": float(truth_vals[i, 0]),
-                                            "truth_time": float(truth_vals[i, 1]),
+                                            "truth_npho": float(original_np[b, sensor_id, 0]),
+                                            "truth_time": float(original_np[b, sensor_id, 1]),
                                             "pred_npho": float(pred[b, i, 0]),
                                             "pred_time": float(pred[b, i, 1]),
                                         }
                                         batch_predictions.append(pred_dict)
-                                    continue
+                            elif is_sensor_level:
+                                # Sensor-level outer face: sensor_ids contains flat sensor indices
+                                sensor_ids = face_result["sensor_ids"].cpu().numpy()  # (B, max_masked)
 
-                                idx_map = face_index_maps_np[face_name]
-                                flat_idx = idx_map[h_idx, w_idx]
+                                for b in range(B):
+                                    n_valid = int(valid[b].sum())
+                                    if n_valid == 0:
+                                        continue
 
-                                for i in range(n_valid):
-                                    sensor_id = int(flat_idx[i])
-                                    pred_dict = {
-                                        "event_idx": event_base + b,
-                                        "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
-                                        "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
-                                        "sensor_id": sensor_id,
-                                        "face": face_name,
-                                        "truth_npho": float(original_np[b, sensor_id, 0]),
-                                        "truth_time": float(original_np[b, sensor_id, 1]),
-                                        "pred_npho": float(pred[b, i, 0]),
-                                        "pred_time": float(pred[b, i, 1]),
-                                    }
-                                    batch_predictions.append(pred_dict)
+                                    for i in range(n_valid):
+                                        sensor_id = int(sensor_ids[b, i])
+                                        pred_dict = {
+                                            "event_idx": event_base + b,
+                                            "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
+                                            "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
+                                            "sensor_id": sensor_id,
+                                            "face": face_name,
+                                            "truth_npho": float(original_np[b, sensor_id, 0]),
+                                            "truth_time": float(original_np[b, sensor_id, 1]),
+                                            "pred_npho": float(pred[b, i, 0]),
+                                            "pred_time": float(pred[b, i, 1]),
+                                        }
+                                        batch_predictions.append(pred_dict)
+                            else:
+                                # Grid-level faces: indices contains (h, w) pairs
+                                indices = face_result["indices"].cpu().numpy()  # (B, max_masked, 2)
+                                if face_name == "outer" and outer_fine:
+                                    if outer_target_np is None:
+                                        continue
+
+                                for b in range(B):
+                                    n_valid = int(valid[b].sum())
+                                    if n_valid == 0:
+                                        continue
+
+                                    h_idx = indices[b, :n_valid, 0]
+                                    w_idx = indices[b, :n_valid, 1]
+                                    if face_name == "outer" and outer_fine:
+                                        # Legacy grid-level outer fine
+                                        truth_vals = outer_target_np[b, h_idx, w_idx]
+                                        for i in range(n_valid):
+                                            sensor_id = int(h_idx[i] * outer_grid_w + w_idx[i])
+                                            pred_dict = {
+                                                "event_idx": event_base + b,
+                                                "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
+                                                "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
+                                                "sensor_id": sensor_id,
+                                                "face": face_name,
+                                                "truth_npho": float(truth_vals[i, 0]),
+                                                "truth_time": float(truth_vals[i, 1]),
+                                                "pred_npho": float(pred[b, i, 0]),
+                                                "pred_time": float(pred[b, i, 1]),
+                                            }
+                                            batch_predictions.append(pred_dict)
+                                        continue
+
+                                    idx_map = face_index_maps_np[face_name]
+                                    flat_idx = idx_map[h_idx, w_idx]
+
+                                    for i in range(n_valid):
+                                        sensor_id = int(flat_idx[i])
+                                        pred_dict = {
+                                            "event_idx": event_base + b,
+                                            "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
+                                            "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
+                                            "sensor_id": sensor_id,
+                                            "face": face_name,
+                                            "truth_npho": float(original_np[b, sensor_id, 0]),
+                                            "truth_time": float(original_np[b, sensor_id, 1]),
+                                            "pred_npho": float(pred[b, i, 0]),
+                                            "pred_time": float(pred[b, i, 1]),
+                                        }
+                                        batch_predictions.append(pred_dict)
 
                 if collect_predictions:
                     if prediction_writer is not None:

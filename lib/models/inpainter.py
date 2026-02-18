@@ -1059,7 +1059,8 @@ class CrossAttentionInpaintingHead(nn.Module):
 
     def __init__(self, sensor_positions_file, k=16, hidden_dim=64,
                  latent_dim=1024, latent_proj_dim=128, pos_dim=96,
-                 face_embed_dim=32, out_channels=1, n_heads=4):
+                 face_embed_dim=32, out_channels=1, n_heads=4,
+                 token_face_ids=None):
         super().__init__()
         self.k = k
         self.hidden_dim = hidden_dim
@@ -1089,6 +1090,19 @@ class CrossAttentionInpaintingHead(nn.Module):
             torch.from_numpy(positions_np).float(), self.num_bands
         )
         self.register_buffer("pos_embed", pos_embed)  # (4760, pos_dim)
+
+        # Token-to-face-ID mapping for latent tokens (precomputed from encoder structure)
+        if token_face_ids is not None:
+            self.register_buffer(
+                "token_face_ids_map",
+                torch.tensor(token_face_ids, dtype=torch.long),
+            )
+        else:
+            # Fallback: assume finegrid ordering [inner=0, us=1, ds=2, outer=3, top=4, bot=5]
+            self.register_buffer(
+                "token_face_ids_map",
+                torch.arange(6, dtype=torch.long),
+            )
 
         # --- Learnable parameters ---
         # Face ID embedding (6 faces)
@@ -1127,12 +1141,15 @@ class CrossAttentionInpaintingHead(nn.Module):
             nn.Linear(hidden_dim, out_channels),
         )
 
-    def forward(self, x_flat, latent_seq, mask):
+    def forward(self, x_flat, latent_seq, mask, encoder_mask=None):
         """
         Args:
             x_flat: (B, 4760, 2) sensor values with masked positions as sentinel
             latent_seq: (B, num_tokens, latent_dim) all latent tokens from encoder
-            mask: (B, 4760) binary mask (1=masked, 0=valid)
+            mask: (B, 4760) binary mask of positions to predict (1=masked, 0=valid)
+            encoder_mask: (B, 4760) binary mask including both training-masked AND
+                         already-invalid sensors. Used to exclude invalid neighbors
+                         from local attention. If None, falls back to mask.
 
         Returns:
             pred_all: (B, 4760, out_channels) predictions (only masked positions filled)
@@ -1174,8 +1191,10 @@ class CrossAttentionInpaintingHead(nn.Module):
         nbr_feat = torch.cat([nbr_values, nbr_pos, nbr_face], dim=-1)  # (total_masked, k, neighbor_feat_dim)
         nbr_feat = self.neighbor_proj(nbr_feat)  # (total_masked, k, hidden_dim)
 
-        # Check which neighbors are masked (exclude from attention)
-        nbr_is_masked = mask[nbr_batch, nbr_indices].bool()  # (total_masked, k)
+        # Check which neighbors are masked or already-invalid (exclude from attention)
+        # Use encoder_mask (training mask + already-invalid) if available
+        nbr_mask_source = encoder_mask if encoder_mask is not None else mask
+        nbr_is_masked = nbr_mask_source[nbr_batch, nbr_indices].bool()  # (total_masked, k)
 
         # Scaled dot-product attention
         q_local = self.query_proj_local(query)  # (total_masked, hidden_dim)
@@ -1196,11 +1215,9 @@ class CrossAttentionInpaintingHead(nn.Module):
         # Project latent tokens
         latent_proj = self.latent_proj(latent_seq)  # (B, num_tokens, latent_proj_dim)
 
-        # Add face-specific bias to latent tokens
-        # Create face embeddings for tokens 0..num_tokens-1
-        # Token order matches encoder face order: typically inner, us, ds, outer, top, bot
-        token_face_ids = torch.arange(num_tokens, device=device).clamp(max=5)
-        token_face_embed = self.face_embedding(token_face_ids)  # (num_tokens, face_embed_dim)
+        # Add face-specific bias to latent tokens using precomputed token-to-face mapping
+        # (handles both finegrid and split mode encoder token orderings correctly)
+        token_face_embed = self.face_embedding(self.token_face_ids_map)  # (num_tokens, face_embed_dim)
         latent_face_bias = self.latent_face_proj(token_face_embed)  # (num_tokens, latent_proj_dim)
         latent_kv = latent_proj + latent_face_bias.unsqueeze(0)  # (B, num_tokens, latent_proj_dim)
 
@@ -1298,6 +1315,20 @@ class XEC_Inpainter(nn.Module):
                 raise ValueError(
                     "sensor_positions_file is required when head_type='cross_attention'"
                 )
+
+            # Build token-to-face-ID mapping from encoder's token ordering.
+            # Token order depends on outer_mode:
+            #   finegrid: [inner, us, ds, outer_fine, top, bot] → face_ids [0, 1, 2, 3, 4, 5]
+            #   split:    [inner, outer_coarse, outer_center, us, ds, top, bot] → [0, 3, 3, 1, 2, 4, 5]
+            _cnn_name_to_face = {"inner": 0, "us": 1, "ds": 2,
+                                 "outer_coarse": 3, "outer_center": 3}
+            token_face_ids = []
+            for name in encoder.cnn_face_names:
+                token_face_ids.append(_cnn_name_to_face[name])
+            if encoder.outer_fine:
+                token_face_ids.append(3)  # outer_fine token
+            token_face_ids.extend([4, 5])  # top, bottom hex tokens
+
             self.cross_attn_head = CrossAttentionInpaintingHead(
                 sensor_positions_file=sensor_positions_file,
                 k=cross_attn_k,
@@ -1306,6 +1337,7 @@ class XEC_Inpainter(nn.Module):
                 latent_proj_dim=cross_attn_latent_dim,
                 pos_dim=cross_attn_pos_dim,
                 out_channels=self.out_channels,
+                token_face_ids=token_face_ids,
             )
             # No per-face heads needed
             self.head_inner = None
@@ -1503,6 +1535,11 @@ class XEC_Inpainter(nn.Module):
             mask_bool = mask.bool()
             x_masked[mask_bool, 0] = 0.0                 # npho -> 0
             x_masked[mask_bool, 1] = self.sentinel_value  # time -> sentinel
+
+        # Cross-attention path: delegate to forward_full_output (operates on all sensors)
+        if self.head_type == "cross_attention":
+            pred_all = self.forward_full_output(x_batch, mask)
+            return pred_all, original_values, mask
 
         # Get encoder features (with masked input and FCMAE-style masking)
         # Include both randomly-masked AND already-invalid sensors in the encoder mask
@@ -1708,7 +1745,8 @@ class XEC_Inpainter(nn.Module):
 
         if self.head_type == "cross_attention":
             # === Cross-attention path: single unified call for all faces ===
-            pred_all = self.cross_attn_head(x_masked, latent_seq, mask)
+            # Pass encoder_mask for neighbor exclusion (training mask + already-invalid)
+            pred_all = self.cross_attn_head(x_masked, latent_seq, mask, encoder_mask)
 
         elif self.use_masked_attention:
             # === Attention path: predict only at masked positions, scatter to output ===
