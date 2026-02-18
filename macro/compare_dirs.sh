@@ -52,12 +52,24 @@ else
 fi
 echo ""
 
+# Count total files first
+echo "Counting files..."
+total_files=$(find "$DIR1" -type f | wc -l)
+echo "Found $total_files files in DIR1"
+echo ""
+
 # Find all files in DIR1, compare with DIR2
 diff_count=0
 match_count=0
 missing_count=0
+processed=0
 
 while IFS= read -r -d '' file1; do
+    ((processed++))
+    # Show progress every 1000 files
+    if (( processed % 1000 == 0 )); then
+        echo "[PROGRESS] $processed / $total_files files checked..."
+    fi
     rel_path="${file1#$DIR1/}"
     file2="$DIR2/$rel_path"
 
@@ -90,6 +102,9 @@ while IFS= read -r -d '' file1; do
         ((missing_count++))
     fi
 done < <(find "$DIR1" -type f -print0)
+
+echo "[PROGRESS] Checked all $processed files in DIR1"
+echo "Checking for files only in DIR2..."
 
 # Check for files only in DIR2
 while IFS= read -r -d '' file2; do
