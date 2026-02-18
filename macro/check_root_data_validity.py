@@ -95,6 +95,7 @@ def check_single_file(
     time_scale: float = DEFAULT_TIME_SCALE,
     time_shift: float = DEFAULT_TIME_SHIFT,
     sentinel_time: float = DEFAULT_SENTINEL_TIME,
+    sentinel_npho: float = -1.0,
     npho_threshold: float = DEFAULT_NPHO_THRESHOLD,
     verbose: bool = False,
     max_events: int = None,
@@ -162,7 +163,8 @@ def check_single_file(
             proc = preprocess_chunk(
                 raw_npho, raw_time,
                 npho_scale, npho_scale2, time_scale, time_shift,
-                sentinel_time, npho_threshold
+                sentinel_time, npho_threshold,
+                sentinel_npho=sentinel_npho,
             )
 
             # === Check for issues AFTER preprocessing ===
@@ -172,7 +174,7 @@ def check_single_file(
             time_norm = proc["time_norm"]
 
             # Valid (non-sentinel) positions
-            valid_npho_mask = npho_norm != sentinel_time
+            valid_npho_mask = npho_norm != sentinel_npho
             valid_time_mask = time_norm != sentinel_time
 
             npho_valid = npho_norm[valid_npho_mask]

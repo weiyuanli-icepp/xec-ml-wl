@@ -286,7 +286,7 @@ class NeighborAverageBaseline:
         ----------
         x_npho : ndarray, shape (N_events, 4760)
             Normalised npho values.  Masked positions may contain the
-            sentinel value (DEFAULT_SENTINEL_TIME = -1.0) or 0.
+            sentinel value (sentinel_npho = -1.0) or 0.
         mask : ndarray, shape (N_events, 4760)
             Boolean array where True marks a masked / dead channel.
 

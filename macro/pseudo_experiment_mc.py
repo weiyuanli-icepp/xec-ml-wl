@@ -58,6 +58,7 @@ from lib.geom_defs import (
 # Constants
 N_CHANNELS = 4760
 MODEL_SENTINEL_TIME = DEFAULT_SENTINEL_TIME  # -5.0
+MODEL_SENTINEL_NPHO = -1.0  # Npho sentinel (matches dataset.py default)
 
 # Flatten hex rows to get sensor indices
 TOP_HEX_FLAT_INDICES = flatten_hex_rows(TOP_HEX_ROWS)
@@ -356,7 +357,7 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                     truth_npho_norm = float(x_original[event_idx, sensor_id, 0])
                     truth_time_norm = float(x_original[event_idx, sensor_id, 1])
 
-                    if truth_npho_norm == MODEL_SENTINEL_TIME or abs(truth_npho_norm) > 1e9:
+                    if truth_npho_norm == MODEL_SENTINEL_NPHO or abs(truth_npho_norm) > 1e9:
                         truth_npho = -999.0
                         error_npho = -999.0
                     else:
@@ -443,7 +444,7 @@ def collect_predictions(predictions: List[Dict], x_original: np.ndarray,
                     truth_time_norm = float(x_original[event_idx, sensor_id, 1])
 
                     # Check if truth is valid
-                    if truth_npho_norm == MODEL_SENTINEL_TIME or abs(truth_npho_norm) > 1e9:
+                    if truth_npho_norm == MODEL_SENTINEL_NPHO or abs(truth_npho_norm) > 1e9:
                         truth_npho = -999.0
                         error_npho = -999.0
                     else:
@@ -678,14 +679,15 @@ def main():
     mask = np.zeros((n_events, N_CHANNELS), dtype=bool)
     mask[:, dead_mask] = True
 
-    # Apply dead channel mask to input
-    x_input[mask] = MODEL_SENTINEL_TIME
+    # Apply dead channel mask to input (set each channel to its own sentinel)
+    x_input[mask, 0] = MODEL_SENTINEL_NPHO  # npho channel
+    x_input[mask, 1] = MODEL_SENTINEL_TIME   # time channel
 
     # Count how many valid sensors are being masked (have ground truth)
     n_valid_masked = 0
     for i in range(n_events):
         for sensor_id in np.where(dead_mask)[0]:
-            if x_original[i, sensor_id, 0] != MODEL_SENTINEL_TIME:
+            if x_original[i, sensor_id, 0] != MODEL_SENTINEL_NPHO:
                 n_valid_masked += 1
     print(f"[INFO] Total masked sensors with ground truth: {n_valid_masked:,}")
 

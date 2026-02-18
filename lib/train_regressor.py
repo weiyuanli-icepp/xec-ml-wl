@@ -269,6 +269,7 @@ def train_with_config(config_path: str, profile: bool = None):
         "time_scale": cfg.normalization.time_scale,
         "time_shift": cfg.normalization.time_shift,
         "sentinel_time": cfg.normalization.sentinel_time,
+        "sentinel_npho": cfg.normalization.sentinel_npho,
         "step_size": cfg.data.chunksize,
         "npho_branch": getattr(cfg.data, "npho_branch", "relative_npho"),
         "time_branch": getattr(cfg.data, "time_branch", "relative_time"),

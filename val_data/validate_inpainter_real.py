@@ -73,6 +73,7 @@ from lib.geom_defs import (
 N_CHANNELS = 4760
 REAL_DATA_SENTINEL = 1e10  # Sentinel value used in PrepareRealData.C
 MODEL_SENTINEL_TIME = DEFAULT_SENTINEL_TIME  # Sentinel value expected by model (-5.0)
+MODEL_SENTINEL_NPHO = -1.0  # Npho sentinel (matches dataset.py default)
 
 # Flatten hex rows to get sensor indices
 TOP_HEX_FLAT_INDICES = flatten_hex_rows(TOP_HEX_ROWS)
@@ -1079,7 +1080,8 @@ def main():
     combined_mask |= artificial_mask  # Plus artificial
 
     # Mask the input
-    x_input[combined_mask] = MODEL_SENTINEL_TIME
+    x_input[combined_mask, 0] = MODEL_SENTINEL_NPHO  # npho channel
+    x_input[combined_mask, 1] = MODEL_SENTINEL_TIME   # time channel
 
     # Determine device (default: cpu for compatibility)
     device = args.device if args.device else 'cpu'
