@@ -352,13 +352,25 @@ def train_with_config(config_path: str, profile: bool = None):
             print(f"[INFO] ARM architecture detected - disabling torch.compile (Triton not supported)")
         compile_mode = 'none'
 
-    if compile_mode and compile_mode != 'false' and compile_mode != 'none':
+    if compile_mode and compile_mode not in ('false', 'none') and device.type == 'cuda':
+        try:
+            import triton  # noqa: F401
+        except ImportError:
+            if is_main_process():
+                print("[WARN] Triton not available — disabling torch.compile (falling back to eager mode)")
+            compile_mode = 'none'
+
+    if compile_mode and compile_mode not in ('false', 'none') and device.type == 'cuda':
         # Increase dynamo cache limit to avoid CacheLimitExceeded errors
         torch._dynamo.config.cache_size_limit = 64
         fg_str = "fullgraph" if compile_fullgraph else "partial"
         if is_main_process():
             print(f"[INFO] Compiling model with mode='{compile_mode}', {fg_str} (this may take a few minutes...)")
-        model = torch.compile(model, mode=compile_mode, fullgraph=compile_fullgraph, dynamic=False)
+        try:
+            model = torch.compile(model, mode=compile_mode, fullgraph=compile_fullgraph, dynamic=False)
+        except Exception as e:
+            if is_main_process():
+                print(f"[WARN] torch.compile failed: {e}. Falling back to eager mode.")
     else:
         if is_main_process():
             print("[INFO] Model compilation disabled (eager mode)")
@@ -374,7 +386,7 @@ def train_with_config(config_path: str, profile: bool = None):
         [{"params": decay, "weight_decay": cfg.training.weight_decay},
          {"params": no_decay, "weight_decay": 0.0}],
         lr=cfg.training.lr,
-        fused=True
+        fused=(device.type == "cuda"),
     )
 
     # --- EMA ---
@@ -532,9 +544,10 @@ def train_with_config(config_path: str, profile: bool = None):
             if is_main_process():
                 print(f"[INFO] Detected full regressor checkpoint. Resuming training state.")
             model_without_ddp.load_state_dict(checkpoint["model_state_dict"])
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            checkpoint_epoch = checkpoint["epoch"]
-            best_val = checkpoint.get("best_val", float("inf"))
+            if "optimizer_state_dict" in checkpoint:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            checkpoint_epoch = checkpoint.get("epoch", 0)
+            best_val = checkpoint.get("best_val_loss", checkpoint.get("best_val", float("inf")))
             mlflow_run_id = checkpoint.get("mlflow_run_id", None)
 
             # Handle reset_epoch: start from epoch 1 (only load weights)
@@ -844,10 +857,11 @@ def train_with_config(config_path: str, profile: bool = None):
                     "epoch": ep,
                     "model_state_dict": model_without_ddp.state_dict(),
                     "ema_state_dict": ema_model.state_dict() if ema_model else None,
+                    "best_ema_state": best_ema_state,
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scaler_state_dict": scaler.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
-                    "best_val": best_val,
+                    "best_val_loss": best_val,
                     "mlflow_run_id": mlflow_run_id,
                     "config": {
                         "outer_mode": cfg.model.outer_mode,
@@ -863,6 +877,8 @@ def train_with_config(config_path: str, profile: bool = None):
                         "dim_feedforward": cfg.model.dim_feedforward,
                         "num_fusion_layers": cfg.model.num_fusion_layers,
                         "active_tasks": active_tasks,
+                        "npho_branch": cfg.data.npho_branch,
+                        "time_branch": cfg.data.time_branch,
                     },
                 }
                 torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_best.pth"))
@@ -893,10 +909,11 @@ def train_with_config(config_path: str, profile: bool = None):
                 "epoch": ep,
                 "model_state_dict": model_without_ddp.state_dict(),
                 "ema_state_dict": ema_model.state_dict() if ema_model else None,
+                "best_ema_state": best_ema_state,
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scaler_state_dict": scaler.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
-                "best_val": best_val,
+                "best_val_loss": best_val,
                 "mlflow_run_id": mlflow_run_id,
                 "config": {
                     "outer_mode": cfg.model.outer_mode,
@@ -912,6 +929,8 @@ def train_with_config(config_path: str, profile: bool = None):
                     "dim_feedforward": cfg.model.dim_feedforward,
                     "num_fusion_layers": cfg.model.num_fusion_layers,
                     "active_tasks": active_tasks,
+                    "npho_branch": cfg.data.npho_branch,
+                    "time_branch": cfg.data.time_branch,
                 },
             }
             torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_last.pth"))
