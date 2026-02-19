@@ -305,10 +305,8 @@ Examples:
         grad_clip = args.grad_clip if args.grad_clip is not None else cfg.training.grad_clip
         # If --disable_mae_rmse_metrics flag is passed, disable; otherwise use config value
         track_mae_rmse = False if args.disable_mae_rmse_metrics else getattr(cfg.training, "track_mae_rmse", True)
-        # Read save_predictions from checkpoint (new location) or training (old location) for backward compat
-        save_root_predictions = getattr(cfg.checkpoint, "save_predictions", None)
-        if save_root_predictions is None:
-            save_root_predictions = getattr(cfg.training, "save_root_predictions", True)
+        save_root_predictions = cfg.checkpoint.save_predictions
+        root_save_interval = cfg.checkpoint.root_save_interval
         grad_accum_steps = args.grad_accum_steps if args.grad_accum_steps is not None else getattr(cfg.training, "grad_accum_steps", 1)
         track_train_metrics = getattr(cfg.training, "track_train_metrics", True)
         profile = args.profile or getattr(cfg.training, 'profile', False)
@@ -400,6 +398,7 @@ Examples:
         grad_clip = args.grad_clip or 1.0
         track_mae_rmse = not bool(args.disable_mae_rmse_metrics)
         save_root_predictions = True
+        root_save_interval = 10
         grad_accum_steps = args.grad_accum_steps or 1
         track_train_metrics = True
         profile = args.profile
@@ -903,8 +902,7 @@ Examples:
                     t_best_elapsed = time.time() - t_best_start
                     print(f"  Saved best checkpoint to {best_path} ({t_best_elapsed:.1f}s)")
 
-            # Save ROOT predictions every 10 epochs (and at end)
-            root_save_interval = 10
+            # Save ROOT predictions periodically (and at end)
             if save_root_predictions and all_val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs):
                 t_root_start = time.time()
                 print(f"  Collecting predictions for ROOT output...")

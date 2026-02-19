@@ -108,6 +108,7 @@ checkpoint:
   save_dir: "artifacts/inpainter"   # Directory to save checkpoints
   save_interval: 10                 # Save checkpoint every N epochs
   save_predictions: true            # Write ROOT outputs during validation
+  root_save_interval: 10            # Save ROOT predictions every N epochs
   new_mlflow_run: false             # Create new MLflow run when resuming (vs continue existing)
 
 # === Distributed Training ===

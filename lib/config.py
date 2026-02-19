@@ -468,6 +468,7 @@ class MAECheckpointConfig:
     save_dir: str = "artifacts"
     save_interval: int = 10  # Save checkpoint every N epochs
     save_predictions: bool = True  # Save ROOT file with sensor predictions
+    root_save_interval: int = 10  # Save ROOT predictions every N epochs
     new_mlflow_run: bool = False  # Force new MLflow run even when resuming from checkpoint
 
 
@@ -703,7 +704,6 @@ class InpainterTrainingConfig:
     # Compile entire model as single graph (True=slower compile but better perf, False=faster compile)
     compile_fullgraph: bool = False
     track_mae_rmse: bool = True
-    save_root_predictions: bool = True
     grad_accum_steps: int = 1
     track_train_metrics: bool = True
     ema_decay: Optional[float] = None  # None = disabled, 0.999 = typical value
@@ -721,6 +721,7 @@ class InpainterCheckpointConfig:
     save_dir: str = "artifacts"
     save_interval: int = 10
     save_predictions: bool = True  # Save ROOT file with sensor predictions
+    root_save_interval: int = 10  # Save ROOT predictions every N epochs
     new_mlflow_run: bool = False  # Force new MLflow run even when resuming from checkpoint
 
 

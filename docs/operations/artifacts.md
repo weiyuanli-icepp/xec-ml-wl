@@ -146,7 +146,7 @@ Output directory: `{save_path}/` (typically `artifacts/<RUN_NAME>/`)
 | `inpainter_checkpoint_best.pth` | Best inpainter checkpoint | epoch, model_state_dict, optimizer_state_dict, scaler_state_dict, scheduler_state_dict, best_val_loss, mlflow_run_id, config |
 | `inpainter_checkpoint_last.pth` | Latest checkpoint (every 10 epochs + final) | Same as above |
 
-### ROOT Predictions (if `save_root_predictions=True`)
+### ROOT Predictions (if `checkpoint.save_predictions: true`)
 
 | File | Description |
 |------|-------------|

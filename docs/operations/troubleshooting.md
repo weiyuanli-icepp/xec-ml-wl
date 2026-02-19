@@ -32,7 +32,7 @@ training:
 
 **Symptom:** Process killed, `MemoryError`, or system becomes unresponsive when training with large ROOT files (>1M events)
 
-**Root Cause:** The inpainter/MAE with `save_predictions: true` (or `save_root_predictions: true`) collects ALL predictions in memory during validation before writing to ROOT. With 1M events × 5% mask × 238 sensors = 12M prediction dicts.
+**Root Cause:** The inpainter/MAE with `checkpoint.save_predictions: true` collects ALL predictions in memory during validation before writing to ROOT. With 1M events × 5% mask × 238 sensors = 12M prediction dicts.
 
 **Memory estimation:**
 ```
@@ -45,11 +45,11 @@ Per prediction: ~200 bytes (dict with 8 floats + metadata)
 ```yaml
 # Option 1: Disable prediction saving
 checkpoint:
-  save_predictions: false  # or save_root_predictions: false
+  save_predictions: false
 
-# Option 2: Reduce validation frequency
+# Option 2: Reduce ROOT prediction frequency
 checkpoint:
-  save_interval: 50  # Save only every 50 epochs
+  root_save_interval: 50  # Save ROOT predictions only every 50 epochs
 
 # Option 3: Use smaller validation set
 data:

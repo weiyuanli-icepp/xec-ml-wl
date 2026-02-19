@@ -299,6 +299,7 @@ Examples:
         resume_from = args.resume_from or cfg.checkpoint.resume_from
         save_predictions = args.save_predictions or getattr(cfg.checkpoint, 'save_predictions', False)
         save_interval = getattr(cfg.checkpoint, 'save_interval', 10)
+        root_save_interval = getattr(cfg.checkpoint, 'root_save_interval', 10)
         # Handle compile option: can be string mode or boolean (for backward compat)
         compile_cfg = getattr(cfg.training, 'compile', 'reduce-overhead')
         if isinstance(compile_cfg, bool):
@@ -375,6 +376,7 @@ Examples:
         resume_from = args.resume_from
         save_predictions = args.save_predictions
         save_interval = 10
+        root_save_interval = 10
         compile_mode = args.compile if args.compile is not None else 'reduce-overhead'
         compile_fullgraph = False  # Default for CLI mode
         # New normalization and loss weighting options (CLI defaults)
@@ -824,7 +826,7 @@ Examples:
             )
 
             # Save predictions (use full val files, not sharded)
-            if save_predictions and all_val_files and ((epoch + 1) % save_interval == 0 or (epoch + 1) == epochs):
+            if save_predictions and all_val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs):
                 try:
                     _, predictions = run_eval_mae(
                         eval_model, device, all_val_files, "tree",
