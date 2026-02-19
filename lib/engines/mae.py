@@ -154,7 +154,10 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
         prefetch_factor=prefetch_factor if dataloader_workers > 0 else None,
     )
 
+    profiler.start("data_load_cpu")
     for x_batch, _ in loader:
+        profiler.stop()  # data_load_cpu (batch yield time)
+
         profiler.start("gpu_transfer")
         x_in = x_batch.to(device, non_blocking=True)  # Already normalized: (B, 4760, 2)
         profiler.stop()
@@ -721,7 +724,10 @@ def run_eval_mae(model, device, root_files, tree_name,
         prefetch_factor=prefetch_factor if dataloader_workers > 0 else None,
     )
 
+    profiler.start("data_load_cpu")
     for x_batch, _ in loader:
+        profiler.stop()  # data_load_cpu (batch yield time)
+
         profiler.start("gpu_transfer")
         x_in = x_batch.to(device, non_blocking=True)  # Already normalized: (B, 4760, 2)
         profiler.stop()

@@ -747,7 +747,10 @@ def run_epoch_inpainter(
 
         profiler.stop()  # data_load
 
+        profiler.start("data_load")
         for batch in loader:
+            profiler.stop()  # data_load (batch yield time)
+
             profiler.start("gpu_transfer")
             if isinstance(batch, dict):
                 x_batch = batch["x"]
@@ -866,6 +869,10 @@ def run_epoch_inpainter(
                         metric_sums[key] = 0.0
                     metric_sums[key] += value
             num_batches += 1
+
+            profiler.start("data_load")  # time waiting for next batch
+
+        profiler.stop()  # data_load (end of file iteration)
 
         # Accumulate dataset I/O stats from this file
         if profile and dataloader_workers == 0:
@@ -1095,7 +1102,10 @@ def run_eval_inpainter(
             )
             profiler.stop()  # data_load
 
+            profiler.start("data_load")
             for batch in loader:
+                profiler.stop()  # data_load (batch yield time)
+
                 batch_predictions = [] if collect_predictions else None
                 event_base = num_batches * batch_size
 
@@ -1359,6 +1369,10 @@ def run_eval_inpainter(
                     profiler.stop()  # pred_collect
 
                 num_batches += 1
+
+                profiler.start("data_load")  # time waiting for next batch
+
+            profiler.stop()  # data_load (end of file iteration)
 
             # Accumulate dataset I/O stats from this file
             if profile and dataloader_workers == 0:
