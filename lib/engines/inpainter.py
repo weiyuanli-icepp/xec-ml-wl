@@ -703,184 +703,161 @@ def run_epoch_inpainter(
     # Initialize profiler
     profiler = SimpleProfiler(enabled=profile, sync_cuda=True)
 
-    # Cumulative dataset I/O stats (since we create a new dataset per file)
-    cumulative_io_stats = {
-        "io_time": 0.0,
-        "process_time": 0.0,
-        "batch_time": 0.0,
-        "chunk_count": 0,
-        "event_count": 0,
-        "file_count": 0,
-    }
+    # Create single dataset + DataLoader for all files (avoids per-file worker spawn overhead)
+    # Note: dataset I/O profiling requires dataloader_workers=0 for accurate stats
+    dataset = XECStreamingDataset(
+        root_files=train_files,
+        tree_name=tree_name,
+        batch_size=batch_size,  # Pre-batch in dataset
+        step_size=step_size,
+        npho_branch=npho_branch,
+        time_branch=time_branch,
+        npho_scale=npho_scale,
+        npho_scale2=npho_scale2,
+        npho_scheme=npho_scheme,
+        time_scale=time_scale,
+        time_shift=time_shift,
+        sentinel_time=sentinel_time,
+        num_workers=dataset_workers,
+        log_invalid_npho=log_invalid_npho,
+        load_truth_branches=False,  # Inpainter doesn't need truth branches
+        profile=profile,
+        sentinel_npho=sentinel_npho,
+    )
 
-    for root_file in train_files:
-        profiler.start("data_load")
-        # Note: dataset I/O profiling requires dataloader_workers=0 for accurate stats
-        dataset = XECStreamingDataset(
-            root_files=root_file,
-            tree_name=tree_name,
-            batch_size=batch_size,  # Pre-batch in dataset
-            step_size=step_size,
-            npho_branch=npho_branch,
-            time_branch=time_branch,
-            npho_scale=npho_scale,
-            npho_scale2=npho_scale2,
-            npho_scheme=npho_scheme,
-            time_scale=time_scale,
-            time_shift=time_shift,
-            sentinel_time=sentinel_time,
-            num_workers=dataset_workers,
-            log_invalid_npho=log_invalid_npho,
-            load_truth_branches=False,  # Inpainter doesn't need truth branches
-            profile=profile,
-            sentinel_npho=sentinel_npho,
-        )
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=None,  # Dataset yields pre-batched tensors
+        num_workers=dataloader_workers,
+        pin_memory=True,
+        persistent_workers=(dataloader_workers > 0),
+        prefetch_factor=prefetch_factor if dataloader_workers > 0 else None,
+    )
 
-        loader = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=None,  # Dataset yields pre-batched tensors
-            num_workers=dataloader_workers,
-            pin_memory=True,
-            persistent_workers=(dataloader_workers > 0),
-            prefetch_factor=prefetch_factor if dataloader_workers > 0 else None,
-        )
+    profiler.start("data_load")
+    for batch in loader:
+        profiler.stop()  # data_load (batch yield time)
 
-        profiler.stop()  # data_load
+        profiler.start("gpu_transfer")
+        if isinstance(batch, dict):
+            x_batch = batch["x"]
+        else:
+            x_batch = batch[0]
+        x_batch = x_batch.to(device, non_blocking=True)
+        profiler.stop()
 
-        profiler.start("data_load")
-        for batch in loader:
-            profiler.stop()  # data_load (batch yield time)
-
-            profiler.start("gpu_transfer")
-            if isinstance(batch, dict):
-                x_batch = batch["x"]
+        # Forward with AMP (pass npho_threshold_norm for stratified masking)
+        profiler.start("forward")
+        with torch.amp.autocast('cuda', enabled=(scaler is not None)):
+            if use_fast_forward:
+                # Fast path: fixed-size outputs, simpler loss computation
+                pred_all, original_values, mask = model.forward_training(
+                    x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
+                )
             else:
-                x_batch = batch[0]
-            x_batch = x_batch.to(device, non_blocking=True)
-            profiler.stop()
+                # Original path: variable-size outputs, per-face loss
+                results, original_values, mask = model(
+                    x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
+                )
+        profiler.stop()
 
-            # Forward with AMP (pass npho_threshold_norm for stratified masking)
-            profiler.start("forward")
-            with torch.amp.autocast('cuda', enabled=(scaler is not None)):
-                if use_fast_forward:
-                    # Fast path: fixed-size outputs, simpler loss computation
-                    pred_all, original_values, mask = model.forward_training(
-                        x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
-                    )
-                else:
-                    # Original path: variable-size outputs, per-face loss
-                    results, original_values, mask = model(
-                        x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
-                    )
-            profiler.stop()
+        # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
+        # Already-invalid sensors are NOT in mask
+        if "time" in predict_channels:
+            already_invalid = (original_values[:, :, 1] == sentinel_time)  # (B, N)
+        else:
+            already_invalid = (original_values[:, :, 0] == sentinel_npho)  # (B, N)
+        total_valid_sensors += (~already_invalid).sum()
+        total_randomly_masked += mask.sum().long()
 
-            # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
-            # Already-invalid sensors are NOT in mask
-            if "time" in predict_channels:
-                already_invalid = (original_values[:, :, 1] == sentinel_time)  # (B, N)
+        profiler.start("loss_compute")
+        with torch.amp.autocast('cuda', enabled=(scaler is not None)):
+            if use_fast_forward:
+                # Fast path: simple flat loss computation
+                loss, metrics = compute_inpainting_loss_flat(
+                    pred_all, original_values, mask,
+                    loss_fn=loss_fn,
+                    loss_beta=loss_beta,
+                    npho_weight=npho_weight,
+                    time_weight=time_weight,
+                    npho_threshold=npho_threshold,
+                    npho_scale=npho_scale,
+                    npho_scale2=npho_scale2,
+                    use_npho_time_weight=use_npho_time_weight,
+                    track_metrics=track_metrics,
+                    predict_channels=predict_channels,
+                    npho_scheme=npho_scheme,
+                    npho_loss_weight_enabled=npho_loss_weight_enabled,
+                    npho_loss_weight_alpha=npho_loss_weight_alpha,
+                )
             else:
-                already_invalid = (original_values[:, :, 0] == sentinel_npho)  # (B, N)
-            total_valid_sensors += (~already_invalid).sum()
-            total_randomly_masked += mask.sum().long()
+                # Original path: per-face loss computation
+                loss, metrics = compute_inpainting_loss(
+                    results, original_values, mask,
+                    face_index_maps,
+                    loss_fn=loss_fn,
+                    loss_beta=loss_beta,
+                    npho_weight=npho_weight,
+                    time_weight=time_weight,
+                    outer_fine=outer_fine,
+                    outer_fine_pool=outer_fine_pool,
+                    track_mae_rmse=track_mae_rmse,
+                    track_metrics=track_metrics,
+                    npho_threshold=npho_threshold,
+                    npho_scale=npho_scale,
+                    npho_scale2=npho_scale2,
+                    use_npho_time_weight=use_npho_time_weight,
+                    predict_channels=predict_channels,
+                    npho_scheme=npho_scheme,
+                    npho_loss_weight_enabled=npho_loss_weight_enabled,
+                    npho_loss_weight_alpha=npho_loss_weight_alpha,
+                )
+        profiler.stop()
 
-            profiler.start("loss_compute")
-            with torch.amp.autocast('cuda', enabled=(scaler is not None)):
-                if use_fast_forward:
-                    # Fast path: simple flat loss computation
-                    loss, metrics = compute_inpainting_loss_flat(
-                        pred_all, original_values, mask,
-                        loss_fn=loss_fn,
-                        loss_beta=loss_beta,
-                        npho_weight=npho_weight,
-                        time_weight=time_weight,
-                        npho_threshold=npho_threshold,
-                        npho_scale=npho_scale,
-                        npho_scale2=npho_scale2,
-                        use_npho_time_weight=use_npho_time_weight,
-                        track_metrics=track_metrics,
-                        predict_channels=predict_channels,
-                        npho_scheme=npho_scheme,
-                        npho_loss_weight_enabled=npho_loss_weight_enabled,
-                        npho_loss_weight_alpha=npho_loss_weight_alpha,
-                    )
-                else:
-                    # Original path: per-face loss computation
-                    loss, metrics = compute_inpainting_loss(
-                        results, original_values, mask,
-                        face_index_maps,
-                        loss_fn=loss_fn,
-                        loss_beta=loss_beta,
-                        npho_weight=npho_weight,
-                        time_weight=time_weight,
-                        outer_fine=outer_fine,
-                        outer_fine_pool=outer_fine_pool,
-                        track_mae_rmse=track_mae_rmse,
-                        track_metrics=track_metrics,
-                        npho_threshold=npho_threshold,
-                        npho_scale=npho_scale,
-                        npho_scale2=npho_scale2,
-                        use_npho_time_weight=use_npho_time_weight,
-                        predict_channels=predict_channels,
-                        npho_scheme=npho_scheme,
-                        npho_loss_weight_enabled=npho_loss_weight_enabled,
-                        npho_loss_weight_alpha=npho_loss_weight_alpha,
-                    )
-            profiler.stop()
+        # Backward
+        total_loss_sum += loss.item()
+        loss_batches += 1
 
-            # Backward
-            total_loss_sum += loss.item()
-            loss_batches += 1
-
-            profiler.start("backward")
-            loss = loss / grad_accum_steps
-            # Use no_sync on intermediate accumulation steps to skip AllReduce
-            is_sync_step = (accum_step + 1) % grad_accum_steps == 0
-            sync_ctx = nullcontext() if (no_sync_ctx is None or is_sync_step) else no_sync_ctx()
-            with sync_ctx:
-                if scaler is not None:
-                    scaler.scale(loss).backward()
-                else:
-                    loss.backward()
-            profiler.stop()
-
-            profiler.start("optimizer")
+        profiler.start("backward")
+        loss = loss / grad_accum_steps
+        # Use no_sync on intermediate accumulation steps to skip AllReduce
+        is_sync_step = (accum_step + 1) % grad_accum_steps == 0
+        sync_ctx = nullcontext() if (no_sync_ctx is None or is_sync_step) else no_sync_ctx()
+        with sync_ctx:
             if scaler is not None:
-                if (accum_step + 1) % grad_accum_steps == 0:
-                    if grad_clip > 0:
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                    scaler.step(optimizer)
-                    scaler.update()
-                    optimizer.zero_grad(set_to_none=True)
+                scaler.scale(loss).backward()
             else:
-                if (accum_step + 1) % grad_accum_steps == 0:
-                    if grad_clip > 0:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                    optimizer.step()
-                    optimizer.zero_grad(set_to_none=True)
-            profiler.stop()
+                loss.backward()
+        profiler.stop()
 
-            accum_step += 1
+        profiler.start("optimizer")
+        if scaler is not None:
+            if (accum_step + 1) % grad_accum_steps == 0:
+                if grad_clip > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+        else:
+            if (accum_step + 1) % grad_accum_steps == 0:
+                if grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+        profiler.stop()
 
-            # Accumulate metrics
-            if track_metrics:
-                for key, value in metrics.items():
-                    if key not in metric_sums:
-                        metric_sums[key] = 0.0
-                    metric_sums[key] += value
-            num_batches += 1
+        accum_step += 1
 
-            profiler.start("data_load")  # time waiting for next batch
+        # Accumulate metrics
+        if track_metrics:
+            for key, value in metrics.items():
+                if key not in metric_sums:
+                    metric_sums[key] = 0.0
+                metric_sums[key] += value
+        num_batches += 1
 
-        profiler.stop()  # data_load (end of file iteration)
-
-        # Accumulate dataset I/O stats from this file
-        if profile and dataloader_workers == 0:
-            file_stats = dataset.get_profile_stats()
-            for key in cumulative_io_stats:
-                cumulative_io_stats[key] += file_stats.get(key, 0)
-
-        profiler.start("data_load")  # For next file/iteration
+        profiler.start("data_load")  # time waiting for next batch
 
     # Stop any pending timer
     profiler.stop()
@@ -888,25 +865,27 @@ def run_epoch_inpainter(
     # Print profiler report if enabled
     if profile:
         print(profiler.report())
-        # Print cumulative dataset I/O breakdown (only accurate when dataloader_workers=0)
-        if dataloader_workers == 0 and cumulative_io_stats["event_count"] > 0:
-            total_time = cumulative_io_stats["io_time"] + cumulative_io_stats["process_time"] + cumulative_io_stats["batch_time"]
-            lines = ["[Dataset Profile] Cumulative I/O breakdown:"]
-            lines.append(f"  Files: {cumulative_io_stats['file_count']}, Chunks: {cumulative_io_stats['chunk_count']}, Events: {cumulative_io_stats['event_count']:,}")
-            timing_items = [
-                ("I/O (uproot)", cumulative_io_stats["io_time"]),
-                ("CPU (normalize)", cumulative_io_stats["process_time"]),
-                ("Batch (numpy→torch)", cumulative_io_stats["batch_time"]),
-            ]
-            max_name_len = max(len(name) for name, _ in timing_items)
-            for name, t in timing_items:
-                pct = 100 * t / total_time if total_time > 0 else 0
-                lines.append(f"  {name:<{max_name_len}}  {t:>7.2f}s  ({pct:>5.1f}%)")
-            lines.append(f"  {'TOTAL':<{max_name_len}}  {total_time:>7.2f}s")
-            if total_time > 0:
-                throughput = cumulative_io_stats["event_count"] / total_time
-                lines.append(f"  Throughput: {throughput:,.0f} events/s")
-            print("\n".join(lines))
+        # Print dataset I/O breakdown (only accurate when dataloader_workers=0)
+        if dataloader_workers == 0:
+            io_stats = dataset.get_profile_stats()
+            if io_stats.get("event_count", 0) > 0:
+                total_time = io_stats["io_time"] + io_stats["process_time"] + io_stats["batch_time"]
+                lines = ["[Dataset Profile] I/O breakdown:"]
+                lines.append(f"  Files: {io_stats['file_count']}, Chunks: {io_stats['chunk_count']}, Events: {io_stats['event_count']:,}")
+                timing_items = [
+                    ("I/O (uproot)", io_stats["io_time"]),
+                    ("CPU (normalize)", io_stats["process_time"]),
+                    ("Batch (numpy→torch)", io_stats["batch_time"]),
+                ]
+                max_name_len = max(len(name) for name, _ in timing_items)
+                for name, t in timing_items:
+                    pct = 100 * t / total_time if total_time > 0 else 0
+                    lines.append(f"  {name:<{max_name_len}}  {t:>7.2f}s  ({pct:>5.1f}%)")
+                lines.append(f"  {'TOTAL':<{max_name_len}}  {total_time:>7.2f}s")
+                if total_time > 0:
+                    throughput = io_stats["event_count"] / total_time
+                    lines.append(f"  Throughput: {throughput:,.0f} events/s")
+                print("\n".join(lines))
 
     # Final optimizer step if grads remain from incomplete accumulation.
     # Previous backward passes used no_sync(), so model gradients are local-only.
@@ -1058,329 +1037,307 @@ def run_eval_inpainter(
     # Initialize profiler
     profiler = SimpleProfiler(enabled=profile, sync_cuda=True)
 
-    # Cumulative dataset I/O stats (since we create a new dataset per file)
-    cumulative_io_stats = {
-        "io_time": 0.0,
-        "process_time": 0.0,
-        "batch_time": 0.0,
-        "chunk_count": 0,
-        "event_count": 0,
-        "file_count": 0,
-    }
+    # Create single dataset + DataLoader for all files (avoids per-file worker spawn overhead)
+    # Note: dataset I/O profiling requires dataloader_workers=0 for accurate stats
+    dataset = XECStreamingDataset(
+        root_files=val_files,
+        tree_name=tree_name,
+        batch_size=batch_size,  # Pre-batch in dataset
+        step_size=step_size,
+        npho_branch=npho_branch,
+        time_branch=time_branch,
+        npho_scale=npho_scale,
+        npho_scale2=npho_scale2,
+        npho_scheme=npho_scheme,
+        time_scale=time_scale,
+        time_shift=time_shift,
+        sentinel_time=sentinel_time,
+        num_workers=dataset_workers,
+        log_invalid_npho=log_invalid_npho,
+        load_truth_branches=False,  # Inpainter doesn't need truth branches
+        profile=profile,
+        sentinel_npho=sentinel_npho,
+    )
+
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=None,  # Dataset yields pre-batched tensors
+        num_workers=dataloader_workers,
+        pin_memory=True,
+        persistent_workers=(dataloader_workers > 0),
+        prefetch_factor=prefetch_factor if dataloader_workers > 0 else None,
+    )
 
     with torch.no_grad():
-        for root_file in val_files:
-            profiler.start("data_load")
-            # Note: dataset I/O profiling requires dataloader_workers=0 for accurate stats
-            dataset = XECStreamingDataset(
-                root_files=root_file,
-                tree_name=tree_name,
-                batch_size=batch_size,  # Pre-batch in dataset
-                step_size=step_size,
-                npho_branch=npho_branch,
-                time_branch=time_branch,
-                npho_scale=npho_scale,
-                npho_scale2=npho_scale2,
-                npho_scheme=npho_scheme,
-                time_scale=time_scale,
-                time_shift=time_shift,
-                sentinel_time=sentinel_time,
-                num_workers=dataset_workers,
-                log_invalid_npho=log_invalid_npho,
-                load_truth_branches=False,  # Inpainter doesn't need truth branches
-                profile=profile,
-                sentinel_npho=sentinel_npho,
-            )
+        profiler.start("data_load")
+        for batch in loader:
+            profiler.stop()  # data_load (batch yield time)
 
-            loader = torch.utils.data.DataLoader(
-                dataset,
-                batch_size=None,  # Dataset yields pre-batched tensors
-                num_workers=dataloader_workers,
-                pin_memory=True,
-                persistent_workers=(dataloader_workers > 0),
-                prefetch_factor=prefetch_factor if dataloader_workers > 0 else None,
-            )
-            profiler.stop()  # data_load
+            batch_predictions = [] if collect_predictions else None
+            event_base = num_batches * batch_size
 
-            profiler.start("data_load")
-            for batch in loader:
-                profiler.stop()  # data_load (batch yield time)
+            # Extract input and metadata from batch
+            # Dataset returns (x, targets_dict) where targets_dict has "run" and "event"
+            profiler.start("gpu_transfer")
+            if isinstance(batch, dict):
+                x_batch = batch["x"]
+                run_numbers = batch.get("run", None)
+                event_numbers = batch.get("event", None)
+            elif isinstance(batch, (tuple, list)) and len(batch) >= 2:
+                x_batch = batch[0]
+                targets = batch[1] if isinstance(batch[1], dict) else {}
+                run_numbers = targets.get("run", None)
+                event_numbers = targets.get("event", None)
+            else:
+                x_batch = batch[0] if isinstance(batch, (tuple, list)) else batch
+                run_numbers = None
+                event_numbers = None
 
-                batch_predictions = [] if collect_predictions else None
-                event_base = num_batches * batch_size
+            x_batch = x_batch.to(device, non_blocking=True)
+            profiler.stop()
 
-                # Extract input and metadata from batch
-                # Dataset returns (x, targets_dict) where targets_dict has "run" and "event"
-                profiler.start("gpu_transfer")
-                if isinstance(batch, dict):
-                    x_batch = batch["x"]
-                    run_numbers = batch.get("run", None)
-                    event_numbers = batch.get("event", None)
-                elif isinstance(batch, (tuple, list)) and len(batch) >= 2:
-                    x_batch = batch[0]
-                    targets = batch[1] if isinstance(batch[1], dict) else {}
-                    run_numbers = targets.get("run", None)
-                    event_numbers = targets.get("event", None)
+            # Convert run/event to numpy for later use
+            run_numbers_np = run_numbers.cpu().numpy() if run_numbers is not None else None
+            event_numbers_np = event_numbers.cpu().numpy() if event_numbers is not None else None
+
+            profiler.start("forward")
+            # Use fast path only if not collecting predictions (which needs the results dict)
+            # Exception: cross-attention always uses fast path (no per-face results dict)
+            use_fast = use_fast_forward and (not collect_predictions or head_type == "cross_attention")
+            with torch.amp.autocast('cuda', enabled=True):
+                if use_fast:
+                    pred_all, original_values, mask = model.forward_training(
+                        x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
+                    )
                 else:
-                    x_batch = batch[0] if isinstance(batch, (tuple, list)) else batch
-                    run_numbers = None
-                    event_numbers = None
+                    results, original_values, mask = model(
+                        x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
+                    )
+            profiler.stop()
 
-                x_batch = x_batch.to(device, non_blocking=True)
-                profiler.stop()
+            # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
+            if "time" in predict_channels:
+                already_invalid = (original_values[:, :, 1] == sentinel_time)  # (B, N)
+            else:
+                already_invalid = (original_values[:, :, 0] == sentinel_npho)  # (B, N)
+            total_valid_sensors += (~already_invalid).sum()
+            total_randomly_masked += mask.sum().long()
 
-                # Convert run/event to numpy for later use
-                run_numbers_np = run_numbers.cpu().numpy() if run_numbers is not None else None
-                event_numbers_np = event_numbers.cpu().numpy() if event_numbers is not None else None
-
-                profiler.start("forward")
-                # Use fast path only if not collecting predictions (which needs the results dict)
-                # Exception: cross-attention always uses fast path (no per-face results dict)
-                use_fast = use_fast_forward and (not collect_predictions or head_type == "cross_attention")
-                with torch.amp.autocast('cuda', enabled=True):
-                    if use_fast:
-                        pred_all, original_values, mask = model.forward_training(
-                            x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
-                        )
-                    else:
-                        results, original_values, mask = model(
-                            x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
-                        )
-                profiler.stop()
-
-                # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
-                if "time" in predict_channels:
-                    already_invalid = (original_values[:, :, 1] == sentinel_time)  # (B, N)
+            profiler.start("loss_compute")
+            with torch.amp.autocast('cuda', enabled=True):
+                if use_fast:
+                    _, metrics = compute_inpainting_loss_flat(
+                        pred_all, original_values, mask,
+                        loss_fn=loss_fn,
+                        loss_beta=loss_beta,
+                        npho_weight=npho_weight,
+                        time_weight=time_weight,
+                        npho_threshold=npho_threshold,
+                        npho_scale=npho_scale,
+                        npho_scale2=npho_scale2,
+                        use_npho_time_weight=use_npho_time_weight,
+                        track_metrics=True,
+                        predict_channels=predict_channels,
+                        npho_scheme=npho_scheme,
+                        npho_loss_weight_enabled=npho_loss_weight_enabled,
+                        npho_loss_weight_alpha=npho_loss_weight_alpha,
+                    )
                 else:
-                    already_invalid = (original_values[:, :, 0] == sentinel_npho)  # (B, N)
-                total_valid_sensors += (~already_invalid).sum()
-                total_randomly_masked += mask.sum().long()
+                    _, metrics = compute_inpainting_loss(
+                        results, original_values, mask,
+                        face_index_maps,
+                        loss_fn=loss_fn,
+                        loss_beta=loss_beta,
+                        npho_weight=npho_weight,
+                        time_weight=time_weight,
+                        outer_fine=outer_fine,
+                        outer_fine_pool=outer_fine_pool,
+                        track_mae_rmse=track_mae_rmse,
+                        track_metrics=True,
+                        npho_threshold=npho_threshold,
+                        npho_scale=npho_scale,
+                        npho_scale2=npho_scale2,
+                        use_npho_time_weight=use_npho_time_weight,
+                        predict_channels=predict_channels,
+                        npho_scheme=npho_scheme,
+                        npho_loss_weight_enabled=npho_loss_weight_enabled,
+                        npho_loss_weight_alpha=npho_loss_weight_alpha,
+                    )
+                if not track_mae_rmse:
+                    metrics = {k: v for k, v in metrics.items() if not (k.startswith("mae_") or k.startswith("rmse_"))}
+            profiler.stop()  # loss_compute
 
-                profiler.start("loss_compute")
-                with torch.amp.autocast('cuda', enabled=True):
-                    if use_fast:
-                        _, metrics = compute_inpainting_loss_flat(
-                            pred_all, original_values, mask,
-                            loss_fn=loss_fn,
-                            loss_beta=loss_beta,
-                            npho_weight=npho_weight,
-                            time_weight=time_weight,
-                            npho_threshold=npho_threshold,
-                            npho_scale=npho_scale,
-                            npho_scale2=npho_scale2,
-                            use_npho_time_weight=use_npho_time_weight,
-                            track_metrics=True,
-                            predict_channels=predict_channels,
-                            npho_scheme=npho_scheme,
-                            npho_loss_weight_enabled=npho_loss_weight_enabled,
-                            npho_loss_weight_alpha=npho_loss_weight_alpha,
+            for key, value in metrics.items():
+                if key not in metric_sums:
+                    metric_sums[key] = 0.0
+                metric_sums[key] += value
+
+            # Collect predictions at sensor level
+            if collect_predictions:
+                profiler.start("pred_collect")
+                B = x_batch.shape[0]
+                original_np = original_values.cpu().numpy()
+
+                if head_type == "cross_attention":
+                    # Flat prediction collection from pred_all (B, 4760, C)
+                    pred_np = pred_all.cpu().numpy()
+                    mask_np = mask.cpu().numpy()
+                    # Map sensor_id → face name
+                    _face_id_to_name = {0: "inner", 1: "us", 2: "ds", 3: "outer", 4: "top", 5: "bot"}
+                    from ..sensor_geometry import build_sensor_face_ids
+                    _sensor_face_ids = build_sensor_face_ids()
+
+                    for b in range(B):
+                        masked_sensors = np.where(mask_np[b] > 0.5)[0]
+                        for sensor_id in masked_sensors:
+                            face_name = _face_id_to_name[int(_sensor_face_ids[sensor_id])]
+                            pred_dict = {
+                                "event_idx": event_base + b,
+                                "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
+                                "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
+                                "sensor_id": int(sensor_id),
+                                "face": face_name,
+                                "truth_npho": float(original_np[b, sensor_id, 0]),
+                                "truth_time": float(original_np[b, sensor_id, 1]),
+                                "pred_npho": float(pred_np[b, sensor_id, 0]),
+                                "pred_time": float(pred_np[b, sensor_id, 1]) if pred_np.shape[2] > 1 else 0.0,
+                            }
+                            batch_predictions.append(pred_dict)
+                else:
+                    # Per-face prediction collection from results dict
+                    outer_target_np = None
+                    outer_grid_w = None
+                    # Only build outer_target for legacy grid-level mode
+                    if outer_fine and "outer" in results and not results["outer"].get("is_sensor_level", False):
+                        from ..geom_utils import build_outer_fine_grid_tensor
+                        outer_target = build_outer_fine_grid_tensor(
+                            original_values, pool_kernel=outer_fine_pool
                         )
-                    else:
-                        _, metrics = compute_inpainting_loss(
-                            results, original_values, mask,
-                            face_index_maps,
-                            loss_fn=loss_fn,
-                            loss_beta=loss_beta,
-                            npho_weight=npho_weight,
-                            time_weight=time_weight,
-                            outer_fine=outer_fine,
-                            outer_fine_pool=outer_fine_pool,
-                            track_mae_rmse=track_mae_rmse,
-                            track_metrics=True,
-                            npho_threshold=npho_threshold,
-                            npho_scale=npho_scale,
-                            npho_scale2=npho_scale2,
-                            use_npho_time_weight=use_npho_time_weight,
-                            predict_channels=predict_channels,
-                            npho_scheme=npho_scheme,
-                            npho_loss_weight_enabled=npho_loss_weight_enabled,
-                            npho_loss_weight_alpha=npho_loss_weight_alpha,
-                        )
-                    if not track_mae_rmse:
-                        metrics = {k: v for k, v in metrics.items() if not (k.startswith("mae_") or k.startswith("rmse_"))}
-                profiler.stop()  # loss_compute
+                        outer_target_np = outer_target.permute(0, 2, 3, 1).cpu().numpy()
+                        outer_grid_w = outer_target_np.shape[2]
 
-                for key, value in metrics.items():
-                    if key not in metric_sums:
-                        metric_sums[key] = 0.0
-                    metric_sums[key] += value
+                    # Process each face and collect predictions
+                    for face_name in ["inner", "us", "ds", "outer", "top", "bot"]:
+                        if face_name not in results:
+                            continue
 
-                # Collect predictions at sensor level
-                if collect_predictions:
-                    profiler.start("pred_collect")
-                    B = x_batch.shape[0]
-                    original_np = original_values.cpu().numpy()
+                        face_result = results[face_name]
+                        pred = face_result["pred"].cpu().numpy()  # (B, max_masked, 2)
+                        valid = face_result["valid"].cpu().numpy()  # (B, max_masked)
 
-                    if head_type == "cross_attention":
-                        # Flat prediction collection from pred_all (B, 4760, C)
-                        pred_np = pred_all.cpu().numpy()
-                        mask_np = mask.cpu().numpy()
-                        # Map sensor_id → face name
-                        _face_id_to_name = {0: "inner", 1: "us", 2: "ds", 3: "outer", 4: "top", 5: "bot"}
-                        from ..sensor_geometry import build_sensor_face_ids
-                        _sensor_face_ids = build_sensor_face_ids()
+                        # Check if this is sensor-level prediction (new outer face behavior)
+                        is_sensor_level = face_result.get("is_sensor_level", False)
 
-                        for b in range(B):
-                            masked_sensors = np.where(mask_np[b] > 0.5)[0]
-                            for sensor_id in masked_sensors:
-                                face_name = _face_id_to_name[int(_sensor_face_ids[sensor_id])]
-                                pred_dict = {
-                                    "event_idx": event_base + b,
-                                    "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
-                                    "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
-                                    "sensor_id": int(sensor_id),
-                                    "face": face_name,
-                                    "truth_npho": float(original_np[b, sensor_id, 0]),
-                                    "truth_time": float(original_np[b, sensor_id, 1]),
-                                    "pred_npho": float(pred_np[b, sensor_id, 0]),
-                                    "pred_time": float(pred_np[b, sensor_id, 1]) if pred_np.shape[2] > 1 else 0.0,
-                                }
-                                batch_predictions.append(pred_dict)
-                    else:
-                        # Per-face prediction collection from results dict
-                        outer_target_np = None
-                        outer_grid_w = None
-                        # Only build outer_target for legacy grid-level mode
-                        if outer_fine and "outer" in results and not results["outer"].get("is_sensor_level", False):
-                            from ..geom_utils import build_outer_fine_grid_tensor
-                            outer_target = build_outer_fine_grid_tensor(
-                                original_values, pool_kernel=outer_fine_pool
-                            )
-                            outer_target_np = outer_target.permute(0, 2, 3, 1).cpu().numpy()
-                            outer_grid_w = outer_target_np.shape[2]
+                        if face_name in ["top", "bot"]:
+                            indices = face_result["indices"].cpu().numpy()  # (B, max_masked)
+                            hex_indices = face_index_maps_np[face_name]
 
-                        # Process each face and collect predictions
-                        for face_name in ["inner", "us", "ds", "outer", "top", "bot"]:
-                            if face_name not in results:
-                                continue
+                            for b in range(B):
+                                n_valid = int(valid[b].sum())
+                                if n_valid == 0:
+                                    continue
 
-                            face_result = results[face_name]
-                            pred = face_result["pred"].cpu().numpy()  # (B, max_masked, 2)
-                            valid = face_result["valid"].cpu().numpy()  # (B, max_masked)
+                                node_idx = indices[b, :n_valid]
+                                flat_idx = hex_indices[node_idx]
 
-                            # Check if this is sensor-level prediction (new outer face behavior)
-                            is_sensor_level = face_result.get("is_sensor_level", False)
+                                for i in range(n_valid):
+                                    sensor_id = int(flat_idx[i])
+                                    pred_dict = {
+                                        "event_idx": event_base + b,
+                                        "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
+                                        "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
+                                        "sensor_id": sensor_id,
+                                        "face": face_name,
+                                        "truth_npho": float(original_np[b, sensor_id, 0]),
+                                        "truth_time": float(original_np[b, sensor_id, 1]),
+                                        "pred_npho": float(pred[b, i, 0]),
+                                        "pred_time": float(pred[b, i, 1]),
+                                    }
+                                    batch_predictions.append(pred_dict)
+                        elif is_sensor_level:
+                            # Sensor-level outer face: sensor_ids contains flat sensor indices
+                            sensor_ids = face_result["sensor_ids"].cpu().numpy()  # (B, max_masked)
 
-                            if face_name in ["top", "bot"]:
-                                indices = face_result["indices"].cpu().numpy()  # (B, max_masked)
-                                hex_indices = face_index_maps_np[face_name]
+                            for b in range(B):
+                                n_valid = int(valid[b].sum())
+                                if n_valid == 0:
+                                    continue
 
-                                for b in range(B):
-                                    n_valid = int(valid[b].sum())
-                                    if n_valid == 0:
-                                        continue
+                                for i in range(n_valid):
+                                    sensor_id = int(sensor_ids[b, i])
+                                    pred_dict = {
+                                        "event_idx": event_base + b,
+                                        "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
+                                        "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
+                                        "sensor_id": sensor_id,
+                                        "face": face_name,
+                                        "truth_npho": float(original_np[b, sensor_id, 0]),
+                                        "truth_time": float(original_np[b, sensor_id, 1]),
+                                        "pred_npho": float(pred[b, i, 0]),
+                                        "pred_time": float(pred[b, i, 1]),
+                                    }
+                                    batch_predictions.append(pred_dict)
+                        else:
+                            # Grid-level faces: indices contains (h, w) pairs
+                            indices = face_result["indices"].cpu().numpy()  # (B, max_masked, 2)
+                            if face_name == "outer" and outer_fine:
+                                if outer_target_np is None:
+                                    continue
 
-                                    node_idx = indices[b, :n_valid]
-                                    flat_idx = hex_indices[node_idx]
+                            for b in range(B):
+                                n_valid = int(valid[b].sum())
+                                if n_valid == 0:
+                                    continue
 
-                                    for i in range(n_valid):
-                                        sensor_id = int(flat_idx[i])
-                                        pred_dict = {
-                                            "event_idx": event_base + b,
-                                            "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
-                                            "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
-                                            "sensor_id": sensor_id,
-                                            "face": face_name,
-                                            "truth_npho": float(original_np[b, sensor_id, 0]),
-                                            "truth_time": float(original_np[b, sensor_id, 1]),
-                                            "pred_npho": float(pred[b, i, 0]),
-                                            "pred_time": float(pred[b, i, 1]),
-                                        }
-                                        batch_predictions.append(pred_dict)
-                            elif is_sensor_level:
-                                # Sensor-level outer face: sensor_ids contains flat sensor indices
-                                sensor_ids = face_result["sensor_ids"].cpu().numpy()  # (B, max_masked)
-
-                                for b in range(B):
-                                    n_valid = int(valid[b].sum())
-                                    if n_valid == 0:
-                                        continue
-
-                                    for i in range(n_valid):
-                                        sensor_id = int(sensor_ids[b, i])
-                                        pred_dict = {
-                                            "event_idx": event_base + b,
-                                            "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
-                                            "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
-                                            "sensor_id": sensor_id,
-                                            "face": face_name,
-                                            "truth_npho": float(original_np[b, sensor_id, 0]),
-                                            "truth_time": float(original_np[b, sensor_id, 1]),
-                                            "pred_npho": float(pred[b, i, 0]),
-                                            "pred_time": float(pred[b, i, 1]),
-                                        }
-                                        batch_predictions.append(pred_dict)
-                            else:
-                                # Grid-level faces: indices contains (h, w) pairs
-                                indices = face_result["indices"].cpu().numpy()  # (B, max_masked, 2)
+                                h_idx = indices[b, :n_valid, 0]
+                                w_idx = indices[b, :n_valid, 1]
                                 if face_name == "outer" and outer_fine:
-                                    if outer_target_np is None:
-                                        continue
-
-                                for b in range(B):
-                                    n_valid = int(valid[b].sum())
-                                    if n_valid == 0:
-                                        continue
-
-                                    h_idx = indices[b, :n_valid, 0]
-                                    w_idx = indices[b, :n_valid, 1]
-                                    if face_name == "outer" and outer_fine:
-                                        # Legacy grid-level outer fine
-                                        truth_vals = outer_target_np[b, h_idx, w_idx]
-                                        for i in range(n_valid):
-                                            sensor_id = int(h_idx[i] * outer_grid_w + w_idx[i])
-                                            pred_dict = {
-                                                "event_idx": event_base + b,
-                                                "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
-                                                "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
-                                                "sensor_id": sensor_id,
-                                                "face": face_name,
-                                                "truth_npho": float(truth_vals[i, 0]),
-                                                "truth_time": float(truth_vals[i, 1]),
-                                                "pred_npho": float(pred[b, i, 0]),
-                                                "pred_time": float(pred[b, i, 1]),
-                                            }
-                                            batch_predictions.append(pred_dict)
-                                        continue
-
-                                    idx_map = face_index_maps_np[face_name]
-                                    flat_idx = idx_map[h_idx, w_idx]
-
+                                    # Legacy grid-level outer fine
+                                    truth_vals = outer_target_np[b, h_idx, w_idx]
                                     for i in range(n_valid):
-                                        sensor_id = int(flat_idx[i])
+                                        sensor_id = int(h_idx[i] * outer_grid_w + w_idx[i])
                                         pred_dict = {
                                             "event_idx": event_base + b,
                                             "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
                                             "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
                                             "sensor_id": sensor_id,
                                             "face": face_name,
-                                            "truth_npho": float(original_np[b, sensor_id, 0]),
-                                            "truth_time": float(original_np[b, sensor_id, 1]),
+                                            "truth_npho": float(truth_vals[i, 0]),
+                                            "truth_time": float(truth_vals[i, 1]),
                                             "pred_npho": float(pred[b, i, 0]),
                                             "pred_time": float(pred[b, i, 1]),
                                         }
                                         batch_predictions.append(pred_dict)
+                                    continue
 
-                if collect_predictions:
-                    if prediction_writer is not None:
-                        prediction_writer(batch_predictions)
-                    else:
-                        all_predictions.extend(batch_predictions)
-                    profiler.stop()  # pred_collect
+                                idx_map = face_index_maps_np[face_name]
+                                flat_idx = idx_map[h_idx, w_idx]
 
-                num_batches += 1
+                                for i in range(n_valid):
+                                    sensor_id = int(flat_idx[i])
+                                    pred_dict = {
+                                        "event_idx": event_base + b,
+                                        "run_number": int(run_numbers_np[b]) if run_numbers_np is not None else -1,
+                                        "event_number": int(event_numbers_np[b]) if event_numbers_np is not None else -1,
+                                        "sensor_id": sensor_id,
+                                        "face": face_name,
+                                        "truth_npho": float(original_np[b, sensor_id, 0]),
+                                        "truth_time": float(original_np[b, sensor_id, 1]),
+                                        "pred_npho": float(pred[b, i, 0]),
+                                        "pred_time": float(pred[b, i, 1]),
+                                    }
+                                    batch_predictions.append(pred_dict)
 
-                profiler.start("data_load")  # time waiting for next batch
+            if collect_predictions:
+                if prediction_writer is not None:
+                    prediction_writer(batch_predictions)
+                else:
+                    all_predictions.extend(batch_predictions)
+                profiler.stop()  # pred_collect
 
-            profiler.stop()  # data_load (end of file iteration)
+            num_batches += 1
 
-            # Accumulate dataset I/O stats from this file
-            if profile and dataloader_workers == 0:
-                file_stats = dataset.get_profile_stats()
-                for key in cumulative_io_stats:
-                    cumulative_io_stats[key] += file_stats.get(key, 0)
-
-            profiler.start("data_load")  # For next file/iteration
+            profiler.start("data_load")  # time waiting for next batch
 
     # Stop any pending timer
     profiler.stop()
@@ -1388,24 +1345,26 @@ def run_eval_inpainter(
     # Print profiler report if enabled
     if profile:
         print(profiler.report("Validation timing breakdown"))
-        # Print cumulative dataset I/O breakdown (only accurate when dataloader_workers=0)
-        if dataloader_workers == 0 and cumulative_io_stats["event_count"] > 0:
-            total_time = cumulative_io_stats["io_time"] + cumulative_io_stats["process_time"] + cumulative_io_stats["batch_time"]
-            lines = ["[Dataset Profile] Cumulative I/O breakdown:"]
-            lines.append(f"  Files: {cumulative_io_stats['file_count']}, Chunks: {cumulative_io_stats['chunk_count']}, Events: {cumulative_io_stats['event_count']:,}")
-            timing_items = [
-                ("I/O (uproot)", cumulative_io_stats["io_time"]),
-                ("CPU (normalize)", cumulative_io_stats["process_time"]),
-                ("Batch (numpy→torch)", cumulative_io_stats["batch_time"]),
-            ]
-            max_name_len = max(len(name) for name, _ in timing_items)
-            for name, t in timing_items:
-                pct = 100 * t / total_time if total_time > 0 else 0
-                lines.append(f"  {name:<{max_name_len}}  {t:>7.2f}s  ({pct:>5.1f}%)")
-            lines.append(f"  {'TOTAL':<{max_name_len}}  {total_time:>7.2f}s")
-            if total_time > 0:
-                throughput = cumulative_io_stats["event_count"] / total_time
-                lines.append(f"  Throughput: {throughput:,.0f} events/s")
+        # Print dataset I/O breakdown (only accurate when dataloader_workers=0)
+        if dataloader_workers == 0:
+            io_stats = dataset.get_profile_stats()
+            if io_stats.get("event_count", 0) > 0:
+                total_time = io_stats["io_time"] + io_stats["process_time"] + io_stats["batch_time"]
+                lines = ["[Dataset Profile] I/O breakdown:"]
+                lines.append(f"  Files: {io_stats['file_count']}, Chunks: {io_stats['chunk_count']}, Events: {io_stats['event_count']:,}")
+                timing_items = [
+                    ("I/O (uproot)", io_stats["io_time"]),
+                    ("CPU (normalize)", io_stats["process_time"]),
+                    ("Batch (numpy→torch)", io_stats["batch_time"]),
+                ]
+                max_name_len = max(len(name) for name, _ in timing_items)
+                for name, t in timing_items:
+                    pct = 100 * t / total_time if total_time > 0 else 0
+                    lines.append(f"  {name:<{max_name_len}}  {t:>7.2f}s  ({pct:>5.1f}%)")
+                lines.append(f"  {'TOTAL':<{max_name_len}}  {total_time:>7.2f}s")
+                if total_time > 0:
+                    throughput = io_stats["event_count"] / total_time
+                    lines.append(f"  Throughput: {throughput:,.0f} events/s")
             print("\n".join(lines))
 
     avg_metrics = {k: v / max(1, num_batches) for k, v in metric_sums.items()}
