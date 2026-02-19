@@ -716,18 +716,46 @@ def train_with_config(config_path: str, profile: bool = None):
         # Determine no_sync context for gradient accumulation (skip AllReduce on intermediate steps)
         no_sync_ctx = model_ddp.no_sync if world_size > 1 else None
 
-        # Log config
-        if start_epoch == 1 and is_main_process():
+        # Log config (always, even on resume — MLflow deduplicates)
+        if is_main_process():
+            resume_from = cfg.checkpoint.resume_from
+            resume_state = "no"
+            if resume_from:
+                resume_state = f"yes: {resume_from}" if os.path.exists(resume_from) else f"missing: {resume_from}"
             log_params = {
+                "train_path": cfg.data.train_path,
+                "val_path": cfg.data.val_path,
+                "save_dir": artifact_dir,
                 "active_tasks": ",".join(active_tasks),
                 "batch_size": cfg.data.batch_size,
+                "chunksize": cfg.data.chunksize,
+                "num_workers": cfg.data.num_workers,
+                "num_threads": cfg.data.num_threads,
+                "npho_scale": cfg.normalization.npho_scale,
+                "npho_scale2": cfg.normalization.npho_scale2,
+                "time_scale": cfg.normalization.time_scale,
+                "time_shift": cfg.normalization.time_shift,
+                "sentinel_time": cfg.normalization.sentinel_time,
+                "sentinel_npho": cfg.normalization.sentinel_npho,
+                "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
                 "lr": cfg.training.lr,
+                "lr_scheduler": cfg.training.lr_scheduler,
+                "warmup_epochs": cfg.training.warmup_epochs,
+                "weight_decay": cfg.training.weight_decay,
+                "grad_clip": cfg.training.grad_clip,
+                "grad_accum_steps": cfg.training.grad_accum_steps,
                 "epochs": cfg.training.epochs,
+                "amp": cfg.training.amp,
+                "compile": compile_mode,
+                "ema_decay": cfg.training.ema_decay,
                 "outer_mode": cfg.model.outer_mode,
+                "encoder_dim": cfg.model.encoder_dim,
+                "dim_feedforward": cfg.model.dim_feedforward,
+                "num_fusion_layers": cfg.model.num_fusion_layers,
                 "total_params": total_params,
                 "trainable_params": trainable_params,
                 "loss_balance": cfg.loss_balance,
-                "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
+                "resume_state": resume_state,
                 "world_size": world_size,
                 "fiducial_enabled": cfg.data.fiducial.enabled,
             }
@@ -808,23 +836,23 @@ def train_with_config(config_path: str, profile: bool = None):
             )
 
             log_dict = {
-                "train_loss": tr_loss,
-                "val_loss": val_loss,
+                "train/loss": tr_loss,
+                "val/loss": val_loss,
             }
 
             # Add gradient norm from training metrics
             if "system/grad_norm_max" in tr_metrics:
-                log_dict["grad_norm_max"] = tr_metrics["system/grad_norm_max"]
+                log_dict["train/grad_norm_max"] = tr_metrics["system/grad_norm_max"]
 
             for metric_key in ["smooth_l1", "l1", "mse"]:
                 if metric_key in val_metrics:
-                    log_dict[f"val_{metric_key}"] = val_metrics[metric_key]
+                    log_dict[f"val/{metric_key}"] = val_metrics[metric_key]
             # Only log cosine loss if angle task is active
             if "angle" in active_tasks and "cos" in val_metrics:
-                log_dict["val_cos"] = val_metrics["cos"]
+                log_dict["val/cos"] = val_metrics["cos"]
             # Log position cosine loss if position task is active
             if "uvwFI" in active_tasks and "cos_pos" in val_metrics:
-                log_dict["val_cos_pos"] = val_metrics["cos_pos"]
+                log_dict["val/cos_pos"] = val_metrics["cos_pos"]
 
             if val_stats:
                 log_dict.update(val_stats)

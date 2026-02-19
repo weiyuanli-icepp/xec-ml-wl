@@ -722,6 +722,9 @@ Examples:
 
         # Log parameters (rank 0 only)
         if is_main_process():
+            resume_state = "no"
+            if resume_from:
+                resume_state = f"yes: {resume_from}" if os.path.exists(resume_from) else f"missing: {resume_from}"
             mlflow.log_params({
                 "train_root": train_root,
                 "val_root": val_root,
@@ -730,6 +733,15 @@ Examples:
                 "epochs": epochs,
                 "batch_size": batch_size,
                 "chunksize": chunksize,
+                "num_workers": num_workers,
+                "num_threads": num_threads,
+                "npho_scale": npho_scale,
+                "npho_scale2": npho_scale2,
+                "time_scale": time_scale,
+                "time_shift": time_shift,
+                "sentinel_time": sentinel_time,
+                "sentinel_npho": sentinel_npho,
+                "npho_scheme": npho_scheme,
                 "mask_ratio": mask_ratio,
                 "freeze_encoder": freeze_encoder,
                 "predict_channels": ",".join(predict_channels),
@@ -742,15 +754,22 @@ Examples:
                 "npho_weight": npho_weight,
                 "time_weight": time_weight,
                 "grad_clip": grad_clip,
+                "grad_accum_steps": grad_accum_steps,
+                "amp": True,
+                "compile": compile_mode,
+                "ema_decay": ema_decay,
                 "outer_mode": outer_mode,
+                "encoder_dim": encoder_dim,
+                "dim_feedforward": encoder_dim_feedforward,
+                "num_fusion_layers": encoder_num_fusion_layers,
                 "trainable_params": model_without_ddp.get_num_trainable_params(),
                 "total_params": model_without_ddp.get_num_total_params(),
-                "npho_scheme": npho_scheme,
                 "npho_loss_weight_enabled": npho_loss_weight_enabled,
                 "npho_loss_weight_alpha": npho_loss_weight_alpha,
                 "intensity_reweighting_enabled": intensity_reweighting_enabled,
                 "use_masked_attention": use_masked_attention,
                 "head_type": head_type,
+                "resume_state": resume_state,
                 "world_size": world_size,
             })
 
