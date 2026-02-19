@@ -1505,7 +1505,8 @@ class XEC_Inpainter(nn.Module):
 
         return x_masked, mask
 
-    def forward(self, x_batch, mask=None, mask_ratio=0.05, npho_threshold_norm=None):
+    def forward(self, x_batch, mask=None, mask_ratio=0.05, npho_threshold_norm=None,
+                forward_mode=None):
         """
         Forward pass for inpainting.
 
@@ -1517,11 +1518,19 @@ class XEC_Inpainter(nn.Module):
             npho_threshold_norm: threshold in normalized npho space for stratified masking.
                                 If provided and time_mask_ratio_scale != 1.0, valid-time sensors
                                 (npho > threshold) are more likely to be masked.
+            forward_mode: If "full_output", skip masking and return (B, 4760, C) predictions
+                         directly via forward_full_output. x_batch should be pre-masked and
+                         mask must be provided. Used by DDP training to separate masking from
+                         the gradient-tracked forward pass.
 
         Returns:
-            results: dict with predictions and masks for each face
-            original_values: (B, 4760, 2) - original values (for loss computation)
+            If forward_mode="full_output": pred_all (B, 4760, C)
+            Otherwise: (results dict, original_values, mask)
         """
+        # DDP-compatible fast path: masking already done, just run forward_full_output
+        if forward_mode == "full_output":
+            return self.forward_full_output(x_batch, mask)
+
         B = x_batch.shape[0]
         device = x_batch.device
 

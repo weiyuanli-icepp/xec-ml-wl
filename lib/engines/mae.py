@@ -183,7 +183,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
 
             profiler.start("loss_compute")
             # 2. Gather Truth Targets
-            if hasattr(model, "encoder") and getattr(model_raw.encoder, "outer_fine", False):
+            if hasattr(model_raw, "encoder") and getattr(model_raw.encoder, "outer_fine", False):
                 outer_target = build_outer_fine_grid_tensor(
                     x_in,
                     pool_kernel=model_raw.encoder.outer_fine_pool,
@@ -748,7 +748,7 @@ def run_eval_mae(model, device, root_files, tree_name,
             with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
                 # Get masked input for visualization (pass npho_threshold_norm for stratified masking)
                 profiler.start("forward")
-                x_masked, mask = model.random_masking(x_in, npho_threshold_norm=npho_threshold_norm)
+                x_masked, mask = model_raw.random_masking(x_in, npho_threshold_norm=npho_threshold_norm)
 
                 # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
                 if predict_time:
@@ -772,12 +772,12 @@ def run_eval_mae(model, device, root_files, tree_name,
                 bot_idx = top_idx + 1
 
                 recons = {
-                    "inner": model.dec_inner(latent_seq[:, name_to_idx["inner"]]),
-                    "us":    model.dec_us(latent_seq[:, name_to_idx["us"]]),
-                    "ds":    model.dec_ds(latent_seq[:, name_to_idx["ds"]]),
-                    "outer": model.dec_outer(latent_seq[:, outer_idx]),
-                    "top":   model.dec_top(latent_seq[:, top_idx]),
-                    "bot":   model.dec_bot(latent_seq[:, bot_idx]),
+                    "inner": model_raw.dec_inner(latent_seq[:, name_to_idx["inner"]]),
+                    "us":    model_raw.dec_us(latent_seq[:, name_to_idx["us"]]),
+                    "ds":    model_raw.dec_ds(latent_seq[:, name_to_idx["ds"]]),
+                    "outer": model_raw.dec_outer(latent_seq[:, outer_idx]),
+                    "top":   model_raw.dec_top(latent_seq[:, top_idx]),
+                    "bot":   model_raw.dec_bot(latent_seq[:, bot_idx]),
                 }
                 profiler.stop()  # forward
 

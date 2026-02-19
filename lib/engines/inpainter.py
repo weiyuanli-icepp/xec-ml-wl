@@ -756,9 +756,10 @@ def run_epoch_inpainter(
         with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=(scaler is not None)):
             if use_fast_forward:
                 # Fast path: fixed-size outputs, simpler loss computation
-                pred_all, original_values, mask = model.forward_training(
-                    x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
-                )
+                # Split forward_training: masking via model_raw (no grad), forward via DDP model
+                original_values = x_batch.clone()
+                x_masked, mask = model_raw.random_masking(x_batch, mask_ratio, npho_threshold_norm=npho_threshold_norm)
+                pred_all = model(x_masked, mask, forward_mode="full_output")
             else:
                 # Original path: variable-size outputs, per-face loss
                 results, original_values, mask = model(
@@ -1122,9 +1123,9 @@ def run_eval_inpainter(
             use_fast = use_fast_forward and (not collect_predictions or head_type == "cross_attention")
             with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
                 if use_fast:
-                    pred_all, original_values, mask = model.forward_training(
-                        x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
-                    )
+                    original_values = x_batch.clone()
+                    x_masked, mask = model_raw.random_masking(x_batch, mask_ratio, npho_threshold_norm=npho_threshold_norm)
+                    pred_all = model_raw.forward_full_output(x_masked, mask)
                 else:
                     results, original_values, mask = model(
                         x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
