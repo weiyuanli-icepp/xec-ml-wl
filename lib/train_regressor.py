@@ -704,6 +704,7 @@ def train_with_config(config_path: str, profile: bool = None):
     # Disable MLflow's automatic system metrics (uses wall clock time)
     # We log our own system metrics with step=epoch for consistent x-axis
     # Only rank 0 interacts with MLflow
+    _is_fresh_mlflow_run = (mlflow_run_id is None)  # Before start_run reassigns it
     mlflow_ctx = (
         mlflow.start_run(run_id=mlflow_run_id, run_name=run_name if not mlflow_run_id else None,
                          log_system_metrics=False)
@@ -719,8 +720,8 @@ def train_with_config(config_path: str, profile: bool = None):
         # Determine no_sync context for gradient accumulation (skip AllReduce on intermediate steps)
         no_sync_ctx = model_ddp.no_sync if world_size > 1 else None
 
-        # Log config (always, even on resume — MLflow deduplicates)
-        if is_main_process():
+        # Log config (only on fresh runs — MLflow params are immutable)
+        if is_main_process() and _is_fresh_mlflow_run:
             resume_from = cfg.checkpoint.resume_from
             resume_state = "no"
             if resume_from:

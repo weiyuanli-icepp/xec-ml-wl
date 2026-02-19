@@ -671,6 +671,7 @@ Examples:
     # Disable MLflow's automatic system metrics (uses wall clock time)
     # We log our own system metrics with step=epoch for consistent x-axis
     # Only rank 0 interacts with MLflow
+    _is_fresh_mlflow_run = (mlflow_run_id is None)  # Before start_run reassigns it
     mlflow_ctx = (
         mlflow.start_run(run_id=mlflow_run_id, run_name=mlflow_run_name if not mlflow_run_id else None,
                          log_system_metrics=False)
@@ -684,7 +685,7 @@ Examples:
         # Determine no_sync context for gradient accumulation
         no_sync_ctx = model_ddp.no_sync if world_size > 1 else None
 
-        if is_main_process():
+        if is_main_process() and _is_fresh_mlflow_run:
             outer_mode_label = outer_mode
             if outer_mode == "finegrid" and outer_fine_pool:
                 pool_str = ",".join(str(x) for x in outer_fine_pool)
@@ -707,7 +708,7 @@ Examples:
             if resume_from:
                 resume_state = f"yes: {resume_from}" if os.path.exists(resume_from) else f"missing: {resume_from}"
 
-            # Log parameters
+            # Log parameters (only on fresh runs — MLflow params are immutable)
             mlflow.log_params({
                 "train_root": train_root,
                 "val_root": val_root,

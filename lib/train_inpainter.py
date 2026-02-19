@@ -659,7 +659,7 @@ Examples:
             model_without_ddp.load_state_dict(checkpoint['model_state_dict'])
             if "optimizer_state_dict" in checkpoint:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            if "scaler_state_dict" in checkpoint:
+            if "scaler_state_dict" in checkpoint and scaler is not None:
                 scaler.load_state_dict(checkpoint['scaler_state_dict'])
             if "ema_state_dict" in checkpoint and ema_model is not None:
                 ema_model.load_state_dict(checkpoint['ema_state_dict'])
@@ -732,6 +732,7 @@ Examples:
     # Disable MLflow's automatic system metrics (uses wall clock time)
     # We log our own system metrics with step=epoch for consistent x-axis
     # Only rank 0 interacts with MLflow
+    _is_fresh_mlflow_run = (mlflow_run_id is None)  # Before start_run reassigns it
     mlflow_ctx = (
         mlflow.start_run(run_id=mlflow_run_id, run_name=mlflow_run_name if not mlflow_run_id else None,
                          log_system_metrics=False)
@@ -745,8 +746,8 @@ Examples:
         # Determine no_sync context for gradient accumulation
         no_sync_ctx = model_ddp.no_sync if world_size > 1 else None
 
-        # Log parameters (rank 0 only)
-        if is_main_process():
+        # Log parameters (only on fresh runs — MLflow params are immutable)
+        if is_main_process() and _is_fresh_mlflow_run:
             resume_state = "no"
             if resume_from:
                 resume_state = f"yes: {resume_from}" if os.path.exists(resume_from) else f"missing: {resume_from}"
@@ -933,7 +934,7 @@ Examples:
                     'epoch': epoch,
                     'model_state_dict': model_without_ddp.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
-                    'scaler_state_dict': scaler.state_dict(),
+                    'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
                     'best_val_loss': best_val_loss,
                     'mlflow_run_id': mlflow_run_id,
                     'config': {
