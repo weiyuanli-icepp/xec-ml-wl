@@ -33,7 +33,7 @@ yaml_get() {
     local key="$1"
     local file="$2"
     # Match line, extract value after first colon, strip comments and quotes
-    grep -E "^\s*${key}:" "$file" 2>/dev/null | head -1 | sed 's/^[^:]*:[[:space:]]*//' | sed 's/[[:space:]]*#.*//' | tr -d '"' | tr -d "'"
+    grep -E "^\s*${key}:" "$file" 2>/dev/null | head -1 | sed 's/^[^:]*:[[:space:]]*//' | sed 's/[[:space:]]*#.*//' | tr -d '"' | tr -d "'" || true
 }
 
 # === Extract ALL config values ===
