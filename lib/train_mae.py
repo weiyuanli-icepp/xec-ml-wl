@@ -204,7 +204,6 @@ Examples:
     parser.add_argument("--npho_weight",          type=float, default=None)
     parser.add_argument("--time_weight",          type=float, default=None)
     parser.add_argument("--auto_channel_weight",  action="store_true", help="Enable homoscedastic channel weighting")
-    parser.add_argument("--channel_dropout_rate", type=float, default=None)
     parser.add_argument("--grad_clip",            type=float, default=None)
     parser.add_argument("--grad_accum_steps",     type=int, default=None, help="Gradient accumulation steps")
     parser.add_argument("--ema_decay",            type=float, default=None, help="EMA decay (None to disable)")
@@ -289,7 +288,6 @@ Examples:
         track_train_metrics = not args.no_track_train_metrics and getattr(cfg.training, "track_train_metrics", False)
         profile = args.profile or getattr(cfg.training, 'profile', False)
         auto_channel_weight = args.auto_channel_weight or cfg.training.auto_channel_weight
-        channel_dropout_rate = args.channel_dropout_rate if args.channel_dropout_rate is not None else cfg.training.channel_dropout_rate
         grad_clip = args.grad_clip if args.grad_clip is not None else getattr(cfg.training, 'grad_clip', 1.0)
         grad_accum_steps = args.grad_accum_steps if args.grad_accum_steps is not None else getattr(cfg.training, 'grad_accum_steps', 1)
         ema_decay = args.ema_decay if args.ema_decay is not None else getattr(cfg.training, 'ema_decay', None)
@@ -366,7 +364,6 @@ Examples:
         track_train_metrics = args.track_train_metrics and not args.no_track_train_metrics
         profile = args.profile
         auto_channel_weight = args.auto_channel_weight
-        channel_dropout_rate = args.channel_dropout_rate or 0.1
         grad_clip = args.grad_clip or 1.0
         grad_accum_steps = args.grad_accum_steps or 1
         ema_decay = args.ema_decay  # None by default
@@ -431,6 +428,7 @@ Examples:
     encoder = XECEncoder(
         outer_mode=outer_mode,
         outer_fine_pool=outer_fine_pool_tuple,
+        sentinel_time=sentinel_time,
         encoder_dim=encoder_dim,
         dim_feedforward=encoder_dim_feedforward,
         num_fusion_layers=encoder_num_fusion_layers,
@@ -678,7 +676,6 @@ Examples:
                 "weight_decay": weight_decay,
                 "loss_fn": loss_fn,
                 "channel_weights": channel_weights_label,
-                "channel_dropout_rate": channel_dropout_rate,
                 "grad_clip": grad_clip,
                 "ema_decay": ema_decay,
                 "resume_state": resume_state,
@@ -711,7 +708,6 @@ Examples:
                 npho_weight=npho_weight,
                 time_weight=time_weight,
                 auto_channel_weight=auto_channel_weight,
-                channel_dropout_rate=channel_dropout_rate,
                 grad_clip=grad_clip,
                 grad_accum_steps=grad_accum_steps,
                 scaler=scaler,
@@ -892,6 +888,14 @@ Examples:
                         'predict_channels': list(predict_channels),
                         'sentinel_time': float(sentinel_time),
                         'sentinel_npho': float(sentinel_npho),
+                        'npho_scale': float(npho_scale),
+                        'npho_scale2': float(npho_scale2),
+                        'time_scale': float(time_scale),
+                        'time_shift': float(time_shift),
+                        'npho_scheme': npho_scheme,
+                        'encoder_dim': encoder_dim,
+                        'dim_feedforward': encoder_dim_feedforward,
+                        'num_fusion_layers': encoder_num_fusion_layers,
                     }
                 }
                 if ema_model is not None:

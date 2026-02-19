@@ -857,6 +857,10 @@ def train_with_config(config_path: str, profile: bool = None):
                         "time_shift": float(cfg.normalization.time_shift),
                         "sentinel_time": float(cfg.normalization.sentinel_time),
                         "sentinel_npho": float(cfg.normalization.sentinel_npho),
+                        "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
+                        "encoder_dim": cfg.model.encoder_dim,
+                        "dim_feedforward": cfg.model.dim_feedforward,
+                        "num_fusion_layers": cfg.model.num_fusion_layers,
                         "active_tasks": active_tasks,
                     },
                 }
@@ -901,6 +905,10 @@ def train_with_config(config_path: str, profile: bool = None):
                     "time_shift": float(cfg.normalization.time_shift),
                     "sentinel_time": float(cfg.normalization.sentinel_time),
                     "sentinel_npho": float(cfg.normalization.sentinel_npho),
+                    "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
+                    "encoder_dim": cfg.model.encoder_dim,
+                    "dim_feedforward": cfg.model.dim_feedforward,
+                    "num_fusion_layers": cfg.model.num_fusion_layers,
                     "active_tasks": active_tasks,
                 },
             }

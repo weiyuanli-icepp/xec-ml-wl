@@ -74,7 +74,8 @@ torch.autograd.profiler.emit_nvtx(False)
 
 
 def load_mae_encoder(checkpoint_path: str, device: torch.device, outer_mode: str = "finegrid", outer_fine_pool=None,
-                     encoder_dim: int = 1024, dim_feedforward=None, num_fusion_layers: int = 2):
+                     encoder_dim: int = 1024, dim_feedforward=None, num_fusion_layers: int = 2,
+                     sentinel_time=None):
     """
     Load encoder weights from MAE checkpoint.
 
@@ -86,6 +87,7 @@ def load_mae_encoder(checkpoint_path: str, device: torch.device, outer_mode: str
         encoder_dim: d_model for fusion transformer
         dim_feedforward: FFN dim (default = encoder_dim * 4)
         num_fusion_layers: number of transformer layers
+        sentinel_time: sentinel value for time channel
 
     Returns:
         encoder: XECEncoder with loaded weights
@@ -97,6 +99,7 @@ def load_mae_encoder(checkpoint_path: str, device: torch.device, outer_mode: str
     encoder = XECEncoder(
         outer_mode=outer_mode,
         outer_fine_pool=outer_fine_pool_tuple,
+        sentinel_time=sentinel_time,
         encoder_dim=encoder_dim,
         dim_feedforward=dim_feedforward,
         num_fusion_layers=num_fusion_layers,
@@ -473,6 +476,7 @@ Examples:
             encoder_dim=encoder_dim,
             dim_feedforward=encoder_dim_feedforward,
             num_fusion_layers=encoder_num_fusion_layers,
+            sentinel_time=sentinel_time,
         )
     else:
         print("[INFO] No MAE checkpoint provided, initializing encoder from scratch")
@@ -480,6 +484,7 @@ Examples:
         encoder = XECEncoder(
             outer_mode=outer_mode,
             outer_fine_pool=outer_fine_pool_tuple,
+            sentinel_time=sentinel_time,
             encoder_dim=encoder_dim,
             dim_feedforward=encoder_dim_feedforward,
             num_fusion_layers=encoder_num_fusion_layers,
@@ -881,6 +886,10 @@ Examples:
                         'npho_branch': npho_branch,
                         'time_branch': time_branch,
                         'sentinel_npho': float(sentinel_npho),
+                        'npho_scheme': npho_scheme,
+                        'encoder_dim': encoder_dim,
+                        'dim_feedforward': encoder_dim_feedforward,
+                        'num_fusion_layers': encoder_num_fusion_layers,
                     }
                 }
                 if scheduler is not None:

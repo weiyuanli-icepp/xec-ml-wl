@@ -56,7 +56,6 @@ training:
   # DEPRECATED: delete this line. Use training.time.weight instead.
   time_weight: 1.0                # Set <1.0 to downweight time channel
   auto_channel_weight: false      # Learn log(sigma^2) per channel (overrides manual weights)
-  channel_dropout_rate: 0.0
   grad_clip: 1.0                    # Gradient clipping (0 to disable)
   grad_accum_steps: 1               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
   ema_decay: null                   # EMA decay rate (null to disable, 0.999 typical)
