@@ -754,8 +754,8 @@ def save_predictions(predictions: List[Dict], output_path: str,
     }
 
     with uproot.recreate(output_path) as f:
-        f['predictions'] = branches
-        f['metadata'] = metadata
+        f.mktree('predictions', branches)
+        f.mktree('metadata', metadata)
 
     print(f"[INFO] Saved {len(predictions):,} predictions to {output_path}")
     print(f"[INFO] Metadata: predict_channels={predict_channels}")

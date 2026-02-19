@@ -146,7 +146,7 @@ def save_predictions_to_root(predictions, save_path, epoch, run_id=None,
     with uproot.recreate(root_path) as f:
         f.mktree("tree", branch_types)
         f["tree"].extend(branch_data)
-        f['metadata'] = metadata
+        f.mktree('metadata', metadata)
 
     print(f"[INFO] Saved {n_events} events to {root_path} (predict_channels={predict_channels})")
     return root_path
