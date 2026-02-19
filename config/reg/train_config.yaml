@@ -73,36 +73,33 @@ tasks:
 # === Training Configuration ===
 training:
   epochs: 20
-  lr: 3.0e-4
-  weight_decay: 1.0e-4
-  warmup_epochs: 2
-  # Learning rate scheduler options: "cosine", "onecycle", "plateau", null (disable)
-  # You can use either lr_scheduler (preferred) or legacy use_scheduler+scheduler
-  lr_scheduler: "cosine"
-  # Legacy scheduler config (use lr_scheduler instead):
-  # use_scheduler: true
-  # scheduler: "cosine"
-  # Minimum LR (used by "cosine" and "plateau" schedulers)
-  lr_min: 1.0e-6
-  # OneCycleLR specific (only used when scheduler: "onecycle")
-  # max_lr: 3.0e-4                  # Max LR (defaults to lr if not set)
-  # pct_start: 0.3                  # Fraction of training for LR increase phase
-  # ReduceLROnPlateau specific (only used when scheduler: "plateau")
-  # lr_patience: 5                  # Epochs to wait before reducing LR
-  # lr_factor: 0.5                  # Factor to reduce LR by
   amp: true
+
+  # --- Optimizer ---
+  lr: 3.0e-4                        # Initial learning rate
+  weight_decay: 1.0e-4
+
+  # --- Learning Rate Schedule ---
+  # Options: "cosine", "onecycle", "plateau", null (constant LR)
+  lr_scheduler: "cosine"
+  warmup_epochs: 2                  # Linear warmup before main schedule
+  lr_min: 1.0e-6                    # Floor LR (cosine, plateau)
+  # Plateau-specific:
+  # lr_patience: 5                  # Epochs without improvement before reducing
+  # lr_factor: 0.5                  # Multiply LR by this factor on plateau
+  # OneCycle-specific:
+  # max_lr: 3.0e-4                  # Peak LR (defaults to lr if not set)
+  # pct_start: 0.3                  # Fraction of training spent ramping up
+
+  # --- Regularization ---
   ema_decay: 0.999
   channel_dropout_rate: 0.1
   grad_clip: 1.0
-  # Gradient accumulation: effective_batch = batch_size × grad_accum_steps
-  # Use when GPU memory limits batch_size but larger effective batches improve convergence
-  grad_accum_steps: 1
-  profile: false                    # Enable training profiler to identify bottlenecks
-  # torch.compile mode options:
-  #   "max-autotune" - Maximum optimization, benchmarks many kernel configs (highest memory)
-  #   "reduce-overhead" - Lower compilation overhead and memory, good balance
-  #   "default" - Basic compilation with minimal overhead
-  #   "false" or "none" - Disable compilation, use eager mode (no extra memory)
+  grad_accum_steps: 1               # effective_batch = batch_size × grad_accum_steps
+
+  # --- Performance ---
+  profile: false
+  # torch.compile: "max-autotune", "reduce-overhead", "default", "false"/"none"
   compile: "reduce-overhead"
 
 # === Loss Balancing ===
