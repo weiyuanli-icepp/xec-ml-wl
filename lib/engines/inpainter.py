@@ -653,8 +653,11 @@ def run_epoch_inpainter(
     """
     model.train()
 
+    # Unwrap DDP to access model attributes (use model_raw for attribute reads, model for forward/backward)
+    model_raw = getattr(model, 'module', model)
+
     # Get predict_channels from model for conditional loss computation
-    predict_channels = getattr(model, 'predict_channels', ['npho', 'time'])
+    predict_channels = getattr(model_raw, 'predict_channels', ['npho', 'time'])
 
     # Auto-select fast forward: always True because the vectorized OuterSensorInpaintingHead
     # computes all sensors regardless of path (forward() calls _compute_all_sensor_preds_vectorized
@@ -676,8 +679,8 @@ def run_epoch_inpainter(
     }
 
     # Get outer fine config from model
-    outer_fine = getattr(model.encoder, "outer_fine", False)
-    outer_fine_pool = getattr(model.encoder, "outer_fine_pool", None)
+    outer_fine = getattr(model_raw.encoder, "outer_fine", False)
+    outer_fine_pool = getattr(model_raw.encoder, "outer_fine_pool", None)
 
     # Convert npho_threshold to normalized space for stratified masking
     if npho_threshold is None:
@@ -988,13 +991,16 @@ def run_eval_inpainter(
     """
     model.eval()
 
+    # Unwrap DDP to access model attributes
+    model_raw = getattr(model, 'module', model)
+
     # Get predict_channels from model for conditional loss computation
-    predict_channels = getattr(model, 'predict_channels', ['npho', 'time'])
+    predict_channels = getattr(model_raw, 'predict_channels', ['npho', 'time'])
 
     # Auto-select fast forward: always True (see run_epoch_inpainter comment)
     # Exception: collect_predictions requires the results dict from standard forward
     # (but cross-attention always uses fast path since it has no per-face heads)
-    head_type = getattr(model, 'head_type', 'per_face')
+    head_type = getattr(model_raw, 'head_type', 'per_face')
     if use_fast_forward is None:
         if head_type == "cross_attention":
             use_fast_forward = True
@@ -1023,8 +1029,8 @@ def run_eval_inpainter(
         "bot": flatten_hex_rows(BOTTOM_HEX_ROWS),
     }
 
-    outer_fine = getattr(model.encoder, "outer_fine", False)
-    outer_fine_pool = getattr(model.encoder, "outer_fine_pool", None)
+    outer_fine = getattr(model_raw.encoder, "outer_fine", False)
+    outer_fine_pool = getattr(model_raw.encoder, "outer_fine_pool", None)
 
     # Convert npho_threshold to normalized space for stratified masking
     if npho_threshold is None:

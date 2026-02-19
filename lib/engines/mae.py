@@ -51,13 +51,17 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                   sentinel_npho=-1.0,
                   ema_model=None):
     model.train()
+
+    # Unwrap DDP to access model attributes (use model_raw for attribute reads, model for forward/backward)
+    model_raw = getattr(model, 'module', model)
+
     if scaler is None:
         scaler = torch.amp.GradScaler('cuda', enabled=amp)
     loss_func = get_pointwise_loss_fn(loss_fn)
-    log_vars = getattr(model, "channel_log_vars", None) if auto_channel_weight else None
+    log_vars = getattr(model_raw, "channel_log_vars", None) if auto_channel_weight else None
 
     # Detect predict_channels from model (default to ["npho", "time"] for legacy)
-    predict_channels = getattr(model, 'predict_channels', ['npho', 'time'])
+    predict_channels = getattr(model_raw, 'predict_channels', ['npho', 'time'])
     predict_time = 'time' in predict_channels
     # Map prediction channel indices to input channel indices
     INPUT_CH_MAP = {"npho": 0, "time": 1}
@@ -179,11 +183,11 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
 
             profiler.start("loss_compute")
             # 2. Gather Truth Targets
-            if hasattr(model, "encoder") and getattr(model.encoder, "outer_fine", False):
+            if hasattr(model, "encoder") and getattr(model_raw.encoder, "outer_fine", False):
                 outer_target = build_outer_fine_grid_tensor(
                     x_in,
-                    pool_kernel=model.encoder.outer_fine_pool,
-                    sentinel_time=getattr(model, "sentinel_time", None)
+                    pool_kernel=model_raw.encoder.outer_fine_pool,
+                    sentinel_time=getattr(model_raw, "sentinel_time", None)
                 )
             else:
                 outer_target = gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP)
@@ -216,14 +220,14 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                         m_face = mask[:, indices]  # Shape: (B, num_sensors_in_face)
                         if name in ["top", "bot"]:
                             mask_expanded = m_face.unsqueeze(1)  # (B, 1, num_hex_nodes)
-                        elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                        elif name == "outer" and getattr(model_raw.encoder, "outer_fine", False):
                             # For outer fine grid: upsample coarse mask to fine grid dimensions
                             H_coarse, W_coarse = OUTER_COARSE_FULL_INDEX_MAP.shape
                             m_coarse = m_face.view(mask.size(0), 1, H_coarse, W_coarse)
                             cr, cc = OUTER_FINE_COARSE_SCALE
                             m_fine = F.interpolate(m_coarse.float(), scale_factor=(float(cr), float(cc)), mode='nearest')
                             # Apply pooling if used
-                            pool_kernel = model.encoder.outer_fine_pool
+                            pool_kernel = model_raw.encoder.outer_fine_pool
                             if pool_kernel:
                                 if isinstance(pool_kernel, int):
                                     ph, pw = pool_kernel, pool_kernel
@@ -264,12 +268,12 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                         # Reshape to match prediction shape
                         if name in ["top", "bot"]:
                             weight_map = (raw_npho_face.clamp(min=1.0) + 1.0).pow(npho_loss_weight_alpha).unsqueeze(1)
-                        elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                        elif name == "outer" and getattr(model_raw.encoder, "outer_fine", False):
                             H_coarse, W_coarse = OUTER_COARSE_FULL_INDEX_MAP.shape
                             cr, cc = OUTER_FINE_COARSE_SCALE
                             npho_coarse = raw_npho_face.view(x_in.size(0), 1, H_coarse, W_coarse)
                             npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
-                            pool_kernel = model.encoder.outer_fine_pool
+                            pool_kernel = model_raw.encoder.outer_fine_pool
                             if pool_kernel:
                                 if isinstance(pool_kernel, int):
                                     ph, pw = pool_kernel, pool_kernel
@@ -302,7 +306,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                         # Create time_valid_mask using normalized threshold
                         if name in ["top", "bot"]:
                             time_valid_base = (npho_norm_face > npho_threshold_norm).unsqueeze(1).float()  # (B, 1, N)
-                        elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                        elif name == "outer" and getattr(model_raw.encoder, "outer_fine", False):
                             # For outer fine grid: use coarse-level threshold check, then upsample
                             time_valid_coarse = (npho_norm_face > npho_threshold_norm).float()  # (B, H_coarse, W_coarse)
                             time_valid_coarse = time_valid_coarse.view(x_in.size(0), 1, *indices.shape)
@@ -325,7 +329,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                                 raw_npho_face = npho_transform.inverse(npho_norm_face)
                             if name in ["top", "bot"]:
                                 npho_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
-                            elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                            elif name == "outer" and getattr(model_raw.encoder, "outer_fine", False):
                                 npho_coarse = raw_npho_face.view(x_in.size(0), 1, *indices.shape)
                                 npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
                                 if pool_kernel:
@@ -543,11 +547,15 @@ def run_eval_mae(model, device, root_files, tree_name,
         If collect_predictions=True: (dict of metrics, dict of predictions)
     """
     model.eval()
+
+    # Unwrap DDP to access model attributes
+    model_raw = getattr(model, 'module', model)
+
     loss_func = get_pointwise_loss_fn(loss_fn)
-    log_vars = getattr(model, "channel_log_vars", None) if auto_channel_weight else None
+    log_vars = getattr(model_raw, "channel_log_vars", None) if auto_channel_weight else None
 
     # Detect predict_channels from model (default to ["npho", "time"] for legacy)
-    predict_channels = getattr(model, 'predict_channels', ['npho', 'time'])
+    predict_channels = getattr(model_raw, 'predict_channels', ['npho', 'time'])
     predict_time = 'time' in predict_channels
     # Map prediction channel indices to input channel indices
     pred_npho_idx = predict_channels.index("npho") if "npho" in predict_channels else None
@@ -683,9 +691,9 @@ def run_eval_mae(model, device, root_files, tree_name,
         scatter_rect_face(full, recons_dict["inner"], INNER_INDEX_MAP)
         scatter_rect_face(full, recons_dict["us"], US_INDEX_MAP)
         scatter_rect_face(full, recons_dict["ds"], DS_INDEX_MAP)
-        if getattr(model.encoder, "outer_fine", False):
+        if getattr(model_raw.encoder, "outer_fine", False):
             coarse_pred, center_pred = reconstruct_outer_from_fine(
-                recons_dict["outer"], model.encoder.outer_fine_pool
+                recons_dict["outer"], model_raw.encoder.outer_fine_pool
             )
             scatter_rect_face(full, coarse_pred, OUTER_COARSE_FULL_INDEX_MAP)
             scatter_rect_face(full, center_pred, OUTER_CENTER_INDEX_MAP)
@@ -750,12 +758,12 @@ def run_eval_mae(model, device, root_files, tree_name,
                 total_valid_sensors += (~already_invalid).sum()
                 total_randomly_masked += mask.sum().long()
 
-                latent_seq = model.encoder.forward_features(x_masked)
+                latent_seq = model_raw.encoder.forward_features(x_masked)
 
                 # Decode each face
-                cnn_names = list(model.encoder.cnn_face_names)
+                cnn_names = list(model_raw.encoder.cnn_face_names)
                 name_to_idx = {name: i for i, name in enumerate(cnn_names)}
-                if model.encoder.outer_fine:
+                if model_raw.encoder.outer_fine:
                     outer_idx = len(cnn_names)
                     top_idx = outer_idx + 1
                 else:
@@ -778,7 +786,7 @@ def run_eval_mae(model, device, root_files, tree_name,
                     "inner": gather_face(x_in, INNER_INDEX_MAP),
                     "us":    gather_face(x_in, US_INDEX_MAP),
                     "ds":    gather_face(x_in, DS_INDEX_MAP),
-                    "outer": build_outer_fine_grid_tensor(x_in, model.encoder.outer_fine_pool, sentinel_time=getattr(model, "sentinel_time", None)) if getattr(model.encoder, "outer_fine", False) else gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP),
+                    "outer": build_outer_fine_grid_tensor(x_in, model_raw.encoder.outer_fine_pool, sentinel_time=getattr(model_raw, "sentinel_time", None)) if getattr(model_raw.encoder, "outer_fine", False) else gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP),
                     "top":   gather_hex_nodes(x_in, top_indices).permute(0, 2, 1),
                     "bot":   gather_hex_nodes(x_in, bot_indices).permute(0, 2, 1)
                 }
@@ -791,13 +799,13 @@ def run_eval_mae(model, device, root_files, tree_name,
                             m_face = mask[:, indices]
                             if name in ["top", "bot"]:
                                 mask_expanded = m_face.unsqueeze(1)
-                            elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                            elif name == "outer" and getattr(model_raw.encoder, "outer_fine", False):
                                 # For outer fine grid: upsample coarse mask to fine grid dimensions
                                 H_coarse, W_coarse = OUTER_COARSE_FULL_INDEX_MAP.shape
                                 m_coarse = m_face.view(mask.size(0), 1, H_coarse, W_coarse)
                                 cr, cc = OUTER_FINE_COARSE_SCALE
                                 m_fine = F.interpolate(m_coarse.float(), scale_factor=(float(cr), float(cc)), mode='nearest')
-                                pool_kernel = model.encoder.outer_fine_pool
+                                pool_kernel = model_raw.encoder.outer_fine_pool
                                 if pool_kernel:
                                     if isinstance(pool_kernel, int):
                                         ph, pw = pool_kernel, pool_kernel
@@ -837,7 +845,7 @@ def run_eval_mae(model, device, root_files, tree_name,
                             # Create time_valid_mask using normalized threshold
                             if name in ["top", "bot"]:
                                 time_valid_base = (npho_norm_face > npho_threshold_norm).unsqueeze(1).float()
-                            elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                            elif name == "outer" and getattr(model_raw.encoder, "outer_fine", False):
                                 time_valid_coarse = (npho_norm_face > npho_threshold_norm).float()
                                 time_valid_coarse = time_valid_coarse.view(x_in.size(0), 1, *indices.shape)
                                 time_valid_base = F.interpolate(time_valid_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
@@ -856,7 +864,7 @@ def run_eval_mae(model, device, root_files, tree_name,
                                 raw_npho_face = npho_transform.inverse(npho_norm_face)
                                 if name in ["top", "bot"]:
                                     npho_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
-                                elif name == "outer" and getattr(model.encoder, "outer_fine", False):
+                                elif name == "outer" and getattr(model_raw.encoder, "outer_fine", False):
                                     npho_coarse = raw_npho_face.view(x_in.size(0), 1, *indices.shape)
                                     npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
                                     if pool_kernel:
