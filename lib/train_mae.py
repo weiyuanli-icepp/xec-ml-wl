@@ -230,6 +230,8 @@ Examples:
     parser.add_argument("--mlflow_experiment", type=str, default=None)
     parser.add_argument("--mlflow_run_name",   type=str, default=None)
     parser.add_argument("--resume_from",       type=str, default=None, help="Path to checkpoint to resume from")
+    parser.add_argument("--reset_epoch",       action="store_true", help="Start from epoch 0 when resuming (only load model weights)")
+    parser.add_argument("--refresh_lr",        action="store_true", help="Reset LR scheduler when resuming (schedule for remaining epochs)")
     parser.add_argument("--save_predictions",  action="store_true", help="Save sensor-level predictions to ROOT")
 
     args = parser.parse_args()
@@ -295,6 +297,8 @@ Examples:
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
         mlflow_new_run = getattr(cfg.checkpoint, 'new_mlflow_run', False)
         resume_from = args.resume_from or cfg.checkpoint.resume_from
+        reset_epoch = args.reset_epoch or getattr(cfg.checkpoint, 'reset_epoch', False)
+        refresh_lr = args.refresh_lr or getattr(cfg.checkpoint, 'refresh_lr', False)
         save_predictions = args.save_predictions or getattr(cfg.checkpoint, 'save_predictions', False)
         save_interval = getattr(cfg.checkpoint, 'save_interval', 10)
         root_save_interval = getattr(cfg.checkpoint, 'root_save_interval', 10)
@@ -371,6 +375,8 @@ Examples:
         mlflow_run_name = args.mlflow_run_name
         mlflow_new_run = False  # No config file, default to False
         resume_from = args.resume_from
+        reset_epoch = args.reset_epoch
+        refresh_lr = args.refresh_lr
         save_predictions = args.save_predictions
         save_interval = 10
         root_save_interval = 10
@@ -564,18 +570,40 @@ Examples:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if "ema_state_dict" in checkpoint and ema_model is not None:
                 ema_model.load_state_dict(checkpoint['ema_state_dict'])
-            # Note: scheduler state is intentionally NOT restored to allow
-            # configuring new epochs/lr_max/lr_min on resume
             if "scaler_state_dict" in checkpoint:
                 scaler.load_state_dict(checkpoint['scaler_state_dict'])
-            start_epoch = checkpoint.get('epoch', 0) + 1
+
+            checkpoint_epoch = checkpoint.get('epoch', 0)
             best_val_loss = checkpoint.get('best_val_loss', float('inf'))
             mlflow_run_id = checkpoint.get('mlflow_run_id', None)
+
+            # Handle reset_epoch: start from epoch 0 (only load weights)
+            if reset_epoch:
+                start_epoch = 0
+                if is_main_process():
+                    print(f"[INFO] reset_epoch=True: Starting from epoch 0 (weights loaded from epoch {checkpoint_epoch})")
+            else:
+                start_epoch = checkpoint_epoch + 1
+
+            # Handle refresh_lr: recreate scheduler for remaining epochs
+            if scheduler is not None and "scheduler_state_dict" in checkpoint:
+                if refresh_lr:
+                    remaining_epochs = epochs - start_epoch
+                    if is_main_process():
+                        print(f"[INFO] refresh_lr=True: Creating fresh scheduler with lr={lr}, "
+                              f"T_max={remaining_epochs} (epochs {start_epoch}-{epochs - 1})")
+                    if lr_scheduler == 'cosine':
+                        scheduler = CosineAnnealingLR(optimizer, T_max=remaining_epochs, eta_min=lr_min)
+                else:
+                    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                    if is_main_process():
+                        print(f"[INFO] Restored scheduler state.")
+
             if is_main_process():
                 print(f"[INFO] Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
         else:
             if is_main_process():
-                print("[WARN] Loaded raw weights. Starting from Epoch 1 (Optimizer reset).")
+                print("[WARN] Loaded raw weights. Starting from Epoch 0 (Optimizer reset).")
             model_without_ddp.load_state_dict(checkpoint, strict=False)
             start_epoch = 0
 

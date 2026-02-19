@@ -236,6 +236,8 @@ Examples:
 
     # Checkpoint
     parser.add_argument("--resume_from", type=str, default=None, help="Resume from inpainter checkpoint")
+    parser.add_argument("--reset_epoch", action="store_true", help="Start from epoch 0 when resuming (only load model weights)")
+    parser.add_argument("--refresh_lr", action="store_true", help="Reset LR scheduler when resuming (schedule for remaining epochs)")
     parser.add_argument("--save_interval", type=int, default=None)
 
     args = parser.parse_args()
@@ -335,6 +337,8 @@ Examples:
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
         mlflow_new_run = getattr(cfg.checkpoint, 'new_mlflow_run', False)
         resume_from = args.resume_from or cfg.checkpoint.resume_from
+        reset_epoch = args.reset_epoch or getattr(cfg.checkpoint, 'reset_epoch', False)
+        refresh_lr = args.refresh_lr or getattr(cfg.checkpoint, 'refresh_lr', False)
         save_interval = args.save_interval if args.save_interval is not None else cfg.checkpoint.save_interval
 
     else:
@@ -420,6 +424,8 @@ Examples:
         mlflow_run_name = args.mlflow_run_name
         mlflow_new_run = False  # No config file, default to False
         resume_from = args.resume_from
+        reset_epoch = args.reset_epoch
+        refresh_lr = args.refresh_lr
         save_interval = args.save_interval or 10
 
     if lr_scheduler == "none":
@@ -628,17 +634,39 @@ Examples:
             model_without_ddp.load_state_dict(checkpoint['model_state_dict'])
             if "optimizer_state_dict" in checkpoint:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            # Note: scheduler state is intentionally NOT restored to allow
-            # configuring new epochs/lr_max/lr_min on resume
             if "scaler_state_dict" in checkpoint:
                 scaler.load_state_dict(checkpoint['scaler_state_dict'])
             if "ema_state_dict" in checkpoint and ema_model is not None:
                 ema_model.load_state_dict(checkpoint['ema_state_dict'])
                 if is_main_process():
                     print("[INFO] Loaded EMA state from checkpoint")
-            start_epoch = checkpoint.get('epoch', 0) + 1
+
+            checkpoint_epoch = checkpoint.get('epoch', 0)
             best_val_loss = checkpoint.get('best_val_loss', float('inf'))
             mlflow_run_id = checkpoint.get('mlflow_run_id', None)
+
+            # Handle reset_epoch: start from epoch 0 (only load weights)
+            if reset_epoch:
+                start_epoch = 0
+                if is_main_process():
+                    print(f"[INFO] reset_epoch=True: Starting from epoch 0 (weights loaded from epoch {checkpoint_epoch})")
+            else:
+                start_epoch = checkpoint_epoch + 1
+
+            # Handle refresh_lr: recreate scheduler for remaining epochs
+            if scheduler is not None and "scheduler_state_dict" in checkpoint:
+                if refresh_lr:
+                    remaining_epochs = epochs - start_epoch
+                    if is_main_process():
+                        print(f"[INFO] refresh_lr=True: Creating fresh scheduler with lr={lr}, "
+                              f"T_max={remaining_epochs} (epochs {start_epoch}-{epochs - 1})")
+                    if lr_scheduler == 'cosine':
+                        scheduler = CosineAnnealingLR(optimizer, T_max=remaining_epochs, eta_min=lr_min)
+                else:
+                    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                    if is_main_process():
+                        print(f"[INFO] Restored scheduler state.")
+
             if is_main_process():
                 print(f"[INFO] Resumed from epoch {start_epoch}")
         else:

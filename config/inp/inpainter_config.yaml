@@ -109,6 +109,8 @@ checkpoint:
   save_interval: 10                 # Save checkpoint every N epochs
   save_predictions: true            # Write ROOT outputs during validation
   root_save_interval: 10            # Save ROOT predictions every N epochs
+  reset_epoch: false                 # Reset epoch counter to 0 when resuming
+  refresh_lr: false                  # Reset learning rate scheduler when resuming
   new_mlflow_run: false             # Create new MLflow run when resuming (vs continue existing)
 
 # === Distributed Training ===
