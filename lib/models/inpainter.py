@@ -1249,8 +1249,8 @@ class CrossAttentionInpaintingHead(nn.Module):
         combined = torch.cat([local_feat, global_feat], dim=-1)  # (total_masked, hidden_dim + latent_proj_dim)
         preds = self.pred_mlp(combined)  # (total_masked, out_channels)
 
-        # Scatter predictions back to output
-        pred_all[batch_idx, sensor_idx] = preds
+        # Scatter predictions back to output (cast to match pred_all dtype for AMP)
+        pred_all[batch_idx, sensor_idx] = preds.to(pred_all.dtype)
 
         return pred_all
 
@@ -1672,7 +1672,7 @@ class XEC_Inpainter(nn.Module):
         face_pos = indices[:, :, 0] * face_w + indices[:, :, 1]  # (B, max_masked)
         global_ids = face_idx_flat[face_pos]  # (B, max_masked)
         batch_range = torch.arange(B, device=device).unsqueeze(1).expand_as(global_ids)
-        pred_all[batch_range[valid], global_ids[valid]] = pred[valid]
+        pred_all[batch_range[valid], global_ids[valid]] = pred[valid].to(pred_all.dtype)
 
     def _scatter_hex_attention(self, pred_all, pred, indices, valid, hex_global_indices):
         """Scatter attention-based hex predictions back to global sensor indices.
@@ -1690,7 +1690,7 @@ class XEC_Inpainter(nn.Module):
         device = pred_all.device
         global_ids = hex_global_indices[indices]  # (B, max_masked)
         batch_range = torch.arange(B, device=device).unsqueeze(1).expand_as(global_ids)
-        pred_all[batch_range[valid], global_ids[valid]] = pred[valid]
+        pred_all[batch_range[valid], global_ids[valid]] = pred[valid].to(pred_all.dtype)
 
     def forward_full_output(self, x_batch, mask):
         """
@@ -1790,7 +1790,7 @@ class XEC_Inpainter(nn.Module):
                 pred, sensor_ids, valid = self.head_outer_sensor(outer_tensor, outer_latent, outer_sensor_mask)
                 if valid.any():
                     batch_range = torch.arange(B, device=device).unsqueeze(1).expand_as(sensor_ids)
-                    pred_all[batch_range[valid], sensor_ids[valid]] = pred[valid]
+                    pred_all[batch_range[valid], sensor_ids[valid]] = pred[valid].to(pred_all.dtype)
             else:
                 outer_tensor = gather_face(x_masked, OUTER_COARSE_FULL_INDEX_MAP)
                 outer_mask_flat = mask[:, self.outer_coarse_idx.flatten()]
