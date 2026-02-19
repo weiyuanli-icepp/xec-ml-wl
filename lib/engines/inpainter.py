@@ -882,25 +882,7 @@ def run_epoch_inpainter(
         print(profiler.report())
         # Print dataset I/O breakdown (only accurate when dataloader_workers=0)
         if dataloader_workers == 0:
-            io_stats = dataset.get_profile_stats()
-            if io_stats.get("event_count", 0) > 0:
-                total_time = io_stats["io_time"] + io_stats["process_time"] + io_stats["batch_time"]
-                lines = ["[Dataset Profile] I/O breakdown:"]
-                lines.append(f"  Files: {io_stats['file_count']}, Chunks: {io_stats['chunk_count']}, Events: {io_stats['event_count']:,}")
-                timing_items = [
-                    ("I/O (uproot)", io_stats["io_time"]),
-                    ("CPU (normalize)", io_stats["process_time"]),
-                    ("Batch (numpy→torch)", io_stats["batch_time"]),
-                ]
-                max_name_len = max(len(name) for name, _ in timing_items)
-                for name, t in timing_items:
-                    pct = 100 * t / total_time if total_time > 0 else 0
-                    lines.append(f"  {name:<{max_name_len}}  {t:>7.2f}s  ({pct:>5.1f}%)")
-                lines.append(f"  {'TOTAL':<{max_name_len}}  {total_time:>7.2f}s")
-                if total_time > 0:
-                    throughput = io_stats["event_count"] / total_time
-                    lines.append(f"  Throughput: {throughput:,.0f} events/s")
-                print("\n".join(lines))
+            print(dataset.get_profile_report())
 
     # Final optimizer step if grads remain from incomplete accumulation.
     # Previous backward passes used no_sync(), so model gradients are local-only.
@@ -1369,25 +1351,7 @@ def run_eval_inpainter(
         print(profiler.report("Validation timing breakdown"))
         # Print dataset I/O breakdown (only accurate when dataloader_workers=0)
         if dataloader_workers == 0:
-            io_stats = dataset.get_profile_stats()
-            if io_stats.get("event_count", 0) > 0:
-                total_time = io_stats["io_time"] + io_stats["process_time"] + io_stats["batch_time"]
-                lines = ["[Dataset Profile] I/O breakdown:"]
-                lines.append(f"  Files: {io_stats['file_count']}, Chunks: {io_stats['chunk_count']}, Events: {io_stats['event_count']:,}")
-                timing_items = [
-                    ("I/O (uproot)", io_stats["io_time"]),
-                    ("CPU (normalize)", io_stats["process_time"]),
-                    ("Batch (numpy→torch)", io_stats["batch_time"]),
-                ]
-                max_name_len = max(len(name) for name, _ in timing_items)
-                for name, t in timing_items:
-                    pct = 100 * t / total_time if total_time > 0 else 0
-                    lines.append(f"  {name:<{max_name_len}}  {t:>7.2f}s  ({pct:>5.1f}%)")
-                lines.append(f"  {'TOTAL':<{max_name_len}}  {total_time:>7.2f}s")
-                if total_time > 0:
-                    throughput = io_stats["event_count"] / total_time
-                    lines.append(f"  Throughput: {throughput:,.0f} events/s")
-                print("\n".join(lines))
+            print(dataset.get_profile_report())
 
     avg_metrics = {k: v / max(1, num_batches) for k, v in metric_sums.items()}
 

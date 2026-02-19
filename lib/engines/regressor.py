@@ -164,6 +164,7 @@ def run_epoch_stream(
     join_ctx = Join([model]) if (dist.is_initialized() and train) else nullcontext()
 
     # ========================== START OF BATCH LOOP ==========================
+    profiler.start("data_load")
     with join_ctx:
         for i_batch, (X_batch, target_dict) in enumerate(loader):
             t_data      = time.time() - t_end
@@ -200,15 +201,17 @@ def run_epoch_stream(
                     w = legacy_rw_cache["weights"][id_th, id_ph]
 
             if train:
-                profiler.start("forward")
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
 
                     # Forward Pass
+                    profiler.start("forward")
                     preds = model(X_batch)
                     if not isinstance(preds, dict):
                         preds = {"angle": preds}  # Compatibility for single-head models
+                    profiler.stop()
 
                     # Multi-task loss computation using cached loss functions
+                    profiler.start("loss_compute")
                     total_loss = 0.0
                     for task, pred in preds.items():
                         if task not in target_dict:
@@ -247,8 +250,7 @@ def run_epoch_stream(
                             total_loss += l_task.mean() * task_weight
 
                     loss = total_loss
-
-                profiler.stop()  # forward
+                    profiler.stop()  # loss_compute
 
                 # Check for NaN/Inf loss - skip batch if detected
                 loss_val = loss.item()
