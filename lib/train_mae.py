@@ -41,6 +41,7 @@ from .engines import run_epoch_mae, run_eval_mae
 from .utils import count_model_params, log_system_metrics_to_mlflow, validate_data_paths, check_artifact_directory
 from .geom_defs import DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_TIME
 from .config import load_mae_config
+from .reweighting import create_intensity_reweighter_from_config
 from .distributed import (
     setup_ddp, cleanup_ddp, is_main_process,
     shard_file_list, reduce_metrics, wrap_ddp,
@@ -201,6 +202,7 @@ Examples:
     parser.add_argument("--warmup_epochs",        type=int, default=None, help="Warmup epochs for cosine scheduler")
     parser.add_argument("--weight_decay",         type=float, default=None)
     parser.add_argument("--loss_fn",              type=str, default=None, choices=["smooth_l1", "mse", "l1", "huber"])
+    parser.add_argument("--loss_beta",            type=float, default=None, help="Beta for smooth_l1/huber loss")
     parser.add_argument("--npho_weight",          type=float, default=None)
     parser.add_argument("--time_weight",          type=float, default=None)
     parser.add_argument("--auto_channel_weight",  action="store_true", help="Enable homoscedastic channel weighting")
@@ -275,6 +277,7 @@ Examples:
         warmup_epochs = args.warmup_epochs if args.warmup_epochs is not None else getattr(cfg.training, "warmup_epochs", 0)
         weight_decay = float(args.weight_decay if args.weight_decay is not None else cfg.training.weight_decay)
         loss_fn = args.loss_fn or cfg.training.loss_fn
+        loss_beta = args.loss_beta if args.loss_beta is not None else getattr(cfg.training, 'loss_beta', 1.0)
         npho_weight = args.npho_weight if args.npho_weight is not None else cfg.training.npho_weight
         # Get time config from nested structure
         time_weight = args.time_weight if args.time_weight is not None else cfg.training.time.weight
@@ -293,6 +296,7 @@ Examples:
         grad_clip = args.grad_clip if args.grad_clip is not None else getattr(cfg.training, 'grad_clip', 1.0)
         grad_accum_steps = args.grad_accum_steps if args.grad_accum_steps is not None else getattr(cfg.training, 'grad_accum_steps', 1)
         ema_decay = args.ema_decay if args.ema_decay is not None else getattr(cfg.training, 'ema_decay', None)
+        amp = getattr(cfg.training, 'amp', True)
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
         mlflow_new_run = getattr(cfg.checkpoint, 'new_mlflow_run', False)
@@ -355,6 +359,7 @@ Examples:
         warmup_epochs = args.warmup_epochs if args.warmup_epochs is not None else 0
         weight_decay = args.weight_decay or 1e-4
         loss_fn = args.loss_fn or "smooth_l1"
+        loss_beta = args.loss_beta if args.loss_beta is not None else 1.0
         npho_weight = args.npho_weight or 1.0
         time_weight = args.time_weight or 1.0
         npho_threshold = args.npho_threshold  # None uses DEFAULT_NPHO_THRESHOLD
@@ -371,6 +376,7 @@ Examples:
         grad_clip = args.grad_clip or 1.0
         grad_accum_steps = args.grad_accum_steps or 1
         ema_decay = args.ema_decay  # None by default
+        amp = True  # Always enabled in CLI mode
         mlflow_experiment = args.mlflow_experiment or "mae_pretraining"
         mlflow_run_name = args.mlflow_run_name
         mlflow_new_run = False  # No config file, default to False
@@ -554,7 +560,29 @@ Examples:
             raise ValueError(f"Unsupported lr_scheduler: {lr_scheduler}")
 
     # Initialize GradScaler for AMP
-    scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
+    scaler = torch.amp.GradScaler('cuda', enabled=(amp and device.type == "cuda"))
+
+    # Intensity-based sample reweighter
+    intensity_reweighter = None
+    if intensity_reweighting_enabled:
+        intensity_reweighter = create_intensity_reweighter_from_config({
+            'enabled': True,
+            'nbins': intensity_reweighting_nbins,
+            'target': intensity_reweighting_target,
+        })
+        if intensity_reweighter is not None:
+            intensity_reweighter.fit(
+                train_files, "tree",
+                npho_branch=npho_branch,
+                step_size=chunksize,
+                npho_scale=npho_scale,
+                npho_scale2=npho_scale2,
+                npho_scheme=npho_scheme,
+            )
+        if intensity_reweighter is None or not intensity_reweighter.is_enabled:
+            if is_main_process():
+                print("[INFO] Intensity reweighting disabled or failed to fit.")
+            intensity_reweighter = None
 
     # Resume from checkpoint if provided
     start_epoch = 0
@@ -709,6 +737,7 @@ Examples:
                 "warmup_epochs": warmup_epochs,
                 "weight_decay": weight_decay,
                 "loss_fn": loss_fn,
+                "loss_beta": loss_beta,
                 "channel_weights": channel_weights_label,
                 "grad_clip": grad_clip,
                 "grad_accum_steps": grad_accum_steps,
@@ -732,6 +761,7 @@ Examples:
                 model, optimizer, device, train_files, "tree",
                 batch_size=batch_size,
                 step_size=chunksize,
+                amp=amp,
                 npho_branch=npho_branch,
                 time_branch=time_branch,
                 npho_scale=npho_scale,
@@ -740,6 +770,7 @@ Examples:
                 time_shift=time_shift,
                 sentinel_time=sentinel_time,
                 loss_fn=loss_fn,
+                loss_beta=loss_beta,
                 npho_weight=npho_weight,
                 time_weight=time_weight,
                 auto_channel_weight=auto_channel_weight,
@@ -758,6 +789,7 @@ Examples:
                 npho_scheme=npho_scheme,
                 npho_loss_weight_enabled=npho_loss_weight_enabled,
                 npho_loss_weight_alpha=npho_loss_weight_alpha,
+                intensity_reweighter=intensity_reweighter,
                 no_sync_ctx=no_sync_ctx,
                 sentinel_npho=sentinel_npho,
                 ema_model=ema_model,
@@ -782,6 +814,7 @@ Examples:
                     time_shift=time_shift,
                     sentinel_time=sentinel_time,
                     loss_fn=loss_fn,
+                    loss_beta=loss_beta,
                     npho_weight=npho_weight,
                     time_weight=time_weight,
                     auto_channel_weight=auto_channel_weight,
@@ -868,6 +901,7 @@ Examples:
                         time_shift=time_shift,
                         sentinel_time=sentinel_time,
                         loss_fn=loss_fn,
+                        loss_beta=loss_beta,
                         npho_weight=npho_weight,
                         time_weight=time_weight,
                         auto_channel_weight=auto_channel_weight,

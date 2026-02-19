@@ -46,6 +46,7 @@ from .engines.inpainter import (
     RootPredictionWriter,
 )
 from .utils import log_system_metrics_to_mlflow, validate_data_paths, check_artifact_directory
+from .reweighting import create_intensity_reweighter_from_config
 from .geom_defs import (
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
     DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_TIME
@@ -324,6 +325,7 @@ Examples:
             compile_mode = args.compile
         compile_fullgraph = getattr(cfg.training, 'compile_fullgraph', False)
         ema_decay = args.ema_decay if args.ema_decay is not None else getattr(cfg.training, 'ema_decay', None)
+        amp = getattr(cfg.training, 'amp', True)
         # New normalization and loss weighting options
         npho_scheme = args.npho_scheme or getattr(cfg.normalization, 'npho_scheme', 'log1p')
         npho_loss_weight_enabled = args.npho_loss_weight_enabled or cfg.training.npho_loss_weight.enabled
@@ -411,6 +413,7 @@ Examples:
         compile_mode = args.compile if args.compile is not None else 'reduce-overhead'
         compile_fullgraph = False  # Default for CLI mode
         ema_decay = args.ema_decay  # None by default
+        amp = True  # Always enabled in CLI mode
         # New normalization and loss weighting options (CLI defaults)
         npho_scheme = args.npho_scheme or "log1p"
         npho_loss_weight_enabled = args.npho_loss_weight_enabled
@@ -619,8 +622,30 @@ Examples:
             if is_main_process():
                 print(f"[INFO] Using CosineAnnealingLR with eta_min={lr_min}")
 
-    # AMP scaler
-    scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
+    # AMP scaler (None when amp disabled — engine uses scaler presence to toggle autocast)
+    scaler = torch.amp.GradScaler('cuda', enabled=True) if (amp and device.type == "cuda") else None
+
+    # Intensity-based sample reweighter
+    intensity_reweighter = None
+    if intensity_reweighting_enabled:
+        intensity_reweighter = create_intensity_reweighter_from_config({
+            'enabled': True,
+            'nbins': intensity_reweighting_nbins,
+            'target': intensity_reweighting_target,
+        })
+        if intensity_reweighter is not None:
+            intensity_reweighter.fit(
+                train_files, "tree",
+                npho_branch=npho_branch,
+                step_size=chunksize,
+                npho_scale=npho_scale,
+                npho_scale2=npho_scale2,
+                npho_scheme=npho_scheme,
+            )
+        if intensity_reweighter is None or not intensity_reweighter.is_enabled:
+            if is_main_process():
+                print("[INFO] Intensity reweighting disabled or failed to fit.")
+            intensity_reweighter = None
 
     # Resume from checkpoint
     start_epoch = 0
@@ -755,7 +780,7 @@ Examples:
                 "time_weight": time_weight,
                 "grad_clip": grad_clip,
                 "grad_accum_steps": grad_accum_steps,
-                "amp": True,
+                "amp": amp,
                 "compile": compile_mode,
                 "ema_decay": ema_decay,
                 "outer_mode": outer_mode,
@@ -810,6 +835,7 @@ Examples:
                 npho_scheme=npho_scheme,
                 npho_loss_weight_enabled=npho_loss_weight_enabled,
                 npho_loss_weight_alpha=npho_loss_weight_alpha,
+                intensity_reweighter=intensity_reweighter,
                 no_sync_ctx=no_sync_ctx,
                 sentinel_npho=sentinel_npho,
                 ema_model=ema_model,
@@ -846,6 +872,7 @@ Examples:
                     use_npho_time_weight=use_npho_time_weight,
                     profile=profile and is_main_process(),
                     log_invalid_npho=log_invalid_npho,
+                    amp=amp,
                     npho_scheme=npho_scheme,
                     npho_loss_weight_enabled=npho_loss_weight_enabled,
                     npho_loss_weight_alpha=npho_loss_weight_alpha,
@@ -997,6 +1024,7 @@ Examples:
                         use_npho_time_weight=use_npho_time_weight,
                         profile=False,
                         log_invalid_npho=log_invalid_npho,
+                        amp=amp,
                         npho_scheme=npho_scheme,
                         npho_loss_weight_enabled=npho_loss_weight_enabled,
                         npho_loss_weight_alpha=npho_loss_weight_alpha,

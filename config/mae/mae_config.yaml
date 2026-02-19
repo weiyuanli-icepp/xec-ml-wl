@@ -54,6 +54,7 @@ training:
   warmup_epochs: 3
   weight_decay: 5.0e-5
   loss_fn: "smooth_l1"            # Options: smooth_l1, mse, l1, huber
+  loss_beta: 1.0                  # Beta for smooth_l1/huber (smaller = more sensitive to medium errors)
   npho_weight: 1.0                # Per-channel manual weighting
   auto_channel_weight: false      # Learn log(sigma^2) per channel (overrides manual weights)
   grad_clip: 1.0                    # Gradient clipping (0 to disable)

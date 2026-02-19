@@ -464,6 +464,7 @@ class MAETrainingConfig:
     warmup_epochs: int = 0
     weight_decay: float = 1e-4
     loss_fn: str = "smooth_l1"  # smooth_l1, mse, l1, huber
+    loss_beta: float = 1.0  # beta for smooth_l1/huber loss
     npho_weight: float = 1.0
     time: TimeConfig = field(default_factory=TimeConfig)  # Time channel options (nested)
     auto_channel_weight: bool = False

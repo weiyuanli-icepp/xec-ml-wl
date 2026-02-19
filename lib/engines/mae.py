@@ -29,6 +29,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                   time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT,
                   sentinel_time=DEFAULT_SENTINEL_TIME,
                   loss_fn="mse",
+                  loss_beta=1.0,
                   npho_weight=1.0,
                   time_weight=1.0,
                   auto_channel_weight=False,
@@ -58,7 +59,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
 
     if scaler is None:
         scaler = torch.amp.GradScaler('cuda', enabled=amp)
-    loss_func = get_pointwise_loss_fn(loss_fn)
+    loss_func = get_pointwise_loss_fn(loss_fn, beta=loss_beta)
     log_vars = getattr(model_raw, "channel_log_vars", None) if auto_channel_weight else None
 
     # Detect predict_channels from model (default to ["npho", "time"] for legacy)
@@ -524,6 +525,7 @@ def run_eval_mae(model, device, root_files, tree_name,
                  time_scale=DEFAULT_TIME_SCALE, time_shift=DEFAULT_TIME_SHIFT,
                  sentinel_time=DEFAULT_SENTINEL_TIME,
                  loss_fn="mse",
+                 loss_beta=1.0,
                  npho_weight=1.0,
                  time_weight=1.0,
                  auto_channel_weight=False,
@@ -556,7 +558,7 @@ def run_eval_mae(model, device, root_files, tree_name,
     # Unwrap DDP to access model attributes
     model_raw = getattr(model, 'module', model)
 
-    loss_func = get_pointwise_loss_fn(loss_fn)
+    loss_func = get_pointwise_loss_fn(loss_fn, beta=loss_beta)
     log_vars = getattr(model_raw, "channel_log_vars", None) if auto_channel_weight else None
 
     # Detect predict_channels from model (default to ["npho", "time"] for legacy)
