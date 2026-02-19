@@ -33,7 +33,6 @@ import time
 import glob
 import platform
 import mlflow
-import numpy as np
 from contextlib import nullcontext
 
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
@@ -577,6 +576,7 @@ Examples:
         if is_main_process():
             print(f"[INFO] EMA enabled with decay={ema_decay}")
         ema_model = AveragedModel(model_without_ddp, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
+        ema_model.to(device)
 
     # Detect resume to auto-disable warmup
     # When resuming from a checkpoint, warmup is not needed since the model
@@ -818,6 +818,7 @@ Examples:
 
             # Validation (use EMA model if available)
             eval_model = ema_model if ema_model is not None else model
+            eval_model.eval()
             val_metrics = {}
             if val_files:
                 val_metrics = run_eval_inpainter(

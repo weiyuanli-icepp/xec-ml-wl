@@ -508,6 +508,7 @@ Examples:
         if is_main_process():
             print(f"[INFO] EMA enabled with decay={ema_decay}")
         ema_model = AveragedModel(model_without_ddp, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
+        ema_model.to(device)
 
     # Detect resume to auto-disable warmup
     # When resuming from a checkpoint, warmup is not needed since the model

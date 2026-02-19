@@ -56,7 +56,6 @@ from .distributed import (
 # ------------------------------------------------------------
 # Suppress torch.compile / Triton autotuning verbose output
 import logging
-import warnings
 logging.getLogger("torch._inductor").setLevel(logging.WARNING)
 logging.getLogger("torch._dynamo").setLevel(logging.WARNING)
 # Suppress torch.compile UserWarnings about tensor construction
@@ -344,7 +343,11 @@ def train_with_config(config_path: str, profile: bool = None):
     # Auto-detect ARM architecture (GH nodes) and disable compile (Triton not supported)
     import platform
     is_arm = platform.machine() in ('aarch64', 'arm64')
-    compile_mode = getattr(cfg.training, 'compile', 'max-autotune')
+    compile_cfg = getattr(cfg.training, 'compile', 'max-autotune')
+    if isinstance(compile_cfg, bool):
+        compile_mode = 'max-autotune' if compile_cfg else 'none'
+    else:
+        compile_mode = compile_cfg if compile_cfg else 'max-autotune'
     compile_fullgraph = getattr(cfg.training, 'compile_fullgraph', False)
 
     if is_arm and compile_mode and compile_mode not in ('false', 'none'):
@@ -637,15 +640,15 @@ def train_with_config(config_path: str, profile: bool = None):
                     ema_model.n_averaged.zero_()
 
     # --- Check for valid epoch range ---
-    if start_epoch >= cfg.training.epochs:
+    if start_epoch > cfg.training.epochs:
         print("\n" + "=" * 70)
         print("[ERROR] No epochs to train!")
         print(f"  Resumed from epoch {start_epoch - 1}, but config has epochs={cfg.training.epochs}")
-        print(f"  The training loop range({start_epoch}, {cfg.training.epochs}) is empty.")
+        print(f"  The training loop range({start_epoch}, {cfg.training.epochs + 1}) is empty.")
         print(f"\n  To continue training, set 'epochs' higher than {start_epoch - 1}.")
         print(f"  For example, to train 10 more epochs, set epochs={start_epoch + 9}")
         print("=" * 70 + "\n")
-        raise ValueError(f"start_epoch ({start_epoch}) >= epochs ({cfg.training.epochs}). "
+        raise ValueError(f"start_epoch ({start_epoch}) > epochs ({cfg.training.epochs}). "
                         f"Set epochs > {start_epoch - 1} to continue training.")
 
     # --- Force new MLflow run if requested ---
@@ -901,6 +904,8 @@ def train_with_config(config_path: str, profile: bool = None):
                         "encoder_dim": cfg.model.encoder_dim,
                         "dim_feedforward": cfg.model.dim_feedforward,
                         "num_fusion_layers": cfg.model.num_fusion_layers,
+                        "hidden_dim": cfg.model.hidden_dim,
+                        "drop_path_rate": cfg.model.drop_path_rate,
                         "active_tasks": active_tasks,
                         "npho_branch": cfg.data.npho_branch,
                         "time_branch": cfg.data.time_branch,
@@ -953,12 +958,21 @@ def train_with_config(config_path: str, profile: bool = None):
                     "encoder_dim": cfg.model.encoder_dim,
                     "dim_feedforward": cfg.model.dim_feedforward,
                     "num_fusion_layers": cfg.model.num_fusion_layers,
+                    "hidden_dim": cfg.model.hidden_dim,
+                    "drop_path_rate": cfg.model.drop_path_rate,
                     "active_tasks": active_tasks,
                     "npho_branch": cfg.data.npho_branch,
                     "time_branch": cfg.data.time_branch,
                 },
             }
             torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_last.pth"))
+
+            # Periodic checkpoint (save_interval)
+            save_interval = cfg.checkpoint.save_interval
+            if save_interval and ep % save_interval == 0:
+                interval_path = os.path.join(artifact_dir, f"checkpoint_epoch_{ep}.pth")
+                torch.save(checkpoint_data, interval_path)
+                print(f"   [info] Saved periodic checkpoint to {interval_path}")
 
         # --- Final Evaluation & Artifacts (rank 0 only) ---
         if is_main_process():
