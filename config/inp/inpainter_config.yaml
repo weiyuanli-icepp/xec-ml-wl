@@ -37,8 +37,6 @@ model:
   outer_mode: "finegrid"            # Must match MAE encoder config
   outer_fine_pool: null             # Must match MAE encoder config
   mask_ratio: 0.05                  # Realistic dead channel density (1-10%)
-  # DEPRECATED: delete this line. Use training.time.mask_ratio_scale instead.
-  time_mask_ratio_scale: 1.0        # Scale factor for masking valid-time sensors (>1.0 to prefer masking valid-time)
   freeze_encoder: false             # Freeze encoder, train only inpainting heads
   use_local_context: true           # Use local neighbor context for inpainting (disable for ablation)
   predict_channels: ["npho"]           # Output channels to predict: ["npho"] or ["npho", "time"]
@@ -51,11 +49,15 @@ model:
   # - Embeds sensor 3D positions via sinusoidal encoding
   # - Embeds face IDs (0-5) to learn SiPM/PMT scale differences
   head_type: "per_face"               # "per_face" or "cross_attention"
-  # sensor_positions_file: "lib/sensor_positions.txt"  # Required for cross_attention
-  # cross_attn_k: 16                  # Number of KNN neighbors for local attention
-  # cross_attn_hidden: 64             # Hidden dimension for local attention
-  # cross_attn_latent_dim: 128        # Projection dimension for latent cross-attention
-  # cross_attn_pos_dim: 96            # Sinusoidal position encoding dimension
+  # Cross-attention settings (only used when head_type is "cross_attention"):
+  sensor_positions_file: null         # Required for cross_attention (e.g. "lib/sensor_positions.txt")
+  cross_attn_k: 16                    # Number of KNN neighbors for local attention
+  cross_attn_hidden: 64               # Hidden dimension for local attention
+  cross_attn_latent_dim: 128          # Projection dimension for latent cross-attention
+  cross_attn_pos_dim: 96              # Sinusoidal position encoding dimension
+  encoder_dim: 1024                  # d_model for fusion transformer (must be divisible by 32)
+  dim_feedforward: null              # FFN dim (null = encoder_dim * 4)
+  num_fusion_layers: 2               # Number of transformer layers
 
 # === Training Configuration ===
 training:
@@ -70,25 +72,24 @@ training:
   loss_fn: "smooth_l1"              # Options: smooth_l1, mse, l1, huber
   loss_beta: 0.1                    # Beta for smooth_l1/huber (smaller = more sensitive to medium errors)
   npho_weight: 1.0                  # Weight for npho channel loss
-  # DEPRECATED: delete this line. Use training.time.weight instead.
-  time_weight: 1.0                  # Weight for time channel loss
   grad_clip: 1.0                    # Gradient clipping (0 to disable)
   amp: true                         # Automatic Mixed Precision
-  # torch.compile mode options:
-  #   "max-autotune" - Maximum optimization, benchmarks many kernel configs (highest memory)
-  #   "reduce-overhead" - Lower compilation overhead and memory, good balance
-  #   "default" - Basic compilation with minimal overhead
-  #   "false" or "none" - Disable compilation, use eager mode (no extra memory)
+  # torch.compile: "max-autotune", "reduce-overhead", "default", "false"/"none"
   compile: "reduce-overhead"
+  compile_fullgraph: false            # Compile as single graph (slower compile, better perf)
   track_mae_rmse: false              # Compute/log MAE/RMSE metrics (set false to skip)
   grad_accum_steps: 4               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
   track_metrics: false               # Track per-face metrics during training (set false to log only total_loss)
-  # DEPRECATED: delete this line. Use training.time.npho_threshold instead.
-  npho_threshold: 100              # Npho threshold for conditional time loss (null uses default 10.0)
-  # DEPRECATED: delete this line. Use training.time.use_npho_weight instead.
-  use_npho_time_weight: true        # Weight time loss by sqrt(npho) for chi-square-like weighting
   ema_decay: null                   # EMA decay rate (null to disable, 0.999 typical)
   profile: false                    # Enable training profiler to identify bottlenecks
+
+  # === Time Channel Options ===
+  # Only relevant when predict_channels includes "time"
+  time:
+    weight: 1.0                     # Loss weight for time channel (<1.0 to downweight)
+    mask_ratio_scale: 1.0           # Scale factor for masking valid-time sensors (>1.0 to prefer masking valid-time)
+    use_npho_weight: true           # Weight time loss by sqrt(npho) for chi-square-like weighting
+    npho_threshold: 100             # Npho threshold for conditional time loss (null uses default)
 
   # === Npho Loss Weighting ===
   # Weight reconstruction loss by (npho + 1)^alpha to give higher weight to high-photon-count sensors

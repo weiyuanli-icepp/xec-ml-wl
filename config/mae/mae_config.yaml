@@ -37,12 +37,13 @@ model:
   outer_mode: "finegrid"            # "finegrid" or "split"
   outer_fine_pool: null             # null or [h, w] for pooling
   mask_ratio: 0.65                  # Fraction of input to mask (0.5-0.75 typical)
-  # DEPRECATED: delete this line. Use training.time.mask_ratio_scale instead.
-  time_mask_ratio_scale: 1.0        # Scale factor for masking valid-time sensors (>1.0 to prefer masking valid-time)
   predict_channels: ["npho", "time"]  # Output channels to predict: ["npho"] or ["npho", "time"]
                                       # Use ["npho"] for faster training when time prediction is not needed
   decoder_dim: 128                  # Lightweight decoder dimension (MAE paper: decoder << encoder)
                                       # Default 128, smaller values force encoder to learn more
+  encoder_dim: 1024                  # d_model for fusion transformer (must be divisible by 32)
+  dim_feedforward: null              # FFN dim (null = encoder_dim * 4)
+  num_fusion_layers: 2               # Number of transformer layers
 
 # === Training Configuration ===
 training:
@@ -54,26 +55,25 @@ training:
   weight_decay: 5.0e-5
   loss_fn: "smooth_l1"            # Options: smooth_l1, mse, l1, huber
   npho_weight: 1.0                # Per-channel manual weighting
-  # DEPRECATED: delete this line. Use training.time.weight instead.
-  time_weight: 1.0                # Set <1.0 to downweight time channel
   auto_channel_weight: false      # Learn log(sigma^2) per channel (overrides manual weights)
   grad_clip: 1.0                    # Gradient clipping (0 to disable)
   grad_accum_steps: 1               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
   ema_decay: null                   # EMA decay rate (null to disable, 0.999 typical)
   amp: true                         # Automatic Mixed Precision
-  # torch.compile mode options:
-  #   "max-autotune" - Maximum optimization, benchmarks many kernel configs (highest memory)
-  #   "reduce-overhead" - Lower compilation overhead and memory, good balance
-  #   "default" - Basic compilation with minimal overhead
-  #   "false" or "none" - Disable compilation, use eager mode (no extra memory)
+  # torch.compile: "max-autotune", "reduce-overhead", "default", "false"/"none"
   compile: "reduce-overhead"
-  # DEPRECATED: delete this line. Use training.time.npho_threshold instead.
-  npho_threshold: 100              # Npho threshold for conditional time loss (null uses default 10.0)
-  # DEPRECATED: delete this line. Use training.time.use_npho_weight instead.
-  use_npho_time_weight: true        # Weight time loss by sqrt(npho) for chi-square-like weighting
+  compile_fullgraph: false            # Compile as single graph (slower compile, better perf)
   track_mae_rmse: false             # Compute/log MAE/RMSE metrics (slower, set true for detailed analysis)
   track_metrics: false              # Track per-face loss during training (slower, set true for debugging)
   profile: false                    # Enable training profiler to identify bottlenecks
+
+  # === Time Channel Options ===
+  # Only relevant when predict_channels includes "time"
+  time:
+    weight: 1.0                     # Loss weight for time channel (<1.0 to downweight)
+    mask_ratio_scale: 1.0           # Scale factor for masking valid-time sensors (>1.0 to prefer masking valid-time)
+    use_npho_weight: true           # Weight time loss by sqrt(npho) for chi-square-like weighting
+    npho_threshold: 100             # Npho threshold for conditional time loss (null uses default)
 
   # === Npho Loss Weighting ===
   # Weight reconstruction loss by (npho + 1)^alpha to give higher weight to high-photon-count sensors

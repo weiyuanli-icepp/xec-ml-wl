@@ -42,6 +42,9 @@ model:
   outer_fine_pool: null             # null or [h, w] for pooling
   hidden_dim: 256
   drop_path_rate: 0.0
+  encoder_dim: 1024                  # d_model for fusion transformer (must be divisible by 32)
+  dim_feedforward: null              # FFN dim (null = encoder_dim * 4)
+  num_fusion_layers: 2               # Number of transformer layers
 
 # === Active Tasks ===
 # Each task can have:
@@ -49,27 +52,32 @@ model:
 #   loss_fn: "smooth_l1", "l1", "mse", "huber"
 #   loss_beta: float (for smooth_l1/huber)
 #   weight: float (manual loss weight)
+#   log_transform: true/false (train on log(value) for energy/timing)
 tasks:
   angle:
     enabled: true
     loss_fn: "smooth_l1"
     loss_beta: 1.0
     weight: 1.0
+    log_transform: false
   energy:
     enabled: false
     loss_fn: "l1"
     loss_beta: 1.0
     weight: 1.0
+    log_transform: false
   timing:
     enabled: false
     loss_fn: "l1"
     loss_beta: 1.0
     weight: 1.0
+    log_transform: false
   uvwFI:
     enabled: false
     loss_fn: "mse"
     loss_beta: 1.0
     weight: 1.0
+    log_transform: false
 
 # === Training Configuration ===
 training:
@@ -83,14 +91,17 @@ training:
   # --- Learning Rate Schedule ---
   # Options: "cosine", "onecycle", "plateau", null (constant LR)
   lr_scheduler: "cosine"
+  # Legacy aliases (used only when lr_scheduler is null):
+  use_scheduler: true
+  scheduler: "cosine"
   warmup_epochs: 2                  # Linear warmup before main schedule
   lr_min: 1.0e-6                    # Floor LR (cosine, plateau)
   # Plateau-specific:
-  # lr_patience: 5                  # Epochs without improvement before reducing
-  # lr_factor: 0.5                  # Multiply LR by this factor on plateau
+  lr_patience: 5                    # Epochs without improvement before reducing
+  lr_factor: 0.5                    # Multiply LR by this factor on plateau
   # OneCycle-specific:
-  # max_lr: 3.0e-4                  # Peak LR (defaults to lr if not set)
-  # pct_start: 0.3                  # Fraction of training spent ramping up
+  max_lr: null                      # Peak LR (defaults to lr if not set)
+  pct_start: 0.3                    # Fraction of training spent ramping up
 
   # --- Regularization ---
   ema_decay: 0.999
@@ -102,6 +113,7 @@ training:
   profile: false
   # torch.compile: "max-autotune", "reduce-overhead", "default", "false"/"none"
   compile: "reduce-overhead"
+  compile_fullgraph: false            # Compile as single graph (slower compile, better perf)
 
 # === Loss Balancing ===
 loss_balance: "manual"              # "manual" or "auto"

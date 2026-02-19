@@ -159,6 +159,12 @@ class MLflowConfig:
 
 
 @dataclass
+class DistributedConfig:
+    """Distributed training configuration."""
+    num_gpus: int = 1  # Number of GPUs (1 = single-GPU, >1 = DDP multi-GPU)
+
+
+@dataclass
 class ExportConfig:
     """Model export configuration."""
     onnx: Optional[str] = "meg2ang_convnextv2.onnx"
@@ -175,6 +181,7 @@ class XECConfig:
     loss_balance: str = "manual"  # "manual" or "auto"
     reweighting: ReweightingConfig = field(default_factory=ReweightingConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
+    distributed: DistributedConfig = field(default_factory=DistributedConfig)
     mlflow: MLflowConfig = field(default_factory=MLflowConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
 
@@ -283,6 +290,14 @@ def load_config(config_path: str, warn_missing: bool = True, auto_update: bool =
         for k, v in raw_config['mlflow'].items():
             if hasattr(config.mlflow, k):
                 setattr(config.mlflow, k, v)
+
+    # Distributed
+    if 'distributed' in raw_config:
+        uk = _warn_unknown_keys(raw_config['distributed'], DistributedConfig, 'distributed')
+        if uk: unknown['distributed'] = uk
+        for k, v in raw_config['distributed'].items():
+            if hasattr(config.distributed, k):
+                setattr(config.distributed, k, v)
 
     # Export
     if 'export' in raw_config:
@@ -481,6 +496,8 @@ class MAECheckpointConfig:
     save_interval: int = 10  # Save checkpoint every N epochs
     save_predictions: bool = True  # Save ROOT file with sensor predictions
     root_save_interval: int = 10  # Save ROOT predictions every N epochs
+    reset_epoch: bool = False  # Start from epoch 0 when resuming (only load model weights)
+    refresh_lr: bool = False  # Reset LR scheduler when resuming (schedule runs from current epoch to end)
     new_mlflow_run: bool = False  # Force new MLflow run even when resuming from checkpoint
 
 
@@ -499,6 +516,7 @@ class MAEConfig:
     model: MAEModelConfig = field(default_factory=MAEModelConfig)
     training: MAETrainingConfig = field(default_factory=MAETrainingConfig)
     checkpoint: MAECheckpointConfig = field(default_factory=MAECheckpointConfig)
+    distributed: DistributedConfig = field(default_factory=DistributedConfig)
     mlflow: MAEMLflowConfig = field(default_factory=MAEMLflowConfig)
 
 
@@ -642,6 +660,14 @@ def load_mae_config(config_path: str, warn_missing: bool = True, auto_update: bo
             if hasattr(config.checkpoint, k):
                 setattr(config.checkpoint, k, v)
 
+    # Distributed
+    if 'distributed' in raw_config:
+        uk = _warn_unknown_keys(raw_config['distributed'], DistributedConfig, 'distributed')
+        if uk: unknown['distributed'] = uk
+        for k, v in raw_config['distributed'].items():
+            if hasattr(config.distributed, k):
+                setattr(config.distributed, k, v)
+
     # MLflow
     if 'mlflow' in raw_config:
         uk = _warn_unknown_keys(raw_config['mlflow'], MAEMLflowConfig, 'mlflow')
@@ -746,6 +772,8 @@ class InpainterCheckpointConfig:
     save_interval: int = 10
     save_predictions: bool = True  # Save ROOT file with sensor predictions
     root_save_interval: int = 10  # Save ROOT predictions every N epochs
+    reset_epoch: bool = False  # Start from epoch 0 when resuming (only load model weights)
+    refresh_lr: bool = False  # Reset LR scheduler when resuming (schedule runs from current epoch to end)
     new_mlflow_run: bool = False  # Force new MLflow run even when resuming from checkpoint
 
 
@@ -764,6 +792,7 @@ class InpainterConfig:
     model: InpainterModelConfig = field(default_factory=InpainterModelConfig)
     training: InpainterTrainingConfig = field(default_factory=InpainterTrainingConfig)
     checkpoint: InpainterCheckpointConfig = field(default_factory=InpainterCheckpointConfig)
+    distributed: DistributedConfig = field(default_factory=DistributedConfig)
     mlflow: InpainterMLflowConfig = field(default_factory=InpainterMLflowConfig)
 
 
@@ -851,6 +880,14 @@ def load_inpainter_config(config_path: str, warn_missing: bool = True, auto_upda
         for k, v in raw_config['checkpoint'].items():
             if hasattr(config.checkpoint, k):
                 setattr(config.checkpoint, k, v)
+
+    # Distributed
+    if 'distributed' in raw_config:
+        uk = _warn_unknown_keys(raw_config['distributed'], DistributedConfig, 'distributed')
+        if uk: unknown['distributed'] = uk
+        for k, v in raw_config['distributed'].items():
+            if hasattr(config.distributed, k):
+                setattr(config.distributed, k, v)
 
     # MLflow
     if 'mlflow' in raw_config:
@@ -1054,6 +1091,7 @@ def validate_config(config_path: str, config_type: str = "auto",
             'model': ModelConfig,
             'training': TrainingConfig,
             'checkpoint': CheckpointConfig,
+            'distributed': DistributedConfig,
             'mlflow': MLflowConfig,
             'export': ExportConfig,
         }
@@ -1064,6 +1102,7 @@ def validate_config(config_path: str, config_type: str = "auto",
             'model': MAEModelConfig,
             'training': MAETrainingConfig,
             'checkpoint': MAECheckpointConfig,
+            'distributed': DistributedConfig,
             'mlflow': MAEMLflowConfig,
         }
     elif config_type == "inpainter":
@@ -1073,6 +1112,7 @@ def validate_config(config_path: str, config_type: str = "auto",
             'model': InpainterModelConfig,
             'training': InpainterTrainingConfig,
             'checkpoint': InpainterCheckpointConfig,
+            'distributed': DistributedConfig,
             'mlflow': InpainterMLflowConfig,
         }
     else:
