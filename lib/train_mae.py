@@ -282,6 +282,9 @@ Examples:
         # predict_channels controls output channels (npho-only or npho+time)
         predict_channels = cfg.model.predict_channels
         decoder_dim = args.decoder_dim if args.decoder_dim is not None else getattr(cfg.model, 'decoder_dim', 128)
+        encoder_dim = cfg.model.encoder_dim
+        encoder_dim_feedforward = cfg.model.dim_feedforward
+        encoder_num_fusion_layers = cfg.model.num_fusion_layers
         track_mae_rmse = not args.no_track_mae_rmse and getattr(cfg.training, "track_mae_rmse", False)
         track_train_metrics = not args.no_track_train_metrics and getattr(cfg.training, "track_train_metrics", False)
         profile = args.profile or getattr(cfg.training, 'profile', False)
@@ -355,6 +358,9 @@ Examples:
         use_npho_time_weight = not args.no_npho_time_weight
         predict_channels = ["npho", "time"]  # Default: predict both channels
         decoder_dim = args.decoder_dim if args.decoder_dim is not None else 128
+        encoder_dim = 1024
+        encoder_dim_feedforward = None
+        encoder_num_fusion_layers = 2
         track_mae_rmse = args.track_mae_rmse and not args.no_track_mae_rmse
         track_train_metrics = args.track_train_metrics and not args.no_track_train_metrics
         profile = args.profile
@@ -422,7 +428,10 @@ Examples:
     outer_fine_pool_tuple = tuple(outer_fine_pool) if outer_fine_pool else None
     encoder = XECEncoder(
         outer_mode=outer_mode,
-        outer_fine_pool=outer_fine_pool_tuple
+        outer_fine_pool=outer_fine_pool_tuple,
+        encoder_dim=encoder_dim,
+        dim_feedforward=encoder_dim_feedforward,
+        num_fusion_layers=encoder_num_fusion_layers,
     ).to(device)
 
     model = XEC_MAE(

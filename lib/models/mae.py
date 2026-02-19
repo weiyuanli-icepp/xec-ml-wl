@@ -137,9 +137,10 @@ class XEC_MAE(nn.Module):
         self.out_channels = len(self.predict_channels)
 
         # -- RECTANGULAR FACES DECODERS --
-        self.dec_inner = FaceDecoder(decoder_dim=decoder_dim, out_h=93, out_w=44, out_channels=self.out_channels)
-        self.dec_us    = FaceDecoder(decoder_dim=decoder_dim, out_h=24, out_w=6, out_channels=self.out_channels)
-        self.dec_ds    = FaceDecoder(decoder_dim=decoder_dim, out_h=24, out_w=6, out_channels=self.out_channels)
+        embed_dim = encoder.face_embed_dim
+        self.dec_inner = FaceDecoder(embed_dim=embed_dim, decoder_dim=decoder_dim, out_h=93, out_w=44, out_channels=self.out_channels)
+        self.dec_us    = FaceDecoder(embed_dim=embed_dim, decoder_dim=decoder_dim, out_h=24, out_w=6, out_channels=self.out_channels)
+        self.dec_ds    = FaceDecoder(embed_dim=embed_dim, decoder_dim=decoder_dim, out_h=24, out_w=6, out_channels=self.out_channels)
         if self.encoder.outer_fine:
             if self.encoder.outer_fine_pool:
                 if isinstance(self.encoder.outer_fine_pool, int):
@@ -152,18 +153,18 @@ class XEC_MAE(nn.Module):
                 out_h, out_w = OUTER_FINE_H, OUTER_FINE_W
         else:
             out_h, out_w = 9, 24
-        self.dec_outer = FaceDecoder(decoder_dim=decoder_dim, out_h=out_h, out_w=out_w, out_channels=self.out_channels)
+        self.dec_outer = FaceDecoder(embed_dim=embed_dim, decoder_dim=decoder_dim, out_h=out_h, out_w=out_w, out_channels=self.out_channels)
 
         # -- GRAPH FACES DECODERS --
         num_hex_top = len(flatten_hex_rows(TOP_HEX_ROWS))
         num_hex_bot = len(flatten_hex_rows(BOTTOM_HEX_ROWS))
         edge_index = torch.from_numpy(HEX_EDGE_INDEX_NP).long()
         self.dec_top = GraphFaceDecoder(
-            num_nodes=num_hex_top, adj_matrix=edge_index, embed_dim=1024, decoder_dim=decoder_dim,
+            num_nodes=num_hex_top, adj_matrix=edge_index, embed_dim=embed_dim, decoder_dim=decoder_dim,
             out_channels=self.out_channels
         )
         self.dec_bot = GraphFaceDecoder(
-            num_nodes=num_hex_bot, adj_matrix=edge_index, embed_dim=1024, decoder_dim=decoder_dim,
+            num_nodes=num_hex_bot, adj_matrix=edge_index, embed_dim=embed_dim, decoder_dim=decoder_dim,
             out_channels=self.out_channels
         )
 

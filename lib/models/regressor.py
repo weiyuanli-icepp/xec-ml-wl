@@ -151,44 +151,51 @@ class XECEncoder(nn.Module):
     Extracts face-level features and fuses them via transformer.
     Use with XECMultiHeadModel for regression tasks.
     """
-    def __init__(self, outer_mode="finegrid", outer_fine_pool=None, drop_path_rate=0.0, sentinel_time=None):
+    def __init__(self, outer_mode="finegrid", outer_fine_pool=None, drop_path_rate=0.0, sentinel_time=None,
+                 encoder_dim=1024, dim_feedforward=None, num_fusion_layers=2):
         super().__init__()
         self.outer_mode = outer_mode
         self.outer_fine_pool = outer_fine_pool
         self.sentinel_time = sentinel_time  # For masked pooling of invalid time values
 
+        if encoder_dim % 32 != 0:
+            raise ValueError(f"encoder_dim must be divisible by 32, got {encoder_dim}")
+        base_channels = encoder_dim // 32
+        if dim_feedforward is None:
+            dim_feedforward = encoder_dim * 4
+
         input_channels = 2  # Npho, Time
-        
+
         # CNN Backbone
         self.backbone = FaceBackbone(
-            in_channels=input_channels, 
-            base_channels=32, 
+            in_channels=input_channels,
+            base_channels=base_channels,
             pooled_hw=(4, 4),
             drop_path_rate=drop_path_rate
         )
         self.face_embed_dim = self.backbone.out_dim
 
-        # Hex Encoder        
+        # Hex Encoder
         self.hex_encoder = DeepHexEncoder(
-            in_dim=input_channels, 
-            embed_dim=self.face_embed_dim, 
-            hidden_dim=96, 
+            in_dim=input_channels,
+            embed_dim=self.face_embed_dim,
+            hidden_dim=96,
             num_layers=4,
             drop_path_rate=drop_path_rate
         )
-        
+
         # Mid-Fusion Transformer: Each face as a token
         fusion_layer = nn.TransformerEncoderLayer(
             d_model=self.face_embed_dim,
             nhead=8,
-            dim_feedforward=self.face_embed_dim * 4,
+            dim_feedforward=dim_feedforward,
             activation='gelu',
             batch_first=True,
             dropout=0.1
         )
         self.fusion_transformer = nn.TransformerEncoder(
             fusion_layer,
-            num_layers=2
+            num_layers=num_fusion_layers
         )
         
         # Face Config

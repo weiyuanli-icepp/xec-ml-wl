@@ -73,7 +73,8 @@ torch.autograd.set_detect_anomaly(False)
 torch.autograd.profiler.emit_nvtx(False)
 
 
-def load_mae_encoder(checkpoint_path: str, device: torch.device, outer_mode: str = "finegrid", outer_fine_pool=None):
+def load_mae_encoder(checkpoint_path: str, device: torch.device, outer_mode: str = "finegrid", outer_fine_pool=None,
+                     encoder_dim: int = 1024, dim_feedforward=None, num_fusion_layers: int = 2):
     """
     Load encoder weights from MAE checkpoint.
 
@@ -82,6 +83,9 @@ def load_mae_encoder(checkpoint_path: str, device: torch.device, outer_mode: str
         device: torch device
         outer_mode: encoder outer mode
         outer_fine_pool: encoder outer fine pool config
+        encoder_dim: d_model for fusion transformer
+        dim_feedforward: FFN dim (default = encoder_dim * 4)
+        num_fusion_layers: number of transformer layers
 
     Returns:
         encoder: XECEncoder with loaded weights
@@ -92,7 +96,10 @@ def load_mae_encoder(checkpoint_path: str, device: torch.device, outer_mode: str
     outer_fine_pool_tuple = tuple(outer_fine_pool) if outer_fine_pool else None
     encoder = XECEncoder(
         outer_mode=outer_mode,
-        outer_fine_pool=outer_fine_pool_tuple
+        outer_fine_pool=outer_fine_pool_tuple,
+        encoder_dim=encoder_dim,
+        dim_feedforward=dim_feedforward,
+        num_fusion_layers=num_fusion_layers,
     )
 
     # Load checkpoint
@@ -278,6 +285,9 @@ Examples:
         cross_attn_hidden = getattr(cfg.model, "cross_attn_hidden", 64)
         cross_attn_latent_dim = getattr(cfg.model, "cross_attn_latent_dim", 128)
         cross_attn_pos_dim = getattr(cfg.model, "cross_attn_pos_dim", 96)
+        encoder_dim = cfg.model.encoder_dim
+        encoder_dim_feedforward = cfg.model.dim_feedforward
+        encoder_num_fusion_layers = cfg.model.num_fusion_layers
 
         lr = float(args.lr if args.lr is not None else cfg.training.lr)
         lr_scheduler = args.lr_scheduler or getattr(cfg.training, "lr_scheduler", None)
@@ -371,6 +381,9 @@ Examples:
         cross_attn_hidden = 64
         cross_attn_latent_dim = 128
         cross_attn_pos_dim = 96
+        encoder_dim = 1024
+        encoder_dim_feedforward = None
+        encoder_num_fusion_layers = 2
 
         lr = args.lr or 1e-4
         lr_scheduler = args.lr_scheduler
@@ -457,14 +470,20 @@ Examples:
         encoder = load_mae_encoder(
             mae_checkpoint, device,
             outer_mode=outer_mode,
-            outer_fine_pool=outer_fine_pool
+            outer_fine_pool=outer_fine_pool,
+            encoder_dim=encoder_dim,
+            dim_feedforward=encoder_dim_feedforward,
+            num_fusion_layers=encoder_num_fusion_layers,
         )
     else:
         print("[INFO] No MAE checkpoint provided, initializing encoder from scratch")
         outer_fine_pool_tuple = tuple(outer_fine_pool) if outer_fine_pool else None
         encoder = XECEncoder(
             outer_mode=outer_mode,
-            outer_fine_pool=outer_fine_pool_tuple
+            outer_fine_pool=outer_fine_pool_tuple,
+            encoder_dim=encoder_dim,
+            dim_feedforward=encoder_dim_feedforward,
+            num_fusion_layers=encoder_num_fusion_layers,
         ).to(device)
 
     # Create inpainter model

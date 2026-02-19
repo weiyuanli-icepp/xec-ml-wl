@@ -318,6 +318,9 @@ def train_with_config(config_path: str, profile: bool = None):
         outer_fine_pool=outer_fine_pool,
         drop_path_rate=cfg.model.drop_path_rate,
         sentinel_time=cfg.normalization.sentinel_time,
+        encoder_dim=cfg.model.encoder_dim,
+        dim_feedforward=cfg.model.dim_feedforward,
+        num_fusion_layers=cfg.model.num_fusion_layers,
     )
     model = XECMultiHeadModel(
         base_regressor,

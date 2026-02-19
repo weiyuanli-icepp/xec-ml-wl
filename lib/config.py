@@ -85,6 +85,9 @@ class ModelConfig:
     outer_fine_pool: Optional[List[int]] = None  # [h, w] or None
     hidden_dim: int = 256
     drop_path_rate: float = 0.0
+    encoder_dim: int = 1024  # d_model for fusion transformer (must be divisible by 32)
+    dim_feedforward: Optional[int] = None  # FFN dim (default = encoder_dim * 4)
+    num_fusion_layers: int = 2  # Number of transformer layers
 
 
 @dataclass
@@ -422,6 +425,9 @@ class MAEModelConfig:
     mask_ratio: float = 0.6
     predict_channels: List[str] = field(default_factory=lambda: ["npho", "time"])  # Output channels to predict
     decoder_dim: int = 128  # Lightweight decoder dimension (MAE paper: decoder << encoder)
+    encoder_dim: int = 1024  # d_model for fusion transformer (must be divisible by 32)
+    dim_feedforward: Optional[int] = None  # FFN dim (default = encoder_dim * 4)
+    num_fusion_layers: int = 2  # Number of transformer layers
 
 
 @dataclass
@@ -671,6 +677,9 @@ class InpainterModelConfig:
     cross_attn_hidden: int = 64  # Hidden dim for local attention
     cross_attn_latent_dim: int = 128  # Projection dim for latent cross-attention
     cross_attn_pos_dim: int = 96  # Sinusoidal position encoding dim (num_bands*2*3)
+    encoder_dim: int = 1024  # d_model for fusion transformer (must be divisible by 32)
+    dim_feedforward: Optional[int] = None  # FFN dim (default = encoder_dim * 4)
+    num_fusion_layers: int = 2  # Number of transformer layers
 
 
 @dataclass
