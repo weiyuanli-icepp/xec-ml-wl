@@ -34,6 +34,8 @@ def load_checkpoint_weights(checkpoint_path, prefer_ema=True):
     config_meta = {}
 
     # Extract config metadata if available
+    if "config" in checkpoint:
+        config_meta.update(checkpoint["config"])
     if "active_tasks" in checkpoint:
         config_meta["active_tasks"] = checkpoint["active_tasks"]
         print(f"[INFO] Found active_tasks in checkpoint: {checkpoint['active_tasks']}")
@@ -120,7 +122,11 @@ def main():
     backbone = XECEncoder(
         outer_mode=args.outer_mode,
         outer_fine_pool=(3, 3),
-        drop_path_rate=0.0  # Always 0 for export
+        drop_path_rate=0.0,  # Always 0 for export
+        encoder_dim=config_meta.get('encoder_dim', 1024),
+        dim_feedforward=config_meta.get('dim_feedforward', None),
+        num_fusion_layers=config_meta.get('num_fusion_layers', 2),
+        sentinel_time=config_meta.get('sentinel_time', -1.0),
     )
 
     model = XECMultiHeadModel(

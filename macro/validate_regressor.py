@@ -111,17 +111,27 @@ def main():
         outer_mode = cfg.model.outer_mode
         outer_fine_pool = tuple(cfg.model.outer_fine_pool) if cfg.model.outer_fine_pool else None
         drop_path_rate = cfg.model.drop_path_rate
+        encoder_dim = cfg.model.encoder_dim
+        dim_feedforward = cfg.model.dim_feedforward
+        num_fusion_layers = cfg.model.num_fusion_layers
     else:
         outer_mode = "finegrid"
         outer_fine_pool = (3, 3)
         drop_path_rate = 0.0
+        encoder_dim = 1024
+        dim_feedforward = None
+        num_fusion_layers = 2
 
     # Build model
-    print(f"[INFO] Building model: outer_mode={outer_mode}, outer_fine_pool={outer_fine_pool}")
+    print(f"[INFO] Building model: outer_mode={outer_mode}, outer_fine_pool={outer_fine_pool}, encoder_dim={encoder_dim}")
     base_regressor = XECEncoder(
         outer_mode=outer_mode,
         outer_fine_pool=outer_fine_pool,
-        drop_path_rate=drop_path_rate
+        drop_path_rate=drop_path_rate,
+        encoder_dim=encoder_dim,
+        dim_feedforward=dim_feedforward,
+        num_fusion_layers=num_fusion_layers,
+        sentinel_time=sentinel_time,
     )
     model = XECMultiHeadModel(base_regressor, active_tasks=active_tasks)
     model.to(device)

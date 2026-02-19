@@ -118,7 +118,11 @@ def load_inpainter_checkpoint(checkpoint_path, prefer_ema=True):
     encoder = XECEncoder(
         outer_mode=outer_mode,
         outer_fine_pool=outer_fine_pool if isinstance(outer_fine_pool, tuple) else tuple(outer_fine_pool),
-        drop_path_rate=0.0  # Always 0 for inference
+        drop_path_rate=0.0,  # Always 0 for inference
+        encoder_dim=config.get('encoder_dim', 1024),
+        dim_feedforward=config.get('dim_feedforward', None),
+        num_fusion_layers=config.get('num_fusion_layers', 2),
+        sentinel_time=sentinel_time,
     )
 
     # Create inpainter

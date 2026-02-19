@@ -340,6 +340,10 @@ def load_model(checkpoint_path: Optional[str] = None,
         encoder = XECEncoder(
             outer_mode=config.get('outer_mode', 'finegrid'),
             outer_fine_pool=config.get('outer_fine_pool', None),
+            encoder_dim=config.get('encoder_dim', 1024),
+            dim_feedforward=config.get('dim_feedforward', None),
+            num_fusion_layers=config.get('num_fusion_layers', 2),
+            sentinel_time=config.get('sentinel_time', -1.0),
         )
         use_masked_attention = config.get('use_masked_attention', False)
         head_type = config.get('head_type', 'per_face')
