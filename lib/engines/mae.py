@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Optional
 from contextlib import nullcontext
+from torch.distributed.algorithms.join import Join
 from torch.utils.data import DataLoader
 from ..dataset import XECStreamingDataset
 from ..utils import get_pointwise_loss_fn, SimpleProfiler
@@ -158,273 +159,277 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
         prefetch_factor=prefetch_factor if dataloader_workers > 0 else None,
     )
 
+    # Use Join context for DDP to handle uneven batch counts across ranks
+    join_ctx = Join([model]) if dist.is_initialized() else nullcontext()
+
     profiler.start("data_load_cpu")
-    for x_batch, _ in loader:
-        profiler.stop()  # data_load_cpu (batch yield time)
+    with join_ctx:
+        for x_batch, _ in loader:
+            profiler.stop()  # data_load_cpu (batch yield time)
 
-        profiler.start("gpu_transfer")
-        x_in = x_batch.to(device, non_blocking=True)  # Already normalized: (B, 4760, 2)
-        profiler.stop()
-
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
-            # 1. Forward Pass (pass npho_threshold_norm for stratified masking)
-            profiler.start("forward")
-            recons, mask = model(x_in, npho_threshold_norm=npho_threshold_norm)
+            profiler.start("gpu_transfer")
+            x_in = x_batch.to(device, non_blocking=True)  # Already normalized: (B, 4760, 2)
             profiler.stop()
 
-            # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
-            # Already-invalid sensors are NOT in mask
-            if predict_time:
-                already_invalid = (x_in[:, :, 1] == sentinel_time)  # (B, N)
-            else:
-                already_invalid = (x_in[:, :, 0] == sentinel_npho)  # (B, N)
-            total_valid_sensors += (~already_invalid).sum()
-            total_randomly_masked += mask.sum().long()
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
+                # 1. Forward Pass (pass npho_threshold_norm for stratified masking)
+                profiler.start("forward")
+                recons, mask = model(x_in, npho_threshold_norm=npho_threshold_norm)
+                profiler.stop()
 
-            profiler.start("loss_compute")
-            # 2. Gather Truth Targets
-            if hasattr(model_raw, "encoder") and getattr(model_raw.encoder, "outer_fine", False):
-                outer_target = build_outer_fine_grid_tensor(
-                    x_in,
-                    pool_kernel=model_raw.encoder.outer_fine_pool,
-                    sentinel_time=getattr(model_raw, "sentinel_time", None)
-                )
-            else:
-                outer_target = gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP)
+                # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
+                # Already-invalid sensors are NOT in mask
+                if predict_time:
+                    already_invalid = (x_in[:, :, 1] == sentinel_time)  # (B, N)
+                else:
+                    already_invalid = (x_in[:, :, 0] == sentinel_npho)  # (B, N)
+                total_valid_sensors += (~already_invalid).sum()
+                total_randomly_masked += mask.sum().long()
 
-            targets = {
-                "inner": gather_face(x_in, INNER_INDEX_MAP),
-                "us":    gather_face(x_in, US_INDEX_MAP),
-                "ds":    gather_face(x_in, DS_INDEX_MAP),
-                "outer": outer_target,
-                "top":   gather_hex_nodes(x_in, top_indices).permute(0, 2, 1),
-                "bot":   gather_hex_nodes(x_in, bot_indices).permute(0, 2, 1)
-            }
+                profiler.start("loss_compute")
+                # 2. Gather Truth Targets
+                if hasattr(model_raw, "encoder") and getattr(model_raw.encoder, "outer_fine", False):
+                    outer_target = build_outer_fine_grid_tensor(
+                        x_in,
+                        pool_kernel=model_raw.encoder.outer_fine_pool,
+                        sentinel_time=getattr(model_raw, "sentinel_time", None)
+                    )
+                else:
+                    outer_target = gather_face(x_in, OUTER_COARSE_FULL_INDEX_MAP)
 
-            # 3. Calculate Loss
-            loss = 0.0
+                targets = {
+                    "inner": gather_face(x_in, INNER_INDEX_MAP),
+                    "us":    gather_face(x_in, US_INDEX_MAP),
+                    "ds":    gather_face(x_in, DS_INDEX_MAP),
+                    "outer": outer_target,
+                    "top":   gather_hex_nodes(x_in, top_indices).permute(0, 2, 1),
+                    "bot":   gather_hex_nodes(x_in, bot_indices).permute(0, 2, 1)
+                }
 
-            face_to_sensor_indices = {
-                "inner": INNER_INDEX_MAP,
-                "us":    US_INDEX_MAP,
-                "ds":    DS_INDEX_MAP,
-                "outer": OUTER_COARSE_FULL_INDEX_MAP,  # Always use coarse for mask lookup
-                "top":   top_indices,
-                "bot":   bot_indices
-            }
-            for name, pred in recons.items():
-                if name in targets:
-                    indices = face_to_sensor_indices.get(name)
+                # 3. Calculate Loss
+                loss = 0.0
 
-                    if indices is not None:
-                        m_face = mask[:, indices]  # Shape: (B, num_sensors_in_face)
-                        if name in ["top", "bot"]:
-                            mask_expanded = m_face.unsqueeze(1)  # (B, 1, num_hex_nodes)
-                        elif name == "outer" and getattr(model_raw.encoder, "outer_fine", False):
-                            # For outer fine grid: upsample coarse mask to fine grid dimensions
-                            H_coarse, W_coarse = OUTER_COARSE_FULL_INDEX_MAP.shape
-                            m_coarse = m_face.view(mask.size(0), 1, H_coarse, W_coarse)
-                            cr, cc = OUTER_FINE_COARSE_SCALE
-                            m_fine = F.interpolate(m_coarse.float(), scale_factor=(float(cr), float(cc)), mode='nearest')
-                            # Apply pooling if used
-                            pool_kernel = model_raw.encoder.outer_fine_pool
-                            if pool_kernel:
-                                if isinstance(pool_kernel, int):
-                                    ph, pw = pool_kernel, pool_kernel
-                                else:
-                                    ph, pw = pool_kernel
-                                m_fine = F.avg_pool2d(m_fine, kernel_size=(ph, pw), stride=(ph, pw))
-                                # Convert avg back to binary (any masked → masked)
-                                m_fine = (m_fine > 0).float()
-                            mask_expanded = m_fine
+                face_to_sensor_indices = {
+                    "inner": INNER_INDEX_MAP,
+                    "us":    US_INDEX_MAP,
+                    "ds":    DS_INDEX_MAP,
+                    "outer": OUTER_COARSE_FULL_INDEX_MAP,  # Always use coarse for mask lookup
+                    "top":   top_indices,
+                    "bot":   bot_indices
+                }
+                for name, pred in recons.items():
+                    if name in targets:
+                        indices = face_to_sensor_indices.get(name)
+
+                        if indices is not None:
+                            m_face = mask[:, indices]  # Shape: (B, num_sensors_in_face)
+                            if name in ["top", "bot"]:
+                                mask_expanded = m_face.unsqueeze(1)  # (B, 1, num_hex_nodes)
+                            elif name == "outer" and getattr(model_raw.encoder, "outer_fine", False):
+                                # For outer fine grid: upsample coarse mask to fine grid dimensions
+                                H_coarse, W_coarse = OUTER_COARSE_FULL_INDEX_MAP.shape
+                                m_coarse = m_face.view(mask.size(0), 1, H_coarse, W_coarse)
+                                cr, cc = OUTER_FINE_COARSE_SCALE
+                                m_fine = F.interpolate(m_coarse.float(), scale_factor=(float(cr), float(cc)), mode='nearest')
+                                # Apply pooling if used
+                                pool_kernel = model_raw.encoder.outer_fine_pool
+                                if pool_kernel:
+                                    if isinstance(pool_kernel, int):
+                                        ph, pw = pool_kernel, pool_kernel
+                                    else:
+                                        ph, pw = pool_kernel
+                                    m_fine = F.avg_pool2d(m_fine, kernel_size=(ph, pw), stride=(ph, pw))
+                                    # Convert avg back to binary (any masked → masked)
+                                    m_fine = (m_fine > 0).float()
+                                mask_expanded = m_fine
+                            else:
+                                H, W = pred.shape[-2], pred.shape[-1]
+                                mask_expanded = m_face.view(mask.size(0), 1, H, W)  # (B, 1, H, W)
                         else:
-                            H, W = pred.shape[-2], pred.shape[-1]
-                            mask_expanded = m_face.view(mask.size(0), 1, H, W)  # (B, 1, H, W)
-                    else:
-                        mask_expanded = torch.ones_like(pred[:, 0:1])
+                            mask_expanded = torch.ones_like(pred[:, 0:1])
 
-                    # Separate npho and time losses (use prediction channel indices)
-                    target = targets[name]
-                    # npho: prediction channel pred_npho_idx -> input channel 0
-                    loss_map_npho = loss_func(pred[:, pred_npho_idx:pred_npho_idx+1], target[:, 0:1])
-                    # time: prediction channel pred_time_idx -> input channel 1 (only if predicting time)
-                    if predict_time:
-                        loss_map_time = loss_func(pred[:, pred_time_idx:pred_time_idx+1], target[:, 1:2])
+                        # Separate npho and time losses (use prediction channel indices)
+                        target = targets[name]
+                        # npho: prediction channel pred_npho_idx -> input channel 0
+                        loss_map_npho = loss_func(pred[:, pred_npho_idx:pred_npho_idx+1], target[:, 0:1])
+                        # time: prediction channel pred_time_idx -> input channel 1 (only if predicting time)
+                        if predict_time:
+                            loss_map_time = loss_func(pred[:, pred_time_idx:pred_time_idx+1], target[:, 1:2])
 
-                    mask_sum = mask_expanded.sum()
-                    mask_sum_safe = mask_sum + 1e-8
+                        mask_sum = mask_expanded.sum()
+                        mask_sum_safe = mask_sum + 1e-8
 
-                    # Npho loss with optional intensity-based weighting
-                    if npho_loss_weight_enabled and mask_sum > 0:
-                        # Get normalized npho for this face (for weighting)
-                        npho_norm_all = x_in[:, :, 0]  # (B, 4760) - normalized npho
-                        if isinstance(indices, torch.Tensor):
-                            npho_norm_face = npho_norm_all[:, indices]
-                        else:
-                            npho_norm_face = npho_norm_all[:, indices.flatten()].view(x_in.size(0), *indices.shape)
-
-                        # Denormalize npho for weighting
-                        raw_npho_face = npho_transform.inverse(npho_norm_face)
-                        # Reshape to match prediction shape
-                        if name in ["top", "bot"]:
-                            weight_map = (raw_npho_face.clamp(min=1.0) + 1.0).pow(npho_loss_weight_alpha).unsqueeze(1)
-                        elif name == "outer" and getattr(model_raw.encoder, "outer_fine", False):
-                            H_coarse, W_coarse = OUTER_COARSE_FULL_INDEX_MAP.shape
-                            cr, cc = OUTER_FINE_COARSE_SCALE
-                            npho_coarse = raw_npho_face.view(x_in.size(0), 1, H_coarse, W_coarse)
-                            npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
-                            pool_kernel = model_raw.encoder.outer_fine_pool
-                            if pool_kernel:
-                                if isinstance(pool_kernel, int):
-                                    ph, pw = pool_kernel, pool_kernel
-                                else:
-                                    ph, pw = pool_kernel
-                                npho_fine = F.avg_pool2d(npho_fine, kernel_size=(ph, pw), stride=(ph, pw))
-                            weight_map = (npho_fine.clamp(min=1.0) + 1.0).pow(npho_loss_weight_alpha)
-                        else:
-                            H, W = pred.shape[-2], pred.shape[-1]
-                            weight_map = (raw_npho_face.view(x_in.size(0), 1, H, W).clamp(min=1.0) + 1.0).pow(npho_loss_weight_alpha)
-                        # Normalize weights so mean is ~1 for stable training
-                        weight_map = weight_map / (weight_map[mask_expanded.bool()].mean() + 1e-8)
-                        npho_loss = (loss_map_npho * mask_expanded * weight_map).sum() / mask_sum_safe
-                    else:
-                        npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum_safe
-
-                    # Time loss (only if predicting time)
-                    time_loss = torch.tensor(0.0, device=device)
-                    time_mask_sum = torch.tensor(0.0, device=device)
-                    if predict_time:
-                        # Conditional time loss: only compute where npho > threshold
-                        # Get normalized npho values for this face (reuse if already computed)
-                        if not npho_loss_weight_enabled:
+                        # Npho loss with optional intensity-based weighting
+                        if npho_loss_weight_enabled and mask_sum > 0:
+                            # Get normalized npho for this face (for weighting)
                             npho_norm_all = x_in[:, :, 0]  # (B, 4760) - normalized npho
                             if isinstance(indices, torch.Tensor):
-                                npho_norm_face = npho_norm_all[:, indices]  # (B, num_sensors)
+                                npho_norm_face = npho_norm_all[:, indices]
                             else:
                                 npho_norm_face = npho_norm_all[:, indices.flatten()].view(x_in.size(0), *indices.shape)
 
-                        # Create time_valid_mask using normalized threshold
-                        if name in ["top", "bot"]:
-                            time_valid_base = (npho_norm_face > npho_threshold_norm).unsqueeze(1).float()  # (B, 1, N)
-                        elif name == "outer" and getattr(model_raw.encoder, "outer_fine", False):
-                            # For outer fine grid: use coarse-level threshold check, then upsample
-                            time_valid_coarse = (npho_norm_face > npho_threshold_norm).float()  # (B, H_coarse, W_coarse)
-                            time_valid_coarse = time_valid_coarse.view(x_in.size(0), 1, *indices.shape)
-                            time_valid_base = F.interpolate(time_valid_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
-                            if pool_kernel:
-                                # Pool and convert back to binary (any valid → valid, be permissive)
-                                time_valid_base = F.avg_pool2d(time_valid_base, kernel_size=(ph, pw), stride=(ph, pw))
-                                time_valid_base = (time_valid_base > 0).float()
-                        else:
-                            H, W = pred.shape[-2], pred.shape[-1]
-                            time_valid_base = (npho_norm_face > npho_threshold_norm).view(x_in.size(0), 1, H, W).float()
-
-                        # Combined mask for time: randomly masked AND time-valid (npho > threshold)
-                        time_mask_expanded = mask_expanded * time_valid_base
-
-                        # Npho weighting for time loss (chi-square-like: weight ~ sqrt(npho))
-                        if use_npho_time_weight and time_mask_expanded.sum() > 0:
-                            # De-normalize to get approximate raw npho for weighting (reuse if already computed)
-                            if not npho_loss_weight_enabled:
-                                raw_npho_face = npho_transform.inverse(npho_norm_face)
+                            # Denormalize npho for weighting
+                            raw_npho_face = npho_transform.inverse(npho_norm_face)
+                            # Reshape to match prediction shape
                             if name in ["top", "bot"]:
-                                npho_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
+                                weight_map = (raw_npho_face.clamp(min=1.0) + 1.0).pow(npho_loss_weight_alpha).unsqueeze(1)
                             elif name == "outer" and getattr(model_raw.encoder, "outer_fine", False):
-                                npho_coarse = raw_npho_face.view(x_in.size(0), 1, *indices.shape)
+                                H_coarse, W_coarse = OUTER_COARSE_FULL_INDEX_MAP.shape
+                                cr, cc = OUTER_FINE_COARSE_SCALE
+                                npho_coarse = raw_npho_face.view(x_in.size(0), 1, H_coarse, W_coarse)
                                 npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
+                                pool_kernel = model_raw.encoder.outer_fine_pool
                                 if pool_kernel:
+                                    if isinstance(pool_kernel, int):
+                                        ph, pw = pool_kernel, pool_kernel
+                                    else:
+                                        ph, pw = pool_kernel
                                     npho_fine = F.avg_pool2d(npho_fine, kernel_size=(ph, pw), stride=(ph, pw))
-                                npho_weight_map = torch.sqrt(npho_fine.clamp(min=npho_threshold))
+                                weight_map = (npho_fine.clamp(min=1.0) + 1.0).pow(npho_loss_weight_alpha)
                             else:
                                 H, W = pred.shape[-2], pred.shape[-1]
-                                npho_weight_map = torch.sqrt(raw_npho_face.view(x_in.size(0), 1, H, W).clamp(min=npho_threshold))
-                            # Normalize weight so mean is ~1 for stable training
-                            npho_weight_map = npho_weight_map / (npho_weight_map[time_mask_expanded.bool()].mean() + 1e-8)
-                            weighted_time_loss = (loss_map_time * time_mask_expanded * npho_weight_map).sum()
+                                weight_map = (raw_npho_face.view(x_in.size(0), 1, H, W).clamp(min=1.0) + 1.0).pow(npho_loss_weight_alpha)
+                            # Normalize weights so mean is ~1 for stable training
+                            weight_map = weight_map / (weight_map[mask_expanded.bool()].mean() + 1e-8)
+                            npho_loss = (loss_map_npho * mask_expanded * weight_map).sum() / mask_sum_safe
                         else:
-                            weighted_time_loss = (loss_map_time * time_mask_expanded).sum()
+                            npho_loss = (loss_map_npho * mask_expanded).sum() / mask_sum_safe
 
-                        time_mask_sum = time_mask_expanded.sum()
-                        time_mask_sum_safe = time_mask_sum + 1e-8
-                        time_loss = weighted_time_loss / time_mask_sum_safe
-
-                        # Track time-valid masked count (no .item() to avoid GPU-CPU sync)
-                        total_time_valid_masked += time_mask_sum
-
-                    # MAE/RMSE tracking (expensive - skip if disabled)
-                    if track_mae_rmse:
-                        diff_npho = pred[:, pred_npho_idx:pred_npho_idx+1] - target[:, 0:1]
-                        mask_sum_val = mask_sum.item()
-                        if mask_sum_val > 0:
-                            masked_abs_sum_npho += (diff_npho.abs() * mask_expanded).sum().item()
-                            masked_sq_sum_npho += (diff_npho.pow(2) * mask_expanded).sum().item()
-                            masked_count_npho += mask_sum_val
-                            masked_abs_face_npho[name] += (diff_npho.abs() * mask_expanded).sum().item()
-                            masked_sq_face_npho[name] += (diff_npho.pow(2) * mask_expanded).sum().item()
+                        # Time loss (only if predicting time)
+                        time_loss = torch.tensor(0.0, device=device)
+                        time_mask_sum = torch.tensor(0.0, device=device)
                         if predict_time:
-                            diff_time = pred[:, pred_time_idx:pred_time_idx+1] - target[:, 1:2]
-                            time_mask_sum_val = time_mask_sum.item()
-                            if time_mask_sum_val > 0:
-                                # Time metrics computed only on time-valid sensors
-                                masked_abs_sum_time += (diff_time.abs() * time_mask_expanded).sum().item()
-                                masked_sq_sum_time += (diff_time.pow(2) * time_mask_expanded).sum().item()
-                                masked_count_time += time_mask_sum_val
-                                masked_abs_face_time[name] += (diff_time.abs() * time_mask_expanded).sum().item()
-                                masked_sq_face_time[name] += (diff_time.pow(2) * time_mask_expanded).sum().item()
-                                masked_count_face[name] += time_mask_sum_val
+                            # Conditional time loss: only compute where npho > threshold
+                            # Get normalized npho values for this face (reuse if already computed)
+                            if not npho_loss_weight_enabled:
+                                npho_norm_all = x_in[:, :, 0]  # (B, 4760) - normalized npho
+                                if isinstance(indices, torch.Tensor):
+                                    npho_norm_face = npho_norm_all[:, indices]  # (B, num_sensors)
+                                else:
+                                    npho_norm_face = npho_norm_all[:, indices.flatten()].view(x_in.size(0), *indices.shape)
 
-                    if log_vars is not None and log_vars.numel() >= 2 and predict_time:
-                        npho_loss = 0.5 * torch.exp(-log_vars[0]) * npho_loss + 0.5 * log_vars[0]
-                        time_loss = 0.5 * torch.exp(-log_vars[1]) * time_loss + 0.5 * log_vars[1]
-                    elif log_vars is not None and log_vars.numel() >= 1:
-                        npho_loss = 0.5 * torch.exp(-log_vars[0]) * npho_loss + 0.5 * log_vars[0]
-                    else:
-                        npho_loss = npho_loss * npho_weight
-                        if predict_time:
-                            time_loss = time_loss * time_weight
-                    face_loss = npho_loss + time_loss
-                    loss += face_loss
+                            # Create time_valid_mask using normalized threshold
+                            if name in ["top", "bot"]:
+                                time_valid_base = (npho_norm_face > npho_threshold_norm).unsqueeze(1).float()  # (B, 1, N)
+                            elif name == "outer" and getattr(model_raw.encoder, "outer_fine", False):
+                                # For outer fine grid: use coarse-level threshold check, then upsample
+                                time_valid_coarse = (npho_norm_face > npho_threshold_norm).float()  # (B, H_coarse, W_coarse)
+                                time_valid_coarse = time_valid_coarse.view(x_in.size(0), 1, *indices.shape)
+                                time_valid_base = F.interpolate(time_valid_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
+                                if pool_kernel:
+                                    # Pool and convert back to binary (any valid → valid, be permissive)
+                                    time_valid_base = F.avg_pool2d(time_valid_base, kernel_size=(ph, pw), stride=(ph, pw))
+                                    time_valid_base = (time_valid_base > 0).float()
+                            else:
+                                H, W = pred.shape[-2], pred.shape[-1]
+                                time_valid_base = (npho_norm_face > npho_threshold_norm).view(x_in.size(0), 1, H, W).float()
 
-                    # Per-face loss tracking (skip if disabled for speed)
-                    if track_metrics:
-                        face_loss_sums[name] += face_loss.item()
-                        face_npho_loss_sums[name] += npho_loss.item()
-                        if predict_time:
-                            face_time_loss_sums[name] += time_loss.item()
+                            # Combined mask for time: randomly masked AND time-valid (npho > threshold)
+                            time_mask_expanded = mask_expanded * time_valid_base
 
-            profiler.stop()  # loss_compute
+                            # Npho weighting for time loss (chi-square-like: weight ~ sqrt(npho))
+                            if use_npho_time_weight and time_mask_expanded.sum() > 0:
+                                # De-normalize to get approximate raw npho for weighting (reuse if already computed)
+                                if not npho_loss_weight_enabled:
+                                    raw_npho_face = npho_transform.inverse(npho_norm_face)
+                                if name in ["top", "bot"]:
+                                    npho_weight_map = torch.sqrt(raw_npho_face.clamp(min=npho_threshold)).unsqueeze(1)
+                                elif name == "outer" and getattr(model_raw.encoder, "outer_fine", False):
+                                    npho_coarse = raw_npho_face.view(x_in.size(0), 1, *indices.shape)
+                                    npho_fine = F.interpolate(npho_coarse, scale_factor=(float(cr), float(cc)), mode='nearest')
+                                    if pool_kernel:
+                                        npho_fine = F.avg_pool2d(npho_fine, kernel_size=(ph, pw), stride=(ph, pw))
+                                    npho_weight_map = torch.sqrt(npho_fine.clamp(min=npho_threshold))
+                                else:
+                                    H, W = pred.shape[-2], pred.shape[-1]
+                                    npho_weight_map = torch.sqrt(raw_npho_face.view(x_in.size(0), 1, H, W).clamp(min=npho_threshold))
+                                # Normalize weight so mean is ~1 for stable training
+                                npho_weight_map = npho_weight_map / (npho_weight_map[time_mask_expanded.bool()].mean() + 1e-8)
+                                weighted_time_loss = (loss_map_time * time_mask_expanded * npho_weight_map).sum()
+                            else:
+                                weighted_time_loss = (loss_map_time * time_mask_expanded).sum()
 
-        # Backward with gradient accumulation
-        total_loss_sum += loss.item()
-        n_batches += 1
+                            time_mask_sum = time_mask_expanded.sum()
+                            time_mask_sum_safe = time_mask_sum + 1e-8
+                            time_loss = weighted_time_loss / time_mask_sum_safe
 
-        profiler.start("backward")
-        loss = loss / grad_accum_steps
-        # Use no_sync on intermediate accumulation steps to skip AllReduce
-        is_sync_step = accum_step % grad_accum_steps == (grad_accum_steps - 1)
-        sync_ctx = nullcontext() if (no_sync_ctx is None or is_sync_step) else no_sync_ctx()
-        with sync_ctx:
-            scaler.scale(loss).backward()
-        profiler.stop()
+                            # Track time-valid masked count (no .item() to avoid GPU-CPU sync)
+                            total_time_valid_masked += time_mask_sum
 
-        accum_step += 1
+                        # MAE/RMSE tracking (expensive - skip if disabled)
+                        if track_mae_rmse:
+                            diff_npho = pred[:, pred_npho_idx:pred_npho_idx+1] - target[:, 0:1]
+                            mask_sum_val = mask_sum.item()
+                            if mask_sum_val > 0:
+                                masked_abs_sum_npho += (diff_npho.abs() * mask_expanded).sum().item()
+                                masked_sq_sum_npho += (diff_npho.pow(2) * mask_expanded).sum().item()
+                                masked_count_npho += mask_sum_val
+                                masked_abs_face_npho[name] += (diff_npho.abs() * mask_expanded).sum().item()
+                                masked_sq_face_npho[name] += (diff_npho.pow(2) * mask_expanded).sum().item()
+                            if predict_time:
+                                diff_time = pred[:, pred_time_idx:pred_time_idx+1] - target[:, 1:2]
+                                time_mask_sum_val = time_mask_sum.item()
+                                if time_mask_sum_val > 0:
+                                    # Time metrics computed only on time-valid sensors
+                                    masked_abs_sum_time += (diff_time.abs() * time_mask_expanded).sum().item()
+                                    masked_sq_sum_time += (diff_time.pow(2) * time_mask_expanded).sum().item()
+                                    masked_count_time += time_mask_sum_val
+                                    masked_abs_face_time[name] += (diff_time.abs() * time_mask_expanded).sum().item()
+                                    masked_sq_face_time[name] += (diff_time.pow(2) * time_mask_expanded).sum().item()
+                                    masked_count_face[name] += time_mask_sum_val
 
-        # Optimizer step every grad_accum_steps
-        if accum_step % grad_accum_steps == 0:
-            profiler.start("optimizer")
-            # Gradient clipping
-            if grad_clip > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                        if log_vars is not None and log_vars.numel() >= 2 and predict_time:
+                            npho_loss = 0.5 * torch.exp(-log_vars[0]) * npho_loss + 0.5 * log_vars[0]
+                            time_loss = 0.5 * torch.exp(-log_vars[1]) * time_loss + 0.5 * log_vars[1]
+                        elif log_vars is not None and log_vars.numel() >= 1:
+                            npho_loss = 0.5 * torch.exp(-log_vars[0]) * npho_loss + 0.5 * log_vars[0]
+                        else:
+                            npho_loss = npho_loss * npho_weight
+                            if predict_time:
+                                time_loss = time_loss * time_weight
+                        face_loss = npho_loss + time_loss
+                        loss += face_loss
 
-            scaler.step(optimizer)
-            scaler.update()
-            if ema_model is not None:
-                ema_model.update_parameters(model)
-            optimizer.zero_grad(set_to_none=True)
+                        # Per-face loss tracking (skip if disabled for speed)
+                        if track_metrics:
+                            face_loss_sums[name] += face_loss.item()
+                            face_npho_loss_sums[name] += npho_loss.item()
+                            if predict_time:
+                                face_time_loss_sums[name] += time_loss.item()
+
+                profiler.stop()  # loss_compute
+
+            # Backward with gradient accumulation
+            total_loss_sum += loss.item()
+            n_batches += 1
+
+            profiler.start("backward")
+            loss = loss / grad_accum_steps
+            # Use no_sync on intermediate accumulation steps to skip AllReduce
+            is_sync_step = accum_step % grad_accum_steps == (grad_accum_steps - 1)
+            sync_ctx = nullcontext() if (no_sync_ctx is None or is_sync_step) else no_sync_ctx()
+            with sync_ctx:
+                scaler.scale(loss).backward()
             profiler.stop()
 
-        profiler.start("data_load_cpu")  # For next iteration
+            accum_step += 1
+
+            # Optimizer step every grad_accum_steps
+            if accum_step % grad_accum_steps == 0:
+                profiler.start("optimizer")
+                # Gradient clipping
+                if grad_clip > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
+                scaler.step(optimizer)
+                scaler.update()
+                if ema_model is not None:
+                    ema_model.update_parameters(model)
+                optimizer.zero_grad(set_to_none=True)
+                profiler.stop()
+
+            profiler.start("data_load_cpu")  # For next iteration
 
     # Stop any pending timer (last data_load_cpu started but not stopped)
     profiler.stop()

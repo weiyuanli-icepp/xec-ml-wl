@@ -8,6 +8,7 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Dict, Optional, Tuple, List, Callable
 from contextlib import nullcontext
+from torch.distributed.algorithms.join import Join
 from ..dataset import XECStreamingDataset
 from ..geom_defs import (
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
@@ -739,135 +740,139 @@ def run_epoch_inpainter(
         prefetch_factor=prefetch_factor if dataloader_workers > 0 else None,
     )
 
+    # Use Join context for DDP to handle uneven batch counts across ranks
+    join_ctx = Join([model]) if dist.is_initialized() else nullcontext()
+
     profiler.start("data_load")
-    for batch in loader:
-        profiler.stop()  # data_load (batch yield time)
+    with join_ctx:
+        for batch in loader:
+            profiler.stop()  # data_load (batch yield time)
 
-        profiler.start("gpu_transfer")
-        if isinstance(batch, dict):
-            x_batch = batch["x"]
-        else:
-            x_batch = batch[0]
-        x_batch = x_batch.to(device, non_blocking=True)
-        profiler.stop()
-
-        # Forward with AMP (pass npho_threshold_norm for stratified masking)
-        profiler.start("forward")
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=(scaler is not None)):
-            if use_fast_forward:
-                # Fast path: fixed-size outputs, simpler loss computation
-                # Split forward_training: masking via model_raw (no grad), forward via DDP model
-                original_values = x_batch.clone()
-                x_masked, mask = model_raw.random_masking(x_batch, mask_ratio, npho_threshold_norm=npho_threshold_norm)
-                pred_all = model(x_masked, mask, forward_mode="full_output")
+            profiler.start("gpu_transfer")
+            if isinstance(batch, dict):
+                x_batch = batch["x"]
             else:
-                # Original path: variable-size outputs, per-face loss
-                results, original_values, mask = model(
-                    x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
-                )
-        profiler.stop()
+                x_batch = batch[0]
+            x_batch = x_batch.to(device, non_blocking=True)
+            profiler.stop()
 
-        # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
-        # Already-invalid sensors are NOT in mask
-        if "time" in predict_channels:
-            already_invalid = (original_values[:, :, 1] == sentinel_time)  # (B, N)
-        else:
-            already_invalid = (original_values[:, :, 0] == sentinel_npho)  # (B, N)
-        total_valid_sensors += (~already_invalid).sum()
-        total_randomly_masked += mask.sum().long()
+            # Forward with AMP (pass npho_threshold_norm for stratified masking)
+            profiler.start("forward")
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=(scaler is not None)):
+                if use_fast_forward:
+                    # Fast path: fixed-size outputs, simpler loss computation
+                    # Split forward_training: masking via model_raw (no grad), forward via DDP model
+                    original_values = x_batch.clone()
+                    x_masked, mask = model_raw.random_masking(x_batch, mask_ratio, npho_threshold_norm=npho_threshold_norm)
+                    pred_all = model(x_masked, mask, forward_mode="full_output")
+                else:
+                    # Original path: variable-size outputs, per-face loss
+                    results, original_values, mask = model(
+                        x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
+                    )
+            profiler.stop()
 
-        profiler.start("loss_compute")
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=(scaler is not None)):
-            if use_fast_forward:
-                # Fast path: simple flat loss computation
-                loss, metrics = compute_inpainting_loss_flat(
-                    pred_all, original_values, mask,
-                    loss_fn=loss_fn,
-                    loss_beta=loss_beta,
-                    npho_weight=npho_weight,
-                    time_weight=time_weight,
-                    npho_threshold=npho_threshold,
-                    npho_scale=npho_scale,
-                    npho_scale2=npho_scale2,
-                    use_npho_time_weight=use_npho_time_weight,
-                    track_metrics=track_metrics,
-                    predict_channels=predict_channels,
-                    npho_scheme=npho_scheme,
-                    npho_loss_weight_enabled=npho_loss_weight_enabled,
-                    npho_loss_weight_alpha=npho_loss_weight_alpha,
-                )
+            # Track actual mask ratio (no .item() to avoid GPU-CPU sync)
+            # Already-invalid sensors are NOT in mask
+            if "time" in predict_channels:
+                already_invalid = (original_values[:, :, 1] == sentinel_time)  # (B, N)
             else:
-                # Original path: per-face loss computation
-                loss, metrics = compute_inpainting_loss(
-                    results, original_values, mask,
-                    face_index_maps,
-                    loss_fn=loss_fn,
-                    loss_beta=loss_beta,
-                    npho_weight=npho_weight,
-                    time_weight=time_weight,
-                    outer_fine=outer_fine,
-                    outer_fine_pool=outer_fine_pool,
-                    track_mae_rmse=track_mae_rmse,
-                    track_metrics=track_metrics,
-                    npho_threshold=npho_threshold,
-                    npho_scale=npho_scale,
-                    npho_scale2=npho_scale2,
-                    use_npho_time_weight=use_npho_time_weight,
-                    predict_channels=predict_channels,
-                    npho_scheme=npho_scheme,
-                    npho_loss_weight_enabled=npho_loss_weight_enabled,
-                    npho_loss_weight_alpha=npho_loss_weight_alpha,
-                )
-        profiler.stop()
+                already_invalid = (original_values[:, :, 0] == sentinel_npho)  # (B, N)
+            total_valid_sensors += (~already_invalid).sum()
+            total_randomly_masked += mask.sum().long()
 
-        # Backward
-        total_loss_sum += loss.item()
-        loss_batches += 1
+            profiler.start("loss_compute")
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=(scaler is not None)):
+                if use_fast_forward:
+                    # Fast path: simple flat loss computation
+                    loss, metrics = compute_inpainting_loss_flat(
+                        pred_all, original_values, mask,
+                        loss_fn=loss_fn,
+                        loss_beta=loss_beta,
+                        npho_weight=npho_weight,
+                        time_weight=time_weight,
+                        npho_threshold=npho_threshold,
+                        npho_scale=npho_scale,
+                        npho_scale2=npho_scale2,
+                        use_npho_time_weight=use_npho_time_weight,
+                        track_metrics=track_metrics,
+                        predict_channels=predict_channels,
+                        npho_scheme=npho_scheme,
+                        npho_loss_weight_enabled=npho_loss_weight_enabled,
+                        npho_loss_weight_alpha=npho_loss_weight_alpha,
+                    )
+                else:
+                    # Original path: per-face loss computation
+                    loss, metrics = compute_inpainting_loss(
+                        results, original_values, mask,
+                        face_index_maps,
+                        loss_fn=loss_fn,
+                        loss_beta=loss_beta,
+                        npho_weight=npho_weight,
+                        time_weight=time_weight,
+                        outer_fine=outer_fine,
+                        outer_fine_pool=outer_fine_pool,
+                        track_mae_rmse=track_mae_rmse,
+                        track_metrics=track_metrics,
+                        npho_threshold=npho_threshold,
+                        npho_scale=npho_scale,
+                        npho_scale2=npho_scale2,
+                        use_npho_time_weight=use_npho_time_weight,
+                        predict_channels=predict_channels,
+                        npho_scheme=npho_scheme,
+                        npho_loss_weight_enabled=npho_loss_weight_enabled,
+                        npho_loss_weight_alpha=npho_loss_weight_alpha,
+                    )
+            profiler.stop()
 
-        profiler.start("backward")
-        loss = loss / grad_accum_steps
-        # Use no_sync on intermediate accumulation steps to skip AllReduce
-        is_sync_step = (accum_step + 1) % grad_accum_steps == 0
-        sync_ctx = nullcontext() if (no_sync_ctx is None or is_sync_step) else no_sync_ctx()
-        with sync_ctx:
+            # Backward
+            total_loss_sum += loss.item()
+            loss_batches += 1
+
+            profiler.start("backward")
+            loss = loss / grad_accum_steps
+            # Use no_sync on intermediate accumulation steps to skip AllReduce
+            is_sync_step = (accum_step + 1) % grad_accum_steps == 0
+            sync_ctx = nullcontext() if (no_sync_ctx is None or is_sync_step) else no_sync_ctx()
+            with sync_ctx:
+                if scaler is not None:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
+            profiler.stop()
+
+            profiler.start("optimizer")
             if scaler is not None:
-                scaler.scale(loss).backward()
+                if (accum_step + 1) % grad_accum_steps == 0:
+                    if grad_clip > 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    if ema_model is not None:
+                        ema_model.update_parameters(model)
+                    optimizer.zero_grad(set_to_none=True)
             else:
-                loss.backward()
-        profiler.stop()
+                if (accum_step + 1) % grad_accum_steps == 0:
+                    if grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                    optimizer.step()
+                    if ema_model is not None:
+                        ema_model.update_parameters(model)
+                    optimizer.zero_grad(set_to_none=True)
+            profiler.stop()
 
-        profiler.start("optimizer")
-        if scaler is not None:
-            if (accum_step + 1) % grad_accum_steps == 0:
-                if grad_clip > 0:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                scaler.step(optimizer)
-                scaler.update()
-                if ema_model is not None:
-                    ema_model.update_parameters(model)
-                optimizer.zero_grad(set_to_none=True)
-        else:
-            if (accum_step + 1) % grad_accum_steps == 0:
-                if grad_clip > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                optimizer.step()
-                if ema_model is not None:
-                    ema_model.update_parameters(model)
-                optimizer.zero_grad(set_to_none=True)
-        profiler.stop()
+            accum_step += 1
 
-        accum_step += 1
+            # Accumulate metrics
+            if track_metrics:
+                for key, value in metrics.items():
+                    if key not in metric_sums:
+                        metric_sums[key] = 0.0
+                    metric_sums[key] += value
+            num_batches += 1
 
-        # Accumulate metrics
-        if track_metrics:
-            for key, value in metrics.items():
-                if key not in metric_sums:
-                    metric_sums[key] = 0.0
-                metric_sums[key] += value
-        num_batches += 1
-
-        profiler.start("data_load")  # time waiting for next batch
+            profiler.start("data_load")  # time waiting for next batch
 
     # Stop any pending timer
     profiler.stop()
