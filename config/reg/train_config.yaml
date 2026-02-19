@@ -10,6 +10,7 @@ data:
   batch_size: 4096
   chunksize: 256000
   num_workers: 8                    # DataLoader workers
+  prefetch_factor: 2                # Batches to prefetch per worker
   num_threads: 4                    # CPU preprocessing threads
   npho_branch: "npho"      # Input branch for photon counts (or "npho")
   time_branch: "relative_time"      # Input branch for timing (or "time")
