@@ -572,6 +572,11 @@ def train_with_config(config_path: str, profile: bool = None):
                     if is_main_process():
                         print(f"[INFO] Restored scheduler state.")
 
+            if "scaler_state_dict" in checkpoint:
+                scaler.load_state_dict(checkpoint["scaler_state_dict"])
+                if is_main_process():
+                    print(f"[INFO] Restored AMP scaler state.")
+
             if ema_model is not None and "ema_state_dict" in checkpoint:
                 ema_model.load_state_dict(checkpoint["ema_state_dict"])
 
@@ -845,6 +850,7 @@ def train_with_config(config_path: str, profile: bool = None):
                     "model_state_dict": model_without_ddp.state_dict(),
                     "ema_state_dict": ema_model.state_dict() if ema_model else None,
                     "optimizer_state_dict": optimizer.state_dict(),
+                    "scaler_state_dict": scaler.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
                     "best_val": best_val,
                     "mlflow_run_id": mlflow_run_id,
@@ -893,6 +899,7 @@ def train_with_config(config_path: str, profile: bool = None):
                 "model_state_dict": model_without_ddp.state_dict(),
                 "ema_state_dict": ema_model.state_dict() if ema_model else None,
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scaler_state_dict": scaler.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
                 "best_val": best_val,
                 "mlflow_run_id": mlflow_run_id,
