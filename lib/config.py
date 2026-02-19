@@ -199,8 +199,10 @@ def load_config(config_path: str, warn_missing: bool = True, auto_update: bool =
 
     # Data
     if 'data' in raw_config:
+        _warn_unknown_keys(raw_config['data'], DataConfig, 'data')
         for k, v in raw_config['data'].items():
             if k == 'fiducial' and isinstance(v, dict):
+                _warn_unknown_keys(v, FiducialConfig, 'data.fiducial')
                 for fk, fv in v.items():
                     if hasattr(config.data.fiducial, fk):
                         setattr(config.data.fiducial, fk, fv)
@@ -209,12 +211,14 @@ def load_config(config_path: str, warn_missing: bool = True, auto_update: bool =
 
     # Normalization
     if 'normalization' in raw_config:
+        _warn_unknown_keys(raw_config['normalization'], NormalizationConfig, 'normalization')
         for k, v in raw_config['normalization'].items():
             if hasattr(config.normalization, k):
                 setattr(config.normalization, k, v)
 
     # Model
     if 'model' in raw_config:
+        _warn_unknown_keys(raw_config['model'], ModelConfig, 'model')
         for k, v in raw_config['model'].items():
             if hasattr(config.model, k):
                 setattr(config.model, k, v)
@@ -224,6 +228,7 @@ def load_config(config_path: str, warn_missing: bool = True, auto_update: bool =
         for task_name, task_cfg in raw_config['tasks'].items():
             tc = TaskConfig()
             if isinstance(task_cfg, dict):
+                _warn_unknown_keys(task_cfg, TaskConfig, f'tasks.{task_name}')
                 for k, v in task_cfg.items():
                     if hasattr(tc, k):
                         setattr(tc, k, v)
@@ -231,6 +236,7 @@ def load_config(config_path: str, warn_missing: bool = True, auto_update: bool =
 
     # Training
     if 'training' in raw_config:
+        _warn_unknown_keys(raw_config['training'], TrainingConfig, 'training')
         for k, v in raw_config['training'].items():
             if hasattr(config.training, k):
                 setattr(config.training, k, v)
@@ -246,24 +252,28 @@ def load_config(config_path: str, warn_missing: bool = True, auto_update: bool =
                 task_cfg = raw_config['reweighting'][task_name]
                 task_rw = getattr(config.reweighting, task_name)
                 if isinstance(task_cfg, dict):
+                    _warn_unknown_keys(task_cfg, TaskReweightConfig, f'reweighting.{task_name}')
                     for k, v in task_cfg.items():
                         if hasattr(task_rw, k):
                             setattr(task_rw, k, v)
 
     # Checkpoint
     if 'checkpoint' in raw_config:
+        _warn_unknown_keys(raw_config['checkpoint'], CheckpointConfig, 'checkpoint')
         for k, v in raw_config['checkpoint'].items():
             if hasattr(config.checkpoint, k):
                 setattr(config.checkpoint, k, v)
 
     # MLflow
     if 'mlflow' in raw_config:
+        _warn_unknown_keys(raw_config['mlflow'], MLflowConfig, 'mlflow')
         for k, v in raw_config['mlflow'].items():
             if hasattr(config.mlflow, k):
                 setattr(config.mlflow, k, v)
 
     # Export
     if 'export' in raw_config:
+        _warn_unknown_keys(raw_config['export'], ExportConfig, 'export')
         for k, v in raw_config['export'].items():
             if hasattr(config.export, k):
                 setattr(config.export, k, v)
@@ -551,18 +561,21 @@ def load_mae_config(config_path: str, warn_missing: bool = True, auto_update: bo
 
     # Data
     if 'data' in raw_config:
+        _warn_unknown_keys(raw_config['data'], MAEDataConfig, 'data')
         for k, v in raw_config['data'].items():
             if hasattr(config.data, k):
                 setattr(config.data, k, v)
 
     # Normalization
     if 'normalization' in raw_config:
+        _warn_unknown_keys(raw_config['normalization'], NormalizationConfig, 'normalization')
         for k, v in raw_config['normalization'].items():
             if hasattr(config.normalization, k):
                 setattr(config.normalization, k, v)
 
     # Model
     if 'model' in raw_config:
+        _warn_unknown_keys(raw_config['model'], MAEModelConfig, 'model')
         for k, v in raw_config['model'].items():
             if hasattr(config.model, k):
                 setattr(config.model, k, v)
@@ -571,19 +584,23 @@ def load_mae_config(config_path: str, warn_missing: bool = True, auto_update: bo
     if 'training' in raw_config:
         model_raw = raw_config.get('model', {})
         training_raw = _migrate_flat_time_options(raw_config['training'], model_raw, "MAE")
+        _warn_unknown_keys(training_raw, MAETrainingConfig, 'training')
         for k, v in training_raw.items():
             if k == 'time' and isinstance(v, dict):
                 # Handle nested time config
+                _warn_unknown_keys(v, TimeConfig, 'training.time')
                 for tk, tv in v.items():
                     if hasattr(config.training.time, tk):
                         setattr(config.training.time, tk, tv)
             elif k == 'npho_loss_weight' and isinstance(v, dict):
                 # Handle nested npho_loss_weight config
+                _warn_unknown_keys(v, NphoLossWeightConfig, 'training.npho_loss_weight')
                 for nk, nv in v.items():
                     if hasattr(config.training.npho_loss_weight, nk):
                         setattr(config.training.npho_loss_weight, nk, nv)
             elif k == 'intensity_reweighting' and isinstance(v, dict):
                 # Handle nested intensity_reweighting config
+                _warn_unknown_keys(v, IntensityReweightConfig, 'training.intensity_reweighting')
                 for ik, iv in v.items():
                     if hasattr(config.training.intensity_reweighting, ik):
                         setattr(config.training.intensity_reweighting, ik, iv)
@@ -592,12 +609,14 @@ def load_mae_config(config_path: str, warn_missing: bool = True, auto_update: bo
 
     # Checkpoint
     if 'checkpoint' in raw_config:
+        _warn_unknown_keys(raw_config['checkpoint'], MAECheckpointConfig, 'checkpoint')
         for k, v in raw_config['checkpoint'].items():
             if hasattr(config.checkpoint, k):
                 setattr(config.checkpoint, k, v)
 
     # MLflow
     if 'mlflow' in raw_config:
+        _warn_unknown_keys(raw_config['mlflow'], MAEMLflowConfig, 'mlflow')
         for k, v in raw_config['mlflow'].items():
             if hasattr(config.mlflow, k):
                 setattr(config.mlflow, k, v)
@@ -737,18 +756,21 @@ def load_inpainter_config(config_path: str, warn_missing: bool = True, auto_upda
 
     # Data
     if 'data' in raw_config:
+        _warn_unknown_keys(raw_config['data'], InpainterDataConfig, 'data')
         for k, v in raw_config['data'].items():
             if hasattr(config.data, k):
                 setattr(config.data, k, v)
 
     # Normalization
     if 'normalization' in raw_config:
+        _warn_unknown_keys(raw_config['normalization'], NormalizationConfig, 'normalization')
         for k, v in raw_config['normalization'].items():
             if hasattr(config.normalization, k):
                 setattr(config.normalization, k, v)
 
     # Model
     if 'model' in raw_config:
+        _warn_unknown_keys(raw_config['model'], InpainterModelConfig, 'model')
         for k, v in raw_config['model'].items():
             if hasattr(config.model, k):
                 setattr(config.model, k, v)
@@ -757,19 +779,23 @@ def load_inpainter_config(config_path: str, warn_missing: bool = True, auto_upda
     if 'training' in raw_config:
         model_raw = raw_config.get('model', {})
         training_raw = _migrate_flat_time_options(raw_config['training'], model_raw, "Inpainter")
+        _warn_unknown_keys(training_raw, InpainterTrainingConfig, 'training')
         for k, v in training_raw.items():
             if k == 'time' and isinstance(v, dict):
                 # Handle nested time config
+                _warn_unknown_keys(v, TimeConfig, 'training.time')
                 for tk, tv in v.items():
                     if hasattr(config.training.time, tk):
                         setattr(config.training.time, tk, tv)
             elif k == 'npho_loss_weight' and isinstance(v, dict):
                 # Handle nested npho_loss_weight config
+                _warn_unknown_keys(v, NphoLossWeightConfig, 'training.npho_loss_weight')
                 for nk, nv in v.items():
                     if hasattr(config.training.npho_loss_weight, nk):
                         setattr(config.training.npho_loss_weight, nk, nv)
             elif k == 'intensity_reweighting' and isinstance(v, dict):
                 # Handle nested intensity_reweighting config
+                _warn_unknown_keys(v, IntensityReweightConfig, 'training.intensity_reweighting')
                 for ik, iv in v.items():
                     if hasattr(config.training.intensity_reweighting, ik):
                         setattr(config.training.intensity_reweighting, ik, iv)
@@ -778,12 +804,14 @@ def load_inpainter_config(config_path: str, warn_missing: bool = True, auto_upda
 
     # Checkpoint
     if 'checkpoint' in raw_config:
+        _warn_unknown_keys(raw_config['checkpoint'], InpainterCheckpointConfig, 'checkpoint')
         for k, v in raw_config['checkpoint'].items():
             if hasattr(config.checkpoint, k):
                 setattr(config.checkpoint, k, v)
 
     # MLflow
     if 'mlflow' in raw_config:
+        _warn_unknown_keys(raw_config['mlflow'], InpainterMLflowConfig, 'mlflow')
         for k, v in raw_config['mlflow'].items():
             if hasattr(config.mlflow, k):
                 setattr(config.mlflow, k, v)
@@ -805,6 +833,18 @@ def load_inpainter_config(config_path: str, warn_missing: bool = True, auto_upda
 # ------------------------------------------------------------
 #  Config Validation and Auto-Update
 # ------------------------------------------------------------
+
+def _warn_unknown_keys(raw_section: Optional[Dict], dataclass_cls, section_name: str):
+    """Warn about unknown keys in a config section that don't match any dataclass field."""
+    if not raw_section:
+        return
+    import dataclasses
+    known_keys = {f.name for f in dataclasses.fields(dataclass_cls)}
+    for key in raw_section:
+        if key not in known_keys:
+            print(f"[WARN] Unknown config key '{section_name}.{key}' — will be ignored. "
+                  f"Check for typos or deprecated options.")
+
 
 def _get_dataclass_defaults(cls) -> Dict[str, Any]:
     """Get default values from a dataclass."""
