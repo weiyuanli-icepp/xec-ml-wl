@@ -97,11 +97,7 @@ class TrainingConfig:
     lr: float = 3e-4
     weight_decay: float = 1e-4
     warmup_epochs: int = 2
-    # New unified scheduler naming (preferred)
     lr_scheduler: Optional[str] = None  # "cosine", "onecycle", "plateau", or null to disable
-    # Legacy scheduler config (for backward compatibility)
-    use_scheduler: bool = True
-    scheduler: str = "cosine"  # "cosine", "onecycle", "plateau", or "none"
     # OneCycleLR specific
     max_lr: Optional[float] = None  # Max LR for OneCycleLR (defaults to lr if not set)
     pct_start: float = 0.3  # Fraction of training for LR increase phase

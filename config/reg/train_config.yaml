@@ -91,9 +91,6 @@ training:
   # --- Learning Rate Schedule ---
   # Options: "cosine", "onecycle", "plateau", null (constant LR)
   lr_scheduler: "cosine"
-  # Legacy aliases (used only when lr_scheduler is null):
-  use_scheduler: true
-  scheduler: "cosine"
   warmup_epochs: 2                  # Linear warmup before main schedule
   lr_min: 1.0e-6                    # Floor LR (cosine, plateau)
   # Plateau-specific:
