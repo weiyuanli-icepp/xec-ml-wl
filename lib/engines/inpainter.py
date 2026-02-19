@@ -126,7 +126,7 @@ def compute_inpainting_loss_flat(
                 # Denormalize npho to get raw values for weighting
                 npho_norm_valid = gt_masked[time_valid, 0]
                 raw_npho = npho_transform.inverse(npho_norm_valid)
-                time_weights = torch.sqrt(raw_npho.clamp(min=1.0))
+                time_weights = torch.sqrt(raw_npho.clamp(min=npho_threshold))
                 time_weights = time_weights / time_weights.mean()  # Normalize weights
                 loss_time = loss_time * time_weights
 
@@ -635,6 +635,7 @@ def run_epoch_inpainter(
     intensity_reweighter: Optional[object] = None,
     no_sync_ctx=None,
     sentinel_npho: float = -1.0,
+    ema_model=None,
 ) -> Dict[str, float]:
     """
     Run one training epoch for inpainter.
@@ -718,6 +719,7 @@ def run_epoch_inpainter(
         time_scale=time_scale,
         time_shift=time_shift,
         sentinel_time=sentinel_time,
+        npho_threshold=npho_threshold,
         num_workers=dataset_workers,
         log_invalid_npho=log_invalid_npho,
         load_truth_branches=False,  # Inpainter doesn't need truth branches
@@ -748,7 +750,7 @@ def run_epoch_inpainter(
 
         # Forward with AMP (pass npho_threshold_norm for stratified masking)
         profiler.start("forward")
-        with torch.amp.autocast('cuda', enabled=(scaler is not None)):
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=(scaler is not None)):
             if use_fast_forward:
                 # Fast path: fixed-size outputs, simpler loss computation
                 pred_all, original_values, mask = model.forward_training(
@@ -771,7 +773,7 @@ def run_epoch_inpainter(
         total_randomly_masked += mask.sum().long()
 
         profiler.start("loss_compute")
-        with torch.amp.autocast('cuda', enabled=(scaler is not None)):
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=(scaler is not None)):
             if use_fast_forward:
                 # Fast path: simple flat loss computation
                 loss, metrics = compute_inpainting_loss_flat(
@@ -838,12 +840,16 @@ def run_epoch_inpainter(
                     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 scaler.step(optimizer)
                 scaler.update()
+                if ema_model is not None:
+                    ema_model.update_parameters(model)
                 optimizer.zero_grad(set_to_none=True)
         else:
             if (accum_step + 1) % grad_accum_steps == 0:
                 if grad_clip > 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 optimizer.step()
+                if ema_model is not None:
+                    ema_model.update_parameters(model)
                 optimizer.zero_grad(set_to_none=True)
         profiler.stop()
 
@@ -904,6 +910,8 @@ def run_epoch_inpainter(
             if grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
+        if ema_model is not None:
+            ema_model.update_parameters(model)
         optimizer.zero_grad(set_to_none=True)
 
     # Average metrics
@@ -962,6 +970,7 @@ def run_eval_inpainter(
     npho_loss_weight_enabled: bool = False,
     npho_loss_weight_alpha: float = 0.5,
     sentinel_npho: float = -1.0,
+    amp: bool = True,
 ) -> Dict[str, float]:
     """
     Run evaluation for inpainter.
@@ -1052,6 +1061,7 @@ def run_eval_inpainter(
         time_scale=time_scale,
         time_shift=time_shift,
         sentinel_time=sentinel_time,
+        npho_threshold=npho_threshold,
         num_workers=dataset_workers,
         log_invalid_npho=log_invalid_npho,
         load_truth_branches=False,  # Inpainter doesn't need truth branches
@@ -1104,7 +1114,7 @@ def run_eval_inpainter(
             # Use fast path only if not collecting predictions (which needs the results dict)
             # Exception: cross-attention always uses fast path (no per-face results dict)
             use_fast = use_fast_forward and (not collect_predictions or head_type == "cross_attention")
-            with torch.amp.autocast('cuda', enabled=True):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
                 if use_fast:
                     pred_all, original_values, mask = model.forward_training(
                         x_batch, mask_ratio=mask_ratio, npho_threshold_norm=npho_threshold_norm
@@ -1124,7 +1134,7 @@ def run_eval_inpainter(
             total_randomly_masked += mask.sum().long()
 
             profiler.start("loss_compute")
-            with torch.amp.autocast('cuda', enabled=True):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
                 if use_fast:
                     _, metrics = compute_inpainting_loss_flat(
                         pred_all, original_values, mask,

@@ -765,12 +765,9 @@ Examples:
                 npho_loss_weight_alpha=npho_loss_weight_alpha,
                 no_sync_ctx=no_sync_ctx,
                 sentinel_npho=sentinel_npho,
+                ema_model=ema_model,
             )
             train_metrics = reduce_metrics(train_metrics, device)
-
-            # Update EMA model
-            if ema_model is not None:
-                ema_model.update_parameters(model_without_ddp)
 
             # Validation (use EMA model if available)
             eval_model = ema_model if ema_model is not None else model

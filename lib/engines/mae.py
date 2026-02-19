@@ -48,7 +48,8 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                   npho_loss_weight_alpha=0.5,
                   intensity_reweighter=None,
                   no_sync_ctx=None,
-                  sentinel_npho=-1.0):
+                  sentinel_npho=-1.0,
+                  ema_model=None):
     model.train()
     if scaler is None:
         scaler = torch.amp.GradScaler('cuda', enabled=amp)
@@ -414,6 +415,8 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
 
             scaler.step(optimizer)
             scaler.update()
+            if ema_model is not None:
+                ema_model.update_parameters(model)
             optimizer.zero_grad(set_to_none=True)
             profiler.stop()
 
@@ -434,6 +437,8 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         scaler.step(optimizer)
         scaler.update()
+        if ema_model is not None:
+            ema_model.update_parameters(model)
         optimizer.zero_grad(set_to_none=True)
 
     # Print profiler report if enabled
