@@ -71,7 +71,7 @@ training:
   # DEPRECATED: delete this line. Use training.time.use_npho_weight instead.
   use_npho_time_weight: true        # Weight time loss by sqrt(npho) for chi-square-like weighting
   track_mae_rmse: false             # Compute/log MAE/RMSE metrics (slower, set true for detailed analysis)
-  track_train_metrics: false        # Track per-face loss during training (slower, set true for debugging)
+  track_metrics: false              # Track per-face loss during training (slower, set true for debugging)
   profile: false                    # Enable training profiler to identify bottlenecks
 
   # === Npho Loss Weighting ===

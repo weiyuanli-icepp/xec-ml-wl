@@ -205,7 +205,7 @@ Key parameters in `config/mae_config.yaml`:
 | `training.time.npho_threshold` | 100 | Min npho for time loss (skip low-signal sensors) |
 | `auto_channel_weight` | false | Learn channel weights automatically |
 | `track_mae_rmse` | false | Compute MAE/RMSE metrics (slower) |
-| `track_train_metrics` | false | Per-face training metrics |
+| `track_metrics` | false | Per-face training metrics |
 | `grad_accum_steps` | 1 | Gradient accumulation steps |
 | `ema_decay` | null | EMA decay rate (null=disabled, 0.999 typical) |
 
@@ -250,5 +250,5 @@ training:
 | `npho_threshold` | `training.npho_threshold` | 100 | Min npho for time loss computation |
 | `use_npho_time_weight` | `training.use_npho_time_weight` | true | Chi-square-like time weighting |
 | `track_mae_rmse` | `training.track_mae_rmse` | false | Compute MAE/RMSE metrics (slower) |
-| `track_train_metrics` | `training.track_train_metrics` | false | Per-face training metrics |
+| `track_metrics` | `training.track_metrics` | false | Per-face training metrics |
 | `freeze_encoder` | `model.freeze_encoder` | false | Freeze encoder during inpainter training |

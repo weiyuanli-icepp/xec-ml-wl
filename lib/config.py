@@ -465,7 +465,7 @@ class MAETrainingConfig:
     # Compile entire model as single graph (True=slower compile but better perf, False=faster compile)
     compile_fullgraph: bool = False
     track_mae_rmse: bool = False  # Compute/log MAE/RMSE metrics
-    track_train_metrics: bool = False  # Track per-face loss during training
+    track_metrics: bool = False  # Track per-face loss during training
     profile: bool = False  # Enable training profiler
     # Npho reconstruction loss weighting: weight = (npho + 1)^alpha
     npho_loss_weight: NphoLossWeightConfig = field(default_factory=NphoLossWeightConfig)
@@ -729,7 +729,7 @@ class InpainterTrainingConfig:
     compile_fullgraph: bool = False
     track_mae_rmse: bool = True
     grad_accum_steps: int = 1
-    track_train_metrics: bool = True
+    track_metrics: bool = True
     ema_decay: Optional[float] = None  # None = disabled, 0.999 = typical value
     profile: bool = False  # Enable training profiler
     # Npho reconstruction loss weighting: weight = (npho + 1)^alpha

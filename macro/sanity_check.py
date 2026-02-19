@@ -117,7 +117,7 @@ def test_mae(data_path, device, num_batches=5, profile=False, npho_scheme="log1p
             dataloader_workers=0,
             dataset_workers=2,
             track_mae_rmse=True,
-            track_train_metrics=True,
+            track_metrics=True,
             profile=profile,
             log_invalid_npho=False,  # Suppress warnings for test
             npho_scheme=npho_scheme,

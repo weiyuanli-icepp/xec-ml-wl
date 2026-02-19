@@ -52,7 +52,7 @@ There are currently **two normalization schemes** in use:
 | `npho_scale2` | 1.0 | 4.08 | Second scale factor |
 | `time_scale` | 6.5e-8 | 1.14e-7 | Time normalization (seconds) |
 | `time_shift` | 0.5 | -0.46 | Time offset after scaling |
-| `sentinel_time` | -5.0 | -1.0 | Invalid sensor marker |
+| `sentinel_time` | -1.0 | -1.0 | Invalid sensor marker |
 
 **Important:** When using MAE pretraining for fine-tuning, ensure all downstream models use the **same** normalization scheme as the MAE.
 
@@ -189,7 +189,7 @@ After normalization with the **new scheme** (npho_scale=1000):
 | `npho_scheme` | `normalization.npho_scheme` | - | log1p | Normalization scheme (log1p/anscombe/sqrt/linear) |
 | `time_scale` | `normalization.time_scale` | 6.5e-8 | 1.14e-7 | Time scale (seconds) |
 | `time_shift` | `normalization.time_shift` | 0.5 | -0.46 | Time offset after scaling |
-| `sentinel_time` | `normalization.sentinel_time` | -5.0 | -1.0 | Invalid time sensor marker |
+| `sentinel_time` | `normalization.sentinel_time` | -1.0 | -1.0 | Invalid time sensor marker |
 | `sentinel_npho` | `normalization.sentinel_npho` | -1.0 | -1.0 | Invalid npho sensor marker |
 | `npho_threshold` | `normalization.npho_threshold` | - | 100 | Min npho for valid timing |
 

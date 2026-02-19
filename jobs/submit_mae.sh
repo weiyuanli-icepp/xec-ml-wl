@@ -82,7 +82,7 @@ CFG_COMPILE=$(yaml_get "compile" "$CONFIG_PATH")
 CFG_NPHO_THRESHOLD=$(yaml_get "npho_threshold" "$CONFIG_PATH")
 CFG_USE_NPHO_TIME_WEIGHT=$(yaml_get "use_npho_time_weight" "$CONFIG_PATH")
 CFG_TRACK_MAE_RMSE=$(yaml_get "track_mae_rmse" "$CONFIG_PATH")
-CFG_TRACK_TRAIN_METRICS=$(yaml_get "track_train_metrics" "$CONFIG_PATH")
+CFG_TRACK_METRICS=$(yaml_get "track_metrics" "$CONFIG_PATH")
 
 # Checkpoint
 CFG_RESUME_FROM=$(yaml_get "resume_from" "$CONFIG_PATH")
@@ -264,7 +264,7 @@ if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
     echo ""
     echo "=== Tracking ==="
     echo "  Track MAE/RMSE:      ${CFG_TRACK_MAE_RMSE:-false}"
-    echo "  Track train metrics: ${CFG_TRACK_TRAIN_METRICS:-false}"
+    echo "  Track train metrics: ${CFG_TRACK_METRICS:-false}"
     echo ""
     echo "=== Checkpoint ==="
     echo "  Save dir:      ${CFG_SAVE_DIR:-artifacts}"

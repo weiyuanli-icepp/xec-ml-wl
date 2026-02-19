@@ -120,6 +120,6 @@ Training is now **config-based** using `config/train_config.yaml`. CLI arguments
 | `--npho_scale2` | `normalization.npho_scale2` | 1.0 | 4.08 | Secondary npho scale |
 | `--time_scale` | `normalization.time_scale` | 6.5e-8 | 1.14e-7 | Time normalization |
 | `--time_shift` | `normalization.time_shift` | 0.5 | -0.46 | Time offset shift |
-| `--sentinel_time` | `normalization.sentinel_time` | -5.0 | -1.0 | Bad channel marker |
+| `--sentinel_time` | `normalization.sentinel_time` | -1.0 | -1.0 | Bad channel marker |
 
 See [Data Pipeline](../architecture/data-pipeline.md) for detailed normalization documentation.

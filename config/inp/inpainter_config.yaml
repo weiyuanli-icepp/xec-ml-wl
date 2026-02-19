@@ -81,7 +81,7 @@ training:
   compile: "reduce-overhead"
   track_mae_rmse: false              # Compute/log MAE/RMSE metrics (set false to skip)
   grad_accum_steps: 4               # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps)
-  track_train_metrics: false         # Track per-face metrics during training (set false to log only total_loss)
+  track_metrics: false               # Track per-face metrics during training (set false to log only total_loss)
   # DEPRECATED: delete this line. Use training.time.npho_threshold instead.
   npho_threshold: 100              # Npho threshold for conditional time loss (null uses default 10.0)
   # DEPRECATED: delete this line. Use training.time.use_npho_weight instead.

@@ -40,7 +40,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                   npho_threshold=None,
                   use_npho_time_weight=True,
                   track_mae_rmse=True,
-                  track_train_metrics=True,
+                  track_metrics=True,
                   profile=False,
                   log_invalid_npho=True,
                   npho_scheme="log1p",
@@ -381,7 +381,7 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                     loss += face_loss
 
                     # Per-face loss tracking (skip if disabled for speed)
-                    if track_train_metrics:
+                    if track_metrics:
                         face_loss_sums[name] += face_loss.item()
                         face_npho_loss_sums[name] += npho_loss.item()
                         if predict_time:
@@ -449,8 +449,8 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
     # Total loss (always computed)
     metrics["total_loss"] = total_loss_sum / max(1, n_batches)
 
-    # Per-face metrics (only if track_train_metrics)
-    if track_train_metrics:
+    # Per-face metrics (only if track_metrics)
+    if track_metrics:
         for name, val in face_loss_sums.items():
             metrics[f"loss_{name}"] = val / max(1, n_batches)
         for name, val in face_npho_loss_sums.items():

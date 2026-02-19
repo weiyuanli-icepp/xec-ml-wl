@@ -311,7 +311,7 @@ Examples:
         save_root_predictions = cfg.checkpoint.save_predictions
         root_save_interval = cfg.checkpoint.root_save_interval
         grad_accum_steps = args.grad_accum_steps if args.grad_accum_steps is not None else getattr(cfg.training, "grad_accum_steps", 1)
-        track_train_metrics = getattr(cfg.training, "track_train_metrics", True)
+        track_metrics = getattr(cfg.training, "track_metrics", True)
         profile = args.profile or getattr(cfg.training, 'profile', False)
         # Handle compile option: can be string mode or boolean (for backward compat)
         compile_cfg = getattr(cfg.training, 'compile', 'reduce-overhead')
@@ -403,7 +403,7 @@ Examples:
         save_root_predictions = True
         root_save_interval = 10
         grad_accum_steps = args.grad_accum_steps or 1
-        track_train_metrics = True
+        track_metrics = True
         profile = args.profile
         compile_mode = args.compile if args.compile is not None else 'reduce-overhead'
         compile_fullgraph = False  # Default for CLI mode
@@ -755,7 +755,7 @@ Examples:
                 dataset_workers=num_threads,
                 prefetch_factor=prefetch_factor,
                 grad_accum_steps=grad_accum_steps,
-                track_metrics=track_train_metrics,
+                track_metrics=track_metrics,
                 npho_threshold=npho_threshold,
                 use_npho_time_weight=use_npho_time_weight,
                 profile=profile and is_main_process(),

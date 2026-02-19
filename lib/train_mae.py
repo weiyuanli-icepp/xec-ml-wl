@@ -213,8 +213,8 @@ Examples:
     parser.add_argument("--no_npho_time_weight", action="store_true", help="Disable npho time weighting")
     parser.add_argument("--track_mae_rmse", action="store_true", help="Enable MAE/RMSE metric tracking (slower)")
     parser.add_argument("--no_track_mae_rmse", action="store_true", help="Disable MAE/RMSE metric tracking (faster)")
-    parser.add_argument("--track_train_metrics", action="store_true", help="Enable per-face train metrics tracking")
-    parser.add_argument("--no_track_train_metrics", action="store_true", help="Disable per-face train metrics (faster)")
+    parser.add_argument("--track_metrics", action="store_true", help="Enable per-face train metrics tracking")
+    parser.add_argument("--no_track_metrics", action="store_true", help="Disable per-face train metrics (faster)")
     parser.add_argument("--profile", action="store_true", help="Enable training profiler to identify bottlenecks")
     parser.add_argument("--npho_scheme", type=str, default=None, choices=["log1p", "anscombe", "sqrt", "linear"],
                         help="Normalization scheme for npho (default: log1p)")
@@ -285,7 +285,7 @@ Examples:
         encoder_dim_feedforward = cfg.model.dim_feedforward
         encoder_num_fusion_layers = cfg.model.num_fusion_layers
         track_mae_rmse = not args.no_track_mae_rmse and getattr(cfg.training, "track_mae_rmse", False)
-        track_train_metrics = not args.no_track_train_metrics and getattr(cfg.training, "track_train_metrics", False)
+        track_metrics = not args.no_track_metrics and getattr(cfg.training, "track_metrics", False)
         profile = args.profile or getattr(cfg.training, 'profile', False)
         auto_channel_weight = args.auto_channel_weight or cfg.training.auto_channel_weight
         grad_clip = args.grad_clip if args.grad_clip is not None else getattr(cfg.training, 'grad_clip', 1.0)
@@ -361,7 +361,7 @@ Examples:
         encoder_dim_feedforward = None
         encoder_num_fusion_layers = 2
         track_mae_rmse = args.track_mae_rmse and not args.no_track_mae_rmse
-        track_train_metrics = args.track_train_metrics and not args.no_track_train_metrics
+        track_metrics = args.track_metrics and not args.no_track_metrics
         profile = args.profile
         auto_channel_weight = args.auto_channel_weight
         grad_clip = args.grad_clip or 1.0
@@ -717,7 +717,7 @@ Examples:
                 npho_threshold=npho_threshold,
                 use_npho_time_weight=use_npho_time_weight,
                 track_mae_rmse=track_mae_rmse,
-                track_train_metrics=track_train_metrics,
+                track_metrics=track_metrics,
                 profile=profile and is_main_process(),
                 log_invalid_npho=log_invalid_npho,
                 npho_scheme=npho_scheme,
