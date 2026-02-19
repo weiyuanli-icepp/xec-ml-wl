@@ -569,7 +569,7 @@ Examples:
 
     # Optimizer (only trainable params)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay)
+    optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay, fused=(device.type == "cuda"))
 
     # Initialize EMA model if enabled (from unwrapped model)
     ema_model = None
@@ -917,10 +917,8 @@ Examples:
                         'num_fusion_layers': encoder_num_fusion_layers,
                     }
                 }
-                if scheduler is not None:
-                    checkpoint_dict['scheduler_state_dict'] = scheduler.state_dict()
-                if ema_model is not None:
-                    checkpoint_dict['ema_state_dict'] = ema_model.state_dict()
+                checkpoint_dict['scheduler_state_dict'] = scheduler.state_dict() if scheduler is not None else None
+                checkpoint_dict['ema_state_dict'] = ema_model.state_dict() if ema_model is not None else None
 
                 # Save last
                 ckpt_path = os.path.join(save_path, "inpainter_checkpoint_last.pth")

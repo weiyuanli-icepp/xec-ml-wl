@@ -27,7 +27,7 @@ from torch.optim.lr_scheduler import (
     CosineAnnealingLR, LinearLR, SequentialLR,
     OneCycleLR, ReduceLROnPlateau
 )
-from torch.optim.swa_utils import AveragedModel
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 
 from .models import XECEncoder, XECMultiHeadModel, AutomaticLossScaler
 from .engines import run_epoch_stream
@@ -396,11 +396,8 @@ def train_with_config(config_path: str, profile: bool = None):
         if is_main_process():
             print(f"[INFO] Using EMA with decay={ema_decay}")
 
-        def robust_ema_avg(averaged_model_parameter, model_parameter, num_averaged):
-            return ema_decay * averaged_model_parameter + (1.0 - ema_decay) * model_parameter
-
         # Build EMA from unwrapped model (no DDP wrapper)
-        ema_model = AveragedModel(model_without_ddp, avg_fn=robust_ema_avg, use_buffers=True)
+        ema_model = AveragedModel(model_without_ddp, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
         ema_model.to(device)
 
     # --- Loss Scaler (Auto Balance) ---
