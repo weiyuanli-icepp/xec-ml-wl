@@ -899,41 +899,47 @@ def plot_resolution_vs_signal(data: Dict[str, np.ndarray], output_dir: str,
     plt.savefig(os.path.join(output_dir, 'resolution_vs_signal.pdf'))
     plt.close()
 
-    # --- Denormalized space: log-spaced bins ---
+    # --- Denormalized space: relative resolution, truth >= 100 photons ---
     truth_raw = denormalize_npho(truth_npho, npho_scale, npho_scale2)
     pred_raw = denormalize_npho(data['pred_npho'][valid], npho_scale, npho_scale2)
     error_raw = pred_raw - truth_raw
 
-    raw_max = np.percentile(truth_raw, 99)
-    raw_min = max(1.0, np.percentile(truth_raw[truth_raw > 0], 1) if (truth_raw > 0).any() else 1.0)
-    if raw_max <= raw_min:
-        print("[INFO] Saved resolution_vs_signal.pdf")
+    # Cut: only sensors with truth >= 100 photons
+    raw_cut = truth_raw >= 100.0
+    if raw_cut.sum() < 100:
+        print("[INFO] Saved resolution_vs_signal.pdf (too few sensors above 100 photons for denorm)")
         return
-    bin_edges_raw = np.logspace(np.log10(raw_min), np.log10(raw_max), n_bins + 1)
 
-    centers_raw, mae_raw, bias_raw, pct68_raw = _compute_slice_metrics(
-        truth_raw, error_raw, bin_edges_raw)
+    truth_raw_cut = truth_raw[raw_cut]
+    error_raw_cut = error_raw[raw_cut]
+    rel_error = error_raw_cut / truth_raw_cut
+
+    raw_max = np.percentile(truth_raw_cut, 99)
+    bin_edges_raw = np.logspace(np.log10(100.0), np.log10(raw_max), n_bins + 1)
+
+    centers_raw, rel_mae, rel_bias, rel_pct68 = _compute_slice_metrics(
+        truth_raw_cut, rel_error, bin_edges_raw)
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
-    axes[0].plot(centers_raw, mae_raw, 'o', color='blue', markersize=4)
+    axes[0].plot(centers_raw, rel_mae, 'o', color='blue', markersize=4)
     axes[0].set_xscale('log')
     axes[0].set_xlabel('Truth Npho [photons]')
-    axes[0].set_ylabel('MAE [photons]')
-    axes[0].set_title('MAE vs Truth Npho (denormalized)')
+    axes[0].set_ylabel('Relative MAE (|error|/truth)')
+    axes[0].set_title('Relative MAE vs Truth Npho')
 
-    axes[1].plot(centers_raw, bias_raw, 'o', color='red', markersize=4)
+    axes[1].plot(centers_raw, rel_bias, 'o', color='red', markersize=4)
     axes[1].axhline(0, color='gray', linestyle='--', alpha=0.5)
     axes[1].set_xscale('log')
     axes[1].set_xlabel('Truth Npho [photons]')
-    axes[1].set_ylabel('Bias [photons]')
-    axes[1].set_title('Bias vs Truth Npho (denormalized)')
+    axes[1].set_ylabel('Relative Bias (error/truth)')
+    axes[1].set_title('Relative Bias vs Truth Npho')
 
-    axes[2].plot(centers_raw, pct68_raw, 'o', color='green', markersize=4)
+    axes[2].plot(centers_raw, rel_pct68, 'o', color='green', markersize=4)
     axes[2].set_xscale('log')
     axes[2].set_xlabel('Truth Npho [photons]')
-    axes[2].set_ylabel('68th Percentile |Error| [photons]')
-    axes[2].set_title('Resolution (68%) vs Truth Npho (denormalized)')
+    axes[2].set_ylabel('Relative 68th Pct (|error|/truth)')
+    axes[2].set_title('Relative Resolution (68%) vs Truth Npho')
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'resolution_vs_signal_denorm.pdf'))
