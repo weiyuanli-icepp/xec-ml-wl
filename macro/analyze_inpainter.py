@@ -815,11 +815,43 @@ def plot_scatter_truth_vs_pred(data: Dict[str, np.ndarray], output_dir: str,
         print("[INFO] Saved scatter_truth_vs_pred.pdf and scatter_truth_vs_pred_denorm.pdf")
 
 
+def _compute_slice_metrics(truth: np.ndarray, error: np.ndarray,
+                            bin_edges: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute MAE, bias, 68th percentile in each bin.
+
+    Returns bin_centers, mae, bias, pct68 arrays.
+    """
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    indices = np.digitize(truth, bin_edges) - 1
+    indices = np.clip(indices, 0, len(bin_centers) - 1)
+
+    mae = np.full(len(bin_centers), np.nan)
+    bias = np.full(len(bin_centers), np.nan)
+    pct68 = np.full(len(bin_centers), np.nan)
+
+    for i in range(len(bin_centers)):
+        m = indices == i
+        if m.sum() < 10:
+            continue
+        err = error[m]
+        mae[i] = np.mean(np.abs(err))
+        bias[i] = np.mean(err)
+        pct68[i] = np.percentile(np.abs(err), 68)
+
+    return bin_centers, mae, bias, pct68
+
+
 def plot_resolution_vs_signal(data: Dict[str, np.ndarray], output_dir: str,
                                has_mask_type: bool,
                                npho_scale: float, npho_scale2: float,
                                n_bins: int = 30, predict_time: bool = True):
-    """Plot error statistics (MAE, bias, std) as a function of truth npho (slice plot)."""
+    """Plot error statistics (MAE, bias, 68%) as a function of truth npho (slice plot).
+
+    Binning strategy:
+    - Normalized: equal-width bins in [0, 95th percentile]
+    - Denormalized: log-spaced bins with log x-axis
+    - Per-face: same equal-width bins as normalized
+    """
     if not HAS_MATPLOTLIB:
         return
 
@@ -834,126 +866,80 @@ def plot_resolution_vs_signal(data: Dict[str, np.ndarray], output_dir: str,
     truth_npho = data['truth_npho'][valid]
     error_npho = data['error_npho'][valid]
 
-    # --- Normalized space ---
-    # Use percentile-based edges to ensure roughly equal statistics per bin
-    bin_edges = np.percentile(truth_npho, np.linspace(0, 100, n_bins + 1))
-    # Remove duplicate edges (can happen if many sensors have the same value)
-    bin_edges = np.unique(bin_edges)
-    if len(bin_edges) < 3:
-        print("[WARNING] Not enough unique truth values for slice plot")
+    # --- Normalized space: equal-width bins ---
+    x_max = np.percentile(truth_npho, 95)
+    x_min = max(0.0, truth_npho.min())
+    if x_max <= x_min:
+        print("[WARNING] Not enough range for slice plot")
         return
+    bin_edges = np.linspace(x_min, x_max, n_bins + 1)
 
-    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-    bin_indices = np.digitize(truth_npho, bin_edges) - 1
-    bin_indices = np.clip(bin_indices, 0, len(bin_centers) - 1)
-
-    mae_vals = np.zeros(len(bin_centers))
-    bias_vals = np.zeros(len(bin_centers))
-    std_vals = np.zeros(len(bin_centers))
-    pct68_vals = np.zeros(len(bin_centers))
-    counts = np.zeros(len(bin_centers), dtype=int)
-
-    for i in range(len(bin_centers)):
-        mask = bin_indices == i
-        if mask.sum() < 10:
-            mae_vals[i] = bias_vals[i] = std_vals[i] = pct68_vals[i] = np.nan
-            continue
-        err = error_npho[mask]
-        counts[i] = len(err)
-        mae_vals[i] = np.mean(np.abs(err))
-        bias_vals[i] = np.mean(err)
-        std_vals[i] = np.std(err)
-        pct68_vals[i] = np.percentile(np.abs(err), 68)
+    centers, mae_vals, bias_vals, pct68_vals = _compute_slice_metrics(
+        truth_npho, error_npho, bin_edges)
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
-    # MAE vs truth
-    ax = axes[0]
-    ax.plot(bin_centers, mae_vals, 'o-', color='blue', markersize=3)
-    ax.set_xlabel('Truth Npho (normalized)')
-    ax.set_ylabel('MAE (normalized)')
-    ax.set_title('MAE vs Truth Npho')
-    ax.grid(True, alpha=0.3)
+    axes[0].plot(centers, mae_vals, 'o', color='blue', markersize=4)
+    axes[0].set_xlabel('Truth Npho (normalized)')
+    axes[0].set_ylabel('MAE (normalized)')
+    axes[0].set_title('MAE vs Truth Npho')
 
-    # Bias vs truth
-    ax = axes[1]
-    ax.plot(bin_centers, bias_vals, 'o-', color='red', markersize=3)
-    ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
-    ax.set_xlabel('Truth Npho (normalized)')
-    ax.set_ylabel('Bias (normalized)')
-    ax.set_title('Bias vs Truth Npho')
-    ax.grid(True, alpha=0.3)
+    axes[1].plot(centers, bias_vals, 'o', color='red', markersize=4)
+    axes[1].axhline(0, color='gray', linestyle='--', alpha=0.5)
+    axes[1].set_xlabel('Truth Npho (normalized)')
+    axes[1].set_ylabel('Bias (normalized)')
+    axes[1].set_title('Bias vs Truth Npho')
 
-    # 68th percentile vs truth
-    ax = axes[2]
-    ax.plot(bin_centers, pct68_vals, 'o-', color='green', markersize=3)
-    ax.set_xlabel('Truth Npho (normalized)')
-    ax.set_ylabel('68th Percentile |Error|')
-    ax.set_title('Resolution (68%) vs Truth Npho')
-    ax.grid(True, alpha=0.3)
+    axes[2].plot(centers, pct68_vals, 'o', color='green', markersize=4)
+    axes[2].set_xlabel('Truth Npho (normalized)')
+    axes[2].set_ylabel('68th Percentile |Error|')
+    axes[2].set_title('Resolution (68%) vs Truth Npho')
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'resolution_vs_signal.pdf'))
     plt.close()
 
-    # --- Denormalized space ---
+    # --- Denormalized space: log-spaced bins ---
     truth_raw = denormalize_npho(truth_npho, npho_scale, npho_scale2)
     pred_raw = denormalize_npho(data['pred_npho'][valid], npho_scale, npho_scale2)
     error_raw = pred_raw - truth_raw
 
-    bin_edges_raw = np.percentile(truth_raw, np.linspace(0, 100, n_bins + 1))
-    bin_edges_raw = np.unique(bin_edges_raw)
-    if len(bin_edges_raw) < 3:
+    raw_max = np.percentile(truth_raw, 99)
+    raw_min = max(1.0, np.percentile(truth_raw[truth_raw > 0], 1) if (truth_raw > 0).any() else 1.0)
+    if raw_max <= raw_min:
         print("[INFO] Saved resolution_vs_signal.pdf")
         return
+    bin_edges_raw = np.logspace(np.log10(raw_min), np.log10(raw_max), n_bins + 1)
 
-    bin_centers_raw = 0.5 * (bin_edges_raw[:-1] + bin_edges_raw[1:])
-    bin_indices_raw = np.digitize(truth_raw, bin_edges_raw) - 1
-    bin_indices_raw = np.clip(bin_indices_raw, 0, len(bin_centers_raw) - 1)
-
-    mae_raw = np.zeros(len(bin_centers_raw))
-    bias_raw = np.zeros(len(bin_centers_raw))
-    pct68_raw = np.zeros(len(bin_centers_raw))
-
-    for i in range(len(bin_centers_raw)):
-        mask = bin_indices_raw == i
-        if mask.sum() < 10:
-            mae_raw[i] = bias_raw[i] = pct68_raw[i] = np.nan
-            continue
-        err = error_raw[mask]
-        mae_raw[i] = np.mean(np.abs(err))
-        bias_raw[i] = np.mean(err)
-        pct68_raw[i] = np.percentile(np.abs(err), 68)
+    centers_raw, mae_raw, bias_raw, pct68_raw = _compute_slice_metrics(
+        truth_raw, error_raw, bin_edges_raw)
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
-    ax = axes[0]
-    ax.plot(bin_centers_raw, mae_raw, 'o-', color='blue', markersize=3)
-    ax.set_xlabel('Truth Npho [photons]')
-    ax.set_ylabel('MAE [photons]')
-    ax.set_title('MAE vs Truth Npho (denormalized)')
-    ax.grid(True, alpha=0.3)
+    axes[0].plot(centers_raw, mae_raw, 'o', color='blue', markersize=4)
+    axes[0].set_xscale('log')
+    axes[0].set_xlabel('Truth Npho [photons]')
+    axes[0].set_ylabel('MAE [photons]')
+    axes[0].set_title('MAE vs Truth Npho (denormalized)')
 
-    ax = axes[1]
-    ax.plot(bin_centers_raw, bias_raw, 'o-', color='red', markersize=3)
-    ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
-    ax.set_xlabel('Truth Npho [photons]')
-    ax.set_ylabel('Bias [photons]')
-    ax.set_title('Bias vs Truth Npho (denormalized)')
-    ax.grid(True, alpha=0.3)
+    axes[1].plot(centers_raw, bias_raw, 'o', color='red', markersize=4)
+    axes[1].axhline(0, color='gray', linestyle='--', alpha=0.5)
+    axes[1].set_xscale('log')
+    axes[1].set_xlabel('Truth Npho [photons]')
+    axes[1].set_ylabel('Bias [photons]')
+    axes[1].set_title('Bias vs Truth Npho (denormalized)')
 
-    ax = axes[2]
-    ax.plot(bin_centers_raw, pct68_raw, 'o-', color='green', markersize=3)
-    ax.set_xlabel('Truth Npho [photons]')
-    ax.set_ylabel('68th Percentile |Error| [photons]')
-    ax.set_title('Resolution (68%) vs Truth Npho (denormalized)')
-    ax.grid(True, alpha=0.3)
+    axes[2].plot(centers_raw, pct68_raw, 'o', color='green', markersize=4)
+    axes[2].set_xscale('log')
+    axes[2].set_xlabel('Truth Npho [photons]')
+    axes[2].set_ylabel('68th Percentile |Error| [photons]')
+    axes[2].set_title('Resolution (68%) vs Truth Npho (denormalized)')
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'resolution_vs_signal_denorm.pdf'))
     plt.close()
 
-    # --- Per-face overlay (normalized) ---
+    # --- Per-face overlay (normalized, same equal-width bins) ---
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     face_colors = {'inner': 'blue', 'us': 'orange', 'ds': 'green',
                    'outer': 'red', 'top': 'purple', 'bot': 'brown'}
@@ -966,46 +952,28 @@ def plot_resolution_vs_signal(data: Dict[str, np.ndarray], output_dir: str,
         ft = data['truth_npho'][face_valid]
         fe = data['error_npho'][face_valid]
 
-        # Use same global bin edges for consistent comparison
-        fi = np.digitize(ft, bin_edges) - 1
-        fi = np.clip(fi, 0, len(bin_centers) - 1)
-
-        f_mae = np.full(len(bin_centers), np.nan)
-        f_bias = np.full(len(bin_centers), np.nan)
-        f_pct68 = np.full(len(bin_centers), np.nan)
-
-        for i in range(len(bin_centers)):
-            m = fi == i
-            if m.sum() < 10:
-                continue
-            err = fe[m]
-            f_mae[i] = np.mean(np.abs(err))
-            f_bias[i] = np.mean(err)
-            f_pct68[i] = np.percentile(np.abs(err), 68)
+        _, f_mae, f_bias, f_pct68 = _compute_slice_metrics(ft, fe, bin_edges)
 
         color = face_colors.get(face_name, 'gray')
-        axes[0].plot(bin_centers, f_mae, '-', color=color, alpha=0.7, linewidth=1.5, label=face_name)
-        axes[1].plot(bin_centers, f_bias, '-', color=color, alpha=0.7, linewidth=1.5, label=face_name)
-        axes[2].plot(bin_centers, f_pct68, '-', color=color, alpha=0.7, linewidth=1.5, label=face_name)
+        axes[0].plot(centers, f_mae, 'o', color=color, markersize=3, alpha=0.7, label=face_name)
+        axes[1].plot(centers, f_bias, 'o', color=color, markersize=3, alpha=0.7, label=face_name)
+        axes[2].plot(centers, f_pct68, 'o', color=color, markersize=3, alpha=0.7, label=face_name)
 
     axes[0].set_xlabel('Truth Npho (normalized)')
     axes[0].set_ylabel('MAE (normalized)')
     axes[0].set_title('MAE vs Truth Npho (per face)')
     axes[0].legend(fontsize=8)
-    axes[0].grid(True, alpha=0.3)
 
     axes[1].set_xlabel('Truth Npho (normalized)')
     axes[1].set_ylabel('Bias (normalized)')
     axes[1].set_title('Bias vs Truth Npho (per face)')
     axes[1].axhline(0, color='gray', linestyle='--', alpha=0.5)
     axes[1].legend(fontsize=8)
-    axes[1].grid(True, alpha=0.3)
 
     axes[2].set_xlabel('Truth Npho (normalized)')
     axes[2].set_ylabel('68th Percentile |Error|')
     axes[2].set_title('Resolution (68%) vs Truth Npho (per face)')
     axes[2].legend(fontsize=8)
-    axes[2].grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'resolution_vs_signal_per_face.pdf'))
