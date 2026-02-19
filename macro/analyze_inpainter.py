@@ -890,20 +890,30 @@ def save_metrics_csv(metrics: Dict, output_dir: str):
 
     # Per-face metrics
     if 'per_face' in metrics and metrics['per_face']:
+        predict_time = metrics.get('predict_time', True)
         with open(os.path.join(output_dir, 'face_metrics.csv'), 'w', newline='') as f:
             writer = csv.writer(f)
-            header = ['face', 'n', 'n_valid_time',
-                      'npho_mae', 'npho_rmse', 'npho_bias', 'npho_68pct',
-                      'time_mae', 'time_rmse', 'time_bias', 'time_68pct',
-                      'time_mae_valid', 'time_bias_valid']
+            if predict_time:
+                header = ['face', 'n', 'n_valid_time',
+                          'npho_mae', 'npho_rmse', 'npho_bias', 'npho_68pct',
+                          'time_mae', 'time_rmse', 'time_bias', 'time_68pct',
+                          'time_mae_valid', 'time_bias_valid']
+            else:
+                header = ['face', 'n',
+                          'npho_mae', 'npho_rmse', 'npho_bias', 'npho_68pct']
             writer.writerow(header)
             for face_name in FACE_NAMES:
                 if face_name in metrics['per_face']:
                     m = metrics['per_face'][face_name]
-                    writer.writerow([face_name, m['n'], m.get('n_valid_time', ''),
-                                     m['npho_mae'], m['npho_rmse'], m['npho_bias'], m['npho_68pct'],
-                                     m['time_mae'], m['time_rmse'], m['time_bias'], m['time_68pct'],
-                                     m.get('time_mae_valid', ''), m.get('time_bias_valid', '')])
+                    if predict_time:
+                        writer.writerow([face_name, m['n'], m.get('n_valid_time', ''),
+                                         m['npho_mae'], m['npho_rmse'], m['npho_bias'], m['npho_68pct'],
+                                         m.get('time_mae', ''), m.get('time_rmse', ''),
+                                         m.get('time_bias', ''), m.get('time_68pct', ''),
+                                         m.get('time_mae_valid', ''), m.get('time_bias_valid', '')])
+                    else:
+                        writer.writerow([face_name, m['n'],
+                                         m['npho_mae'], m['npho_rmse'], m['npho_bias'], m['npho_68pct']])
         print("[INFO] Saved face_metrics.csv")
 
     # Dead channel stats
