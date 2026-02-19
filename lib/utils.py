@@ -190,7 +190,7 @@ def iterate_chunks(files, tree, branches, step_size=4000):
 # ------------------------------------------------------------
 # Loss function helper
 # ------------------------------------------------------------
-def get_pointwise_loss_fn(loss_name: str, epsilon: float = 1e-3):
+def get_pointwise_loss_fn(loss_name: str, epsilon: float = 1e-3, beta: float = 1.0):
     """
     Returns a point-wise loss function with reduction='none'.
 
@@ -202,6 +202,7 @@ def get_pointwise_loss_fn(loss_name: str, epsilon: float = 1e-3):
     - relative_smooth_l1: Smooth L1 divided by |target|
     - relative_mse, relative_l2: MSE divided by target^2
 
+    For smooth_l1/huber variants, beta controls the transition point (default 1.0).
     For relative losses, epsilon prevents division by zero for small targets.
     Defaults to smooth_l1.
     """
@@ -209,7 +210,7 @@ def get_pointwise_loss_fn(loss_name: str, epsilon: float = 1e-3):
 
     # Standard losses
     if name in ("smooth_l1", "huber"):
-        return lambda pred, target: torch.nn.functional.smooth_l1_loss(pred, target, reduction="none")
+        return lambda pred, target: torch.nn.functional.smooth_l1_loss(pred, target, reduction="none", beta=beta)
     if name == "l1":
         return lambda pred, target: torch.nn.functional.l1_loss(pred, target, reduction="none")
     if name in ("mse", "l2"):
@@ -225,7 +226,7 @@ def get_pointwise_loss_fn(loss_name: str, epsilon: float = 1e-3):
 
     if name == "relative_smooth_l1":
         def relative_smooth_l1_loss(pred, target):
-            sl1 = torch.nn.functional.smooth_l1_loss(pred, target, reduction="none")
+            sl1 = torch.nn.functional.smooth_l1_loss(pred, target, reduction="none", beta=beta)
             scale = torch.abs(target).clamp(min=epsilon)
             return sl1 / scale
         return relative_smooth_l1_loss
@@ -238,7 +239,7 @@ def get_pointwise_loss_fn(loss_name: str, epsilon: float = 1e-3):
         return relative_mse_loss
 
     # Default to smooth_l1
-    return lambda pred, target: torch.nn.functional.smooth_l1_loss(pred, target, reduction="none")
+    return lambda pred, target: torch.nn.functional.smooth_l1_loss(pred, target, reduction="none", beta=beta)
 
 # ------------------------------------------------------------
 # Angle conversion utilities

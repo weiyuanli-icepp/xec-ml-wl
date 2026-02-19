@@ -123,10 +123,12 @@ def run_epoch_stream(
                 loss_fn_name = cfg.get("loss_fn", loss_type)
                 task_weight = cfg.get("weight", 1.0)
                 use_log_transform = cfg.get("log_transform", False)
+                task_loss_beta = cfg.get("loss_beta", loss_beta)
             else:
                 loss_fn_name = loss_type
                 task_weight = cfg
                 use_log_transform = False
+                task_loss_beta = loss_beta
 
             if loss_fn_name not in valid_loss_names:
                 warnings.warn(
@@ -137,7 +139,7 @@ def run_epoch_stream(
                 loss_fn_name = "smooth_l1"
 
             task_loss_cache[task] = {
-                "loss_fn": get_pointwise_loss_fn(loss_fn_name),
+                "loss_fn": get_pointwise_loss_fn(loss_fn_name, beta=task_loss_beta),
                 "weight": task_weight,
                 "log_transform": use_log_transform,
             }
@@ -218,7 +220,7 @@ def run_epoch_stream(
                         use_log_transform = cache["log_transform"]
                     else:
                         # Fallback for uncached tasks
-                        loss_fn = get_pointwise_loss_fn(loss_type)
+                        loss_fn = get_pointwise_loss_fn(loss_type, beta=loss_beta)
                         task_weight = 1.0
                         use_log_transform = False
 

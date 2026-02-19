@@ -271,7 +271,7 @@ def train_with_config(config_path: str, profile: bool = None):
         "sentinel_time": cfg.normalization.sentinel_time,
         "sentinel_npho": cfg.normalization.sentinel_npho,
         "step_size": cfg.data.chunksize,
-        "npho_branch": getattr(cfg.data, "npho_branch", "relative_npho"),
+        "npho_branch": getattr(cfg.data, "npho_branch", "npho"),
         "time_branch": getattr(cfg.data, "time_branch", "relative_time"),
         "log_invalid_npho": getattr(cfg.data, "log_invalid_npho", True),
         "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),

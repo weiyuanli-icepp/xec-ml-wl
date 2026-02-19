@@ -737,7 +737,7 @@ def run_eval_mae(model, device, root_files, tree_name,
         profiler.stop()
 
         with torch.no_grad():
-            with torch.amp.autocast('cuda', enabled=amp):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=amp):
                 # Get masked input for visualization (pass npho_threshold_norm for stratified masking)
                 profiler.start("forward")
                 x_masked, mask = model.random_masking(x_in, npho_threshold_norm=npho_threshold_norm)
