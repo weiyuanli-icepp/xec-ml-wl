@@ -1365,7 +1365,7 @@ def run_eval_inpainter(
                 if total_time > 0:
                     throughput = io_stats["event_count"] / total_time
                     lines.append(f"  Throughput: {throughput:,.0f} events/s")
-            print("\n".join(lines))
+                print("\n".join(lines))
 
     avg_metrics = {k: v / max(1, num_batches) for k, v in metric_sums.items()}
 
