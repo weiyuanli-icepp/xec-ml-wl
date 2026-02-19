@@ -395,9 +395,9 @@ def get_system_metrics(device=None):
 
     Returns:
         dict: Metrics dictionary with standardized names:
-            - system/vram_allocated_GB: GPU memory currently allocated by this process
-            - system/vram_peak_GB: Peak GPU memory allocated by this process
-            - system/process_rss_GB: Current process resident memory
+            - perf/vram_allocated_GB: GPU memory currently allocated by this process
+            - perf/vram_peak_GB: Peak GPU memory allocated by this process
+            - perf/process_rss_GB: Current process resident memory
     """
     metrics = {}
 
@@ -410,14 +410,14 @@ def get_system_metrics(device=None):
         allocated = torch.cuda.memory_allocated(device)
         peak = torch.cuda.max_memory_allocated(device)
 
-        metrics["system/vram_allocated_GB"] = allocated / 1e9
-        metrics["system/vram_peak_GB"] = peak / 1e9
+        metrics["perf/vram_allocated_GB"] = allocated / 1e9
+        metrics["perf/vram_peak_GB"] = peak / 1e9
 
     # Process memory metrics
     try:
         process = psutil.Process(os.getpid())
         mem_info = process.memory_info()
-        metrics["system/process_rss_GB"] = mem_info.rss / 1e9
+        metrics["perf/process_rss_GB"] = mem_info.rss / 1e9
     except Exception:
         pass
 
@@ -446,10 +446,10 @@ def log_system_metrics_to_mlflow(step, device=None, epoch_time_sec=None,
 
     # Add optional metrics
     if epoch_time_sec is not None:
-        metrics["system/epoch_time_sec"] = epoch_time_sec
+        metrics["perf/epoch_time_sec"] = epoch_time_sec
 
     if throughput_events_per_sec is not None:
-        metrics["system/throughput_events_per_sec"] = throughput_events_per_sec
+        metrics["perf/throughput_events_per_sec"] = throughput_events_per_sec
 
     if lr is not None:
         metrics["lr"] = lr
