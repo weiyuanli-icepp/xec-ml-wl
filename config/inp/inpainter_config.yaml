@@ -30,13 +30,14 @@ normalization:
   #   "anscombe" - 2*sqrt(x + 3/8), variance stabilization for Poisson data
   #   "sqrt" - sqrt(x)/sqrt(scale), simpler variance stabilization
   #   "linear" - x/scale, no transform (baseline)
-  npho_scheme: "log1p"
+  npho_scheme: "sqrt"
 
 # === Model Configuration ===
 model:
   outer_mode: "finegrid"            # Must match MAE encoder config
   outer_fine_pool: null             # Must match MAE encoder config
   mask_ratio: 0.05                  # Realistic dead channel density (1-10%)
+  mask_npho_flat: false              # CDF-based flat masking (uniform across npho quantiles)
   freeze_encoder: false             # Freeze encoder, train only inpainting heads
   use_local_context: true           # Use local neighbor context for inpainting (disable for ablation)
   predict_channels: ["npho"]           # Output channels to predict: ["npho"] or ["npho", "time"]

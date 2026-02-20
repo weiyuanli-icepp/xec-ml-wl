@@ -1279,6 +1279,8 @@ class XEC_Inpainter(nn.Module):
         cross_attn_hidden: Hidden dimension for local attention in cross-attention head.
         cross_attn_latent_dim: Projection dimension for latent tokens in cross-attention.
         cross_attn_pos_dim: Dimension of sinusoidal position encoding.
+        mask_npho_flat: If True, use CDF-based flat masking so masked sensors are spread
+                       uniformly across npho quantiles instead of uniformly random.
     """
     def __init__(self, encoder: XECEncoder, freeze_encoder: bool = True, sentinel_time: float = DEFAULT_SENTINEL_TIME,
                  time_mask_ratio_scale: float = 1.0, use_local_context: bool = True, predict_channels=None,
@@ -1289,13 +1291,15 @@ class XEC_Inpainter(nn.Module):
                  cross_attn_hidden: int = 64,
                  cross_attn_latent_dim: int = 128,
                  cross_attn_pos_dim: int = 96,
-                 sentinel_npho: float = -1.0):
+                 sentinel_npho: float = -1.0,
+                 mask_npho_flat: bool = False):
         super().__init__()
         self.encoder = encoder
         self.freeze_encoder = freeze_encoder
         self.sentinel_time = sentinel_time
         self.sentinel_npho = sentinel_npho
         self.time_mask_ratio_scale = time_mask_ratio_scale
+        self.mask_npho_flat = mask_npho_flat
         self.use_local_context = use_local_context
         self.use_masked_attention = use_masked_attention
         self.head_type = head_type
@@ -1472,6 +1476,17 @@ class XEC_Inpainter(nn.Module):
         # Generate random noise, set invalid sensors to inf to exclude from selection
         noise = torch.rand(B, N, device=device)
         noise[already_invalid] = float('inf')
+
+        # CDF-based flat masking: replace uniform noise with quantile-rank noise
+        # so that masked sensors are spread uniformly across npho quantiles
+        if self.mask_npho_flat:
+            npho_for_rank = x_flat[:, :, 0].clone()
+            npho_for_rank[already_invalid] = float('-inf')
+            order = torch.argsort(npho_for_rank, dim=1)
+            ranks = torch.argsort(order, dim=1).float() / valid_count.unsqueeze(1).float().clamp(min=1)
+            jitter_scale = 1.0 / valid_count.unsqueeze(1).float().clamp(min=1)
+            noise = ranks + jitter_scale * torch.rand(B, N, device=device)
+            noise[already_invalid] = float('inf')
 
         # Stratified masking: bias toward valid-time sensors
         # When time_mask_ratio_scale > 1.0, valid-time sensors get lower noise values,

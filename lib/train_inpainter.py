@@ -224,6 +224,7 @@ Examples:
     parser.add_argument("--ema_decay", type=float, default=None, help="EMA decay rate (None to disable, 0.999 typical)")
     parser.add_argument("--npho_scheme", type=str, default=None, choices=["log1p", "anscombe", "sqrt", "linear"],
                         help="Normalization scheme for npho (default: log1p)")
+    parser.add_argument("--mask_npho_flat", action="store_true", help="CDF-based flat masking (uniform across npho quantiles)")
     parser.add_argument("--npho_loss_weight_enabled", action="store_true", help="Enable npho loss weighting by intensity")
     parser.add_argument("--npho_loss_weight_alpha", type=float, default=None, help="Exponent for npho loss weighting (default: 0.5)")
     parser.add_argument("--intensity_reweighting_enabled", action="store_true", help="Enable intensity-based sample reweighting")
@@ -276,6 +277,7 @@ Examples:
         outer_mode = args.outer_mode or cfg.model.outer_mode
         outer_fine_pool = args.outer_fine_pool or cfg.model.outer_fine_pool
         mask_ratio = args.mask_ratio if args.mask_ratio is not None else cfg.model.mask_ratio
+        mask_npho_flat = args.mask_npho_flat or getattr(cfg.model, 'mask_npho_flat', False)
         # time_mask_ratio_scale moved to nested time config
         time_mask_ratio_scale = args.time_mask_ratio_scale if args.time_mask_ratio_scale is not None else cfg.training.time.mask_ratio_scale
         freeze_encoder = cfg.model.freeze_encoder if not args.finetune_encoder else False
@@ -376,6 +378,7 @@ Examples:
         outer_mode = args.outer_mode or "finegrid"
         outer_fine_pool = args.outer_fine_pool  # None means no pooling
         mask_ratio = args.mask_ratio or 0.05
+        mask_npho_flat = args.mask_npho_flat
         time_mask_ratio_scale = args.time_mask_ratio_scale or 1.0
         freeze_encoder = not args.finetune_encoder  # Default: frozen
         use_local_context = not args.global_only  # Default: True (use local context)
@@ -512,6 +515,7 @@ Examples:
         cross_attn_latent_dim=cross_attn_latent_dim,
         cross_attn_pos_dim=cross_attn_pos_dim,
         sentinel_npho=sentinel_npho,
+        mask_npho_flat=mask_npho_flat,
     ).to(device)
 
     if is_main_process():
@@ -728,6 +732,7 @@ Examples:
         print(f"  - Experiment: {mlflow_experiment}")
         print(f"  - Run name: {mlflow_run_name}")
         print(f"  - Mask ratio: {mask_ratio}")
+        print(f"  - Mask npho flat: {mask_npho_flat}")
 
     # Disable MLflow's automatic system metrics (uses wall clock time)
     # We log our own system metrics with step=epoch for consistent x-axis
@@ -769,6 +774,7 @@ Examples:
                 "sentinel_npho": sentinel_npho,
                 "npho_scheme": npho_scheme,
                 "mask_ratio": mask_ratio,
+                "mask_npho_flat": mask_npho_flat,
                 "freeze_encoder": freeze_encoder,
                 "predict_channels": ",".join(predict_channels),
                 "lr": lr,
@@ -941,6 +947,7 @@ Examples:
                         'outer_mode': outer_mode,
                         'outer_fine_pool': outer_fine_pool,
                         'mask_ratio': mask_ratio,
+                        'mask_npho_flat': mask_npho_flat,
                         'freeze_encoder': freeze_encoder,
                         'predict_channels': list(predict_channels),
                         'use_masked_attention': use_masked_attention,
