@@ -9,6 +9,7 @@
 #include <TMath.h>
 #include <TRandom3.h>
 #include <TVector3.h>
+#include <TKey.h>
 #include <ROMETreeInfo.h>
 #include <Riostream.h>
 #include <fstream>
@@ -166,6 +167,8 @@ void MCXECPreprocess(Int_t iStart=0, Int_t iEnd=0, TString conf="E15to60_AngUni_
                                        64.84, 106.27, 67.03, 96., 125.52,
                                        0, 0, 0);
 
+   static const int kXECNChan = 4760;
+
    // --- Input chains ---
    TChain *rec = new TChain("rec");
    TChain *sim = new TChain("sim");
@@ -175,6 +178,66 @@ void MCXECPreprocess(Int_t iStart=0, Int_t iEnd=0, TString conf="E15to60_AngUni_
     for (Int_t iRun=iStart; iRun<=iEnd; iRun++) rec->Add(Form("%s/rec%05d.root", recBaseDirectory.Data(), iRun));
     TString simBaseDirectory = Form("%s/barOut/%s", commonDir.Data(), conf.Data());
     for (Int_t iRun=iStart; iRun<=iEnd; iRun++) sim->Add(Form("%s/sim%05d.root", simBaseDirectory.Data(), iRun));
+
+   // --- Load PM geometry from run header (needed for solid angle) ---
+   Double_t pmPosCache[kXECNChan][3] = {{0}};
+   Double_t pmDirCache[kXECNChan][3] = {{0}};
+   Bool_t pmGeomLoaded = kFALSE;
+   {
+     TObjArray* fileList = rec->GetListOfFiles();
+     if (fileList && fileList->GetEntries() > 0) {
+       TString firstFileName = fileList->At(0)->GetTitle();
+       TFile* firstFile = TFile::Open(firstFileName, "READ");
+       if (firstFile && !firstFile->IsZombie()) {
+         // Try common tree names for run headers
+         TTree* headerTree = nullptr;
+         const char* treeNames[] = {"HeaderTree", "RunHeaders", "headerTree", nullptr};
+         for (int i = 0; treeNames[i] && !headerTree; ++i) {
+           headerTree = dynamic_cast<TTree*>(firstFile->Get(treeNames[i]));
+         }
+
+         if (headerTree && headerTree->GetEntries() > 0) {
+           const char* branchNames[] = {"xecpmrunheader", "xecpmrh", nullptr};
+           for (int i = 0; branchNames[i] && !pmGeomLoaded; ++i) {
+             if (headerTree->GetBranch(branchNames[i])) {
+               TTreeReader rhReader(headerTree);
+               TTreeReaderArray<MEGXECPMRunHeader> pmRH(rhReader, branchNames[i]);
+               if (rhReader.Next() && (int)pmRH.GetSize() >= kXECNChan) {
+                 for (int pm = 0; pm < kXECNChan; ++pm) {
+                   for (int j = 0; j < 3; ++j) {
+                     pmPosCache[pm][j] = pmRH.At(pm).GetXYZAt(j);
+                     pmDirCache[pm][j] = pmRH.At(pm).GetDirectionAt(j);
+                   }
+                 }
+                 pmGeomLoaded = kTRUE;
+                 std::cout << "PM geometry loaded from run header (branch: "
+                           << branchNames[i] << ", " << pmRH.GetSize() << " PMs)\n";
+               }
+             }
+           }
+         }
+
+         if (!pmGeomLoaded) {
+           std::cout << "WARNING: Could not load PM geometry from run header.\n";
+           std::cout << "  Solid angle computation will be skipped.\n";
+           std::cout << "  Available keys in " << firstFileName << ":\n";
+           TIter next(firstFile->GetListOfKeys());
+           TKey* key;
+           while ((key = (TKey*)next())) {
+             std::cout << "    " << key->GetName() << " (" << key->GetClassName() << ")\n";
+           }
+           if (headerTree) {
+             std::cout << "  Branches in header tree:\n";
+             TObjArray* branches = headerTree->GetListOfBranches();
+             for (int i = 0; i < branches->GetEntries(); ++i) {
+               std::cout << "    " << branches->At(i)->GetName() << "\n";
+             }
+           }
+         }
+         delete firstFile;
+       }
+     }
+   }
 
    // --- Output file & trees ---
    // Apply runOffset to output run numbers
@@ -204,8 +267,6 @@ void MCXECPreprocess(Int_t iStart=0, Int_t iEnd=0, TString conf="E15to60_AngUni_
    TFile outputFile(Form("%s/%s.root", outputDir.Data(), baseName.Data()),
                     "RECREATE", "XEC MC single-candidate");
    TTree *tree = new TTree("tree", "Tree for Gamma variables prediction ML training samples");
-
-   static const int kXECNChan = 4760;
 
    Int_t   run=0;
    Int_t   event=0;
@@ -466,28 +527,15 @@ void MCXECPreprocess(Int_t iStart=0, Int_t iEnd=0, TString conf="E15to60_AngUni_
      // Uses exact methods from PMSolidAngle (official analyzer):
      //   SiPM (ch 0-4091):  ComputeSolidAngleMPPC (4-chip rectangular geometry)
      //   PMT  (ch 4092-4759): ComputeSolidAnglePMT (Paxton circular disk formula)
-     if (std::isfinite(xyzRecoFI[0]) && xyzRecoFI[0] < 1e9f) {
+     if (pmGeomLoaded && std::isfinite(xyzRecoFI[0]) && xyzRecoFI[0] < 1e9f) {
        TVector3 vtx(xyzRecoFI[0], xyzRecoFI[1], xyzRecoFI[2]);
        for (int iPM = 0; iPM < kXECNChan; ++iPM) {
-         Double_t pmXYZ[3], pmDir[3];
-         Bool_t gotGeom = kFALSE;
-
-         Int_t face = -1, row = -1, col = -1;
-         if (XECTOOLS::GetFaceRowColFromCh(iPM, face, row, col)) {
-           if (XECTOOLS::GetXYZFromFaceRowCol(face, row, col, pmXYZ) &&
-               XECTOOLS::GetDirectionFromFaceRowCol(face, row, col, pmDir)) {
-             gotGeom = kTRUE;
-           }
-         }
-
-         if (gotGeom) {
-           TVector3 pmPos(pmXYZ[0], pmXYZ[1], pmXYZ[2]);
-           TVector3 pmNorm(pmDir[0], pmDir[1], pmDir[2]);
-           if (iPM < kSiPMPMTBoundary) {
-             solid_angle[iPM] = static_cast<Float_t>(ComputeSolidAngleMPPC(vtx, pmPos, pmNorm));
-           } else {
-             solid_angle[iPM] = static_cast<Float_t>(ComputeSolidAnglePMT(vtx, pmPos, pmNorm));
-           }
+         TVector3 pmPos(pmPosCache[iPM][0], pmPosCache[iPM][1], pmPosCache[iPM][2]);
+         TVector3 pmNorm(pmDirCache[iPM][0], pmDirCache[iPM][1], pmDirCache[iPM][2]);
+         if (iPM < kSiPMPMTBoundary) {
+           solid_angle[iPM] = static_cast<Float_t>(ComputeSolidAngleMPPC(vtx, pmPos, pmNorm));
+         } else {
+           solid_angle[iPM] = static_cast<Float_t>(ComputeSolidAnglePMT(vtx, pmPos, pmNorm));
          }
        }
      }
