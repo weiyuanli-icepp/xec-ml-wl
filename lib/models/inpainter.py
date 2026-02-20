@@ -1519,13 +1519,15 @@ class XEC_Inpainter(nn.Module):
             sel_sorted = (lo + rand_off).clamp(max=N - 1)
             sel_orig = sorted_indices.gather(1, sel_sorted)  # (B, k_max)
 
-            # Assign low noise [j, j+1) to selected sensors; rest stay at inf
+            # Assign low noise [j, j+1) to selected sensors from non-empty bins.
+            # Non-selected valid sensors get noise in [k_max, k_max+1) so they
+            # fill remaining mask slots uniformly when some log bins are empty.
             bins_f = torch.arange(k_max, device=device).unsqueeze(0).expand(B, -1).float()
-            noise = torch.full((B, N), float('inf'), device=device)
+            noise = k_max + torch.rand(B, N, device=device)  # uniform fill
+            noise[already_invalid] = float('inf')
             sel_noise = bins_f + torch.rand(B, k_max, device=device)
             sel_noise[~non_empty] = float('inf')  # skip empty bins
             noise.scatter_(1, sel_orig, sel_noise)
-            noise[already_invalid] = float('inf')
 
         # Stratified masking: bias toward valid-time sensors
         # When time_mask_ratio_scale > 1.0, valid-time sensors get lower noise values,

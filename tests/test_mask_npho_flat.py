@@ -190,18 +190,21 @@ def random_masking_standalone(x_flat, mask_ratio, sentinel_npho, sentinel_time,
         sel_sorted = (lo + rand_off).clamp(max=N - 1)
         sel_orig = sorted_indices.gather(1, sel_sorted)  # (B, k_max)
 
-        # Assign low noise [j, j+1) to selected sensors; rest stay at inf
+        # Assign low noise [j, j+1) to selected sensors from non-empty bins.
+        # Non-selected valid sensors get noise in [k_max, k_max+1) so they
+        # fill remaining mask slots uniformly when some log bins are empty.
         bins_f = torch.arange(k_max, device=device).unsqueeze(0).expand(B, -1).float()
-        noise = torch.full((B, N), float('inf'), device=device)
+        noise = k_max + torch.rand(B, N, device=device)  # uniform fill
+        noise[already_invalid] = float('inf')
         sel_noise = bins_f + torch.rand(B, k_max, device=device)
         sel_noise[~non_empty] = float('inf')  # skip empty bins
         noise.scatter_(1, sel_orig, sel_noise)
-        noise[already_invalid] = float('inf')
 
         if debug:
             n_non_empty = non_empty[0].sum().item()
-            print(f"  [DEBUG] Flat-log: {k_max} log bins, {n_non_empty} non-empty "
-                  f"(eff. mask ratio: {n_non_empty/N:.3f})")
+            n_fill = max(0, num_to_mask[0].item() - n_non_empty)
+            print(f"  [DEBUG] Flat-log: {k_max} log bins, {n_non_empty} non-empty, "
+                  f"{n_fill} uniform fill")
             print(f"  [DEBUG] log range: [{log_lo[0,0]:.2f}, {log_hi[0,0]:.2f}], "
                   f"bin width: {(log_hi[0,0] - log_lo[0,0]).item()/k_max:.4f}")
             print(f"  [DEBUG] valid_count: min={valid_count.min()}, max={valid_count.max()}")
