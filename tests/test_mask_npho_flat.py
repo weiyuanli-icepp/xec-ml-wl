@@ -288,12 +288,33 @@ def main():
     raw_masked_uniform = raw_masked_uniform[raw_masked_uniform > 0]
     raw_masked_flat = raw_masked_flat[raw_masked_flat > 0]
 
-    # Print stats before positive filter (for debugging)
+    # Detailed debug: check alignment and values
     raw_masked_flat_all = raw_npho_np[mask_flat.bool().numpy()]
+    raw_masked_uniform_all = raw_npho_np[mask_uniform.bool().numpy()]
     print(f"\nMask totals (before >0 filter):")
     print(f"  mask_uniform.sum() = {mask_uniform.sum().item():.0f}")
     print(f"  mask_flat.sum()    = {mask_flat.sum().item():.0f}")
-    print(f"  raw_masked_flat (incl <=0): N={len(raw_masked_flat_all):,}")
+    print(f"  shapes: raw_npho={raw_npho_np.shape}, mask_flat={mask_flat.shape}, x_flat={x_flat.shape}")
+    print(f"  raw_masked_uniform (incl <=0): N={len(raw_masked_uniform_all):,}, "
+          f"==0: {(raw_masked_uniform_all == 0).sum():,}, <0: {(raw_masked_uniform_all < 0).sum():,}")
+    print(f"  raw_masked_flat    (incl <=0): N={len(raw_masked_flat_all):,}, "
+          f"==0: {(raw_masked_flat_all == 0).sum():,}, <0: {(raw_masked_flat_all < 0).sum():,}")
+
+    # Check first event in detail
+    ev0_mask_flat = mask_flat[0].bool().numpy()
+    ev0_mask_uniform = mask_uniform[0].bool().numpy()
+    ev0_flat_indices = np.where(ev0_mask_flat)[0]
+    ev0_uni_indices = np.where(ev0_mask_uniform)[0]
+    print(f"\n  Event 0 debug:")
+    print(f"    uniform mask indices (first 10): {ev0_uni_indices[:10]}")
+    print(f"    uniform raw_npho at those:       {raw_npho_np[0, ev0_uni_indices[:10]]}")
+    print(f"    CDF-flat mask indices (first 10): {ev0_flat_indices[:10]}")
+    print(f"    CDF-flat raw_npho at those:       {raw_npho_np[0, ev0_flat_indices[:10]]}")
+    print(f"    CDF-flat norm_npho at those:      {x_flat[0, ev0_flat_indices[:10], 0].numpy()}")
+    print(f"    raw_npho[0] stats: min={raw_npho_np[0].min():.1f}, "
+          f"max={raw_npho_np[0].max():.1f}, ==0: {(raw_npho_np[0]==0).sum()}")
+    print(f"    norm_npho[0] stats: min={x_flat[0,:,0].min():.4f}, "
+          f"max={x_flat[0,:,0].max():.4f}")
 
     print(f"\nAll valid sensors:      N={len(raw_all_valid):,}")
     print(f"Masked (uniform):      N={len(raw_masked_uniform):,}")
