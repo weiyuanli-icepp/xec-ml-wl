@@ -158,31 +158,34 @@ def random_masking_standalone(x_flat, mask_ratio, sentinel_npho, sentinel_time,
         npho_vals[already_invalid] = float('-inf')
         sorted_indices = torch.argsort(npho_vals, dim=1)  # invalid first, then ascending npho
 
-        # In sorted order: first n_invalid slots are invalid, rest are valid ascending
-        n_invalid = already_invalid.sum(dim=1)  # (B,)
-        positions = torch.arange(N, device=device).unsqueeze(0).expand(B, -1)
-        valid_pos = (positions - n_invalid.unsqueeze(1)).clamp(min=0).float()
-        vc = valid_count.unsqueeze(1).float().clamp(min=1)
-        k = num_to_mask.unsqueeze(1).float().clamp(min=1)
+        n_inv = already_invalid.sum(dim=1)  # (B,)
+        vc_f = valid_count.float().clamp(min=1)  # (B,)
+        k_f = num_to_mask.float().clamp(min=1)   # (B,)
+        k_max = num_to_mask.max().item()
 
-        # Assign each valid sensor to a bin: bin_id in [0, k)
-        bin_ids = (valid_pos * k / vc).long().clamp(max=num_to_mask.max().item() - 1)
-        # noise in [bin_id, bin_id+1) — non-overlapping ranges ensure one pick per bin
-        noise_sorted = bin_ids.float() + torch.rand(B, N, device=device)
+        # Bin boundaries in valid-sensor space: bin j spans [lo_j, hi_j)
+        bins = torch.arange(k_max, device=device).unsqueeze(0).expand(B, -1).float()
+        lo = (bins * vc_f.unsqueeze(1) / k_f.unsqueeze(1)).long()
+        hi = ((bins + 1) * vc_f.unsqueeze(1) / k_f.unsqueeze(1)).long()
+        bin_sz = (hi - lo).clamp(min=1)
 
-        # Scatter back from sorted order to original sensor positions
+        # Pick one random sensor from each bin
+        rand_off = (torch.rand(B, k_max, device=device) * bin_sz.float()).long()
+        sel_sorted = (lo + rand_off + n_inv.unsqueeze(1)).clamp(max=N - 1)
+        sel_orig = sorted_indices.gather(1, sel_sorted)  # (B, k_max)
+
+        # Assign low noise [j, j+1) to selected sensors; rest stay at inf
         noise = torch.full((B, N), float('inf'), device=device)
-        noise.scatter_(1, sorted_indices, noise_sorted)
+        sel_noise = bins + torch.rand(B, k_max, device=device)
+        noise.scatter_(1, sel_orig, sel_noise)
         noise[already_invalid] = float('inf')
 
         if debug:
-            valid_noise = noise[~already_invalid]
-            print(f"  [DEBUG] CDF-flat noise stats (valid only): "
-                  f"min={valid_noise.min():.4f}, max={valid_noise.max():.4f}, "
-                  f"mean={valid_noise.mean():.4f}")
+            selected_noise = sel_noise[0].sort()[0]
+            print(f"  [DEBUG] CDF-flat: {k_max} bins, bin_sz ~{bin_sz[0, 0].item()}")
+            print(f"  [DEBUG] Selected noise range: [{selected_noise[0]:.2f}, {selected_noise[-1]:.2f}]")
             print(f"  [DEBUG] valid_count: min={valid_count.min()}, max={valid_count.max()}")
             print(f"  [DEBUG] num_to_mask: min={num_to_mask.min()}, max={num_to_mask.max()}")
-            print(f"  [DEBUG] bin_ids range: 0..{bin_ids.max().item()}")
 
     ids_shuffle = torch.argsort(noise, dim=1)
 
@@ -196,29 +199,14 @@ def random_masking_standalone(x_flat, mask_ratio, sentinel_npho, sentinel_time,
               f"per-event: min={mask.sum(1).min():.0f}, max={mask.sum(1).max():.0f}")
 
         if mask_npho_flat:
-            # Verify: what noise values and npho quantiles do the masked sensors have?
             ev0_mask_bool = mask[0].bool()
-            ev0_noise_masked = noise[0][ev0_mask_bool]
             ev0_npho_masked = x_flat[0, ev0_mask_bool, 0]
-            sorted_noise = ev0_noise_masked.sort()[0]
-            print(f"  [DEBUG] Event 0 masked noise: min={sorted_noise[0]:.2f}, "
-                  f"max={sorted_noise[-1]:.2f}, first5={sorted_noise[:5].tolist()}")
+            n_zero = (x_flat[0, :, 0] == 0).sum().item()
             print(f"  [DEBUG] Event 0 masked norm_npho: ==0: {(ev0_npho_masked == 0).sum().item()}, "
                   f">0: {(ev0_npho_masked > 0).sum().item()}, "
                   f"min={ev0_npho_masked.min():.4f}, max={ev0_npho_masked.max():.4f}")
-            # Verify scatter: check noise at a few specific original sensor indices
-            # Sensor sorted_indices[0, 2000] should have noise ~= floor(2000*238/4760) + rand = ~100 + rand
-            si_2000 = sorted_indices[0, 2000].item()
-            si_4000 = sorted_indices[0, 4000].item()
-            print(f"  [DEBUG] Scatter check: sorted_pos=2000 → sensor_idx={si_2000}, "
-                  f"noise={noise[0, si_2000]:.2f} (expected ~100), "
-                  f"norm_npho={x_flat[0, si_2000, 0]:.4f}")
-            print(f"  [DEBUG] Scatter check: sorted_pos=4000 → sensor_idx={si_4000}, "
-                  f"noise={noise[0, si_4000]:.2f} (expected ~200), "
-                  f"norm_npho={x_flat[0, si_4000, 0]:.4f}")
-            # How many norm_npho=0 sensors total in event 0?
-            n_zero = (x_flat[0, :, 0] == 0).sum().item()
-            print(f"  [DEBUG] Event 0: {n_zero} sensors with norm_npho=0 out of {N}")
+            print(f"  [DEBUG] Event 0: {n_zero} sensors with norm_npho=0 out of {N} "
+                  f"({100*n_zero/N:.1f}%), expected masked ==0: ~{int(n_zero/N * num_to_mask[0].item())}")
 
     return mask
 
