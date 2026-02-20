@@ -1477,15 +1477,17 @@ class XEC_Inpainter(nn.Module):
         noise = torch.rand(B, N, device=device)
         noise[already_invalid] = float('inf')
 
-        # CDF-based flat masking: replace uniform noise with quantile-rank noise
-        # so that masked sensors are spread uniformly across npho quantiles
+        # CDF-based flat masking: stratified sampling across npho quantiles.
+        # Divide the npho rank into num_to_mask bins and pick one sensor per bin.
+        # noise = rank * num_to_mask + rand() gives each bin [j, j+1), so argsort
+        # selects the lowest-rand sensor from each bin — one per quantile.
         if self.mask_npho_flat:
             npho_for_rank = x_flat[:, :, 0].clone()
             npho_for_rank[already_invalid] = float('-inf')
             order = torch.argsort(npho_for_rank, dim=1)
             ranks = torch.argsort(order, dim=1).float() / valid_count.unsqueeze(1).float().clamp(min=1)
-            jitter_scale = 1.0 / valid_count.unsqueeze(1).float().clamp(min=1)
-            noise = ranks + jitter_scale * torch.rand(B, N, device=device)
+            k = num_to_mask.unsqueeze(1).float().clamp(min=1)  # (B, 1)
+            noise = ranks * k + torch.rand(B, N, device=device)
             noise[already_invalid] = float('inf')
 
         # Stratified masking: bias toward valid-time sensors

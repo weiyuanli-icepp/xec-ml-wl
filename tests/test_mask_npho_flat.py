@@ -158,8 +158,8 @@ def random_masking_standalone(x_flat, mask_ratio, sentinel_npho, sentinel_time,
         npho_for_rank[already_invalid] = float('-inf')
         order = torch.argsort(npho_for_rank, dim=1)
         ranks = torch.argsort(order, dim=1).float() / valid_count.unsqueeze(1).float().clamp(min=1)
-        jitter_scale = 1.0 / valid_count.unsqueeze(1).float().clamp(min=1)
-        noise = ranks + jitter_scale * torch.rand(B, N, device=device)
+        k = num_to_mask.unsqueeze(1).float().clamp(min=1)  # (B, 1)
+        noise = ranks * k + torch.rand(B, N, device=device)
         noise[already_invalid] = float('inf')
 
         if debug:
