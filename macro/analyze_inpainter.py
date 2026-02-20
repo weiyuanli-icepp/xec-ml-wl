@@ -914,7 +914,7 @@ def plot_resolution_vs_signal(data: Dict[str, np.ndarray], output_dir: str,
     error_raw_cut = error_raw[raw_cut]
     rel_error = error_raw_cut / truth_raw_cut
 
-    raw_max = np.percentile(truth_raw_cut, 99)
+    raw_max = np.max(truth_raw_cut)
     bin_edges_raw = np.logspace(np.log10(100.0), np.log10(raw_max), n_bins + 1)
 
     centers_raw, rel_mae, rel_bias, rel_pct68 = _compute_slice_metrics(
