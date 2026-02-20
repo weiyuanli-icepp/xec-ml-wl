@@ -32,8 +32,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from lib.models.inpainter import XEC_Inpainter
-from lib.models.regressor import XECEncoder
 from lib.normalization import NphoTransform
 from lib.geom_defs import DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2, DEFAULT_SENTINEL_TIME
 
@@ -135,27 +133,74 @@ def make_synthetic_batch(batch_size=256, n_sensors=4760,
     return torch.from_numpy(x), raw_npho.astype(np.float32)
 
 
-def run_masking(mask_npho_flat, x_flat, mask_ratio, sentinel_npho, sentinel_time):
-    """Run random_masking with a minimal XEC_Inpainter."""
-    encoder = XECEncoder(outer_mode="finegrid", encoder_dim=1024, num_fusion_layers=1)
-    model = XEC_Inpainter(
-        encoder,
-        freeze_encoder=True,
-        sentinel_time=sentinel_time,
-        sentinel_npho=sentinel_npho,
-        predict_channels=["npho"],
-        mask_npho_flat=mask_npho_flat,
-    )
-    model.eval()
+def random_masking_standalone(x_flat, mask_ratio, sentinel_npho, sentinel_time,
+                              mask_npho_flat=False, predict_time=False, debug=False):
+    """Standalone random_masking (no model needed).
 
-    # Process in chunks to avoid OOM on large batches
+    Same logic as XEC_Inpainter.random_masking but without needing an encoder.
+    """
+    B, N, C = x_flat.shape
+    device = x_flat.device
+
+    if predict_time:
+        already_invalid = (x_flat[:, :, 1] == sentinel_time)
+    else:
+        already_invalid = (x_flat[:, :, 0] == sentinel_npho)
+
+    valid_count = (~already_invalid).sum(dim=1)  # (B,)
+    num_to_mask = (valid_count.float() * mask_ratio).int()  # (B,)
+
+    noise = torch.rand(B, N, device=device)
+    noise[already_invalid] = float('inf')
+
+    if mask_npho_flat:
+        npho_for_rank = x_flat[:, :, 0].clone()
+        npho_for_rank[already_invalid] = float('-inf')
+        order = torch.argsort(npho_for_rank, dim=1)
+        ranks = torch.argsort(order, dim=1).float() / valid_count.unsqueeze(1).float().clamp(min=1)
+        jitter_scale = 1.0 / valid_count.unsqueeze(1).float().clamp(min=1)
+        noise = ranks + jitter_scale * torch.rand(B, N, device=device)
+        noise[already_invalid] = float('inf')
+
+        if debug:
+            valid_noise = noise[~already_invalid]
+            print(f"  [DEBUG] CDF-flat noise stats (valid only): "
+                  f"min={valid_noise.min():.4f}, max={valid_noise.max():.4f}, "
+                  f"mean={valid_noise.mean():.4f}")
+            print(f"  [DEBUG] valid_count: min={valid_count.min()}, max={valid_count.max()}")
+            print(f"  [DEBUG] num_to_mask: min={num_to_mask.min()}, max={num_to_mask.max()}")
+            print(f"  [DEBUG] ranks (valid only): min={ranks[~already_invalid].min():.4f}, "
+                  f"max={ranks[~already_invalid].max():.4f}")
+
+    ids_shuffle = torch.argsort(noise, dim=1)
+
+    position_in_sort = torch.arange(N, device=device).unsqueeze(0).expand(B, -1)
+    should_mask = (position_in_sort < num_to_mask.unsqueeze(1)).float()
+    mask = torch.zeros(B, N, device=device)
+    mask.scatter_(1, ids_shuffle, should_mask)
+
+    if debug:
+        print(f"  [DEBUG] mask.sum()={mask.sum().item():.0f}, "
+              f"per-event: min={mask.sum(1).min():.0f}, max={mask.sum(1).max():.0f}")
+
+    return mask
+
+
+def run_masking(mask_npho_flat, x_flat, mask_ratio, sentinel_npho, sentinel_time):
+    """Run random_masking on all data in chunks."""
     chunk_size = 512
     masks = []
+    debug_first = True
     for i in range(0, len(x_flat), chunk_size):
         chunk = x_flat[i:i + chunk_size]
         with torch.no_grad():
-            _, mask = model.random_masking(chunk, mask_ratio=mask_ratio)
+            mask = random_masking_standalone(
+                chunk, mask_ratio, sentinel_npho, sentinel_time,
+                mask_npho_flat=mask_npho_flat,
+                debug=debug_first,
+            )
         masks.append(mask)
+        debug_first = False
     return torch.cat(masks, dim=0)
 
 
@@ -243,18 +288,28 @@ def main():
     raw_masked_uniform = raw_masked_uniform[raw_masked_uniform > 0]
     raw_masked_flat = raw_masked_flat[raw_masked_flat > 0]
 
+    # Print stats before positive filter (for debugging)
+    raw_masked_flat_all = raw_npho_np[mask_flat.bool().numpy()]
+    print(f"\nMask totals (before >0 filter):")
+    print(f"  mask_uniform.sum() = {mask_uniform.sum().item():.0f}")
+    print(f"  mask_flat.sum()    = {mask_flat.sum().item():.0f}")
+    print(f"  raw_masked_flat (incl <=0): N={len(raw_masked_flat_all):,}")
+
     print(f"\nAll valid sensors:      N={len(raw_all_valid):,}")
     print(f"Masked (uniform):      N={len(raw_masked_uniform):,}")
     print(f"Masked (CDF-flat):     N={len(raw_masked_flat):,}")
-    print(f"\nRaw npho stats (all valid):   median={np.median(raw_all_valid):.0f}, "
-          f"mean={np.mean(raw_all_valid):.0f}, p99={np.percentile(raw_all_valid, 99):.0f}, "
-          f"max={np.max(raw_all_valid):.0f}")
-    print(f"Raw npho stats (uniform):     median={np.median(raw_masked_uniform):.0f}, "
-          f"mean={np.mean(raw_masked_uniform):.0f}, p99={np.percentile(raw_masked_uniform, 99):.0f}, "
-          f"max={np.max(raw_masked_uniform):.0f}")
-    print(f"Raw npho stats (CDF-flat):    median={np.median(raw_masked_flat):.0f}, "
-          f"mean={np.mean(raw_masked_flat):.0f}, p99={np.percentile(raw_masked_flat, 99):.0f}, "
-          f"max={np.max(raw_masked_flat):.0f}")
+
+    def _print_stats(label, arr):
+        if len(arr) == 0:
+            print(f"Raw npho stats ({label}):     (empty)")
+            return
+        print(f"Raw npho stats ({label}):     median={np.median(arr):.0f}, "
+              f"mean={np.mean(arr):.0f}, p99={np.percentile(arr, 99):.0f}, "
+              f"max={np.max(arr):.0f}")
+
+    _print_stats("all valid", raw_all_valid)
+    _print_stats("uniform", raw_masked_uniform)
+    _print_stats("CDF-flat", raw_masked_flat)
 
     # --- Plot ---
     fig, axes = plt.subplots(2, 3, figsize=(15, 9))
