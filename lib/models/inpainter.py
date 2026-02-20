@@ -1477,28 +1477,37 @@ class XEC_Inpainter(nn.Module):
         noise = torch.rand(B, N, device=device)
         noise[already_invalid] = float('inf')
 
-        # CDF-based flat masking: equal-width bins in norm_npho VALUE space.
-        # Sort sensors by npho, divide the value range [0, max] into k equal-width
-        # bins, then pick one random sensor from each non-empty bin. This produces
-        # a flat (uniform) distribution of masked npho values, over-sampling the
-        # sparse high-npho tail relative to the dense low-npho bulk.
+        # Flat masking: equal-width bins in log(norm_npho) space.
+        # Since norm_npho = sqrt(raw_npho/scale), log(norm_npho) ∝ log(raw_npho),
+        # so this produces a flat distribution in log(raw_npho) — equal
+        # representation at every order of magnitude.
+        # Sensors with norm_npho = 0 are clamped to eps and grouped together.
         if self.mask_npho_flat:
             npho_vals = x_flat[:, :, 0].clone()
             npho_vals[already_invalid] = float('-inf')
-            sorted_indices = torch.argsort(npho_vals, dim=1)  # ascending
-            sorted_npho = npho_vals.gather(1, sorted_indices)  # (B, N)
+
+            # Transform to log space; clamp zeros to eps
+            eps = 0.01
+            log_npho = torch.log(npho_vals.clamp(min=eps))
+            log_npho[already_invalid] = float('-inf')
+
+            sorted_indices = torch.argsort(log_npho, dim=1)  # ascending
+            sorted_log = log_npho.gather(1, sorted_indices)  # (B, N)
 
             k_max = num_to_mask.max().item()
             k_f = num_to_mask.unsqueeze(1).float().clamp(min=1)  # (B, 1)
-            # Extend max slightly so the last sensor is included in the last bin
-            max_npho = sorted_npho[:, -1:].clamp(min=1e-6) * 1.001  # (B, 1)
 
-            # Equal-width bin edges: 0, max/k, 2*max/k, ..., max
+            # Log range: [log(eps), log(max) + tiny margin]
+            log_lo = torch.tensor(float(torch.log(torch.tensor(eps))),
+                                  device=device).view(1, 1).expand(B, 1)
+            log_hi = sorted_log[:, -1:] + 0.001  # (B, 1)
+
+            # Equal-width bin edges in log space
             edge_idx = torch.arange(k_max + 1, device=device).unsqueeze(0).float()
-            edges = edge_idx * max_npho / k_f  # (B, k_max+1)
+            edges = log_lo + edge_idx * (log_hi - log_lo) / k_f  # (B, k_max+1)
 
             # Find sorted-position range for each bin via searchsorted
-            edge_pos = torch.searchsorted(sorted_npho, edges)  # (B, k_max+1)
+            edge_pos = torch.searchsorted(sorted_log, edges)  # (B, k_max+1)
             lo = edge_pos[:, :-1]  # (B, k_max)
             hi = edge_pos[:, 1:]   # (B, k_max)
             bin_sz = hi - lo       # (B, k_max)

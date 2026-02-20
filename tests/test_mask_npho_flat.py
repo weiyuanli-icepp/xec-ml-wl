@@ -156,20 +156,29 @@ def random_masking_standalone(x_flat, mask_ratio, sentinel_npho, sentinel_time,
     if mask_npho_flat:
         npho_vals = x_flat[:, :, 0].clone()
         npho_vals[already_invalid] = float('-inf')
-        sorted_indices = torch.argsort(npho_vals, dim=1)  # ascending
-        sorted_npho = npho_vals.gather(1, sorted_indices)  # (B, N)
+
+        # Transform to log space; clamp zeros to eps
+        eps = 0.01
+        log_npho = torch.log(npho_vals.clamp(min=eps))
+        log_npho[already_invalid] = float('-inf')
+
+        sorted_indices = torch.argsort(log_npho, dim=1)  # ascending
+        sorted_log = log_npho.gather(1, sorted_indices)  # (B, N)
 
         k_max = num_to_mask.max().item()
         k_f = num_to_mask.unsqueeze(1).float().clamp(min=1)  # (B, 1)
-        # Extend max slightly so the last sensor is included in the last bin
-        max_npho = sorted_npho[:, -1:].clamp(min=1e-6) * 1.001  # (B, 1)
 
-        # Equal-width bin edges: 0, max/k, 2*max/k, ..., max
+        # Log range: [log(eps), log(max) + tiny margin]
+        log_lo = torch.tensor(float(torch.log(torch.tensor(eps))),
+                              device=device).view(1, 1).expand(B, 1)
+        log_hi = sorted_log[:, -1:] + 0.001  # (B, 1)
+
+        # Equal-width bin edges in log space
         edge_idx = torch.arange(k_max + 1, device=device).unsqueeze(0).float()
-        edges = edge_idx * max_npho / k_f  # (B, k_max+1)
+        edges = log_lo + edge_idx * (log_hi - log_lo) / k_f  # (B, k_max+1)
 
         # Find sorted-position range for each bin via searchsorted
-        edge_pos = torch.searchsorted(sorted_npho, edges)  # (B, k_max+1)
+        edge_pos = torch.searchsorted(sorted_log, edges)  # (B, k_max+1)
         lo = edge_pos[:, :-1]  # (B, k_max)
         hi = edge_pos[:, 1:]   # (B, k_max)
         bin_sz = hi - lo       # (B, k_max)
@@ -191,10 +200,10 @@ def random_masking_standalone(x_flat, mask_ratio, sentinel_npho, sentinel_time,
 
         if debug:
             n_non_empty = non_empty[0].sum().item()
-            print(f"  [DEBUG] CDF-flat: {k_max} value bins, {n_non_empty} non-empty "
+            print(f"  [DEBUG] Flat-log: {k_max} log bins, {n_non_empty} non-empty "
                   f"(eff. mask ratio: {n_non_empty/N:.3f})")
-            print(f"  [DEBUG] max_norm_npho: {sorted_npho[0, -1]:.4f}, "
-                  f"bin width: {max_npho[0, 0].item()/k_max:.4f}")
+            print(f"  [DEBUG] log range: [{log_lo[0,0]:.2f}, {log_hi[0,0]:.2f}], "
+                  f"bin width: {(log_hi[0,0] - log_lo[0,0]).item()/k_max:.4f}")
             print(f"  [DEBUG] valid_count: min={valid_count.min()}, max={valid_count.max()}")
             print(f"  [DEBUG] num_to_mask: min={num_to_mask.min()}, max={num_to_mask.max()}")
 
