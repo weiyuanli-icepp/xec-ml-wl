@@ -195,6 +195,31 @@ def random_masking_standalone(x_flat, mask_ratio, sentinel_npho, sentinel_time,
         print(f"  [DEBUG] mask.sum()={mask.sum().item():.0f}, "
               f"per-event: min={mask.sum(1).min():.0f}, max={mask.sum(1).max():.0f}")
 
+        if mask_npho_flat:
+            # Verify: what noise values and npho quantiles do the masked sensors have?
+            ev0_mask_bool = mask[0].bool()
+            ev0_noise_masked = noise[0][ev0_mask_bool]
+            ev0_npho_masked = x_flat[0, ev0_mask_bool, 0]
+            sorted_noise = ev0_noise_masked.sort()[0]
+            print(f"  [DEBUG] Event 0 masked noise: min={sorted_noise[0]:.2f}, "
+                  f"max={sorted_noise[-1]:.2f}, first5={sorted_noise[:5].tolist()}")
+            print(f"  [DEBUG] Event 0 masked norm_npho: ==0: {(ev0_npho_masked == 0).sum().item()}, "
+                  f">0: {(ev0_npho_masked > 0).sum().item()}, "
+                  f"min={ev0_npho_masked.min():.4f}, max={ev0_npho_masked.max():.4f}")
+            # Verify scatter: check noise at a few specific original sensor indices
+            # Sensor sorted_indices[0, 2000] should have noise ~= floor(2000*238/4760) + rand = ~100 + rand
+            si_2000 = sorted_indices[0, 2000].item()
+            si_4000 = sorted_indices[0, 4000].item()
+            print(f"  [DEBUG] Scatter check: sorted_pos=2000 → sensor_idx={si_2000}, "
+                  f"noise={noise[0, si_2000]:.2f} (expected ~100), "
+                  f"norm_npho={x_flat[0, si_2000, 0]:.4f}")
+            print(f"  [DEBUG] Scatter check: sorted_pos=4000 → sensor_idx={si_4000}, "
+                  f"noise={noise[0, si_4000]:.2f} (expected ~200), "
+                  f"norm_npho={x_flat[0, si_4000, 0]:.4f}")
+            # How many norm_npho=0 sensors total in event 0?
+            n_zero = (x_flat[0, :, 0] == 0).sum().item()
+            print(f"  [DEBUG] Event 0: {n_zero} sensors with norm_npho=0 out of {N}")
+
     return mask
 
 
