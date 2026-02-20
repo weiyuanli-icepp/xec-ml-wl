@@ -179,7 +179,8 @@ void MCXECPreprocess(Int_t iStart=0, Int_t iEnd=0, TString conf="E15to60_AngUni_
     TString simBaseDirectory = Form("%s/barOut/%s", commonDir.Data(), conf.Data());
     for (Int_t iRun=iStart; iRun<=iEnd; iRun++) sim->Add(Form("%s/sim%05d.root", simBaseDirectory.Data(), iRun));
 
-   // --- Load PM geometry from run header (needed for solid angle) ---
+   // --- Load PM geometry from XECPMRunHeader (needed for solid angle) ---
+   // The run header is stored as a top-level TClonesArray in the analyzer output file.
    Double_t pmPosCache[kXECNChan][3] = {{0}};
    Double_t pmDirCache[kXECNChan][3] = {{0}};
    Bool_t pmGeomLoaded = kFALSE;
@@ -189,49 +190,26 @@ void MCXECPreprocess(Int_t iStart=0, Int_t iEnd=0, TString conf="E15to60_AngUni_
        TString firstFileName = fileList->At(0)->GetTitle();
        TFile* firstFile = TFile::Open(firstFileName, "READ");
        if (firstFile && !firstFile->IsZombie()) {
-         // Try common tree names for run headers
-         TTree* headerTree = nullptr;
-         const char* treeNames[] = {"HeaderTree", "RunHeaders", "headerTree", nullptr};
-         for (int i = 0; treeNames[i] && !headerTree; ++i) {
-           headerTree = dynamic_cast<TTree*>(firstFile->Get(treeNames[i]));
-         }
-
-         if (headerTree && headerTree->GetEntries() > 0) {
-           const char* branchNames[] = {"xecpmrunheader", "xecpmrh", nullptr};
-           for (int i = 0; branchNames[i] && !pmGeomLoaded; ++i) {
-             if (headerTree->GetBranch(branchNames[i])) {
-               TTreeReader rhReader(headerTree);
-               TTreeReaderArray<MEGXECPMRunHeader> pmRH(rhReader, branchNames[i]);
-               if (rhReader.Next() && (int)pmRH.GetSize() >= kXECNChan) {
-                 for (int pm = 0; pm < kXECNChan; ++pm) {
-                   for (int j = 0; j < 3; ++j) {
-                     pmPosCache[pm][j] = pmRH.At(pm).GetXYZAt(j);
-                     pmDirCache[pm][j] = pmRH.At(pm).GetDirectionAt(j);
-                   }
-                 }
-                 pmGeomLoaded = kTRUE;
-                 std::cout << "PM geometry loaded from run header (branch: "
-                           << branchNames[i] << ", " << pmRH.GetSize() << " PMs)\n";
-               }
+         TClonesArray* pmHeaders = dynamic_cast<TClonesArray*>(firstFile->Get("XECPMRunHeader"));
+         if (pmHeaders && pmHeaders->GetEntries() >= kXECNChan) {
+           for (int pm = 0; pm < kXECNChan; ++pm) {
+             MEGXECPMRunHeader* pmRH = (MEGXECPMRunHeader*)pmHeaders->At(pm);
+             for (int j = 0; j < 3; ++j) {
+               pmPosCache[pm][j] = pmRH->GetXYZAt(j);
+               pmDirCache[pm][j] = pmRH->GetDirectionAt(j);
              }
            }
-         }
-
-         if (!pmGeomLoaded) {
-           std::cout << "WARNING: Could not load PM geometry from run header.\n";
+           pmGeomLoaded = kTRUE;
+           std::cout << "PM geometry loaded from XECPMRunHeader ("
+                     << pmHeaders->GetEntries() << " PMs)\n";
+         } else {
+           std::cout << "WARNING: XECPMRunHeader not found or too few entries.\n";
            std::cout << "  Solid angle computation will be skipped.\n";
            std::cout << "  Available keys in " << firstFileName << ":\n";
            TIter next(firstFile->GetListOfKeys());
            TKey* key;
            while ((key = (TKey*)next())) {
              std::cout << "    " << key->GetName() << " (" << key->GetClassName() << ")\n";
-           }
-           if (headerTree) {
-             std::cout << "  Branches in header tree:\n";
-             TObjArray* branches = headerTree->GetListOfBranches();
-             for (int i = 0; i < branches->GetEntries(); ++i) {
-               std::cout << "    " << branches->At(i)->GetName() << "\n";
-             }
            }
          }
          delete firstFile;
