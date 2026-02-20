@@ -5,8 +5,14 @@ Loads real MC data from a ROOT file (or generates synthetic data as fallback),
 runs both masking modes, and plots histograms of the masked sensors' raw npho.
 
 Usage:
-    # With real MC data
+    # Single ROOT file
     python -m tests.test_mask_npho_flat --root data/val.root
+
+    # Glob pattern (multiple files)
+    python -m tests.test_mask_npho_flat --root "data/MCGamma_*.root"
+
+    # Directory (loads all *.root files)
+    python -m tests.test_mask_npho_flat --root data/
 
     # With config file (reads val_path from config)
     python -m tests.test_mask_npho_flat --config config/inp/inpainter_config.yaml
@@ -45,9 +51,24 @@ def load_from_root(root_path, npho_branch="npho", time_branch="relative_time",
         raw_npho: (N_events, 4760) raw npho array
     """
     import uproot
+    import glob as globmod
 
     path = os.path.expanduser(root_path)
-    print(f"Loading ROOT file: {path}")
+
+    # Resolve glob patterns, directories, or single files
+    if '*' in path or '?' in path:
+        files = sorted(globmod.glob(path))
+        if not files:
+            raise FileNotFoundError(f"No files matched pattern: {path}")
+    elif os.path.isdir(path):
+        files = sorted(globmod.glob(os.path.join(path, "*.root")))
+        if not files:
+            raise FileNotFoundError(f"No ROOT files found in directory: {path}")
+    else:
+        files = [path]
+
+    print(f"Loading {len(files)} ROOT file(s): {files[0]}" +
+          (f" ... {files[-1]}" if len(files) > 1 else ""))
 
     transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
 
@@ -55,8 +76,9 @@ def load_from_root(root_path, npho_branch="npho", time_branch="relative_time",
     x_all = []
     n_loaded = 0
 
+    files_input = {f: tree_name for f in files}
     for arrays in uproot.iterate(
-        f"{path}:{tree_name}",
+        files_input,
         [npho_branch, time_branch],
         step_size=50000,
         library="np",
