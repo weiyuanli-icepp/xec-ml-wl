@@ -19,6 +19,141 @@
 #include "/data/user/ext-li_w1/meghome/offline/analyzer/include/generated/MEGAllFolders.h"
 #include "/data/user/ext-li_w1/meghome/offline/common/include/xec/xectools.h"
 
+// --- Exact solid angle computation (from PMSolidAngle.cpp in the official analyzer) ---
+namespace {
+
+// SiPM/PMT channel boundary: channels 0..4091 = SiPM, 4092..4759 = PMT
+// (kMaxNXePM - kMaxNXePMT = 4760 - 668 = 4092)
+const Int_t kSiPMPMTBoundary = 4092;
+
+// PMT photocathode radius [cm] (from xecconst.h: kRCATH = 4.5/2 * centimeter)
+const Double_t kPMTCathodeRadius = 2.25;
+
+// Exact solid angle for MPPC (SiPM): 2x2 chip rectangular geometry.
+// Replicates PMSolidAngle::PMSolidAngleMPPC from the official analyzer.
+// Returns fractional solid angle (omega / 4pi).
+Double_t ComputeSolidAngleMPPC(TVector3 view, TVector3 center, TVector3 normal)
+{
+   TVector3 center_view = center - view;
+   if (center_view.Dot(normal) > 0) {
+      return 0;
+   }
+
+   // Set up local coordinate system (U, V, W=normal)
+   TVector3 unit[3];
+   unit[0].SetXYZ(0, 0, 1); // U direction
+   unit[1] = (unit[0].Cross(normal)).Unit(); // V direction
+   unit[2] = normal.Unit(); // W direction
+   unit[0] = (unit[1].Cross(unit[2])).Unit();
+
+   // MPPC chip geometry: 4 chips of 5.90 mm separated by 0.5 mm gap
+   const Double_t ChipDistance = 0.05;  // 0.5 mm [cm]
+   const Double_t ChipSize    = 0.59;   // 5.90 mm [cm]
+   Double_t sin_a1, sin_a2, sin_b1, sin_b2;
+   Double_t solid_total = 0;
+
+   // Chip 1: (+U, +V) quadrant
+   TVector3 vcorner1 = center + ChipDistance / 2.0 * unit[0] + ChipDistance / 2.0 * unit[1];
+   TVector3 vcorner2 = vcorner1 + ChipSize * unit[0] + ChipSize * unit[1];
+   TVector3 v1       = vcorner1 - view;
+   TVector3 v2       = vcorner2 - view;
+   sin_a1 = v1.Dot(unit[0]) / sqrt(pow(v1.Dot(unit[0]), 2) + pow(v1.Dot(unit[2]), 2));
+   sin_a2 = v2.Dot(unit[0]) / sqrt(pow(v2.Dot(unit[0]), 2) + pow(v2.Dot(unit[2]), 2));
+   sin_b1 = v1.Dot(unit[1]) / sqrt(pow(v1.Dot(unit[1]), 2) + pow(v1.Dot(unit[2]), 2));
+   sin_b2 = v2.Dot(unit[1]) / sqrt(pow(v2.Dot(unit[1]), 2) + pow(v2.Dot(unit[2]), 2));
+   solid_total += TMath::Abs(asin(sin_a1 * sin_b1) +
+                             asin(sin_a2 * sin_b2) -
+                             asin(sin_a1 * sin_b2) -
+                             asin(sin_b1 * sin_a2)) / (4 * TMath::Pi());
+
+   // Chip 2: (-U, +V) quadrant
+   vcorner1 = center - ChipDistance / 2.0 * unit[0] + ChipDistance / 2.0 * unit[1];
+   vcorner2 = vcorner1 - ChipSize * unit[0] + ChipSize * unit[1];
+   v1       = vcorner1 - view;
+   v2       = vcorner2 - view;
+   sin_a1 = v1.Dot(unit[0]) / sqrt(pow(v1.Dot(unit[0]), 2) + pow(v1.Dot(unit[2]), 2));
+   sin_a2 = v2.Dot(unit[0]) / sqrt(pow(v2.Dot(unit[0]), 2) + pow(v2.Dot(unit[2]), 2));
+   sin_b1 = v1.Dot(unit[1]) / sqrt(pow(v1.Dot(unit[1]), 2) + pow(v1.Dot(unit[2]), 2));
+   sin_b2 = v2.Dot(unit[1]) / sqrt(pow(v2.Dot(unit[1]), 2) + pow(v2.Dot(unit[2]), 2));
+   solid_total += TMath::Abs(asin(sin_a1 * sin_b1) +
+                             asin(sin_a2 * sin_b2) -
+                             asin(sin_a1 * sin_b2) -
+                             asin(sin_b1 * sin_a2)) / (4 * TMath::Pi());
+
+   // Chip 3: (+U, -V) quadrant
+   vcorner1 = center   + ChipDistance / 2.0 * unit[0] - ChipDistance / 2.0 * unit[1];
+   vcorner2 = vcorner1 + ChipSize        * unit[0] - ChipSize * unit[1];
+   v1       = vcorner1 - view;
+   v2       = vcorner2 - view;
+   sin_a1 = v1.Dot(unit[0]) / sqrt(pow(v1.Dot(unit[0]), 2) + pow(v1.Dot(unit[2]), 2));
+   sin_a2 = v2.Dot(unit[0]) / sqrt(pow(v2.Dot(unit[0]), 2) + pow(v2.Dot(unit[2]), 2));
+   sin_b1 = v1.Dot(unit[1]) / sqrt(pow(v1.Dot(unit[1]), 2) + pow(v1.Dot(unit[2]), 2));
+   sin_b2 = v2.Dot(unit[1]) / sqrt(pow(v2.Dot(unit[1]), 2) + pow(v2.Dot(unit[2]), 2));
+   solid_total += TMath::Abs(asin(sin_a1 * sin_b1) +
+                             asin(sin_a2 * sin_b2) -
+                             asin(sin_a1 * sin_b2) -
+                             asin(sin_b1 * sin_a2)) / (4 * TMath::Pi());
+
+   // Chip 4: (-U, -V) quadrant
+   vcorner1 = center   - ChipDistance / 2.0 * unit[0] - ChipDistance / 2.0 * unit[1];
+   vcorner2 = vcorner1 - ChipSize        * unit[0] - ChipSize * unit[1];
+   v1       = vcorner1 - view;
+   v2       = vcorner2 - view;
+   sin_a1 = v1.Dot(unit[0]) / sqrt(pow(v1.Dot(unit[0]), 2) + pow(v1.Dot(unit[2]), 2));
+   sin_a2 = v2.Dot(unit[0]) / sqrt(pow(v2.Dot(unit[0]), 2) + pow(v2.Dot(unit[2]), 2));
+   sin_b1 = v1.Dot(unit[1]) / sqrt(pow(v1.Dot(unit[1]), 2) + pow(v1.Dot(unit[2]), 2));
+   sin_b2 = v2.Dot(unit[1]) / sqrt(pow(v2.Dot(unit[1]), 2) + pow(v2.Dot(unit[2]), 2));
+   solid_total += TMath::Abs(asin(sin_a1 * sin_b1) +
+                             asin(sin_a2 * sin_b2) -
+                             asin(sin_a1 * sin_b2) -
+                             asin(sin_b1 * sin_a2)) / (4 * TMath::Pi());
+
+   return solid_total;
+}
+
+// Exact solid angle for PMT: Paxton formula for circular disk.
+// Replicates PMSolidAngle::PMSolidAnglePMT from the official analyzer.
+// Returns fractional solid angle (omega / 4pi).
+Double_t ComputeSolidAnglePMT(TVector3 view, TVector3 center, TVector3 normal)
+{
+   TVector3 center_view = view - center;
+   if (center_view.Dot(normal) <= 0) {
+      return 0;
+   }
+
+   Double_t solid_angle = 0;
+   const Double_t Rm = kPMTCathodeRadius;
+
+   Double_t dist  = center_view.Mag();
+   Double_t L     = center_view.Dot(normal);
+   Double_t Theta = center_view.Angle(normal);
+   Double_t R0    = dist * TMath::Sin(Theta);
+
+   Double_t Rmax    = TMath::Sqrt(L * L + (R0 + Rm) * (R0 + Rm));
+   Double_t R1      = TMath::Sqrt(L * L + (R0 - Rm) * (R0 - Rm));
+   Double_t kappa   = TMath::Sqrt(1 - R1 * R1 / Rmax / Rmax);
+   Double_t alphasq = 4 * R0 * Rm / (R0 + Rm) / (R0 + Rm);
+
+   if (TMath::Abs((R0 - Rm) / Rm) < 1e-03) {
+      solid_angle = TMath::Pi() -
+                    2 * L / Rmax * std::comp_ellint_1(kappa);
+   } else if (R0 < Rm) {
+      solid_angle = 2 * TMath::Pi() -
+                    2 * L / Rmax * std::comp_ellint_1(kappa) +
+                    2 * L / Rmax * (R0 - Rm) / (R0 + Rm) * std::comp_ellint_3(kappa, alphasq);
+   } else if (R0 > Rm) {
+      solid_angle =
+         - 2 * L / Rmax * std::comp_ellint_1(kappa) +
+         2 * L / Rmax * (R0 - Rm) / (R0 + Rm) * std::comp_ellint_3(kappa, alphasq);
+   } else {
+      return 0;
+   }
+
+   return solid_angle / (4 * TMath::Pi());
+}
+
+} // anonymous namespace
+
 // Use submit_SingleRun.py to submit batch jobs for multiple single runs
 
 // runOffset: adds offset to output run number and filename (useful for combining datasets)
@@ -327,26 +462,16 @@ void MCXECPreprocess(Int_t iStart=0, Int_t iEnd=0, TString conf="E15to60_AngUni_
      }
 
      // --- Solid angle computation ---
-     // Compute fractional solid angle (omega_i / 4pi) for each PM relative to xyzRecoFI
+     // Compute fractional solid angle (omega_i / 4pi) for each PM relative to xyzRecoFI.
+     // Uses exact methods from PMSolidAngle (official analyzer):
+     //   SiPM (ch 0-4091):  ComputeSolidAngleMPPC (4-chip rectangular geometry)
+     //   PMT  (ch 4092-4759): ComputeSolidAnglePMT (Paxton circular disk formula)
      if (std::isfinite(xyzRecoFI[0]) && xyzRecoFI[0] < 1e9f) {
        TVector3 vtx(xyzRecoFI[0], xyzRecoFI[1], xyzRecoFI[2]);
        for (int iPM = 0; iPM < kXECNChan; ++iPM) {
-         // Get PM position and direction from run header
          Double_t pmXYZ[3], pmDir[3];
-         Double_t pmArea = 0.0;
          Bool_t gotGeom = kFALSE;
 
-         // Try to get PM geometry from the analyzer
-         // SiPMs (channels 0-4595): active area ~12x12 mm^2 = 1.44 cm^2
-         // PMTs (channels 4596-4759): active area ~pi*(4.6/2)^2 cm^2 ≈ 16.6 cm^2
-         if (iPM < 4596) {
-           pmArea = 1.44;  // SiPM active area [cm^2]
-         } else {
-           pmArea = 16.62; // PMT active area [cm^2]
-         }
-
-         // Access PM position via XECTOOLS
-         Double_t uvw[3];
          Int_t face = -1, row = -1, col = -1;
          if (XECTOOLS::GetFaceRowColFromCh(iPM, face, row, col)) {
            if (XECTOOLS::GetXYZFromFaceRowCol(face, row, col, pmXYZ) &&
@@ -358,12 +483,10 @@ void MCXECPreprocess(Int_t iStart=0, Int_t iEnd=0, TString conf="E15to60_AngUni_
          if (gotGeom) {
            TVector3 pmPos(pmXYZ[0], pmXYZ[1], pmXYZ[2]);
            TVector3 pmNorm(pmDir[0], pmDir[1], pmDir[2]);
-           TVector3 r = pmPos - vtx;
-           Double_t dist2 = r.Mag2();
-           if (dist2 > 1e-6) {
-             Double_t dist = TMath::Sqrt(dist2);
-             Double_t cosTheta = TMath::Abs(pmNorm.Dot(r)) / (pmNorm.Mag() * dist);
-             solid_angle[iPM] = static_cast<Float_t>(pmArea * cosTheta / dist2 / (4.0 * TMath::Pi()));
+           if (iPM < kSiPMPMTBoundary) {
+             solid_angle[iPM] = static_cast<Float_t>(ComputeSolidAngleMPPC(vtx, pmPos, pmNorm));
+           } else {
+             solid_angle[iPM] = static_cast<Float_t>(ComputeSolidAnglePMT(vtx, pmPos, pmNorm));
            }
          }
        }
