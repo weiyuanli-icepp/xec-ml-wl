@@ -38,11 +38,15 @@ TIME_SHIFT = -0.46
 # NPHO_SCALE2 = 1.0 # for relative_npho
 # NPHO_SCALE2 = 11.54 # for npho
 
-NPHO_SCALE  = 1000
-NPHO_SCALE2 = 4.08 
+# For log1p absolute npho
+# NPHO_SCALE  = 1000
+# NPHO_SCALE2 = 4.08 
 # NPHO_SCALE  = 100
 # NPHO_SCALE2 = 6.4
 
+# For sqrt
+NPHO_SCALE  = 1000
+NPHO_SCALE2 = 1 # ignored
 
 # Branch Names
 # BRANCH_NPHO = "relative_npho"
