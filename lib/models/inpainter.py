@@ -1478,16 +1478,29 @@ class XEC_Inpainter(nn.Module):
         noise[already_invalid] = float('inf')
 
         # CDF-based flat masking: stratified sampling across npho quantiles.
-        # Divide the npho rank into num_to_mask bins and pick one sensor per bin.
-        # noise = rank * num_to_mask + rand() gives each bin [j, j+1), so argsort
-        # selects the lowest-rand sensor from each bin — one per quantile.
+        # Sort sensors by npho, assign integer bin_id = floor(valid_pos * k / N_valid),
+        # then noise = bin_id + rand(). Non-overlapping bin ranges [j, j+1) guarantee
+        # argsort picks exactly one sensor per quantile bin.
         if self.mask_npho_flat:
-            npho_for_rank = x_flat[:, :, 0].clone()
-            npho_for_rank[already_invalid] = float('-inf')
-            order = torch.argsort(npho_for_rank, dim=1)
-            ranks = torch.argsort(order, dim=1).float() / valid_count.unsqueeze(1).float().clamp(min=1)
-            k = num_to_mask.unsqueeze(1).float().clamp(min=1)  # (B, 1)
-            noise = ranks * k + torch.rand(B, N, device=device)
+            npho_vals = x_flat[:, :, 0].clone()
+            npho_vals[already_invalid] = float('-inf')
+            sorted_indices = torch.argsort(npho_vals, dim=1)  # invalid first, then ascending npho
+
+            # In sorted order: first n_invalid slots are invalid, rest are valid ascending
+            n_invalid = already_invalid.sum(dim=1)  # (B,)
+            positions = torch.arange(N, device=device).unsqueeze(0).expand(B, -1)
+            valid_pos = (positions - n_invalid.unsqueeze(1)).clamp(min=0).float()  # 0-based valid position
+            vc = valid_count.unsqueeze(1).float().clamp(min=1)
+            k = num_to_mask.unsqueeze(1).float().clamp(min=1)
+
+            # Assign each valid sensor to a bin: bin_id in [0, k)
+            bin_ids = (valid_pos * k / vc).long().clamp(max=num_to_mask.max().item() - 1)
+            # noise in [bin_id, bin_id+1) — non-overlapping ranges ensure one pick per bin
+            noise_sorted = bin_ids.float() + torch.rand(B, N, device=device)
+
+            # Scatter back from sorted order to original sensor positions
+            noise = torch.full((B, N), float('inf'), device=device)
+            noise.scatter_(1, sorted_indices, noise_sorted)
             noise[already_invalid] = float('inf')
 
         # Stratified masking: bias toward valid-time sensors

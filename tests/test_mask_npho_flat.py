@@ -154,12 +154,25 @@ def random_masking_standalone(x_flat, mask_ratio, sentinel_npho, sentinel_time,
     noise[already_invalid] = float('inf')
 
     if mask_npho_flat:
-        npho_for_rank = x_flat[:, :, 0].clone()
-        npho_for_rank[already_invalid] = float('-inf')
-        order = torch.argsort(npho_for_rank, dim=1)
-        ranks = torch.argsort(order, dim=1).float() / valid_count.unsqueeze(1).float().clamp(min=1)
-        k = num_to_mask.unsqueeze(1).float().clamp(min=1)  # (B, 1)
-        noise = ranks * k + torch.rand(B, N, device=device)
+        npho_vals = x_flat[:, :, 0].clone()
+        npho_vals[already_invalid] = float('-inf')
+        sorted_indices = torch.argsort(npho_vals, dim=1)  # invalid first, then ascending npho
+
+        # In sorted order: first n_invalid slots are invalid, rest are valid ascending
+        n_invalid = already_invalid.sum(dim=1)  # (B,)
+        positions = torch.arange(N, device=device).unsqueeze(0).expand(B, -1)
+        valid_pos = (positions - n_invalid.unsqueeze(1)).clamp(min=0).float()
+        vc = valid_count.unsqueeze(1).float().clamp(min=1)
+        k = num_to_mask.unsqueeze(1).float().clamp(min=1)
+
+        # Assign each valid sensor to a bin: bin_id in [0, k)
+        bin_ids = (valid_pos * k / vc).long().clamp(max=num_to_mask.max().item() - 1)
+        # noise in [bin_id, bin_id+1) — non-overlapping ranges ensure one pick per bin
+        noise_sorted = bin_ids.float() + torch.rand(B, N, device=device)
+
+        # Scatter back from sorted order to original sensor positions
+        noise = torch.full((B, N), float('inf'), device=device)
+        noise.scatter_(1, sorted_indices, noise_sorted)
         noise[already_invalid] = float('inf')
 
         if debug:
@@ -169,8 +182,7 @@ def random_masking_standalone(x_flat, mask_ratio, sentinel_npho, sentinel_time,
                   f"mean={valid_noise.mean():.4f}")
             print(f"  [DEBUG] valid_count: min={valid_count.min()}, max={valid_count.max()}")
             print(f"  [DEBUG] num_to_mask: min={num_to_mask.min()}, max={num_to_mask.max()}")
-            print(f"  [DEBUG] ranks (valid only): min={ranks[~already_invalid].min():.4f}, "
-                  f"max={ranks[~already_invalid].max():.4f}")
+            print(f"  [DEBUG] bin_ids range: 0..{bin_ids.max().item()}")
 
     ids_shuffle = torch.argsort(noise, dim=1)
 
