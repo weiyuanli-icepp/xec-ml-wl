@@ -1477,34 +1477,44 @@ class XEC_Inpainter(nn.Module):
         noise = torch.rand(B, N, device=device)
         noise[already_invalid] = float('inf')
 
-        # CDF-based flat masking: stratified sampling across npho quantiles.
-        # Sort sensors by npho, divide into k contiguous bins, then randomly
-        # select exactly one sensor from each bin. This guarantees the masked
-        # sensors are spread uniformly across the npho distribution.
+        # CDF-based flat masking: equal-width bins in norm_npho VALUE space.
+        # Sort sensors by npho, divide the value range [0, max] into k equal-width
+        # bins, then pick one random sensor from each non-empty bin. This produces
+        # a flat (uniform) distribution of masked npho values, over-sampling the
+        # sparse high-npho tail relative to the dense low-npho bulk.
         if self.mask_npho_flat:
             npho_vals = x_flat[:, :, 0].clone()
             npho_vals[already_invalid] = float('-inf')
-            sorted_indices = torch.argsort(npho_vals, dim=1)  # invalid first, then ascending npho
+            sorted_indices = torch.argsort(npho_vals, dim=1)  # ascending
+            sorted_npho = npho_vals.gather(1, sorted_indices)  # (B, N)
 
-            n_inv = already_invalid.sum(dim=1)  # (B,)
-            vc_f = valid_count.float().clamp(min=1)  # (B,)
-            k_f = num_to_mask.float().clamp(min=1)   # (B,)
             k_max = num_to_mask.max().item()
+            k_f = num_to_mask.unsqueeze(1).float().clamp(min=1)  # (B, 1)
+            # Extend max slightly so the last sensor is included in the last bin
+            max_npho = sorted_npho[:, -1:].clamp(min=1e-6) * 1.001  # (B, 1)
 
-            # Bin boundaries in valid-sensor space: bin j spans [lo_j, hi_j)
-            bins = torch.arange(k_max, device=device).unsqueeze(0).expand(B, -1).float()
-            lo = (bins * vc_f.unsqueeze(1) / k_f.unsqueeze(1)).long()
-            hi = ((bins + 1) * vc_f.unsqueeze(1) / k_f.unsqueeze(1)).long()
-            bin_sz = (hi - lo).clamp(min=1)
+            # Equal-width bin edges: 0, max/k, 2*max/k, ..., max
+            edge_idx = torch.arange(k_max + 1, device=device).unsqueeze(0).float()
+            edges = edge_idx * max_npho / k_f  # (B, k_max+1)
 
-            # Pick one random sensor from each bin
-            rand_off = (torch.rand(B, k_max, device=device) * bin_sz.float()).long()
-            sel_sorted = (lo + rand_off + n_inv.unsqueeze(1)).clamp(max=N - 1)
+            # Find sorted-position range for each bin via searchsorted
+            edge_pos = torch.searchsorted(sorted_npho, edges)  # (B, k_max+1)
+            lo = edge_pos[:, :-1]  # (B, k_max)
+            hi = edge_pos[:, 1:]   # (B, k_max)
+            bin_sz = hi - lo       # (B, k_max)
+            non_empty = (bin_sz > 0)
+
+            # Pick one random sensor from each non-empty bin
+            safe_sz = bin_sz.clamp(min=1)
+            rand_off = (torch.rand(B, k_max, device=device) * safe_sz.float()).long()
+            sel_sorted = (lo + rand_off).clamp(max=N - 1)
             sel_orig = sorted_indices.gather(1, sel_sorted)  # (B, k_max)
 
             # Assign low noise [j, j+1) to selected sensors; rest stay at inf
+            bins_f = torch.arange(k_max, device=device).unsqueeze(0).expand(B, -1).float()
             noise = torch.full((B, N), float('inf'), device=device)
-            sel_noise = bins + torch.rand(B, k_max, device=device)
+            sel_noise = bins_f + torch.rand(B, k_max, device=device)
+            sel_noise[~non_empty] = float('inf')  # skip empty bins
             noise.scatter_(1, sel_orig, sel_noise)
             noise[already_invalid] = float('inf')
 
