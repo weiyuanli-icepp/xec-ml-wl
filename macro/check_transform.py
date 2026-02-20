@@ -6,6 +6,8 @@
 # 5. python macro/check_transform.py /path/to/data.root --npho_scheme all  # compare all schemes
 import uproot
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import sys
 import os
@@ -182,7 +184,10 @@ def analyze_file(file_path, npho_threshold=None, npho_scheme="log1p"):
         ax[2].set_title(f"Transformed Time (npho>{npho_threshold})")
 
     plt.tight_layout()
-    plt.show()
+    out_path = os.path.splitext(file_path)[0] + f"_transform_{npho_scheme}.pdf"
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+    print(f"\nPlot saved to: {out_path}")
 
 def compare_all_schemes(file_path, npho_threshold=None):
     """Compare all npho normalization schemes side by side."""
@@ -241,7 +246,10 @@ def compare_all_schemes(file_path, npho_threshold=None):
 
     plt.suptitle(f"Npho Normalization Schemes Comparison\n{os.path.basename(file_path)}", fontsize=12)
     plt.tight_layout()
-    plt.show()
+    out_path = os.path.splitext(file_path)[0] + "_transform_all.pdf"
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+    print(f"\nPlot saved to: {out_path}")
 
     # Print comparison table
     print("\n" + "="*60)
