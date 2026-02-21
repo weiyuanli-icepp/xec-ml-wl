@@ -5,12 +5,30 @@ Provides class-based reweighting to balance distributions across different tasks
 Supports: angle (theta, phi), energy, timing, position (u, v, w).
 """
 
+import hashlib
+import json
 import os
 import numpy as np
 import torch
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from .utils import iterate_chunks
+
+
+def _reweight_cache_path(root_files: List[str], config_dict: dict) -> str:
+    """Compute a deterministic cache path from reweight config + file metadata.
+
+    Includes file sizes so that regenerated ROOT files (same name, new content)
+    auto-invalidate the cache.
+    """
+    file_info = []
+    for f in sorted(root_files):
+        file_info.append({"path": os.path.abspath(f), "size": os.path.getsize(f)})
+    key_dict = {"files": file_info, **config_dict}
+    key_str = json.dumps(key_dict, sort_keys=True)
+    h = hashlib.sha256(key_str.encode()).hexdigest()[:12]
+    cache_dir = os.path.dirname(os.path.abspath(root_files[0]))
+    return os.path.join(cache_dir, f"reweight_cache_{h}.npz")
 
 
 @dataclass
@@ -91,6 +109,36 @@ class SampleReweighter:
             self._fitted = True
             return
 
+        # Build cache key from config
+        cfg = self.config
+        cache_cfg = {
+            "type": "sample",
+            "angle": {"enabled": cfg.angle.enabled, "nbins_2d": list(cfg.angle.nbins_2d)},
+            "energy": {"enabled": cfg.energy.enabled, "nbins": cfg.energy.nbins},
+            "timing": {"enabled": cfg.timing.enabled, "nbins": cfg.timing.nbins},
+            "uvwFI": {"enabled": cfg.uvwFI.enabled, "nbins_2d": list(cfg.uvwFI.nbins_2d)},
+        }
+        cache_path = _reweight_cache_path(root_files, cache_cfg)
+
+        # Try loading from cache
+        if os.path.exists(cache_path):
+            data = np.load(cache_path, allow_pickle=False)
+            if cfg.angle.enabled:
+                self._angle_edges = (data["angle_edges_th"], data["angle_edges_ph"])
+                self._angle_weights = data["angle_weights"]
+            if cfg.energy.enabled:
+                self._energy_edges = data["energy_edges"]
+                self._energy_weights = data["energy_weights"]
+            if cfg.timing.enabled:
+                self._timing_edges = data["timing_edges"]
+                self._timing_weights = data["timing_weights"]
+            if cfg.uvwFI.enabled:
+                self._uvw_edges = (data["uvw_edges_u"], data["uvw_edges_v"], data["uvw_edges_w"])
+                self._uvw_weights = data["uvw_weights"]
+            self._fitted = True
+            print(f"[Reweighter] Loaded reweight cache from {cache_path}")
+            return
+
         print("[Reweighter] Scanning training data for reweighting histograms...")
 
         # Determine which branches to read
@@ -115,6 +163,27 @@ class SampleReweighter:
         self._build_histograms(root_files, tree_name, branches, step_size, ranges)
 
         self._fitted = True
+
+        # Save to cache
+        save_dict = {}
+        if cfg.angle.enabled:
+            save_dict["angle_edges_th"] = self._angle_edges[0]
+            save_dict["angle_edges_ph"] = self._angle_edges[1]
+            save_dict["angle_weights"] = self._angle_weights
+        if cfg.energy.enabled:
+            save_dict["energy_edges"] = self._energy_edges
+            save_dict["energy_weights"] = self._energy_weights
+        if cfg.timing.enabled:
+            save_dict["timing_edges"] = self._timing_edges
+            save_dict["timing_weights"] = self._timing_weights
+        if cfg.uvwFI.enabled:
+            save_dict["uvw_edges_u"] = self._uvw_edges[0]
+            save_dict["uvw_edges_v"] = self._uvw_edges[1]
+            save_dict["uvw_edges_w"] = self._uvw_edges[2]
+            save_dict["uvw_weights"] = self._uvw_weights
+        np.savez(cache_path, **save_dict)
+        print(f"[Reweighter] Saved reweight cache to {cache_path}")
+
         print("[Reweighter] Fit complete.")
 
     def _scan_ranges(self, root_files: List[str], tree_name: str,
@@ -444,6 +513,26 @@ class IntensityReweighter:
             npho_scale2: Secondary scale for log1p normalization.
             npho_scheme: Normalization scheme used in training.
         """
+        # Build cache key from config
+        cache_cfg = {
+            "type": "intensity",
+            "nbins": self.nbins,
+            "target": self.target,
+            "npho_scale": npho_scale,
+            "npho_scale2": npho_scale2,
+            "npho_scheme": npho_scheme,
+        }
+        cache_path = _reweight_cache_path(root_files, cache_cfg)
+
+        # Try loading from cache
+        if os.path.exists(cache_path):
+            data = np.load(cache_path, allow_pickle=False)
+            self._bin_edges = data["bin_edges"]
+            self._bin_weights = data["bin_weights"]
+            self._fitted = True
+            print(f"[IntensityReweighter] Loaded reweight cache from {cache_path}")
+            return
+
         from .normalization import NphoTransform
 
         print(f"[IntensityReweighter] Scanning training data for intensity histogram...")
@@ -511,6 +600,10 @@ class IntensityReweighter:
               f"weight range [{weights.min():.3f}, {weights.max():.3f}]")
 
         self._fitted = True
+
+        # Save to cache
+        np.savez(cache_path, bin_edges=self._bin_edges, bin_weights=self._bin_weights)
+        print(f"[IntensityReweighter] Saved reweight cache to {cache_path}")
 
     def to_device(self, device: torch.device):
         """Move tensors to GPU for fast lookup."""
