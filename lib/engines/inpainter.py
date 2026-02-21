@@ -36,6 +36,7 @@ def compute_inpainting_loss_flat(
     npho_scheme: str = "log1p",
     npho_loss_weight_enabled: bool = False,
     npho_loss_weight_alpha: float = 0.5,
+    sample_weights: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Compute inpainting loss from FLAT predictions (from forward_training).
@@ -56,6 +57,7 @@ def compute_inpainting_loss_flat(
         use_npho_time_weight: whether to weight time loss by sqrt(npho)
         track_metrics: whether to compute MAE/RMSE metrics
         predict_channels: list of channels being predicted (["npho"] or ["npho", "time"])
+        sample_weights: (B,) per-sample weights from intensity reweighting (None = uniform)
 
     Returns:
         total_loss: scalar loss for backprop
@@ -104,34 +106,78 @@ def compute_inpainting_loss_flat(
         raw_npho_masked = npho_transform.inverse(gt_masked[:, 0])
         weight_npho = (raw_npho_masked.clamp(min=1.0) + 1.0).pow(npho_loss_weight_alpha)
         weight_npho = weight_npho / weight_npho.mean()  # Normalize weights
-        avg_npho_loss = (loss_npho * weight_npho).mean()
-    else:
-        avg_npho_loss = loss_npho.mean()
+        loss_npho = loss_npho * weight_npho
 
     # Compute time loss (only if predicting time)
-    avg_time_loss = torch.tensor(0.0, device=device)
-    time_valid = None
+    loss_time_flat = None
     if predict_time:
         # Compute time loss (only for sensors with sufficient npho)
         npho_gt_norm = gt_masked[:, 0]
         time_valid = npho_gt_norm > npho_threshold_norm  # (num_masked,)
 
         if time_valid.sum() > 0:
+            loss_time_all = torch.zeros_like(loss_npho)
             pred_time_valid = pred_masked[time_valid, pred_time_idx]
             gt_time_valid = gt_masked[time_valid, 1]
 
-            loss_time = loss_func(pred_time_valid, gt_time_valid)  # (num_time_valid,)
+            loss_time_vals = loss_func(pred_time_valid, gt_time_valid)  # (num_time_valid,)
 
             # Optional: weight by sqrt(npho) for chi-square-like weighting
             if use_npho_time_weight:
-                # Denormalize npho to get raw values for weighting
                 npho_norm_valid = gt_masked[time_valid, 0]
                 raw_npho = npho_transform.inverse(npho_norm_valid)
                 time_weights = torch.sqrt(raw_npho.clamp(min=npho_threshold))
-                time_weights = time_weights / time_weights.mean()  # Normalize weights
-                loss_time = loss_time * time_weights
+                time_weights = time_weights / time_weights.mean()
+                loss_time_vals = loss_time_vals * time_weights
 
-            avg_time_loss = loss_time.mean()
+            loss_time_all[time_valid] = loss_time_vals
+            loss_time_flat = loss_time_all  # (num_masked,)
+
+    # Aggregate losses with optional per-sample intensity reweighting
+    if sample_weights is not None:
+        # Per-sample weighted average: compute mean loss per sample, then weighted mean across samples
+        B = mask.size(0)
+        mask_count = mask.sum(dim=1)  # (B,)
+        # Map each flattened masked sensor back to its sample index
+        sample_idx = torch.arange(B, device=device).unsqueeze(1).expand_as(mask)[mask_bool]  # (num_masked,)
+
+        # Per-sample npho loss
+        per_sample_npho = torch.zeros(B, device=device)
+        per_sample_npho.scatter_add_(0, sample_idx, loss_npho)
+        valid_samples = mask_count > 0
+        per_sample_npho[valid_samples] /= mask_count[valid_samples]
+
+        # Weighted mean across samples
+        sw = sample_weights.clone()
+        sw[~valid_samples] = 0.0
+        sw = sw / (sw.sum() + 1e-8) * valid_samples.sum().float()  # Normalize
+        avg_npho_loss = (per_sample_npho * sw).sum() / (valid_samples.sum().float() + 1e-8)
+
+        # Per-sample time loss
+        avg_time_loss = torch.tensor(0.0, device=device)
+        if predict_time and loss_time_flat is not None:
+            per_sample_time = torch.zeros(B, device=device)
+            per_sample_time.scatter_add_(0, sample_idx, loss_time_flat)
+            # Normalize by number of time-valid masked sensors per sample
+            npho_gt_all = original_values[:, :, 0]
+            time_valid_full = npho_gt_all > npho_threshold_norm
+            time_mask_count = (mask_bool & time_valid_full).sum(dim=1).float()  # (B,)
+            time_valid_samples = time_mask_count > 0
+            per_sample_time[time_valid_samples] /= time_mask_count[time_valid_samples]
+            sw_time = sample_weights.clone()
+            sw_time[~time_valid_samples] = 0.0
+            if time_valid_samples.sum() > 0:
+                sw_time = sw_time / (sw_time.sum() + 1e-8) * time_valid_samples.sum().float()
+                avg_time_loss = (per_sample_time * sw_time).sum() / (time_valid_samples.sum().float() + 1e-8)
+    else:
+        avg_npho_loss = loss_npho.mean()
+        avg_time_loss = torch.tensor(0.0, device=device)
+        if predict_time and loss_time_flat is not None:
+            # Only average over time-valid masked sensors
+            npho_gt_norm = gt_masked[:, 0]
+            time_valid = npho_gt_norm > npho_threshold_norm
+            if time_valid.sum() > 0:
+                avg_time_loss = loss_time_flat[time_valid].mean()
 
     # Total loss
     total_loss = npho_weight * avg_npho_loss
@@ -145,7 +191,7 @@ def compute_inpainting_loss_flat(
     if predict_time:
         metrics["loss_time"] = avg_time_loss.item()
 
-    # Optional MAE/RMSE metrics
+    # Optional MAE/RMSE metrics (unweighted — always reflect true reconstruction quality)
     if track_metrics:
         with torch.no_grad():
             # MAE
@@ -156,11 +202,13 @@ def compute_inpainting_loss_flat(
             rmse_npho = torch.sqrt(((pred_masked[:, pred_npho_idx] - gt_masked[:, 0]) ** 2).mean()).item()
             metrics["rmse_npho"] = rmse_npho
 
-            if predict_time and time_valid is not None and time_valid.sum() > 0:
-                mae_time = torch.abs(pred_masked[time_valid, pred_time_idx] - gt_masked[time_valid, 1]).mean().item()
-                metrics["mae_time"] = mae_time
-                rmse_time = torch.sqrt(((pred_masked[time_valid, pred_time_idx] - gt_masked[time_valid, 1]) ** 2).mean()).item()
-                metrics["rmse_time"] = rmse_time
+            if predict_time:
+                time_valid_metrics = gt_masked[:, 0] > npho_threshold_norm
+                if time_valid_metrics.sum() > 0:
+                    mae_time = torch.abs(pred_masked[time_valid_metrics, pred_time_idx] - gt_masked[time_valid_metrics, 1]).mean().item()
+                    metrics["mae_time"] = mae_time
+                    rmse_time = torch.sqrt(((pred_masked[time_valid_metrics, pred_time_idx] - gt_masked[time_valid_metrics, 1]) ** 2).mean()).item()
+                    metrics["rmse_time"] = rmse_time
 
     return total_loss, metrics
 
@@ -781,6 +829,11 @@ def run_epoch_inpainter(
             total_valid_sensors += (~already_invalid).sum()
             total_randomly_masked += mask.sum().long()
 
+            # Compute per-sample intensity reweighting
+            sw = None
+            if intensity_reweighter is not None:
+                sw = intensity_reweighter.compute_weights(x_batch, device)
+
             profiler.start("loss_compute")
             with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=(scaler is not None)):
                 if use_fast_forward:
@@ -800,6 +853,7 @@ def run_epoch_inpainter(
                         npho_scheme=npho_scheme,
                         npho_loss_weight_enabled=npho_loss_weight_enabled,
                         npho_loss_weight_alpha=npho_loss_weight_alpha,
+                        sample_weights=sw,
                     )
                 else:
                     # Original path: per-face loss computation

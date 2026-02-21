@@ -495,12 +495,13 @@ class IntensityReweighter:
             weights = np.zeros(actual_nbins, dtype=np.float64)
             valid = counts > 0
             if valid.any():
-                # Use sqrt of bin center as target weight
+                # Target density proportional to 1/sqrt(bin_center)
                 bin_centers = (self._bin_edges[:-1] + self._bin_edges[1:]) / 2
-                target_weights = 1.0 / np.sqrt(bin_centers.clip(min=1.0))
-                target_counts = counts * target_weights[valid] if valid.any() else counts
-                total_target = target_counts.sum()
-                weights[valid] = (target_counts.sum() / actual_nbins) / counts[valid]
+                target_density = 1.0 / np.sqrt(bin_centers.clip(min=1.0))
+                # Normalize target so total target count = total actual count
+                total = counts.sum()
+                target_counts = target_density[valid] / target_density[valid].sum() * total
+                weights[valid] = target_counts / counts[valid]
         else:
             raise ValueError(f"Unknown target: {self.target}")
 

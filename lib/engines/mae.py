@@ -208,7 +208,17 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                 }
 
                 # 3. Calculate Loss
+                # Compute per-sample intensity reweighting
+                sw = None
+                if intensity_reweighter is not None:
+                    sw = intensity_reweighter.compute_weights(x_in, device)
+
                 loss = 0.0
+                # Per-sample loss accumulators for intensity reweighting
+                B = x_in.size(0)
+                if sw is not None:
+                    per_sample_loss = torch.zeros(B, device=device)
+                    per_sample_mask_count = torch.zeros(B, device=device)
 
                 face_to_sensor_indices = {
                     "inner": INNER_INDEX_MAP,
@@ -389,6 +399,28 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                             if predict_time:
                                 time_loss = time_loss * time_weight
                         face_loss = npho_loss + time_loss
+
+                        if sw is not None:
+                            # Accumulate per-sample weighted loss for this face
+                            # Compute per-sample masked element count for this face
+                            face_mask_per_sample = mask_expanded.flatten(1).sum(1)  # (B,)
+                            # Compute per-sample loss sum for this face (npho + time, weighted by npho_weight/time_weight)
+                            face_loss_map = loss_map_npho * mask_expanded
+                            if npho_loss_weight_enabled and mask_sum > 0:
+                                face_loss_map = face_loss_map * weight_map
+                            per_sample_face_loss = face_loss_map.flatten(1).sum(1)  # (B,)
+                            if log_vars is None:
+                                per_sample_face_loss = per_sample_face_loss * npho_weight
+                            if predict_time and time_mask_sum > 0:
+                                time_loss_per_sample = (loss_map_time * time_mask_expanded).flatten(1).sum(1)
+                                if use_npho_time_weight and time_mask_expanded.sum() > 0:
+                                    time_loss_per_sample = (loss_map_time * time_mask_expanded * npho_weight_map).flatten(1).sum(1)
+                                if log_vars is None:
+                                    time_loss_per_sample = time_loss_per_sample * time_weight
+                                per_sample_face_loss = per_sample_face_loss + time_loss_per_sample
+                            per_sample_loss += per_sample_face_loss
+                            per_sample_mask_count += face_mask_per_sample
+
                         loss += face_loss
 
                         # Per-face loss tracking (skip if disabled for speed)
@@ -399,6 +431,16 @@ def run_epoch_mae(model, optimizer, device, root_files, tree_name,
                                 face_time_loss_sums[name] += time_loss.item()
 
                 profiler.stop()  # loss_compute
+
+                # Apply per-sample intensity reweighting
+                if sw is not None:
+                    valid_samples = per_sample_mask_count > 0
+                    per_sample_mean = torch.zeros(B, device=device)
+                    per_sample_mean[valid_samples] = per_sample_loss[valid_samples] / per_sample_mask_count[valid_samples]
+                    sw_norm = sw.clone()
+                    sw_norm[~valid_samples] = 0.0
+                    sw_norm = sw_norm / (sw_norm.sum() + 1e-8) * valid_samples.sum().float()
+                    loss = (per_sample_mean * sw_norm).sum() / (valid_samples.sum().float() + 1e-8)
 
             # Backward with gradient accumulation
             total_loss_sum += loss.item()
