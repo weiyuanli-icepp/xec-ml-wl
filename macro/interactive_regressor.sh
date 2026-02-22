@@ -29,7 +29,7 @@ if [ -n "$CONDA_PREFIX" ]; then
 fi
 
 # export CONFIG_PATH="config/reg/ene_reg_50epoch_reweight.yaml"
-export CONFIG_PATH="config/reg/ene_reg_test.yaml"
+export CONFIG_PATH="config/reg/ene_reg_test2.yaml"
 
 cd $HOME/meghome/xec-ml-wl
 echo "Moved to directory $(pwd)"

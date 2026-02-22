@@ -45,7 +45,7 @@ TIME_SHIFT = -0.46
 # NPHO_SCALE2 = 6.4
 
 # For sqrt
-NPHO_SCALE  = 1000
+NPHO_SCALE  = 20000
 NPHO_SCALE2 = 1 # ignored
 
 # Branch Names
