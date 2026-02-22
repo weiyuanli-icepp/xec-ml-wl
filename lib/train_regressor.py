@@ -1302,7 +1302,7 @@ if __name__ == "__main__":
                 return {k: _to_dict(v) for k, v in obj.__dict__.items()}
             return obj
         result = {}
-        for section in ["data", "normalization", "model", "training", "checkpoint", "mlflow", "export"]:
+        for section in ["data", "normalization", "model", "training", "checkpoint", "mlflow", "export", "distributed"]:
             if hasattr(cfg, section):
                 obj = getattr(cfg, section)
                 result[section] = _to_dict(obj)
