@@ -337,7 +337,9 @@ def train_with_config(config_path: str, profile: bool = None):
     model_without_ddp = model
 
     # Wrap with DDP (before compile, after .to(device))
-    model = wrap_ddp(model, local_rank)
+    # When not all task heads are active, some parameters won't receive gradients
+    has_unused_params = len(active_tasks) < 4
+    model = wrap_ddp(model, local_rank, find_unused_parameters=has_unused_params)
     model_ddp = model  # Save DDP reference before compile (for .no_sync access)
 
     # Optionally compile model (can be disabled or use different modes to reduce memory)

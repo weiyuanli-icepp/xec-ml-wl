@@ -103,7 +103,7 @@ def reduce_metrics(metrics_dict, device):
     return metrics_dict
 
 
-def wrap_ddp(model, local_rank):
+def wrap_ddp(model, local_rank, find_unused_parameters=False):
     """
     Wrap a model with DistributedDataParallel.
 
@@ -113,13 +113,16 @@ def wrap_ddp(model, local_rank):
     Args:
         model: The model (already on the correct device).
         local_rank: Local GPU index.
+        find_unused_parameters: Set True when some model parameters may not
+            receive gradients (e.g. regressor with disabled task heads).
 
     Returns:
         DDP-wrapped model, or the original model if not distributed.
     """
     if not dist.is_initialized():
         return model
-    return DDP(model, device_ids=[local_rank])
+    return DDP(model, device_ids=[local_rank],
+               find_unused_parameters=find_unused_parameters)
 
 
 def barrier():
