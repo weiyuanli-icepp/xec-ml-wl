@@ -275,6 +275,7 @@ def train_with_config(config_path: str, profile: bool = None):
         "log_invalid_npho": getattr(cfg.data, "log_invalid_npho", True),
         "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
         "fiducial": fiducial,
+        "profile": getattr(cfg.training, "profile", False),
     }
 
     train_loader = get_dataloader(
