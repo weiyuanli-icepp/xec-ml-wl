@@ -395,7 +395,7 @@ def train_with_config(config_path: str, profile: bool = None):
     # --- EMA ---
     ema_model = None
     ema_decay = cfg.training.ema_decay
-    if ema_decay > 0.0:
+    if ema_decay is not None and ema_decay > 0.0:
         if is_main_process():
             print(f"[INFO] Using EMA with decay={ema_decay}")
 
