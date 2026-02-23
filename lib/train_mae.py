@@ -44,7 +44,7 @@ from .config import load_mae_config
 from .reweighting import create_intensity_reweighter_from_config
 from .distributed import (
     setup_ddp, cleanup_ddp, is_main_process,
-    shard_file_list, reduce_metrics, wrap_ddp,
+    shard_file_list, reduce_metrics, wrap_ddp, barrier,
 )
 
 # Usage
@@ -856,139 +856,138 @@ Examples:
                 print(f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | Time: {dt:.1f}s")
 
             # --- Logging & checkpointing (rank 0 only) ---
-            if not is_main_process():
-                continue
+            if is_main_process():
+                # Log MLflow
+                for key, value in train_metrics.items():
+                    mlflow.log_metric(f"train/{key}", value, step=epoch)
 
-            # Log MLflow
-            for key, value in train_metrics.items():
-                mlflow.log_metric(f"train/{key}", value, step=epoch)
+                # Log validation metrics
+                if val_metrics:
+                    for key, value in val_metrics.items():
+                        mlflow.log_metric(f"val/{key}", value, step=epoch)
 
-            # Log validation metrics
-            if val_metrics:
-                for key, value in val_metrics.items():
-                    mlflow.log_metric(f"val/{key}", value, step=epoch)
+                # Log learned channel weights (homoscedastic uncertainty)
+                if auto_channel_weight and hasattr(model_without_ddp, "channel_log_vars") and model_without_ddp.channel_log_vars is not None:
+                    log_vars = model_without_ddp.channel_log_vars.detach()
+                    mlflow.log_metrics({
+                        "channel/npho_log_var": log_vars[0].item(),
+                        "channel/time_log_var": log_vars[1].item(),
+                        "channel/npho_weight": (0.5 * torch.exp(-log_vars[0])).item(),
+                        "channel/time_weight": (0.5 * torch.exp(-log_vars[1])).item(),
+                    }, step=epoch)
 
-            # Log learned channel weights (homoscedastic uncertainty)
-            if auto_channel_weight and hasattr(model_without_ddp, "channel_log_vars") and model_without_ddp.channel_log_vars is not None:
-                log_vars = model_without_ddp.channel_log_vars.detach()
-                # log_var = log(sigma^2), so sigma = exp(log_var / 2)
-                # weight = 1 / (2 * sigma^2) = 0.5 * exp(-log_var)
-                mlflow.log_metrics({
-                    "channel/npho_log_var": log_vars[0].item(),
-                    "channel/time_log_var": log_vars[1].item(),
-                    "channel/npho_weight": (0.5 * torch.exp(-log_vars[0])).item(),
-                    "channel/time_weight": (0.5 * torch.exp(-log_vars[1])).item(),
-                }, step=epoch)
+                # System metrics (standardized)
+                log_system_metrics_to_mlflow(
+                    step=epoch,
+                    device=device,
+                    epoch_time_sec=dt,
+                    lr=current_lr,
+                )
 
-            # System metrics (standardized)
-            log_system_metrics_to_mlflow(
-                step=epoch,
-                device=device,
-                epoch_time_sec=dt,
-                lr=current_lr,
-            )
+                # Save predictions (use full val files, not sharded)
+                if save_predictions and all_val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs):
+                    try:
+                        _, predictions = run_eval_mae(
+                            eval_model, device, all_val_files, "tree",
+                            batch_size=batch_size,
+                            step_size=chunksize,
+                            amp=amp,
+                            npho_branch=npho_branch,
+                            time_branch=time_branch,
+                            npho_scale=npho_scale,
+                            npho_scale2=npho_scale2,
+                            time_scale=time_scale,
+                            time_shift=time_shift,
+                            sentinel_time=sentinel_time,
+                            loss_fn=loss_fn,
+                            loss_beta=loss_beta,
+                            npho_weight=npho_weight,
+                            time_weight=time_weight,
+                            auto_channel_weight=auto_channel_weight,
+                            collect_predictions=True,
+                            max_events=1000,
+                            dataloader_workers=0,
+                            dataset_workers=num_threads,
+                            prefetch_factor=prefetch_factor,
+                            npho_threshold=npho_threshold,
+                            use_npho_time_weight=use_npho_time_weight,
+                            track_mae_rmse=track_mae_rmse,
+                            profile=False,
+                            log_invalid_npho=log_invalid_npho,
+                            npho_scheme=npho_scheme,
+                            npho_loss_weight_enabled=npho_loss_weight_enabled,
+                            npho_loss_weight_alpha=npho_loss_weight_alpha,
+                            sentinel_npho=sentinel_npho,
+                        )
+                        root_path = save_predictions_to_root(
+                            predictions, save_path, epoch, run_id=mlflow_run_id,
+                            predict_channels=predict_channels,
+                            npho_scale=npho_scale, npho_scale2=npho_scale2,
+                            time_scale=time_scale, time_shift=time_shift,
+                            npho_scheme=npho_scheme
+                        )
+                        if root_path:
+                            mlflow.log_artifact(root_path)
+                    except Exception as e:
+                        print(f"[WARN] Could not save predictions to ROOT: {e}")
 
-            # Save predictions (use full val files, not sharded)
-            if save_predictions and all_val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs):
-                try:
-                    _, predictions = run_eval_mae(
-                        eval_model, device, all_val_files, "tree",
-                        batch_size=batch_size,
-                        step_size=chunksize,
-                        amp=amp,
-                        npho_branch=npho_branch,
-                        time_branch=time_branch,
-                        npho_scale=npho_scale,
-                        npho_scale2=npho_scale2,
-                        time_scale=time_scale,
-                        time_shift=time_shift,
-                        sentinel_time=sentinel_time,
-                        loss_fn=loss_fn,
-                        loss_beta=loss_beta,
-                        npho_weight=npho_weight,
-                        time_weight=time_weight,
-                        auto_channel_weight=auto_channel_weight,
-                        collect_predictions=True,
-                        max_events=1000,
-                        dataloader_workers=0,
-                        dataset_workers=num_threads,
-                        prefetch_factor=prefetch_factor,
-                        npho_threshold=npho_threshold,
-                        use_npho_time_weight=use_npho_time_weight,
-                        track_mae_rmse=track_mae_rmse,
-                        profile=False,
-                        log_invalid_npho=log_invalid_npho,
-                        npho_scheme=npho_scheme,
-                        npho_loss_weight_enabled=npho_loss_weight_enabled,
-                        npho_loss_weight_alpha=npho_loss_weight_alpha,
-                        sentinel_npho=sentinel_npho,
-                    )
-                    root_path = save_predictions_to_root(
-                        predictions, save_path, epoch, run_id=mlflow_run_id,
-                        predict_channels=predict_channels,
-                        npho_scale=npho_scale, npho_scale2=npho_scale2,
-                        time_scale=time_scale, time_shift=time_shift,
-                        npho_scheme=npho_scheme
-                    )
-                    if root_path:
-                        mlflow.log_artifact(root_path)
-                except Exception as e:
-                    print(f"[WARN] Could not save predictions to ROOT: {e}")
-
-            # Check if this is the best model
-            is_best = val_loss < best_val_loss if val_metrics else False
-            if is_best:
-                best_val_loss = val_loss
-
-            # Save model checkpoint
-            if (epoch + 1) % save_interval == 0 or (epoch + 1) == epochs or is_best:
-                checkpoint_dict = {
-                    'epoch': epoch,
-                    'model_state_dict': model_without_ddp.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scaler_state_dict': scaler.state_dict(),
-                    'best_val_loss': best_val_loss,
-                    'mlflow_run_id': mlflow_run_id,
-                    'config': {
-                        'outer_mode': outer_mode,
-                        'outer_fine_pool': outer_fine_pool,
-                        'mask_ratio': mask_ratio,
-                        'decoder_dim': decoder_dim,
-                        'predict_channels': list(predict_channels),
-                        'sentinel_time': float(sentinel_time),
-                        'sentinel_npho': float(sentinel_npho),
-                        'npho_scale': float(npho_scale),
-                        'npho_scale2': float(npho_scale2),
-                        'time_scale': float(time_scale),
-                        'time_shift': float(time_shift),
-                        'npho_scheme': npho_scheme,
-                        'encoder_dim': encoder_dim,
-                        'dim_feedforward': encoder_dim_feedforward,
-                        'num_fusion_layers': encoder_num_fusion_layers,
-                        'npho_branch': npho_branch,
-                        'time_branch': time_branch,
-                    }
-                }
-                checkpoint_dict['ema_state_dict'] = ema_model.state_dict() if ema_model is not None else None
-                checkpoint_dict['scheduler_state_dict'] = scheduler.state_dict() if scheduler is not None else None
-
-                # Save last checkpoint
-                full_ckpt_path = os.path.join(save_path, "mae_checkpoint_last.pth")
-                torch.save(checkpoint_dict, full_ckpt_path)
-                print(f"Saved MAE checkpoint to {full_ckpt_path}")
-
-                # Save best checkpoint
+                # Check if this is the best model
+                is_best = val_loss < best_val_loss if val_metrics else False
                 if is_best:
-                    best_ckpt_path = os.path.join(save_path, "mae_checkpoint_best.pth")
-                    torch.save(checkpoint_dict, best_ckpt_path)
-                    print(f"Saved best MAE checkpoint to {best_ckpt_path}")
+                    best_val_loss = val_loss
 
-                # Save encoder weights for transfer learning
-                encoder_path = os.path.join(save_path, f"mae_encoder_epoch_{epoch+1}.pth")
-                encoder_to_save = ema_model.module.encoder if ema_model is not None else model_without_ddp.encoder
-                torch.save(encoder_to_save.state_dict(), encoder_path)
-                print(f"Saved encoder weights to {encoder_path}")
-                mlflow.log_artifact(encoder_path)
+                # Save model checkpoint
+                if (epoch + 1) % save_interval == 0 or (epoch + 1) == epochs or is_best:
+                    checkpoint_dict = {
+                        'epoch': epoch,
+                        'model_state_dict': model_without_ddp.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scaler_state_dict': scaler.state_dict(),
+                        'best_val_loss': best_val_loss,
+                        'mlflow_run_id': mlflow_run_id,
+                        'config': {
+                            'outer_mode': outer_mode,
+                            'outer_fine_pool': outer_fine_pool,
+                            'mask_ratio': mask_ratio,
+                            'decoder_dim': decoder_dim,
+                            'predict_channels': list(predict_channels),
+                            'sentinel_time': float(sentinel_time),
+                            'sentinel_npho': float(sentinel_npho),
+                            'npho_scale': float(npho_scale),
+                            'npho_scale2': float(npho_scale2),
+                            'time_scale': float(time_scale),
+                            'time_shift': float(time_shift),
+                            'npho_scheme': npho_scheme,
+                            'encoder_dim': encoder_dim,
+                            'dim_feedforward': encoder_dim_feedforward,
+                            'num_fusion_layers': encoder_num_fusion_layers,
+                            'npho_branch': npho_branch,
+                            'time_branch': time_branch,
+                        }
+                    }
+                    checkpoint_dict['ema_state_dict'] = ema_model.state_dict() if ema_model is not None else None
+                    checkpoint_dict['scheduler_state_dict'] = scheduler.state_dict() if scheduler is not None else None
+
+                    # Save last checkpoint
+                    full_ckpt_path = os.path.join(save_path, "mae_checkpoint_last.pth")
+                    torch.save(checkpoint_dict, full_ckpt_path)
+                    print(f"Saved MAE checkpoint to {full_ckpt_path}")
+
+                    # Save best checkpoint
+                    if is_best:
+                        best_ckpt_path = os.path.join(save_path, "mae_checkpoint_best.pth")
+                        torch.save(checkpoint_dict, best_ckpt_path)
+                        print(f"Saved best MAE checkpoint to {best_ckpt_path}")
+
+                    # Save encoder weights for transfer learning
+                    encoder_path = os.path.join(save_path, f"mae_encoder_epoch_{epoch+1}.pth")
+                    encoder_to_save = ema_model.module.encoder if ema_model is not None else model_without_ddp.encoder
+                    torch.save(encoder_to_save.state_dict(), encoder_path)
+                    print(f"Saved encoder weights to {encoder_path}")
+                    mlflow.log_artifact(encoder_path)
+
+            # Barrier: all ranks wait for rank 0 to finish checkpointing/ROOT saving
+            barrier()
 
     if is_main_process():
         print("[INFO] MAE Pre-training complete!")

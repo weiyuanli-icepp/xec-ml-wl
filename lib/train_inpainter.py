@@ -54,7 +54,7 @@ from .geom_defs import (
 from .config import load_inpainter_config
 from .distributed import (
     setup_ddp, cleanup_ddp, is_main_process,
-    shard_file_list, reduce_metrics, wrap_ddp,
+    shard_file_list, reduce_metrics, wrap_ddp, barrier,
 )
 
 # Suppress common harmless warnings
@@ -909,140 +909,141 @@ Examples:
                       f"Time: {dt:.1f}s")
 
             # --- Logging & checkpointing (rank 0 only) ---
-            if not is_main_process():
-                continue
+            if is_main_process():
+                # MLflow logging
+                for key, value in train_metrics.items():
+                    mlflow.log_metric(f"train/{key}", value, step=epoch)
 
-            # MLflow logging
-            for key, value in train_metrics.items():
-                mlflow.log_metric(f"train/{key}", value, step=epoch)
+                if val_metrics:
+                    for key, value in val_metrics.items():
+                        mlflow.log_metric(f"val/{key}", value, step=epoch)
 
-            if val_metrics:
-                for key, value in val_metrics.items():
-                    mlflow.log_metric(f"val/{key}", value, step=epoch)
+                # System metrics (standardized)
+                log_system_metrics_to_mlflow(
+                    step=epoch,
+                    device=device,
+                    epoch_time_sec=dt,
+                    lr=current_lr,
+                )
 
-            # System metrics (standardized)
-            log_system_metrics_to_mlflow(
-                step=epoch,
-                device=device,
-                epoch_time_sec=dt,
-                lr=current_lr,
-            )
-
-            # Check best model
-            is_best = val_loss < best_val_loss if val_metrics else False
-            if is_best:
-                best_val_loss = val_loss
-
-            # Save checkpoint
-            if (epoch + 1) % save_interval == 0 or (epoch + 1) == epochs or is_best:
-                t_ckpt_start = time.time()
-                checkpoint_dict = {
-                    'epoch': epoch,
-                    'model_state_dict': model_without_ddp.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
-                    'best_val_loss': best_val_loss,
-                    'mlflow_run_id': mlflow_run_id,
-                    'config': {
-                        'outer_mode': outer_mode,
-                        'outer_fine_pool': outer_fine_pool,
-                        'mask_ratio': mask_ratio,
-                        'mask_npho_flat': mask_npho_flat,
-                        'freeze_encoder': freeze_encoder,
-                        'predict_channels': list(predict_channels),
-                        'use_masked_attention': use_masked_attention,
-                        'head_type': head_type,
-                        'sensor_positions_file': sensor_positions_file,
-                        'cross_attn_k': cross_attn_k,
-                        'cross_attn_hidden': cross_attn_hidden,
-                        'cross_attn_latent_dim': cross_attn_latent_dim,
-                        'cross_attn_pos_dim': cross_attn_pos_dim,
-                        # Normalization parameters (critical for inference)
-                        'npho_scale': float(npho_scale),
-                        'npho_scale2': float(npho_scale2),
-                        'time_scale': float(time_scale),
-                        'time_shift': float(time_shift),
-                        'sentinel_time': float(sentinel_time),
-                        'npho_branch': npho_branch,
-                        'time_branch': time_branch,
-                        'sentinel_npho': float(sentinel_npho),
-                        'npho_scheme': npho_scheme,
-                        'encoder_dim': encoder_dim,
-                        'dim_feedforward': encoder_dim_feedforward,
-                        'num_fusion_layers': encoder_num_fusion_layers,
-                    }
-                }
-                checkpoint_dict['scheduler_state_dict'] = scheduler.state_dict() if scheduler is not None else None
-                checkpoint_dict['ema_state_dict'] = ema_model.state_dict() if ema_model is not None else None
-
-                # Save last
-                ckpt_path = os.path.join(save_path, "inpainter_checkpoint_last.pth")
-                torch.save(checkpoint_dict, ckpt_path)
-                t_ckpt_elapsed = time.time() - t_ckpt_start
-                print(f"  Saved checkpoint to {ckpt_path} ({t_ckpt_elapsed:.1f}s)")
-
-                # Save best
+                # Check best model
+                is_best = val_loss < best_val_loss if val_metrics else False
                 if is_best:
-                    t_best_start = time.time()
-                    best_path = os.path.join(save_path, "inpainter_checkpoint_best.pth")
-                    torch.save(checkpoint_dict, best_path)
-                    t_best_elapsed = time.time() - t_best_start
-                    print(f"  Saved best checkpoint to {best_path} ({t_best_elapsed:.1f}s)")
+                    best_val_loss = val_loss
 
-            # Save ROOT predictions periodically (and at end)
-            if save_root_predictions and all_val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs):
-                t_root_start = time.time()
-                print(f"  Collecting predictions for ROOT output...")
-                with RootPredictionWriter(
-                    save_path, epoch + 1, run_id=mlflow_run_id,
-                    npho_scale=float(npho_scale),
-                    npho_scale2=float(npho_scale2),
-                    time_scale=float(time_scale),
-                    time_shift=float(time_shift),
-                    sentinel_time=float(sentinel_time),
-                    predict_channels=list(predict_channels),
-                    npho_scheme=npho_scheme,
-                ) as writer:
-                    # Use EMA model for predictions if available
-                    pred_model = ema_model if ema_model is not None else model_without_ddp
-                    val_metrics_with_pred, _ = run_eval_inpainter(
-                        pred_model, device,
-                        all_val_files, "tree",
-                        batch_size=batch_size,
-                        step_size=chunksize,
-                        mask_ratio=mask_ratio,
-                        npho_branch=npho_branch,
-                        time_branch=time_branch,
+                # Save checkpoint
+                if (epoch + 1) % save_interval == 0 or (epoch + 1) == epochs or is_best:
+                    t_ckpt_start = time.time()
+                    checkpoint_dict = {
+                        'epoch': epoch,
+                        'model_state_dict': model_without_ddp.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
+                        'best_val_loss': best_val_loss,
+                        'mlflow_run_id': mlflow_run_id,
+                        'config': {
+                            'outer_mode': outer_mode,
+                            'outer_fine_pool': outer_fine_pool,
+                            'mask_ratio': mask_ratio,
+                            'mask_npho_flat': mask_npho_flat,
+                            'freeze_encoder': freeze_encoder,
+                            'predict_channels': list(predict_channels),
+                            'use_masked_attention': use_masked_attention,
+                            'head_type': head_type,
+                            'sensor_positions_file': sensor_positions_file,
+                            'cross_attn_k': cross_attn_k,
+                            'cross_attn_hidden': cross_attn_hidden,
+                            'cross_attn_latent_dim': cross_attn_latent_dim,
+                            'cross_attn_pos_dim': cross_attn_pos_dim,
+                            # Normalization parameters (critical for inference)
+                            'npho_scale': float(npho_scale),
+                            'npho_scale2': float(npho_scale2),
+                            'time_scale': float(time_scale),
+                            'time_shift': float(time_shift),
+                            'sentinel_time': float(sentinel_time),
+                            'npho_branch': npho_branch,
+                            'time_branch': time_branch,
+                            'sentinel_npho': float(sentinel_npho),
+                            'npho_scheme': npho_scheme,
+                            'encoder_dim': encoder_dim,
+                            'dim_feedforward': encoder_dim_feedforward,
+                            'num_fusion_layers': encoder_num_fusion_layers,
+                        }
+                    }
+                    checkpoint_dict['scheduler_state_dict'] = scheduler.state_dict() if scheduler is not None else None
+                    checkpoint_dict['ema_state_dict'] = ema_model.state_dict() if ema_model is not None else None
+
+                    # Save last
+                    ckpt_path = os.path.join(save_path, "inpainter_checkpoint_last.pth")
+                    torch.save(checkpoint_dict, ckpt_path)
+                    t_ckpt_elapsed = time.time() - t_ckpt_start
+                    print(f"  Saved checkpoint to {ckpt_path} ({t_ckpt_elapsed:.1f}s)")
+
+                    # Save best
+                    if is_best:
+                        t_best_start = time.time()
+                        best_path = os.path.join(save_path, "inpainter_checkpoint_best.pth")
+                        torch.save(checkpoint_dict, best_path)
+                        t_best_elapsed = time.time() - t_best_start
+                        print(f"  Saved best checkpoint to {best_path} ({t_best_elapsed:.1f}s)")
+
+                # Save ROOT predictions periodically (and at end)
+                if save_root_predictions and all_val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs):
+                    t_root_start = time.time()
+                    print(f"  Collecting predictions for ROOT output...")
+                    with RootPredictionWriter(
+                        save_path, epoch + 1, run_id=mlflow_run_id,
                         npho_scale=float(npho_scale),
                         npho_scale2=float(npho_scale2),
                         time_scale=float(time_scale),
                         time_shift=float(time_shift),
                         sentinel_time=float(sentinel_time),
-                        loss_fn=loss_fn,
-                        loss_beta=loss_beta,
-                        npho_weight=npho_weight,
-                        time_weight=time_weight,
-                        collect_predictions=True,
-                        prediction_writer=writer.write,
-                        track_mae_rmse=track_mae_rmse,
-                        dataloader_workers=num_workers,
-                        dataset_workers=num_threads,
-                        prefetch_factor=prefetch_factor,
-                        npho_threshold=npho_threshold,
-                        use_npho_time_weight=use_npho_time_weight,
-                        profile=False,
-                        log_invalid_npho=log_invalid_npho,
-                        amp=amp,
+                        predict_channels=list(predict_channels),
                         npho_scheme=npho_scheme,
-                        npho_loss_weight_enabled=npho_loss_weight_enabled,
-                        npho_loss_weight_alpha=npho_loss_weight_alpha,
-                        sentinel_npho=sentinel_npho,
-                    )
-                root_path = writer.filepath if writer.count > 0 else None
-                t_root_elapsed = time.time() - t_root_start
-                if root_path:
-                    print(f"  Saved predictions to {root_path} ({t_root_elapsed:.1f}s)")
-                    mlflow.log_artifact(root_path)
+                    ) as writer:
+                        # Use EMA model for predictions if available
+                        pred_model = ema_model if ema_model is not None else model_without_ddp
+                        val_metrics_with_pred, _ = run_eval_inpainter(
+                            pred_model, device,
+                            all_val_files, "tree",
+                            batch_size=batch_size,
+                            step_size=chunksize,
+                            mask_ratio=mask_ratio,
+                            npho_branch=npho_branch,
+                            time_branch=time_branch,
+                            npho_scale=float(npho_scale),
+                            npho_scale2=float(npho_scale2),
+                            time_scale=float(time_scale),
+                            time_shift=float(time_shift),
+                            sentinel_time=float(sentinel_time),
+                            loss_fn=loss_fn,
+                            loss_beta=loss_beta,
+                            npho_weight=npho_weight,
+                            time_weight=time_weight,
+                            collect_predictions=True,
+                            prediction_writer=writer.write,
+                            track_mae_rmse=track_mae_rmse,
+                            dataloader_workers=num_workers,
+                            dataset_workers=num_threads,
+                            prefetch_factor=prefetch_factor,
+                            npho_threshold=npho_threshold,
+                            use_npho_time_weight=use_npho_time_weight,
+                            profile=False,
+                            log_invalid_npho=log_invalid_npho,
+                            amp=amp,
+                            npho_scheme=npho_scheme,
+                            npho_loss_weight_enabled=npho_loss_weight_enabled,
+                            npho_loss_weight_alpha=npho_loss_weight_alpha,
+                            sentinel_npho=sentinel_npho,
+                        )
+                    root_path = writer.filepath if writer.count > 0 else None
+                    t_root_elapsed = time.time() - t_root_start
+                    if root_path:
+                        print(f"  Saved predictions to {root_path} ({t_root_elapsed:.1f}s)")
+                        mlflow.log_artifact(root_path)
+
+            # Barrier: all ranks wait for rank 0 to finish checkpointing/ROOT saving
+            barrier()
 
     if is_main_process():
         print(f"\n[INFO] Training complete!")
