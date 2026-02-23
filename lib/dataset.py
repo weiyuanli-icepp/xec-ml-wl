@@ -402,7 +402,7 @@ def expand_path(path):
 
 
 def get_dataloader(file_path, batch_size=1024, num_workers=4, num_threads=4, prefetch_factor=2,
-                    rank=0, world_size=1, **kwargs):
+                    rank=0, world_size=1, verbose=True, **kwargs):
     """
     Helper to initialize the multi-threaded data pipeline.
 
@@ -414,6 +414,7 @@ def get_dataloader(file_path, batch_size=1024, num_workers=4, num_threads=4, pre
         prefetch_factor: Number of batches to prefetch per worker (default 2).
         rank: Current process rank for DDP file sharding (default 0).
         world_size: Total number of processes for DDP file sharding (default 1).
+        verbose: Print info about discovered files (default True).
         **kwargs: Additional arguments passed to XECStreamingDataset
                   (e.g., npho_scale, time_scale, sentinel_time, etc.)
 
@@ -426,9 +427,11 @@ def get_dataloader(file_path, batch_size=1024, num_workers=4, num_threads=4, pre
         from .distributed import shard_file_list
         total_files = len(root_files)
         root_files = shard_file_list(root_files, rank, world_size)
-        print(f"[INFO] DataLoader: Rank {rank} got {len(root_files)}/{total_files} ROOT files from '{file_path}'")
+        if verbose:
+            print(f"[INFO] DataLoader: Rank {rank} got {len(root_files)}/{total_files} ROOT files from '{file_path}'")
     else:
-        print(f"[INFO] DataLoader: Found {len(root_files)} ROOT files from '{file_path}'")
+        if verbose:
+            print(f"[INFO] DataLoader: Found {len(root_files)} ROOT files from '{file_path}'")
 
     dataset = XECStreamingDataset(
         root_files,

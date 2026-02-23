@@ -261,7 +261,9 @@ def train_with_config(config_path: str, profile: bool = None):
         print(f"  |u| < {fiducial.u_max} cm, |v| < {fiducial.v_max} cm, w >= {fiducial.w_min} cm"
               + (f", w <= {fiducial.w_max} cm" if fiducial.w_max is not None else ""))
 
-    # --- Data Loaders ---
+    # --- Data Loader factory ---
+    # Loaders are created fresh each epoch (matching MAE/inpainter) to prevent
+    # RSS growth from persistent-worker memory fragmentation over many epochs.
     norm_kwargs = {
         "npho_scale": cfg.normalization.npho_scale,
         "npho_scale2": cfg.normalization.npho_scale2,
@@ -277,39 +279,31 @@ def train_with_config(config_path: str, profile: bool = None):
         "fiducial": fiducial,
         "profile": getattr(cfg.training, "profile", False),
     }
-
-    train_loader = get_dataloader(
-        cfg.data.train_path,
+    _loader_common = dict(
         batch_size=cfg.data.batch_size,
         num_workers=cfg.data.num_workers,
         num_threads=cfg.data.num_threads,
         prefetch_factor=getattr(cfg.data, 'prefetch_factor', 2),
-        rank=rank, world_size=world_size,
-        **norm_kwargs
+        **norm_kwargs,
     )
 
-    val_loader = get_dataloader(
-        cfg.data.val_path,
-        batch_size=cfg.data.batch_size,
-        num_workers=cfg.data.num_workers,
-        num_threads=cfg.data.num_threads,
-        prefetch_factor=getattr(cfg.data, 'prefetch_factor', 2),
-        rank=rank, world_size=world_size,
-        **norm_kwargs
-    )
+    # Log file counts once at startup (loaders are recreated per epoch)
+    _train_files = expand_path(cfg.data.train_path)
+    _val_files = expand_path(cfg.data.val_path)
+    if is_main_process():
+        print(f"[INFO] DataLoader: {len(_train_files)} train ROOT files, {len(_val_files)} val ROOT files")
+        print(f"[INFO] DataLoaders will be recreated each epoch to avoid memory growth")
+    del _train_files, _val_files
 
-    # Full (unsharded) val loader for final evaluation artifacts (rank 0 only)
-    if world_size > 1:
-        val_loader_full = get_dataloader(
-            cfg.data.val_path,
-            batch_size=cfg.data.batch_size,
-            num_workers=cfg.data.num_workers,
-            num_threads=cfg.data.num_threads,
-            prefetch_factor=getattr(cfg.data, 'prefetch_factor', 2),
-            **norm_kwargs
-        )
-    else:
-        val_loader_full = val_loader
+    def _make_train_loader():
+        return get_dataloader(cfg.data.train_path, rank=rank, world_size=world_size, verbose=False, **_loader_common)
+
+    def _make_val_loader():
+        return get_dataloader(cfg.data.val_path, rank=rank, world_size=world_size, verbose=False, **_loader_common)
+
+    def _make_val_loader_full():
+        """Unsharded val loader for final evaluation artifacts (rank 0)."""
+        return get_dataloader(cfg.data.val_path, verbose=False, **_loader_common)
 
     # --- Model ---
     outer_fine_pool = tuple(cfg.model.outer_fine_pool) if cfg.model.outer_fine_pool else None
@@ -780,6 +774,10 @@ def train_with_config(config_path: str, profile: bool = None):
         for ep in range(start_epoch, cfg.training.epochs + 1):
             t0 = time.time()
 
+            # Create fresh loaders each epoch to avoid RSS growth
+            train_loader = _make_train_loader()
+            val_loader = _make_val_loader()
+
             # === TRAIN ===
             # For ReduceLROnPlateau, step after validation with val_loss, not during training
             is_plateau_scheduler = isinstance(scheduler, ReduceLROnPlateau) if scheduler else False
@@ -817,6 +815,9 @@ def train_with_config(config_path: str, profile: bool = None):
                 grad_clip=0.0,
             )
             val_metrics = reduce_metrics(val_metrics, device)
+
+            # Release loaders to free worker processes and pinned memory
+            del train_loader, val_loader
 
             sec = time.time() - t0
             current_lr = optimizer.param_groups[0]['lr']
@@ -996,7 +997,8 @@ def train_with_config(config_path: str, profile: bool = None):
             # Run final validation with best model (use full val data, not sharded)
             final_model.eval()
             _, angle_pred, angle_true, extra_info, _ = run_epoch_stream(
-                final_model, optimizer, device, val_loader_full,
+                final_model, optimizer, device,
+                _make_val_loader_full() if world_size > 1 else _make_val_loader(),
                 scaler=None,
                 train=False,
                 amp=False,
