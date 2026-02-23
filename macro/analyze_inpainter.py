@@ -44,6 +44,7 @@ from lib.geom_defs import (
     DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT,
     DEFAULT_SENTINEL_TIME
 )
+from lib.normalization import NphoTransform
 
 FACE_NAMES = ['inner', 'us', 'ds', 'outer', 'top', 'bot']
 FACE_INT_TO_NAME = {0: 'inner', 1: 'us', 2: 'ds', 3: 'outer', 4: 'top', 5: 'bot'}
@@ -63,6 +64,7 @@ def load_metadata(input_path: str) -> Dict:
         'npho_scale2': DEFAULT_NPHO_SCALE2,
         'time_scale': DEFAULT_TIME_SCALE,
         'time_shift': DEFAULT_TIME_SHIFT,
+        'npho_scheme': 'log1p',  # Default for legacy files
     }
 
     with uproot.open(input_path) as f:
@@ -76,6 +78,13 @@ def load_metadata(input_path: str) -> Dict:
                 if isinstance(pc_val, bytes):
                     pc_val = pc_val.decode()
                 metadata['predict_channels'] = pc_val.split(',')
+
+            # Read npho_scheme
+            if 'npho_scheme' in meta_keys:
+                scheme_val = meta_tree['npho_scheme'].array(library='np')[0]
+                if isinstance(scheme_val, bytes):
+                    scheme_val = scheme_val.decode()
+                metadata['npho_scheme'] = scheme_val
 
             # Read normalization params
             for key in ['npho_scale', 'npho_scale2', 'time_scale', 'time_shift']:
@@ -145,14 +154,88 @@ def load_predictions(input_path: str) -> Tuple[Dict[str, np.ndarray], Dict]:
     return data, metadata
 
 
-def denormalize_npho(npho_norm: np.ndarray, npho_scale: float, npho_scale2: float) -> np.ndarray:
+def denormalize_npho(npho_norm: np.ndarray, npho_scale: float, npho_scale2: float,
+                     npho_scheme: str = 'log1p') -> np.ndarray:
     """Convert normalized npho back to raw scale."""
-    return npho_scale * (np.exp(npho_norm * npho_scale2) - 1.0)
+    transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+    return transform.inverse(npho_norm)
+
+
+def normalize_npho(npho_raw: np.ndarray, npho_scale: float, npho_scale2: float,
+                   npho_scheme: str = 'log1p') -> np.ndarray:
+    """Convert raw npho to normalized scale."""
+    transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+    return transform.forward(npho_raw)
 
 
 def denormalize_time(time_norm: np.ndarray, time_scale: float, time_shift: float) -> np.ndarray:
     """Convert normalized time back to raw scale (seconds)."""
     return (time_norm + time_shift) * time_scale
+
+
+def load_local_fit_predictions(lf_path: str, npho_scale: float, npho_scale2: float,
+                               npho_scheme: str = 'log1p') -> Dict[Tuple[int, int, int], Tuple[float, float]]:
+    """Load LocalFitBaseline predictions and convert to normalized space.
+
+    Returns dict mapping (run_number, event_number, sensor_id) to (pred_norm, truth_norm).
+    """
+    print(f"[INFO] Loading LocalFitBaseline predictions from {lf_path}")
+
+    with uproot.open(lf_path) as f:
+        tree = f['predictions']
+        lf_data = {key: tree[key].array(library='np') for key in tree.keys()}
+
+    n_lf = len(lf_data['run_number'])
+    print(f"[INFO] Loaded {n_lf:,} LocalFitBaseline predictions")
+
+    # Convert raw npho to normalized space
+    truth_raw = lf_data['truth_npho'].astype(np.float64)
+    pred_raw = lf_data['pred_npho'].astype(np.float64)
+
+    # Clamp negative values to 0 before normalization (sqrt/log1p need non-negative)
+    truth_raw = np.maximum(truth_raw, 0.0)
+    pred_raw = np.maximum(pred_raw, 0.0)
+
+    truth_norm = normalize_npho(truth_raw, npho_scale, npho_scale2, npho_scheme)
+    pred_norm = normalize_npho(pred_raw, npho_scale, npho_scale2, npho_scheme)
+
+    # Build lookup dict
+    lf_dict = {}
+    run_numbers = lf_data['run_number']
+    event_numbers = lf_data['event_number']
+    sensor_ids = lf_data['sensor_id']
+
+    for i in range(n_lf):
+        key = (int(run_numbers[i]), int(event_numbers[i]), int(sensor_ids[i]))
+        lf_dict[key] = (float(pred_norm[i]), float(truth_norm[i]))
+
+    return lf_dict
+
+
+def merge_local_fit_into_data(data: Dict[str, np.ndarray],
+                               lf_dict: Dict[Tuple[int, int, int], Tuple[float, float]]):
+    """Merge LocalFitBaseline predictions into ML data arrays.
+
+    Adds 'baseline_lf_npho' and 'baseline_lf_error_npho' to data dict.
+    """
+    n = len(data['event_idx'])
+    lf_npho = np.full(n, np.nan, dtype=np.float32)
+    lf_error = np.full(n, np.nan, dtype=np.float32)
+
+    matched = 0
+    for i in range(n):
+        key = (int(data['run_number'][i]), int(data['event_number'][i]), int(data['sensor_id'][i]))
+        if key in lf_dict:
+            pred_norm, truth_norm = lf_dict[key]
+            lf_npho[i] = pred_norm
+            lf_error[i] = pred_norm - data['truth_npho'][i]  # Use ML truth for consistent comparison
+            matched += 1
+
+    data['baseline_lf_npho'] = lf_npho
+    data['baseline_lf_error_npho'] = lf_error
+
+    print(f"[INFO] LocalFitBaseline matched {matched:,} / {len(lf_dict):,} LF predictions "
+          f"/ {n:,} ML predictions")
 
 
 def compute_detailed_metrics(data: Dict[str, np.ndarray], sentinel_time: float = DEFAULT_SENTINEL_TIME,
@@ -303,13 +386,16 @@ def compute_baseline_metrics(data: Dict[str, np.ndarray],
 
     baseline_metrics = {}
 
-    for prefix, label in [('baseline_avg', 'avg'), ('baseline_sa', 'sa')]:
+    for prefix, label in [('baseline_avg', 'avg'), ('baseline_sa', 'sa'), ('baseline_lf', 'lf')]:
         error_key = f'{prefix}_error_npho'
         pred_key = f'{prefix}_npho'
         if error_key not in data:
             continue
 
-        err = data[error_key][eval_mask]
+        err_raw = data[error_key][eval_mask]
+        # Filter NaN (LocalFitBaseline has NaN for unmatched entries)
+        valid_bl = ~np.isnan(err_raw)
+        err = err_raw[valid_bl]
         if len(err) == 0:
             continue
 
@@ -329,7 +415,11 @@ def compute_baseline_metrics(data: Dict[str, np.ndarray],
             face_mask = eval_mask & (data['face'] == face_int)
             if face_mask.sum() == 0:
                 continue
-            face_err = data[error_key][face_mask]
+            face_err_raw = data[error_key][face_mask]
+            face_valid = ~np.isnan(face_err_raw)
+            face_err = face_err_raw[face_valid]
+            if len(face_err) == 0:
+                continue
             per_face[face_name] = {
                 'n': len(face_err),
                 'npho_mae': np.mean(np.abs(face_err)),
@@ -367,13 +457,17 @@ def plot_baseline_comparison(data: Dict[str, np.ndarray], output_dir: str,
     ax.hist(err_ml, bins=100, range=(-0.3, 0.4), density=True, alpha=0.5,
             color='blue', label=f'ML (MAE={np.mean(np.abs(err_ml)):.4f})')
 
-    colors = {'avg': 'orange', 'sa': 'green'}
-    labels = {'avg': 'Neighbor Avg', 'sa': 'Solid Angle'}
-    for bname in ['avg', 'sa']:
+    colors = {'avg': 'orange', 'sa': 'green', 'lf': 'red'}
+    labels = {'avg': 'Neighbor Avg', 'sa': 'Solid Angle', 'lf': 'Local Fit'}
+    for bname in ['avg', 'sa', 'lf']:
         error_key = f'baseline_{bname}_error_npho'
         if error_key not in data:
             continue
         err_b = data[error_key][valid]
+        # Filter NaN (LocalFitBaseline has NaN for unmatched entries)
+        err_b = err_b[~np.isnan(err_b)]
+        if len(err_b) == 0:
+            continue
         ax.hist(err_b, bins=100, range=(-0.3, 0.4), density=True, alpha=0.4,
                 color=colors.get(bname, 'gray'),
                 label=f'{labels.get(bname, bname)} (MAE={np.mean(np.abs(err_b)):.4f})')
@@ -444,7 +538,8 @@ def plot_residual_distributions(data: Dict[str, np.ndarray], output_dir: str,
                                  has_mask_type: bool,
                                  npho_scale: float, npho_scale2: float,
                                  time_scale: float, time_shift: float,
-                                 sentinel_time: float, predict_time: bool = True):
+                                 sentinel_time: float, predict_time: bool = True,
+                                 npho_scheme: str = 'log1p'):
     """Plot residual distributions (normalized and denormalized)."""
     if not HAS_MATPLOTLIB:
         return
@@ -499,8 +594,8 @@ def plot_residual_distributions(data: Dict[str, np.ndarray], output_dir: str,
     pred_npho_norm = data['pred_npho'][valid]
 
     # Denormalize npho
-    truth_npho_raw = denormalize_npho(truth_npho_norm, npho_scale, npho_scale2)
-    pred_npho_raw = denormalize_npho(pred_npho_norm, npho_scale, npho_scale2)
+    truth_npho_raw = denormalize_npho(truth_npho_norm, npho_scale, npho_scale2, npho_scheme)
+    pred_npho_raw = denormalize_npho(pred_npho_norm, npho_scale, npho_scale2, npho_scheme)
     err_npho_raw = pred_npho_raw - truth_npho_raw
 
     fig, axes = plt.subplots(1, n_cols, figsize=(6 * n_cols, 5))
@@ -548,7 +643,8 @@ def plot_per_face_residuals(data: Dict[str, np.ndarray], output_dir: str,
                              has_mask_type: bool,
                              npho_scale: float, npho_scale2: float,
                              time_scale: float, time_shift: float,
-                             predict_time: bool = True):
+                             predict_time: bool = True,
+                             npho_scheme: str = 'log1p'):
     """Plot per-face residual distributions (normalized and denormalized)."""
     if not HAS_MATPLOTLIB:
         return
@@ -622,8 +718,8 @@ def plot_per_face_residuals(data: Dict[str, np.ndarray], output_dir: str,
             ax.text(0.5, 0.5, f'{face_name}\nNo data', ha='center', va='center')
             continue
 
-        truth_npho_raw = denormalize_npho(data['truth_npho'][face_mask], npho_scale, npho_scale2)
-        pred_npho_raw = denormalize_npho(data['pred_npho'][face_mask], npho_scale, npho_scale2)
+        truth_npho_raw = denormalize_npho(data['truth_npho'][face_mask], npho_scale, npho_scale2, npho_scheme)
+        pred_npho_raw = denormalize_npho(data['pred_npho'][face_mask], npho_scale, npho_scale2, npho_scheme)
         err_npho_raw = pred_npho_raw - truth_npho_raw
 
         npho_low, npho_high = np.percentile(err_npho_raw, [2, 98])
@@ -674,7 +770,8 @@ def plot_scatter_truth_vs_pred(data: Dict[str, np.ndarray], output_dir: str,
                                 has_mask_type: bool,
                                 npho_scale: float, npho_scale2: float,
                                 time_scale: float, time_shift: float,
-                                predict_time: bool = True):
+                                predict_time: bool = True,
+                                npho_scheme: str = 'log1p'):
     """Plot scatter of truth vs prediction with log-scale density."""
     if not HAS_MATPLOTLIB:
         return
@@ -735,8 +832,8 @@ def plot_scatter_truth_vs_pred(data: Dict[str, np.ndarray], output_dir: str,
     plt.close()
 
     # === Denormalized scatter ===
-    truth_npho_raw = denormalize_npho(truth_npho, npho_scale, npho_scale2)
-    pred_npho_raw = denormalize_npho(pred_npho, npho_scale, npho_scale2)
+    truth_npho_raw = denormalize_npho(truth_npho, npho_scale, npho_scale2, npho_scheme)
+    pred_npho_raw = denormalize_npho(pred_npho, npho_scale, npho_scale2, npho_scheme)
 
     fig, axes = plt.subplots(1, n_cols, figsize=(7 * n_cols, 5))
     if n_cols == 1:
@@ -844,7 +941,8 @@ def _compute_slice_metrics(truth: np.ndarray, error: np.ndarray,
 def plot_resolution_vs_signal(data: Dict[str, np.ndarray], output_dir: str,
                                has_mask_type: bool,
                                npho_scale: float, npho_scale2: float,
-                               n_bins: int = 30, predict_time: bool = True):
+                               n_bins: int = 30, predict_time: bool = True,
+                               npho_scheme: str = 'log1p'):
     """Plot error statistics (MAE, bias, 68%) as a function of truth npho (slice plot).
 
     Binning strategy:
@@ -900,8 +998,8 @@ def plot_resolution_vs_signal(data: Dict[str, np.ndarray], output_dir: str,
     plt.close()
 
     # --- Denormalized space: relative resolution, truth >= 100 photons ---
-    truth_raw = denormalize_npho(truth_npho, npho_scale, npho_scale2)
-    pred_raw = denormalize_npho(data['pred_npho'][valid], npho_scale, npho_scale2)
+    truth_raw = denormalize_npho(truth_npho, npho_scale, npho_scale2, npho_scheme)
+    pred_raw = denormalize_npho(data['pred_npho'][valid], npho_scale, npho_scale2, npho_scheme)
     error_raw = pred_raw - truth_raw
 
     # Cut: only sensors with truth >= 100 photons
@@ -1173,7 +1271,7 @@ def print_report(metrics: Dict, predict_time: bool = True,
 
     # Baseline comparison
     if baseline_metrics and 'global' in metrics:
-        baseline_name_map = {'avg': 'Neighbor Avg', 'sa': 'Solid Angle'}
+        baseline_name_map = {'avg': 'Neighbor Avg', 'sa': 'Solid Angle', 'lf': 'Local Fit (inner)'}
         print(f"\n--- ML vs Baselines (npho, normalized) ---")
         print(f"{'Method':<20} {'MAE':>8} {'RMSE':>8} {'Bias':>8} {'68%':>8} {'95%':>8}")
         print("-" * 58)
@@ -1232,6 +1330,8 @@ def main():
                         help=f"Time shift for denormalization (default: {DEFAULT_TIME_SHIFT})")
     parser.add_argument("--sentinel", type=float, default=DEFAULT_SENTINEL_TIME,
                         help=f"Sentinel value for invalid sensors (default: {DEFAULT_SENTINEL_TIME})")
+    parser.add_argument("--local-fit", type=str, default=None,
+                        help="Path to LocalFitBaseline ROOT output file for comparison")
 
     args = parser.parse_args()
 
@@ -1252,6 +1352,13 @@ def main():
     npho_scale2 = metadata.get('npho_scale2', args.npho_scale2)
     time_scale = metadata.get('time_scale', args.time_scale)
     time_shift = metadata.get('time_shift', args.time_shift)
+    npho_scheme = metadata.get('npho_scheme', 'log1p')
+    print(f"[INFO] Npho scheme: {npho_scheme}")
+
+    # Load and merge LocalFitBaseline if provided
+    if args.local_fit:
+        lf_dict = load_local_fit_predictions(args.local_fit, npho_scale, npho_scale2, npho_scheme)
+        merge_local_fit_into_data(data, lf_dict)
 
     # Compute metrics
     print("[INFO] Computing metrics...")
@@ -1271,7 +1378,7 @@ def main():
     # Save baseline metrics CSV if available
     if baseline_metrics:
         import csv
-        baseline_name_map = {'avg': 'neighbor_avg', 'sa': 'solid_angle'}
+        baseline_name_map = {'avg': 'neighbor_avg', 'sa': 'solid_angle', 'lf': 'local_fit'}
         with open(os.path.join(args.output, 'baseline_metrics.csv'), 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(['method', 'scope', 'metric', 'value'])
@@ -1290,15 +1397,19 @@ def main():
         plot_residual_distributions(data, args.output, has_mask_type,
                                      npho_scale, npho_scale2,
                                      time_scale, time_shift,
-                                     args.sentinel, predict_time=predict_time)
+                                     args.sentinel, predict_time=predict_time,
+                                     npho_scheme=npho_scheme)
         plot_per_face_residuals(data, args.output, has_mask_type,
                                  npho_scale, npho_scale2,
-                                 time_scale, time_shift, predict_time=predict_time)
+                                 time_scale, time_shift, predict_time=predict_time,
+                                 npho_scheme=npho_scheme)
         plot_scatter_truth_vs_pred(data, args.output, has_mask_type,
                                     npho_scale, npho_scale2,
-                                    time_scale, time_shift, predict_time=predict_time)
+                                    time_scale, time_shift, predict_time=predict_time,
+                                    npho_scheme=npho_scheme)
         plot_resolution_vs_signal(data, args.output, has_mask_type,
-                                   npho_scale, npho_scale2, predict_time=predict_time)
+                                   npho_scale, npho_scale2, predict_time=predict_time,
+                                   npho_scheme=npho_scheme)
         plot_metrics_summary(metrics, args.output, args.sentinel, predict_time=predict_time)
         if baseline_metrics:
             plot_baseline_comparison(data, args.output, has_mask_type,
