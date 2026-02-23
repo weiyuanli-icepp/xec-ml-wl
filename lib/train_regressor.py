@@ -50,7 +50,7 @@ from .plotting import (
 from .event_display import save_worst_case_events
 from .distributed import (
     setup_ddp, cleanup_ddp, is_main_process,
-    reduce_metrics, wrap_ddp,
+    reduce_metrics, wrap_ddp, barrier,
 )
 
 # ------------------------------------------------------------
@@ -831,60 +831,112 @@ def train_with_config(config_path: str, profile: bool = None):
             if is_main_process():
                 print(f"[{ep:03d}] tr_loss {tr_loss:.2e} val_loss {val_loss:.2e} lr {current_lr:.2e} time {sec:.1f}s")
 
-            # --- Logging (rank 0 only) ---
-            if not is_main_process():
-                continue
+            # --- Logging & checkpointing (rank 0 only) ---
+            if is_main_process():
+                log_system_metrics_to_mlflow(
+                    step=ep,
+                    device=device,
+                    epoch_time_sec=sec,
+                    lr=current_lr,
+                )
 
-            log_system_metrics_to_mlflow(
-                step=ep,
-                device=device,
-                epoch_time_sec=sec,
-                lr=current_lr,
-            )
+                log_dict = {
+                    "train/loss": tr_loss,
+                    "val/loss": val_loss,
+                }
 
-            log_dict = {
-                "train/loss": tr_loss,
-                "val/loss": val_loss,
-            }
+                # Add gradient norm from training metrics
+                if "system/grad_norm_max" in tr_metrics:
+                    log_dict["train/grad_norm_max"] = tr_metrics["system/grad_norm_max"]
 
-            # Add gradient norm from training metrics
-            if "system/grad_norm_max" in tr_metrics:
-                log_dict["train/grad_norm_max"] = tr_metrics["system/grad_norm_max"]
+                for metric_key in ["smooth_l1", "l1", "mse"]:
+                    if metric_key in val_metrics:
+                        log_dict[f"val/{metric_key}"] = val_metrics[metric_key]
+                # Only log cosine loss if angle task is active
+                if "angle" in active_tasks and "cos" in val_metrics:
+                    log_dict["val/cos"] = val_metrics["cos"]
+                # Log position cosine loss if position task is active
+                if "uvwFI" in active_tasks and "cos_pos" in val_metrics:
+                    log_dict["val/cos_pos"] = val_metrics["cos_pos"]
 
-            for metric_key in ["smooth_l1", "l1", "mse"]:
-                if metric_key in val_metrics:
-                    log_dict[f"val/{metric_key}"] = val_metrics[metric_key]
-            # Only log cosine loss if angle task is active
-            if "angle" in active_tasks and "cos" in val_metrics:
-                log_dict["val/cos"] = val_metrics["cos"]
-            # Log position cosine loss if position task is active
-            if "uvwFI" in active_tasks and "cos_pos" in val_metrics:
-                log_dict["val/cos_pos"] = val_metrics["cos_pos"]
+                if val_stats:
+                    log_dict.update(val_stats)
 
-            if val_stats:
-                log_dict.update(val_stats)
+                mlflow.log_metrics(log_dict, step=ep)
 
-            mlflow.log_metrics(log_dict, step=ep)
+                if loss_scaler is not None:
+                    for task, log_var in loss_scaler.log_vars.items():
+                        weight = (0.5 * torch.exp(-log_var)).item()
+                        mlflow.log_metrics({
+                            f"task/{task}_log_var": log_var.item(),
+                            f"task/{task}_weight": weight,
+                        }, step=ep)
 
-            if loss_scaler is not None:
-                for task, log_var in loss_scaler.log_vars.items():
-                    weight = (0.5 * torch.exp(-log_var)).item()
-                    mlflow.log_metrics({
-                        f"task/{task}_log_var": log_var.item(),
-                        f"task/{task}_weight": weight,
-                    }, step=ep)
+                # --- Checkpointing ---
+                # Get validation data for artifact saving
+                root_data = extra_info.get("root_data", {}) if extra_info else {}
 
-            # --- Checkpointing ---
-            # Get validation data for artifact saving
-            root_data = extra_info.get("root_data", {}) if extra_info else {}
+                if val_loss < best_val:
+                    best_val = val_loss
+                    best_state = {k: v.detach().clone().cpu() for k, v in model_without_ddp.state_dict().items()}
+                    # Save best EMA state for final evaluation
+                    if ema_model is not None:
+                        best_ema_state = {k: v.detach().clone().cpu() for k, v in ema_model.state_dict().items()}
 
-            if val_loss < best_val:
-                best_val = val_loss
-                best_state = {k: v.detach().clone().cpu() for k, v in model_without_ddp.state_dict().items()}
-                # Save best EMA state for final evaluation
-                if ema_model is not None:
-                    best_ema_state = {k: v.detach().clone().cpu() for k, v in ema_model.state_dict().items()}
+                    checkpoint_data = {
+                        "epoch": ep,
+                        "model_state_dict": model_without_ddp.state_dict(),
+                        "ema_state_dict": ema_model.state_dict() if ema_model else None,
+                        "best_ema_state": best_ema_state,
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "scaler_state_dict": scaler.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
+                        "best_val_loss": best_val,
+                        "mlflow_run_id": mlflow_run_id,
+                        "config": {
+                            "outer_mode": cfg.model.outer_mode,
+                            "outer_fine_pool": list(outer_fine_pool) if outer_fine_pool else None,
+                            "npho_scale": float(cfg.normalization.npho_scale),
+                            "npho_scale2": float(cfg.normalization.npho_scale2),
+                            "time_scale": float(cfg.normalization.time_scale),
+                            "time_shift": float(cfg.normalization.time_shift),
+                            "sentinel_time": float(cfg.normalization.sentinel_time),
+                            "sentinel_npho": float(cfg.normalization.sentinel_npho),
+                            "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
+                            "encoder_dim": cfg.model.encoder_dim,
+                            "dim_feedforward": cfg.model.dim_feedforward,
+                            "num_fusion_layers": cfg.model.num_fusion_layers,
+                            "hidden_dim": cfg.model.hidden_dim,
+                            "drop_path_rate": cfg.model.drop_path_rate,
+                            "active_tasks": active_tasks,
+                            "npho_branch": cfg.data.npho_branch,
+                            "time_branch": cfg.data.time_branch,
+                        },
+                    }
+                    torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_best.pth"))
+                    print(f"   [info] New best val_loss: {best_val:.2e}")
 
+                # Loss spike detection: warn if val_loss suddenly increases significantly
+                elif val_loss > best_val * 5.0:
+                    print(f"   [WARN] Loss spike detected! val_loss ({val_loss:.2e}) > 5x best ({best_val:.2e})")
+                    print(f"   [WARN] Consider: (1) reducing lr, (2) reducing grad_clip, (3) resuming from checkpoint_best.pth")
+
+                    # Save validation artifacts (plots and CSVs) for best checkpoint
+                    # Note: worst_events are only saved at end of training to reduce time
+                    if getattr(cfg.checkpoint, 'save_artifacts', True):
+                        save_validation_artifacts(
+                            model=val_model,
+                            angle_pred=pred_val,
+                            angle_true=true_val,
+                            root_data=root_data,
+                            active_tasks=active_tasks,
+                            artifact_dir=artifact_dir,
+                            run_name=run_name,
+                            epoch=ep,
+                            worst_events=None,  # Skip during training, only save at end
+                        )
+
+                # Save last checkpoint
                 checkpoint_data = {
                     "epoch": ep,
                     "model_state_dict": model_without_ddp.state_dict(),
@@ -915,68 +967,17 @@ def train_with_config(config_path: str, profile: bool = None):
                         "time_branch": cfg.data.time_branch,
                     },
                 }
-                torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_best.pth"))
-                print(f"   [info] New best val_loss: {best_val:.2e}")
+                torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_last.pth"))
 
-            # Loss spike detection: warn if val_loss suddenly increases significantly
-            elif val_loss > best_val * 5.0:
-                print(f"   [WARN] Loss spike detected! val_loss ({val_loss:.2e}) > 5x best ({best_val:.2e})")
-                print(f"   [WARN] Consider: (1) reducing lr, (2) reducing grad_clip, (3) resuming from checkpoint_best.pth")
+                # Periodic checkpoint (save_interval)
+                save_interval = cfg.checkpoint.save_interval
+                if save_interval and ep % save_interval == 0:
+                    interval_path = os.path.join(artifact_dir, f"checkpoint_epoch_{ep}.pth")
+                    torch.save(checkpoint_data, interval_path)
+                    print(f"   [info] Saved periodic checkpoint to {interval_path}")
 
-                # Save validation artifacts (plots and CSVs) for best checkpoint
-                # Note: worst_events are only saved at end of training to reduce time
-                if getattr(cfg.checkpoint, 'save_artifacts', True):
-                    save_validation_artifacts(
-                        model=val_model,
-                        angle_pred=pred_val,
-                        angle_true=true_val,
-                        root_data=root_data,
-                        active_tasks=active_tasks,
-                        artifact_dir=artifact_dir,
-                        run_name=run_name,
-                        epoch=ep,
-                        worst_events=None,  # Skip during training, only save at end
-                    )
-
-            # Save last checkpoint
-            checkpoint_data = {
-                "epoch": ep,
-                "model_state_dict": model_without_ddp.state_dict(),
-                "ema_state_dict": ema_model.state_dict() if ema_model else None,
-                "best_ema_state": best_ema_state,
-                "optimizer_state_dict": optimizer.state_dict(),
-                "scaler_state_dict": scaler.state_dict(),
-                "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
-                "best_val_loss": best_val,
-                "mlflow_run_id": mlflow_run_id,
-                "config": {
-                    "outer_mode": cfg.model.outer_mode,
-                    "outer_fine_pool": list(outer_fine_pool) if outer_fine_pool else None,
-                    "npho_scale": float(cfg.normalization.npho_scale),
-                    "npho_scale2": float(cfg.normalization.npho_scale2),
-                    "time_scale": float(cfg.normalization.time_scale),
-                    "time_shift": float(cfg.normalization.time_shift),
-                    "sentinel_time": float(cfg.normalization.sentinel_time),
-                    "sentinel_npho": float(cfg.normalization.sentinel_npho),
-                    "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
-                    "encoder_dim": cfg.model.encoder_dim,
-                    "dim_feedforward": cfg.model.dim_feedforward,
-                    "num_fusion_layers": cfg.model.num_fusion_layers,
-                    "hidden_dim": cfg.model.hidden_dim,
-                    "drop_path_rate": cfg.model.drop_path_rate,
-                    "active_tasks": active_tasks,
-                    "npho_branch": cfg.data.npho_branch,
-                    "time_branch": cfg.data.time_branch,
-                },
-            }
-            torch.save(checkpoint_data, os.path.join(artifact_dir, "checkpoint_last.pth"))
-
-            # Periodic checkpoint (save_interval)
-            save_interval = cfg.checkpoint.save_interval
-            if save_interval and ep % save_interval == 0:
-                interval_path = os.path.join(artifact_dir, f"checkpoint_epoch_{ep}.pth")
-                torch.save(checkpoint_data, interval_path)
-                print(f"   [info] Saved periodic checkpoint to {interval_path}")
+            # Barrier: all ranks wait for rank 0 to finish logging/checkpointing
+            barrier()
 
         # --- Final Evaluation & Artifacts (rank 0 only) ---
         if is_main_process():
