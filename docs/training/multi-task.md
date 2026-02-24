@@ -119,16 +119,14 @@ Task-specific metrics are logged to MLflow during validation.
 
 | Metric | MLflow Key | Description |
 |--------|------------|-------------|
-| Cosine Loss | `val_cos` | `1 - cos_sim` where cos_sim is dot product of predicted and true emission direction unit vectors. Range: 0 (perfect) to 2 (opposite). |
+| Cosine Loss | `val/cos` | `1 - cos_sim` where cos_sim is dot product of predicted and true emission direction unit vectors. Range: 0 (perfect) to 2 (opposite). |
 | Opening Angle | `angle_resolution_68pct` | 68th percentile of opening angle between pred/true directions (degrees). |
-| Theta Bias | `theta_bias` | Mean of θ residuals. |
-| Theta RMS | `theta_rms` | Standard deviation of θ residuals. |
 
 ## Position Task Metrics
 
 | Metric | MLflow Key | Description |
 |--------|------------|-------------|
-| Cosine Loss | `val_cos_pos` | `1 - cos_sim` for position vectors. Measures if pred/true positions point in same direction from origin. |
+| Cosine Loss | `val/cos_pos` | `1 - cos_sim` for position vectors. Measures if pred/true positions point in same direction from origin. |
 | Distance 68% | `uvw_dist_68pct` | 68th percentile of Euclidean distance between pred/true positions. |
 | U/V/W Resolution | `uvw_{u,v,w}_res_68pct` | 68th percentile of absolute residual for each axis. |
 

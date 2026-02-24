@@ -91,7 +91,7 @@ $$\mathcal{L} = \sum_{\text{face}} \left( w_{\text{npho}} \cdot \mathcal{L}_{\te
 Where for each face:
 $$\mathcal{L}_{\text{channel}}^{\text{face}} = \frac{1}{|\text{mask}|} \sum_{i \in \text{mask}} \ell(y_i^{\text{pred}}, y_i^{\text{true}})$$
 
-Supported loss functions: `mse`, `l1`, `smooth_l1`
+Supported loss functions: `mse`, `l1`, `smooth_l1`, `huber`
 
 **Optional: Homoscedastic Channel Weighting**
 
@@ -204,7 +204,7 @@ Key parameters in `config/mae/mae_config.yaml`:
 | `training.time.weight` | 1.0 | Weight for time channel loss |
 | `training.time.mask_ratio_scale` | 1.0 | Bias masking toward valid-time sensors (>1.0 prefers valid-time) |
 | `training.time.use_npho_weight` | true | Weight time loss by sqrt(npho) |
-| `training.time.npho_threshold` | 100 | Min npho for time loss (skip low-signal sensors) |
+| `training.time.npho_threshold` | null | Min npho for time loss (null = use DEFAULT_NPHO_THRESHOLD=100 from geom_defs) |
 | `training.auto_channel_weight` | false | Learn channel weights automatically |
 | `training.track_mae_rmse` | false | Compute MAE/RMSE metrics (slower) |
 | `training.track_metrics` | false | Per-face training metrics |
@@ -254,10 +254,10 @@ These parameters are shared between MAE and Inpainter training. All time-related
 |-----------|-------------|-------------|-------------------|-------------|
 | `mask_ratio` | `model.mask_ratio` | 0.6 | 0.05 | Fraction of valid sensors to mask |
 | `time.mask_ratio_scale` | `training.time.mask_ratio_scale` | 1.0 | 1.0 | Bias masking toward valid-time sensors |
-| `time.npho_threshold` | `training.time.npho_threshold` | 100 | 100 | Min npho for time loss computation |
+| `time.npho_threshold` | `training.time.npho_threshold` | null | null | Min npho for time loss (null = DEFAULT_NPHO_THRESHOLD=100) |
 | `time.use_npho_weight` | `training.time.use_npho_weight` | true | true | Chi-square-like time weighting |
 | `track_mae_rmse` | `training.track_mae_rmse` | false | false | Compute MAE/RMSE metrics (slower) |
 | `track_metrics` | `training.track_metrics` | false | false | Per-face training metrics |
-| `freeze_encoder` | `model.freeze_encoder` | - | false | Freeze encoder during inpainter training |
+| `freeze_encoder` | `model.freeze_encoder` | - | true (code) / false (YAML) | Freeze encoder during inpainter training |
 
 **Note:** Legacy flat config keys (`time_mask_ratio_scale`, `npho_threshold`, `use_npho_time_weight`) are auto-migrated to the nested `training.time:` structure but are deprecated. Use the nested paths above.

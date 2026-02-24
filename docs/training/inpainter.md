@@ -375,7 +375,7 @@ model:
 
 - **Checkpoints**: `artifacts/inpainter/checkpoint_best.pth`, `checkpoint_last.pth`
 - **ROOT Predictions**: `inpainter_predictions_epoch_*.root` (every 10 epochs)
-  - Branches: `event_idx`, `sensor_id`, `face`, `truth_npho`, `truth_time`, `pred_npho`, `pred_time`, `error_npho`, `error_time`
+  - Branches: `event_idx`, `run_number`, `event_number`, `sensor_id`, `face`, `truth_npho`, `truth_time`, `pred_npho`, `pred_time`, `error_npho`, `error_time`
 
 ## 7. Analysis
 

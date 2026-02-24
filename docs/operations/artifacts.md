@@ -12,7 +12,7 @@ Output directory: `artifacts/<RUN_NAME>/`
 
 | File | Description | Contents |
 |------|-------------|----------|
-| `checkpoint_best.pth` | Best model (lowest validation loss) | model_state_dict, ema_state_dict, optimizer_state_dict, scheduler_state_dict, best_val, mlflow_run_id |
+| `checkpoint_best.pth` | Best model (lowest validation loss) | epoch, model_state_dict, ema_state_dict, best_ema_state, optimizer_state_dict, scheduler_state_dict, scaler_state_dict, best_val, mlflow_run_id, config |
 | `checkpoint_last.pth` | Latest checkpoint (after each epoch) | Same as above |
 
 ### Task-Specific CSV Predictions
@@ -55,9 +55,9 @@ Only generated for enabled tasks. Scatter plots are included within resolution p
 | File | Description |
 |------|-------------|
 | `face_weights_{run_name}.pdf` | Model feature importance across detector faces |
-| `worst_events/worst_01_{run_name}.pdf` | Top-10 worst predictions with detector visualization |
+| `worst_events/worst_01_{run_name}.pdf` | Top-5 worst predictions with detector visualization |
 | `worst_events/worst_02_{run_name}.pdf` | (comprehensive 2-panel npho + timing display) |
-| ... up to `worst_10_{run_name}.pdf` | |
+| ... up to `worst_05_{run_name}.pdf` | (engine tracks top-10 internally, saves top-5) |
 
 **Worst Case Event Display Details:**
 - Title shows: Run/Event ID, loss (×1000 scale), truth energy (MeV), first interaction point (u,v,w in cm)
@@ -361,21 +361,16 @@ These metrics monitor the health of the training infrastructure.
 
 | Metric | Key in MLflow | Interpretation |
 | ------ | ------------- | -------------- |
-| Allocated Memory | `system/memory_allocated_GB` | Actual tensor size on GPU. Steady growth indicates memory leak. |
-| Reserved Memory | `system/memory_reserved_GB` | Total memory PyTorch requested from OS. OOM if hits limit. |
-| Peak Memory | `system/memory_peak_GB` | Highest memory usage (usually during backward). Use to tune batch_size. |
-| GPU Utilization | `system/gpu_utilization_pct` | Ratio of Allocated to Total VRAM. Low (<50%) = increase batch size. |
-| Fragmentation | `system/memory_fragmentation` | Empty space within reserved blocks. High (>0.5) = inefficient. |
-| RAM Usage | `system/ram_used_gb` | System RAM used. High = reduce chunksize. |
-| Throughput | `system/epoch_duration_sec` | Wall-clock time per epoch. |
+| Allocated Memory | `perf/vram_allocated_GB` | GPU memory currently allocated by this process. Steady growth indicates memory leak. |
+| Peak Memory | `perf/vram_peak_GB` | Peak GPU memory allocated (usually during backward). Use to tune batch_size. |
+| RAM Usage | `perf/process_rss_GB` | Process resident memory. High = reduce chunksize or num_workers. |
+| Epoch Time | `perf/epoch_time_sec` | Wall-clock time per epoch. |
 
 ### 4. System Performance Metrics
 
 | Metric | Key in MLflow | Description |
 | ------ | ------------- | ----------- |
-| Throughput | `system/throughput_events_per_sec` | Events processed per second. |
-| Data Load Time | `system/avg_data_load_sec` | Time GPU waits for CPU. If high, increase chunksize. |
-| Compute Efficiency | `system/compute_efficiency` | % of time GPU is computing. |
+| Throughput | `perf/throughput_events_per_sec` | Events processed per second. |
 
 ---
 

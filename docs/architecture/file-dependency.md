@@ -55,7 +55,6 @@ graph TD
         %% Utilities
         Utils(utils.py):::lib
         Reweight(reweighting.py):::lib
-        ReweightLegacy(angle_reweighting.py):::lib
         Metrics(metrics.py):::lib
 
         %% Visualization
@@ -102,7 +101,6 @@ graph TD
     TrainScript -->|Load Data| Dataset
     TrainScript -->|DDP| Distributed
     TrainScript -->|Calc Weights| Reweight
-    TrainScript -.->|Legacy| ReweightLegacy
     TrainScript -->|Saliency/RAM| Utils
     TrainScript -->|End Plots| Plotting
     TrainScript -->|Worst Events| EventDisp

@@ -77,14 +77,12 @@ For GH nodes, use the following settings to maximize throughput:
 
 ## Interactive Jupyter Session
 
-```bash
-# Syntax:
-# ./start_jupyter_xec_gpu.sh [PARTITION] [TIME] [PORT]
-./start_jupyter_xec_gpu.sh gh-interactive 02:00:00 8888
-```
-1. Wait for the connection URL.
-2. Tunnel ports locally: `ssh -N -L 8888:localhost:8888 -J <user>@login001 <user>@gpuXXX`
-3. Paste the URL with token in the browser.
+To start a Jupyter session on a GPU node:
+
+1. Request a GPU interactive session via SLURM
+2. Start Jupyter: `jupyter notebook --no-browser --port=8888`
+3. Tunnel ports locally: `ssh -N -L 8888:localhost:8888 -J <user>@login001 <user>@gpuXXX`
+4. Paste the URL with token in the browser
 
 ## Configuration Parameters
 
@@ -107,7 +105,7 @@ Training is now **config-based** using `config/reg/train_config.yaml`. CLI argum
 | `--grad_accum_steps` | `training.grad_accum_steps` | `1` | Gradient accumulation steps |
 | `--channel_dropout_rate` | `training.channel_dropout_rate` | `0.1` | Random channel dropout rate |
 | `--lr_scheduler` | `training.lr_scheduler` | `cosine` | LR schedule (`cosine`, `onecycle`, `plateau`, `null`) |
-| `--compile` | `training.compile` | `reduce-overhead` | torch.compile mode (`max-autotune`, `reduce-overhead`, `default`, `none`) |
+| `--compile` | `training.compile` | `max-autotune` | torch.compile mode (`max-autotune`, `reduce-overhead`, `default`, `none`) |
 | `--outer_mode` | `model.outer_mode` | `finegrid` | Outer face mode (`finegrid` or `split`) |
 | `--encoder_dim` | `model.encoder_dim` | `1024` | Encoder token dimension (must be divisible by 32) |
 | `--dim_feedforward` | `model.dim_feedforward` | `null` | FFN dimension (null = encoder_dim × 4) |

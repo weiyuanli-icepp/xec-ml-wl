@@ -608,11 +608,7 @@ The `XECMultiHeadModel` extends the encoder with task-specific regression heads.
 │   │       ↓                                  │                                 │
 │   │  Linear(256 → 256)                       │                                 │
 │   │       ↓                                  │                                 │
-│   │  LayerNorm(256)                          │                                 │
-│   │       ↓                                  │                                 │
 │   │  GELU                                    │                                 │
-│   │       ↓                                  │                                 │
-│   │  Dropout(0.2)                            │                                 │
 │   │       ↓                                  │                                 │
 │   │  Linear(256 → output_dim)                │                                 │
 │   └──────────────────────────────────────────┘                                 │
