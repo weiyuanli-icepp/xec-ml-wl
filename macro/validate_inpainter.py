@@ -68,6 +68,7 @@ from lib.geom_defs import (
     DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT,
     DEFAULT_SENTINEL_TIME, DEFAULT_NPHO_THRESHOLD
 )
+from lib.normalization import NphoTransform
 from lib.dataset import expand_path
 from lib.baselines import NeighborAverageBaseline, SolidAngleWeightedBaseline
 
@@ -235,6 +236,7 @@ def load_solid_angles(input_path: str, branch_name: str,
 
 
 def normalize_data(npho: np.ndarray, time: np.ndarray,
+                   npho_scheme: str = 'log1p',
                    npho_scale: float = DEFAULT_NPHO_SCALE,
                    npho_scale2: float = DEFAULT_NPHO_SCALE2,
                    time_scale: float = DEFAULT_TIME_SCALE,
@@ -243,16 +245,17 @@ def normalize_data(npho: np.ndarray, time: np.ndarray,
                    npho_threshold: float = DEFAULT_NPHO_THRESHOLD,
                    npho_sentinel: float = -1.0) -> np.ndarray:
     """Normalize data to model input format."""
+    transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+    domain_min = transform.domain_min()
+
     # True invalids: dead/missing sensors, corrupted data
     mask_npho_invalid = (npho > 9e9) | np.isnan(npho)
-    # Domain-breaking values for log1p
-    domain_min = -npho_scale * 0.999
     mask_domain_break = (~mask_npho_invalid) & (npho < domain_min)
     mask_time_invalid = mask_npho_invalid | (npho < npho_threshold) | (np.abs(time) > 9e9) | np.isnan(time)
 
-    # Normalize npho: log1p transform (allow negatives through)
+    # Normalize npho using configured scheme
     npho_safe = np.where(mask_npho_invalid | mask_domain_break, 0.0, npho)
-    npho_norm = np.log1p(npho_safe / npho_scale) / npho_scale2
+    npho_norm = transform.forward(npho_safe)
     npho_norm[mask_npho_invalid] = npho_sentinel
     npho_norm[mask_domain_break] = 0.0
 
@@ -317,6 +320,7 @@ def load_model(checkpoint_path: Optional[str] = None,
         model: The loaded model
         model_type: 'torchscript' or 'checkpoint'
         predict_channels: List of predicted channels (e.g., ['npho'] or ['npho', 'time'])
+        npho_scheme: Normalization scheme (e.g., 'log1p', 'sqrt') or None if unknown
     """
     if torchscript_path:
         print(f"[INFO] Loading TorchScript model from {torchscript_path}")
@@ -333,7 +337,8 @@ def load_model(checkpoint_path: Optional[str] = None,
         else:
             predict_channels = ['npho', 'time']
         print(f"[INFO] Detected output channels: {out_channels} → predict_channels={predict_channels}")
-        return model, 'torchscript', predict_channels
+        # TorchScript has no metadata — npho_scheme must come from CLI
+        return model, 'torchscript', predict_channels, None
 
     if checkpoint_path:
         print(f"[INFO] Loading checkpoint from {checkpoint_path}")
@@ -344,7 +349,9 @@ def load_model(checkpoint_path: Optional[str] = None,
 
         # Get predict_channels from checkpoint config (default to both for legacy)
         predict_channels = config.get('predict_channels', ['npho', 'time'])
+        npho_scheme = config.get('npho_scheme', 'log1p')
         print(f"[INFO] Predict channels: {predict_channels}")
+        print(f"[INFO] Npho scheme: {npho_scheme}")
 
         encoder = XECEncoder(
             outer_mode=config.get('outer_mode', 'finegrid'),
@@ -386,7 +393,7 @@ def load_model(checkpoint_path: Optional[str] = None,
         model.load_state_dict(state_dict, strict=False)
         model.to(device)
         model.eval()
-        return model, 'checkpoint', predict_channels
+        return model, 'checkpoint', predict_channels, npho_scheme
 
     raise ValueError("Either --checkpoint or --torchscript must be specified")
 
@@ -698,6 +705,7 @@ def compute_baseline_metrics(baseline_predictions: List[Dict]) -> Dict:
 def save_predictions(predictions: List[Dict], output_path: str,
                      run_number: Optional[int] = None,
                      predict_channels: List[str] = None,
+                     npho_scheme: str = 'log1p',
                      npho_scale: float = DEFAULT_NPHO_SCALE,
                      npho_scale2: float = DEFAULT_NPHO_SCALE2,
                      time_scale: float = DEFAULT_TIME_SCALE,
@@ -711,6 +719,7 @@ def save_predictions(predictions: List[Dict], output_path: str,
         output_path: Output ROOT file path
         run_number: Run number for dead channel pattern
         predict_channels: List of predicted channels (['npho'] or ['npho', 'time'])
+        npho_scheme: Npho normalization scheme
         npho_scale, npho_scale2, time_scale, time_shift: Normalization parameters
         baseline_results: Optional dict from run_baselines() with keys 'avg' and/or 'sa'
     """
@@ -760,6 +769,7 @@ def save_predictions(predictions: List[Dict], output_path: str,
     # Metadata for downstream analysis scripts
     metadata = {
         'predict_channels': np.array([','.join(predict_channels)], dtype='U32'),
+        'npho_scheme': np.array([npho_scheme], dtype='U16'),
         'npho_scale': np.array([npho_scale], dtype=np.float64),
         'npho_scale2': np.array([npho_scale2], dtype=np.float64),
         'time_scale': np.array([time_scale], dtype=np.float64),
@@ -911,6 +921,10 @@ def main():
                         choices=["npho", "time"],
                         help="Override predict channels (e.g., --predict-channels npho). "
                              "Auto-detected from model output shape if not specified.")
+    parser.add_argument("--npho-scheme", type=str, default=None,
+                        choices=["log1p", "sqrt", "anscombe", "linear"],
+                        help="Npho normalization scheme. Auto-detected from checkpoint; "
+                             "REQUIRED for TorchScript models (default: log1p).")
 
     # Baselines
     parser.add_argument("--baselines", action="store_true",
@@ -933,13 +947,37 @@ def main():
     # Create output directory
     os.makedirs(args.output, exist_ok=True)
 
+    # Load model first to get npho_scheme before normalizing
+    model, model_type, predict_channels, model_npho_scheme = load_model(
+        checkpoint_path=args.checkpoint,
+        torchscript_path=args.torchscript,
+        device=args.device
+    )
+
+    # Override predict_channels if specified via CLI
+    if args.predict_channels is not None:
+        print(f"[INFO] Overriding predict_channels: {predict_channels} → {args.predict_channels}")
+        predict_channels = args.predict_channels
+
+    # Resolve npho_scheme: CLI > checkpoint > default
+    if args.npho_scheme is not None:
+        npho_scheme = args.npho_scheme
+        print(f"[INFO] Npho scheme (from CLI): {npho_scheme}")
+    elif model_npho_scheme is not None:
+        npho_scheme = model_npho_scheme
+        print(f"[INFO] Npho scheme (from checkpoint): {npho_scheme}")
+    else:
+        npho_scheme = 'log1p'
+        print(f"[WARN] Npho scheme unknown (TorchScript has no metadata), using default: {npho_scheme}")
+        print(f"[WARN] Use --npho-scheme to specify if your model was trained with a different scheme")
+
     # Load data
     data = load_data(args.input, tree_name=args.tree_name, max_events=args.max_events)
     n_events = len(data['npho'])
 
     # Normalize
-    print("[INFO] Normalizing data...")
-    x_input = normalize_data(data['npho'], data['time'])
+    print(f"[INFO] Normalizing data (npho_scheme={npho_scheme})...")
+    x_input = normalize_data(data['npho'], data['time'], npho_scheme=npho_scheme)
     x_original = x_input.copy()
 
     # Get dead channels
@@ -974,18 +1012,6 @@ def main():
 
     n_masked = combined_mask.sum()
     print(f"[INFO] Total masked sensors: {n_masked:,} ({n_masked/(n_events*N_CHANNELS)*100:.2f}%)")
-
-    # Load model
-    model, model_type, predict_channels = load_model(
-        checkpoint_path=args.checkpoint,
-        torchscript_path=args.torchscript,
-        device=args.device
-    )
-
-    # Override predict_channels if specified via CLI
-    if args.predict_channels is not None:
-        print(f"[INFO] Overriding predict_channels: {predict_channels} → {args.predict_channels}")
-        predict_channels = args.predict_channels
 
     # Run inference
     print(f"[INFO] Running inference on {args.device}...")
@@ -1044,6 +1070,7 @@ def main():
     pred_file = os.path.join(args.output, f"predictions_{mode_str}_run{run_str}.root")
     save_predictions(pred_list, pred_file, run_number=args.run,
                      predict_channels=predict_channels,
+                     npho_scheme=npho_scheme,
                      baseline_results=baseline_results)
 
     # Metrics CSV (include baseline metrics if available)
