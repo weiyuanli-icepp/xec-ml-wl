@@ -342,17 +342,19 @@ class NeighborAverageBaseline:
 
 
 class SolidAngleWeightedBaseline:
-    """Predict masked sensors using solid-angle-weighted interpolation
+    """Predict masked sensors using solid-angle-weighted averaging
     from k-hop neighbors.
 
     For a masked sensor *m* with solid angle omega_m, and unmasked neighbor
     *n* with solid angle omega_n and value v_n, the prediction is::
 
-        pred_m = mean_over_n( v_n * omega_m / omega_n )
+        pred_m = sum_n( w_n * v_n ) / sum_n( w_n )
+        w_n = omega_m / omega_n
 
-    This rescales each neighbor's photon count by the ratio of solid angles,
-    accounting for the geometric difference in photon collection between
-    the masked sensor and its neighbors.
+    This is a weighted average where neighbors with solid angles closer to
+    the masked sensor's solid angle contribute more.  Unlike a multiplicative
+    correction (v_n * ratio), this weighted average stays bounded in
+    normalized space and avoids outliers from extreme solid angle ratios.
 
     If *solid_angles* is not provided, falls back to the simple unweighted
     neighbor average (identical to :class:`NeighborAverageBaseline`).
@@ -421,17 +423,15 @@ class SolidAngleWeightedBaseline:
                 # omega_n: solid angle of each neighbor.
                 omega_n = solid_angles[i][nbrs]                 # (n_masked, max_nbrs)
 
-                # Rescale: v_n * (omega_m / omega_n).
-                # Guard against zero omega_n.
+                # Weighted average: w_n = omega_m / omega_n
                 safe_omega_n = np.where(omega_n > 0, omega_n, 1.0)
-                ratio = omega_m[:, None] / safe_omega_n         # (n_masked, max_nbrs)
-                weighted_vals = nbr_vals * ratio
-                weighted_vals = np.where(valid, weighted_vals, 0.0)
+                weights = omega_m[:, None] / safe_omega_n       # (n_masked, max_nbrs)
+                weights = np.where(valid, weights, 0.0)
 
-                n_valid = valid.sum(axis=1).astype(np.float64)
-                total = weighted_vals.sum(axis=1)
-                safe_n = np.maximum(n_valid, 1.0)
-                avg = np.where(n_valid > 0, total / safe_n, 0.0)
+                weighted_vals = np.where(valid, nbr_vals * weights, 0.0)
+                weight_sum = weights.sum(axis=1)                # (n_masked,)
+                safe_wsum = np.maximum(weight_sum, 1e-12)
+                avg = np.where(weight_sum > 0, weighted_vals.sum(axis=1) / safe_wsum, 0.0)
             else:
                 # Simple average fallback.
                 nbr_vals = np.where(valid, nbr_vals, 0.0)
