@@ -19,7 +19,7 @@ $ cd jobs
 $ ./run_regressor.sh
 
 # Or set env vars directly:
-$ export RUN_NAME="my_run" CONFIG_PATH="config/train_config.yaml" PARTITION="a100-daily"
+$ export RUN_NAME="my_run" CONFIG_PATH="config/reg/train_config.yaml" PARTITION="a100-daily"
 $ ./submit_regressor.sh
 ```
 
@@ -39,10 +39,10 @@ $ TASKS="angle energy" ./submit_regressor.sh
 
 ```bash
 # Config-based training
-$ python -m lib.train_regressor --config config/train_config.yaml
+$ python -m lib.train_regressor --config config/reg/train_config.yaml
 
 # With CLI overrides
-$ python -m lib.train_regressor --config config/train_config.yaml --lr 1e-4 --epochs 30
+$ python -m lib.train_regressor --config config/reg/train_config.yaml --lr 1e-4 --epochs 30
 ```
 
 ### 4. Multi-GPU Training (DDP)
@@ -54,10 +54,10 @@ All training scripts support multi-GPU training via PyTorch DistributedDataParal
 $ NUM_GPUS=4 ./jobs/submit_regressor.sh
 
 # Direct multi-GPU training (without SLURM)
-$ torchrun --nproc_per_node=4 -m lib.train_regressor --config config/train_config.yaml
+$ torchrun --nproc_per_node=4 -m lib.train_regressor --config config/reg/train_config.yaml
 
 # Single GPU still works as before
-$ python -m lib.train_regressor --config config/train_config.yaml
+$ python -m lib.train_regressor --config config/reg/train_config.yaml
 ```
 
 **Key behaviors with DDP:**
@@ -88,7 +88,7 @@ For GH nodes, use the following settings to maximize throughput:
 
 ## Configuration Parameters
 
-Training is now **config-based** using `config/train_config.yaml`. CLI arguments can override config values.
+Training is now **config-based** using `config/reg/train_config.yaml`. CLI arguments can override config values.
 
 ### Core Training Parameters
 
@@ -116,8 +116,9 @@ Training is now **config-based** using `config/train_config.yaml`. CLI arguments
 
 | Parameter | Config Path | Legacy | New | Description |
 |-----------|-------------|--------|-----|-------------|
-| `--npho_scale` | `normalization.npho_scale` | 0.58 | 1000 | Npho log transform scale |
-| `--npho_scale2` | `normalization.npho_scale2` | 1.0 | 4.08 | Secondary npho scale |
+| `--npho_scheme` | `normalization.npho_scheme` | `log1p` | `log1p` | Normalization scheme (`log1p`, `anscombe`, `sqrt`, `linear`) |
+| `--npho_scale` | `normalization.npho_scale` | 0.58 | 1000 | Npho normalization scale |
+| `--npho_scale2` | `normalization.npho_scale2` | 1.0 | 4.08 | Secondary npho scale (log1p only) |
 | `--time_scale` | `normalization.time_scale` | 6.5e-8 | 1.14e-7 | Time normalization |
 | `--time_shift` | `normalization.time_shift` | 0.5 | -0.46 | Time offset shift |
 | `--sentinel_time` | `normalization.sentinel_time` | -1.0 | -1.0 | Bad channel marker |

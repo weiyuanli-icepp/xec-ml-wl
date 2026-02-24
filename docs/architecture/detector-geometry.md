@@ -133,24 +133,28 @@ The edge index tensor has shape `(3, num_edges)` with:
 
 There are **two normalization schemes** currently in use. See [Data Pipeline](data-pipeline.md) for detailed explanation.
 
-**Legacy Scheme** (in `lib/geom_defs.py` and `config/train_config.yaml`):
+**Legacy Scheme** (in `lib/geom_defs.py` and `config/reg/train_config.yaml`):
 ```python
-DEFAULT_NPHO_SCALE     = 0.58      # Npho log transform scale
-DEFAULT_NPHO_SCALE2    = 1.0       # Secondary npho scale
+DEFAULT_NPHO_SCALE     = 0.58      # Npho normalization scale
+DEFAULT_NPHO_SCALE2    = 1.0       # Secondary npho scale (log1p only)
 DEFAULT_TIME_SCALE     = 6.5e-8    # Time normalization (seconds)
 DEFAULT_TIME_SHIFT     = 0.5       # Time offset after scaling
 DEFAULT_SENTINEL_TIME = -1.0      # Marker for invalid/masked sensors
+# npho_scheme = "log1p"            # Default normalization scheme
 ```
 
-**New Scheme** (in `config/mae_config.yaml` and `config/inpainter_config.yaml`):
+**New Scheme** (in `config/mae/mae_config.yaml` and `config/inp/inpainter_config.yaml`):
 ```python
-npho_scale     = 1000       # Npho log transform scale
-npho_scale2    = 4.08       # Secondary npho scale
+npho_scale     = 1000       # Npho normalization scale
+npho_scale2    = 4.08       # Secondary npho scale (log1p only)
 time_scale     = 1.14e-7    # Time normalization (seconds)
 time_shift     = -0.46      # Time offset after scaling
 sentinel_time = -1.0       # Marker for invalid/masked time sensors
 sentinel_npho = -1.0       # Marker for invalid/masked npho sensors
+# npho_scheme: "log1p" (MAE) or "sqrt" (inpainter)
 ```
+
+All normalization schemes (`log1p`, `anscombe`, `sqrt`, `linear`) are supported via the `npho_scheme` config parameter. See [Data Pipeline](data-pipeline.md) for scheme formulas and the `NphoTransform` class.
 
 **Important:** Models trained with different normalization schemes are **not compatible**. MAE pretraining and downstream fine-tuning must use the same scheme.
 

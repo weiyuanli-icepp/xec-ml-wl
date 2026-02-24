@@ -141,10 +141,10 @@ QUICK REFERENCE - Command Summary:
 ──────────────────────────────────────────────────────────────────────────────
 
 # 1. Train MAE (optional, recommended)
-python -m lib.train_mae --config config/mae_config.yaml
+python -m lib.train_mae --config config/mae/mae_config.yaml
 
 # 2. Train Inpainter
-python -m lib.train_inpainter --config config/inpainter_config.yaml \
+python -m lib.train_inpainter --config config/inp/inpainter_config.yaml \
     --mae_checkpoint artifacts/mae/mae_checkpoint_best.pth
 
 # 3. Export to TorchScript
@@ -215,10 +215,10 @@ This ensures:
 
 ```bash
 # First, train MAE
-python -m lib.train_mae --config config/mae_config.yaml
+python -m lib.train_mae --config config/mae/mae_config.yaml
 
 # Then, train inpainter with frozen MAE encoder
-python -m lib.train_inpainter --config config/inpainter_config.yaml \
+python -m lib.train_inpainter --config config/inp/inpainter_config.yaml \
     --mae_checkpoint artifacts/mae/mae_checkpoint_best.pth
 ```
 
@@ -226,7 +226,7 @@ python -m lib.train_inpainter --config config/inpainter_config.yaml \
 
 ```bash
 # Train inpainter without MAE (encoder trained jointly)
-python -m lib.train_inpainter --config config/inpainter_config.yaml \
+python -m lib.train_inpainter --config config/inp/inpainter_config.yaml \
     --mae_checkpoint ""
 ```
 
@@ -246,7 +246,7 @@ Inpainter training supports multi-GPU via DDP:
 NUM_GPUS=4 ./jobs/submit_inpainter.sh
 
 # Direct multi-GPU training
-torchrun --nproc_per_node=4 -m lib.train_inpainter --config config/inpainter_config.yaml \
+torchrun --nproc_per_node=4 -m lib.train_inpainter --config config/inp/inpainter_config.yaml \
     --mae_checkpoint artifacts/mae/mae_checkpoint_best.pth
 
 # Dry run to verify settings
@@ -257,30 +257,56 @@ ROOT file lists are sharded across GPUs. Only rank 0 logs to MLflow, saves check
 
 ## 4. Configuration
 
-Configure in `config/inpainter_config.yaml`:
+Configure in `config/inp/inpainter_config.yaml`:
 
 ```yaml
+# Normalization (must match MAE pretraining)
+normalization:
+  npho_scheme: "sqrt"             # Normalization scheme (log1p, anscombe, sqrt, linear)
+  npho_scale: 1000
+  npho_scale2: 4.08               # Used by log1p only
+  sentinel_npho: -1.0
+  sentinel_time: -1.0
+
 # Model
 model:
-  outer_mode: "finegrid"        # Must match MAE encoder config
-  outer_fine_pool: [3, 3]       # Must match MAE encoder config
-  mask_ratio: 0.05              # Realistic dead channel density (1-10%)
-  freeze_encoder: true          # Freeze encoder, train only heads
-  predict_channels: ["npho", "time"]  # Output channels (or ["npho"] for npho-only)
+  outer_mode: "finegrid"          # Must match MAE encoder config
+  outer_fine_pool: null           # Must match MAE encoder config
+  mask_ratio: 0.05                # Realistic dead channel density (1-10%)
+  mask_npho_flat: false           # CDF-based flat masking (uniform across npho quantiles)
+  freeze_encoder: false           # Freeze encoder, train only heads
+  use_local_context: true         # Use local neighbor context for inpainting
+  predict_channels: ["npho"]      # Output channels: ["npho"] or ["npho", "time"]
+  use_masked_attention: false     # Use attention-based heads for masked positions
+  head_type: "per_face"           # "per_face" or "cross_attention"
+  # Cross-attention settings (only when head_type is "cross_attention"):
+  sensor_positions_file: null     # Required for cross_attention (e.g. "lib/sensor_positions.txt")
+  cross_attn_k: 16               # Number of KNN neighbors for local attention
+  cross_attn_hidden: 64           # Hidden dimension for local attention
+  cross_attn_latent_dim: 128      # Projection dimension for latent cross-attention
+  cross_attn_pos_dim: 96          # Sinusoidal position encoding dimension
 
 # Training
 training:
-  mae_checkpoint: "artifacts/mae/checkpoint_best.pth"  # or null
+  mae_checkpoint: null            # Path to pretrained MAE, or null
   epochs: 50
   lr: 1.0e-4
   lr_scheduler: "cosine"
-  loss_fn: "smooth_l1"          # smooth_l1, mse, l1
+  loss_fn: "smooth_l1"            # smooth_l1, mse, l1, huber
+  loss_beta: 0.1                  # Beta for smooth_l1/huber
   npho_weight: 1.0
-  time:                         # Time-specific options (ignored if 'time' not in predict_channels)
+  time:                           # Time-specific options (ignored if 'time' not in predict_channels)
     weight: 1.0
     mask_ratio_scale: 1.0
     use_npho_weight: true
     npho_threshold: 100.0
+  npho_loss_weight:               # Weight loss by sensor intensity
+    enabled: false
+    alpha: 0.5
+  intensity_reweighting:          # Reweight samples by total event intensity
+    enabled: false
+    nbins: 5
+    target: "uniform"
 ```
 
 ### Npho-Only Mode
@@ -331,6 +357,26 @@ python macro/analyze_inpainter.py artifacts/inpainter/inpainter_predictions_epoc
     --output analysis_output/
 ```
 
+**Baseline comparison with `--baselines`:**
+
+When predictions are generated with `macro/validate_inpainter.py --baselines`, the output ROOT file includes neighbor-average and solid-angle baseline predictions. These are automatically detected and compared by the analysis script.
+
+**Local Fit baseline with `--local-fit`:**
+
+Compare against the physics-based LocalFitBaseline (`others/LocalFitBaseline.C`), which predicts dead channel npho via position reconstruction and solid angle modeling (inner face only):
+
+```bash
+# Run LocalFitBaseline on the same MC file
+root -l -b -q 'others/LocalFitBaseline.C("mc_data.root", "localfit.root")'
+
+# Include in analysis
+python macro/analyze_inpainter.py predictions.root \
+    --local-fit localfit.root \
+    --output analysis_output/
+```
+
+The LocalFitBaseline covers inner face sensors only (0-4091). Unmatched entries use NaN and are excluded from metrics. Events are matched by `(run_number, event_number, sensor_id)` tuple.
+
 **Generated outputs:**
 - `global_metrics.csv` - MAE, RMSE, bias, 68th/95th percentiles
 - `face_metrics.csv` - Per-face breakdown
@@ -340,6 +386,7 @@ python macro/analyze_inpainter.py artifacts/inpainter/inpainter_predictions_epoc
 - `scatter_truth_vs_pred.pdf` - 2D density plots
 - `resolution_vs_signal.pdf` - Resolution/bias vs truth magnitude
 - `metrics_summary.pdf` - Bar chart comparison across faces
+- `baseline_comparison.pdf` - Overlay of ML vs baselines (when baselines available)
 
 ---
 

@@ -488,12 +488,14 @@ tokens = tokens + self.pos_embed  # Add learnable positional embeddings
 tokens = self.fusion_transformer(tokens)  # 2-layer Transformer
 ```
 
-**Transformer Configuration:**
-- **d_model**: 1024 (token dimension)
+**Transformer Configuration (defaults shown, configurable via `model.encoder_dim`, `model.dim_feedforward`, `model.num_fusion_layers`):**
+- **d_model**: 1024 (token dimension, set by `encoder_dim`)
 - **nhead**: 8 (attention heads)
-- **dim_feedforward**: 4096 (4× expansion)
-- **num_layers**: 2
+- **dim_feedforward**: 4096 (4× expansion, or set by `dim_feedforward`)
+- **num_layers**: 2 (set by `num_fusion_layers`)
 - **dropout**: 0.1
+
+**Note:** All dimensions scale with `encoder_dim`. The backbone channel width is `encoder_dim // 32` (e.g., 1024 → 32 base channels). The flattened output dimension is `6 × encoder_dim`.
 
 **Why Transformer over simple concatenation:**
 1. Each face can attend to any other face

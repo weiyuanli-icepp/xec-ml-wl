@@ -114,10 +114,12 @@ Saved at: every 10 epochs, best epoch, and final epoch. Use these for fine-tunin
 The ROOT file includes a `metadata` tree with a single entry containing model configuration:
 - `predict_channels` - Comma-separated list of predicted channels (e.g., `"npho"` or `"npho,time"`)
 - `npho_scale` - Normalization scale for npho
+- `npho_scale2` - Secondary npho scale
+- `npho_scheme` - Normalization scheme (`log1p`, `anscombe`, `sqrt`, `linear`)
 - `time_scale` - Normalization scale for time
 - `sentinel_time` - Value used for invalid/masked sensors
 
-Downstream macros auto-detect the prediction mode from this metadata.
+Downstream macros auto-detect the prediction mode and normalization scheme from this metadata.
 
 Saved at: every 10 epochs + final epoch.
 
@@ -168,10 +170,12 @@ Output directory: `{save_path}/` (typically `artifacts/<RUN_NAME>/`)
 The ROOT file includes a `metadata` tree with a single entry containing model configuration:
 - `predict_channels` - Comma-separated list of predicted channels (e.g., `"npho"` or `"npho,time"`)
 - `npho_scale` - Normalization scale for npho
+- `npho_scale2` - Secondary npho scale
+- `npho_scheme` - Normalization scheme (`log1p`, `anscombe`, `sqrt`, `linear`)
 - `time_scale` - Normalization scale for time
 - `sentinel_time` - Value used for invalid/masked sensors
 
-Downstream macros (e.g., `macro/analyze_inpainter.py`, `val_data/analyze_inpainter.py`) auto-detect the prediction mode from this metadata and skip time-related analysis when only npho is predicted.
+Downstream macros (e.g., `macro/analyze_inpainter.py`) auto-detect the prediction mode and normalization scheme from this metadata and skip time-related analysis when only npho is predicted.
 
 Saved at: every 10 epochs + final epoch.
 
@@ -244,7 +248,7 @@ mlruns/                                  # MLflow experiment tracking
 Resolution plots and prediction CSVs are generated **automatically** after training. This behavior can be controlled via the config file:
 
 ```yaml
-# config/train_config.yaml
+# config/reg/train_config.yaml
 checkpoint:
   save_artifacts: true  # Set to false to disable plot/CSV generation
 ```

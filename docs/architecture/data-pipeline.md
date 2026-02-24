@@ -12,8 +12,10 @@ Shape: 4760 per event
 
 | Branch | Description |
 |--------|-------------|
-| `relative_npho` | Normalized photon counts per sensor |
-| `relative_time` | Normalized timing per sensor |
+| `npho` | Photon counts per sensor (default `npho_branch`) |
+| `relative_time` | Timing per sensor (default `time_branch`) |
+
+**Note:** The branch names are configurable via `data.npho_branch` and `data.time_branch` in the config file. The legacy branch name `relative_npho` is deprecated; use `npho` for newer data formats.
 
 ### Truth Branches
 
@@ -48,8 +50,9 @@ There are currently **two normalization schemes** in use:
 
 | Parameter | Legacy Scheme | New Scheme | Notes |
 |-----------|---------------|------------|-------|
-| `npho_scale` | 0.58 | 1000 | First log1p scale factor |
-| `npho_scale2` | 1.0 | 4.08 | Second scale factor |
+| `npho_scheme` | `log1p` | `log1p` (or `sqrt` for inpainter) | Normalization scheme |
+| `npho_scale` | 0.58 | 1000 | Npho scale factor |
+| `npho_scale2` | 1.0 | 4.08 | Secondary scale (log1p only) |
 | `time_scale` | 6.5e-8 | 1.14e-7 | Time normalization (seconds) |
 | `time_shift` | 0.5 | -0.46 | Time offset after scaling |
 | `sentinel_time` | -1.0 | -1.0 | Invalid sensor marker |
@@ -184,7 +187,7 @@ After normalization with the **new scheme** (npho_scale=1000):
 
 | Parameter | Config Key | Legacy | New | Description |
 |-----------|------------|--------|-----|-------------|
-| `npho_scale` | `normalization.npho_scale` | 0.58 | 1000 | Npho log transform scale |
+| `npho_scale` | `normalization.npho_scale` | 0.58 | 1000 | Npho normalization scale |
 | `npho_scale2` | `normalization.npho_scale2` | 1.0 | 4.08 | Secondary npho scale (log1p only) |
 | `npho_scheme` | `normalization.npho_scheme` | - | log1p | Normalization scheme (log1p/anscombe/sqrt/linear) |
 | `time_scale` | `normalization.time_scale` | 6.5e-8 | 1.14e-7 | Time scale (seconds) |

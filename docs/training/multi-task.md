@@ -4,7 +4,7 @@ The model supports simultaneous regression of multiple physical observables.
 
 ## Task Configuration
 
-Configure tasks in `config/train_config.yaml`:
+Configure tasks in `config/reg/train_config.yaml`:
 
 ```yaml
 tasks:
@@ -78,7 +78,7 @@ Balance training distributions using histogram-based reweighting. This helps whe
 
 ## Configuration
 
-Configure in `config/train_config.yaml`:
+Configure in `config/reg/train_config.yaml`:
 
 ```yaml
 reweighting:

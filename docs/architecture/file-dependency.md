@@ -12,9 +12,9 @@ graph TD
 
     %% -- Configuration (Yellow) --
     subgraph "Config (config/)"
-        TrainYaml(train_config.yaml):::config
-        MaeYaml(mae_config.yaml):::config
-        InpaintYaml(inpainter_config.yaml):::config
+        TrainYaml(reg/train_config.yaml):::config
+        MaeYaml(mae/mae_config.yaml):::config
+        InpaintYaml(inp/inpainter_config.yaml):::config
     end
 
     %% -- Job Submission (Pink) --

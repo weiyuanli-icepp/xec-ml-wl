@@ -469,7 +469,7 @@ NUM_GPUS=4 ./jobs/submit_mae.sh
 ```
 Or use `torchrun` directly:
 ```bash
-torchrun --nproc_per_node=4 -m lib.train_mae --config config/mae_config.yaml
+torchrun --nproc_per_node=4 -m lib.train_mae --config config/mae/mae_config.yaml
 ```
 Single-GPU mode still works as before with `python -m lib.train_*`. Checkpoints are compatible between single and multi-GPU.
 

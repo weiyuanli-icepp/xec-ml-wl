@@ -95,7 +95,7 @@ Supported loss functions: `mse`, `l1`, `smooth_l1`
 
 **Optional: Homoscedastic Channel Weighting**
 
-When `learn_channel_logvars=True`, the model learns per-channel uncertainty:
+When `auto_channel_weight=True`, the model learns per-channel uncertainty:
 $$\mathcal{L} = \frac{1}{2\sigma_{\text{npho}}^2} \mathcal{L}_{\text{npho}} + \frac{1}{2\sigma_{\text{time}}^2} \mathcal{L}_{\text{time}} + \log\sigma_{\text{npho}} + \log\sigma_{\text{time}}$$
 
 ## 4. Quick Start
@@ -109,10 +109,10 @@ python -m lib.train_mae --train_root /path/to/data.root --save_path mae_pretrain
   --outer_mode finegrid --outer_fine_pool 3 3
 
 # Config mode (recommended)
-python -m lib.train_mae --config config/mae_config.yaml
+python -m lib.train_mae --config config/mae/mae_config.yaml
 
 # Config + CLI override
-python -m lib.train_mae --config config/mae_config.yaml --epochs 50 --train_root /path/to/train
+python -m lib.train_mae --config config/mae/mae_config.yaml --epochs 50 --train_root /path/to/train
 ```
 
 ## 5. Running Pre-training
@@ -145,7 +145,7 @@ MAE pre-training supports multi-GPU via DDP for faster training:
 NUM_GPUS=4 ./jobs/submit_mae.sh
 
 # Direct multi-GPU training
-torchrun --nproc_per_node=4 -m lib.train_mae --config config/mae_config.yaml
+torchrun --nproc_per_node=4 -m lib.train_mae --config config/mae/mae_config.yaml
 
 # Dry run to verify settings
 NUM_GPUS=4 DRY_RUN=1 ./jobs/submit_mae.sh
@@ -188,7 +188,7 @@ Once pre-training is complete, load the learned encoder weights into the regress
 
 ## 8. Configuration Reference
 
-Key parameters in `config/mae_config.yaml`:
+Key parameters in `config/mae/mae_config.yaml`:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -203,11 +203,14 @@ Key parameters in `config/mae_config.yaml`:
 | `training.time.mask_ratio_scale` | 1.0 | Bias masking toward valid-time sensors (>1.0 prefers valid-time) |
 | `training.time.use_npho_weight` | true | Weight time loss by sqrt(npho) |
 | `training.time.npho_threshold` | 100 | Min npho for time loss (skip low-signal sensors) |
-| `auto_channel_weight` | false | Learn channel weights automatically |
-| `track_mae_rmse` | false | Compute MAE/RMSE metrics (slower) |
-| `track_metrics` | false | Per-face training metrics |
-| `grad_accum_steps` | 1 | Gradient accumulation steps |
-| `ema_decay` | null | EMA decay rate (null=disabled, 0.999 typical) |
+| `training.auto_channel_weight` | false | Learn channel weights automatically |
+| `training.track_mae_rmse` | false | Compute MAE/RMSE metrics (slower) |
+| `training.track_metrics` | false | Per-face training metrics |
+| `training.grad_accum_steps` | 1 | Gradient accumulation steps |
+| `training.ema_decay` | null | EMA decay rate (null=disabled, 0.999 typical) |
+| `training.npho_loss_weight.enabled` | false | Weight loss by sensor intensity |
+| `training.npho_loss_weight.alpha` | 0.5 | Exponent for intensity weighting |
+| `training.intensity_reweighting.enabled` | false | Reweight samples by total event intensity |
 
 ### Configurable Output Channels
 
