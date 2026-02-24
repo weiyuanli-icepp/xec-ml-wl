@@ -1,0 +1,99 @@
+# Step 1: Baseline (reference point for scan)
+# Current config on small dataset, energy-only
+
+data:
+  train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_middle"
+  val_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/val"
+  tree_name: "tree"
+  batch_size: 4096
+  chunksize: 131072
+  num_workers: 2
+  prefetch_factor: 16
+  num_threads: 16
+  npho_branch: "npho"
+  time_branch: "relative_time"
+  log_invalid_npho: true
+  fiducial:
+    enabled: true
+    u_max: 23.9
+    v_max: 67.9
+    w_min: 0.0
+    w_max: null
+
+normalization:
+  npho_scheme: sqrt
+  npho_scale: 20000
+  npho_scale2: 1.0
+  time_scale: 1.14e-7
+  time_shift: -0.46
+  sentinel_time: -1.0
+  sentinel_npho: -1.0
+
+model:
+  outer_mode: "finegrid"
+  outer_fine_pool: [2, 2]
+  hidden_dim: 256
+  drop_path_rate: 0.1
+  encoder_dim: 512
+  dim_feedforward: 2048
+  num_fusion_layers: 1
+
+tasks:
+  angle:
+    enabled: false
+  energy:
+    enabled: true
+    loss_fn: "smooth_l1"
+    loss_beta: 0.002
+    weight: 1.0
+    log_transform: false
+  timing:
+    enabled: false
+  uvwFI:
+    enabled: false
+
+training:
+  epochs: 50
+  amp: true
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  lr_scheduler: "cosine"
+  warmup_epochs: 0
+  lr_min: 1.0e-6
+  lr_patience: 5
+  lr_factor: 0.5
+  max_lr: null
+  pct_start: 0.3
+  ema_decay: null
+  channel_dropout_rate: 0
+  grad_clip: 0.1
+  grad_accum_steps: 1
+  profile: false
+  compile: none
+  compile_fullgraph: false
+
+loss_balance: "manual"
+
+reweighting:
+  energy:
+    enabled: false
+    nbins: 30
+
+checkpoint:
+  resume_from: null
+  save_dir: "artifacts"
+  save_interval: 10
+  save_artifacts: true
+  new_mlflow_run: false
+  reset_epoch: false
+  refresh_lr: false
+
+distributed:
+  num_gpus: 1
+
+mlflow:
+  experiment: "energy_scan"
+  run_name: null
+
+export:
+  onnx: null
