@@ -322,8 +322,17 @@ def load_model(checkpoint_path: Optional[str] = None,
         print(f"[INFO] Loading TorchScript model from {torchscript_path}")
         model = torch.jit.load(torchscript_path, map_location=device)
         model.eval()
-        # TorchScript models: assume default channels or detect from output
-        predict_channels = getattr(model, 'predict_channels', ['npho', 'time'])
+        # Probe output shape with dummy input to detect predict_channels
+        with torch.no_grad():
+            dummy_x = torch.zeros(1, N_CHANNELS, 2, device=device)
+            dummy_mask = torch.ones(1, N_CHANNELS, device=device)
+            dummy_out = model(dummy_x, dummy_mask)
+        out_channels = dummy_out.shape[-1]
+        if out_channels == 1:
+            predict_channels = ['npho']
+        else:
+            predict_channels = ['npho', 'time']
+        print(f"[INFO] Detected output channels: {out_channels} → predict_channels={predict_channels}")
         return model, 'torchscript', predict_channels
 
     if checkpoint_path:
@@ -901,7 +910,7 @@ def main():
     parser.add_argument("--predict-channels", type=str, nargs='+', default=None,
                         choices=["npho", "time"],
                         help="Override predict channels (e.g., --predict-channels npho). "
-                             "Required for TorchScript models that don't store this metadata.")
+                             "Auto-detected from model output shape if not specified.")
 
     # Baselines
     parser.add_argument("--baselines", action="store_true",
@@ -975,10 +984,8 @@ def main():
 
     # Override predict_channels if specified via CLI
     if args.predict_channels is not None:
+        print(f"[INFO] Overriding predict_channels: {predict_channels} → {args.predict_channels}")
         predict_channels = args.predict_channels
-        print(f"[INFO] Predict channels (from CLI): {predict_channels}")
-    else:
-        print(f"[INFO] Predict channels (auto-detected): {predict_channels}")
 
     # Run inference
     print(f"[INFO] Running inference on {args.device}...")
