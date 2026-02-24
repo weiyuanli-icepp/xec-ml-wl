@@ -111,13 +111,20 @@ Where:
 Sensors are marked as **invalid** based on these conditions:
 
 ```python
-# Npho invalid if:
-# - raw_npho > 9e9: sentinel in data (missing/dead sensor)
-# - raw_npho < -npho_scale: would break log1p (log of negative)
-# - isnan: corrupted data
-mask_npho_invalid = (raw_npho > 9e9) | (raw_npho < -npho_scale) | isnan(raw_npho)
+# Step 1: True invalids (data-level sentinels)
+mask_npho_invalid = (raw_npho > 9e9) | isnan(raw_npho)
 
-# Time invalid if:
+# Step 2: Domain-breaking values (scheme-dependent)
+# NphoTransform.domain_min() returns the minimum raw value the scheme can handle:
+#   log1p:    -0.999 * npho_scale  (log1p requires x > -1)
+#   sqrt:     0.0                  (sqrt requires x >= 0)
+#   anscombe: -0.375              (anscombe requires x > -3/8)
+#   linear:   -inf                (no lower bound)
+domain_min = npho_transform.domain_min()
+mask_domain_break = (~mask_npho_invalid) & (raw_npho < domain_min)
+# Domain-breaking sensors are set to sentinel (not normalized)
+
+# Step 3: Time invalids
 # - npho is invalid: can't trust timing either
 # - raw_npho < npho_threshold: timing unreliable (uncertainty ~ 1/sqrt(npho))
 # - raw_time > 9e9: sentinel in data
@@ -126,10 +133,10 @@ mask_time_invalid = mask_npho_invalid | (raw_npho < npho_threshold) | (abs(raw_t
 ```
 
 **Why this scheme?**
-- The `log1p(x)` function requires `x > -1`, so `raw_npho > -npho_scale`
-- Small negative npho values (e.g., -10) are physically possible due to baseline subtraction and are handled correctly by `log1p`
+- The `domain_min()` check is **scheme-dependent**: `log1p` requires `x > -scale`, `sqrt` requires `x >= 0`, etc.
+- Small negative npho values (e.g., -10) are physically possible due to baseline subtraction and are handled correctly by `log1p` (but NOT by `sqrt`)
 - Timing uncertainty scales as `1/sqrt(npho)`, so low-npho sensors have unreliable timing
-- The `npho_threshold` (default: 100) determines when timing becomes unreliable
+- The `npho_threshold` (default: 100, configured via `training.time.npho_threshold`) determines when timing becomes unreliable
 
 **Invalid Sensor Handling:**
 | Channel | Invalid Value | Reason |

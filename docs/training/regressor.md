@@ -96,7 +96,7 @@ Training is now **config-based** using `config/reg/train_config.yaml`. CLI argum
 |-----------|-------------|---------|-------------|
 | `--train_path` | `data.train_path` | Required | Path to training ROOT file(s) |
 | `--val_path` | `data.val_path` | Required | Path to validation ROOT file(s) |
-| `--batch` | `data.batch_size` | `256` | Batch size |
+| `--batch_size` | `data.batch_size` | `256` | Batch size |
 | `--chunksize` | `data.chunksize` | `256000` | Events per ROOT read |
 | `--epochs` | `training.epochs` | `20` | Training epochs |
 | `--lr` | `training.lr` | `3e-4` | Learning rate |
@@ -105,7 +105,13 @@ Training is now **config-based** using `config/reg/train_config.yaml`. CLI argum
 | `--ema_decay` | `training.ema_decay` | `0.999` | EMA decay rate |
 | `--grad_clip` | `training.grad_clip` | `1.0` | Gradient clipping |
 | `--grad_accum_steps` | `training.grad_accum_steps` | `1` | Gradient accumulation steps |
+| `--channel_dropout_rate` | `training.channel_dropout_rate` | `0.1` | Random channel dropout rate |
+| `--lr_scheduler` | `training.lr_scheduler` | `cosine` | LR schedule (`cosine`, `onecycle`, `plateau`, `null`) |
+| `--compile` | `training.compile` | `reduce-overhead` | torch.compile mode (`max-autotune`, `reduce-overhead`, `default`, `none`) |
 | `--outer_mode` | `model.outer_mode` | `finegrid` | Outer face mode (`finegrid` or `split`) |
+| `--encoder_dim` | `model.encoder_dim` | `1024` | Encoder token dimension (must be divisible by 32) |
+| `--dim_feedforward` | `model.dim_feedforward` | `null` | FFN dimension (null = encoder_dim × 4) |
+| `--num_fusion_layers` | `model.num_fusion_layers` | `2` | Number of transformer fusion layers |
 | `--tasks` | `tasks.*` | angle only | Enable specific tasks (energy, timing, uvwFI, angle) |
 | `--resume_from` | `checkpoint.resume_from` | `null` | Path to checkpoint to resume |
 | `--refresh_lr` | `checkpoint.refresh_lr` | `false` | Reset LR scheduler for remaining epochs |

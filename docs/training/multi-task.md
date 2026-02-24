@@ -32,7 +32,8 @@ tasks:
 
 | Loss Function | Formula | Use Case |
 |---------------|---------|----------|
-| `smooth_l1` (default) | Huber loss | General purpose, robust to outliers |
+| `smooth_l1` (default) | Huber loss (smooth_l1 variant) | General purpose, robust to outliers |
+| `huber` | Huber loss (PyTorch native) | Same as smooth_l1 with configurable `loss_beta` |
 | `l1` | \|pred - target\| | Median regression |
 | `mse` / `l2` | (pred - target)² | Mean regression |
 | `relative_l1` | \|pred - target\| / \|target\| | Scale-invariant, good for energy |

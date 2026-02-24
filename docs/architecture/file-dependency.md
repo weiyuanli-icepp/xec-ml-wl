@@ -170,6 +170,13 @@ graph TD
 | `lib/tasks/` | Task-specific handlers (energy, timing, position, angle) |
 | `lib/geom_defs.py` | Detector geometry constants and index maps |
 | `lib/geom_utils.py` | Geometry utility functions (gather_face, etc.) |
+| `lib/normalization.py` | NphoTransform class for scheme-aware npho normalization (forward/inverse) |
 | `lib/config.py` | Configuration loading and dataclasses |
 | `lib/dataset.py` | XECStreamingDataset for ROOT file streaming |
 | `lib/distributed.py` | DDP utilities (setup, sharding, metric reduction, model wrapping) |
+| `lib/train_regressor.py` | Main training script for regressor |
+| `lib/train_mae.py` | Main training script for MAE pre-training |
+| `lib/train_inpainter.py` | Main training script for inpainter |
+| `macro/validate_inpainter.py` | Unified MC pseudo-experiment and real data validation |
+| `macro/analyze_inpainter.py` | Analysis and plotting for inpainter predictions |
+| `macro/export_onnx_inpainter.py` | Export inpainter to TorchScript format |

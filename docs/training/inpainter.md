@@ -166,35 +166,56 @@ python macro/analyze_inpainter.py validation_mc/predictions.root --output analys
 
 ## 1. Architecture Overview
 
-The inpainter (`XEC_Inpainter`) uses a frozen encoder from MAE pretraining combined with lightweight inpainting heads:
+The inpainter (`XEC_Inpainter`) uses an encoder (optionally frozen from MAE pretraining) combined with lightweight inpainting heads:
 
 ```
 Input (with dead channels marked as sentinel)
     ↓
 ┌─────────────────────────────────────────┐
-│  Frozen XECEncoder (from MAE)           │
+│  XECEncoder (optionally frozen)         │
 │  - Extracts latent tokens per face      │
 │  - Global context from transformer      │
 └─────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────┐
-│  Face-Specific Inpainting Heads         │
+│  Inpainting Heads (configurable)        │
 │                                         │
-│  Rectangular (Inner, US, DS, Outer):    │
-│  - FaceInpaintingHead                   │
-│  - Local CNN (2× ConvNeXtV2 blocks)     │
-│  - Global conditioning from latent      │
-│  - Hidden dim: 64                       │
+│  head_type="per_face" (default):        │
+│    Rectangular (Inner, US, DS):         │
+│    - FaceInpaintingHead                 │
+│    - Local CNN (2× ConvNeXtV2 blocks)   │
+│    - Global conditioning from latent    │
+│    - Hidden dim: 64                     │
 │                                         │
-│  Hexagonal (Top, Bottom):               │
-│  - HexInpaintingHead                    │
-│  - Local GNN (3× HexNeXt blocks)        │
-│  - Global conditioning from latent      │
-│  - Hidden dim: 96                       │
+│    Outer (finegrid mode):               │
+│    - OuterSensorInpaintingHead          │
+│    - Per-sensor attention pooling       │
+│    - Vectorized over all 234 sensors    │
+│                                         │
+│    Hexagonal (Top, Bottom):             │
+│    - HexInpaintingHead                  │
+│    - Local GNN (3× HexNeXt blocks)      │
+│    - Global conditioning from latent    │
+│    - Hidden dim: 96                     │
+│                                         │
+│  head_type="cross_attention":           │
+│    - CrossAttentionInpaintingHead       │
+│    - Unified head for all sensors       │
+│    - Queries latent tokens via cross-   │
+│      attention + KNN local context      │
+│    - See cross-attention-inpainter.md   │
 └─────────────────────────────────────────┘
     ↓
 Output: Predicted (npho, time) at masked positions only
 ```
+
+**Head variants (controlled by `model.head_type` and `model.use_masked_attention`):**
+
+| Head Type | `head_type` | `use_masked_attention` | Description |
+|-----------|-------------|----------------------|-------------|
+| Per-face CNN/GNN | `per_face` | `false` | Default. Face-specific heads with local+global context |
+| Masked attention | `per_face` | `true` | Attention-based heads, predict only at masked positions |
+| Cross-attention | `cross_attention` | - | Unified head, queries all latents via cross-attention + KNN |
 
 ## 2. Masking Strategy
 
@@ -291,9 +312,17 @@ training:
   mae_checkpoint: null            # Path to pretrained MAE, or null
   epochs: 50
   lr: 1.0e-4
+  lr_min: 1.0e-6                  # Minimum learning rate for cosine scheduler
   lr_scheduler: "cosine"
+  warmup_epochs: 3                # Linear warmup epochs
+  weight_decay: 1.0e-4
   loss_fn: "smooth_l1"            # smooth_l1, mse, l1, huber
   loss_beta: 0.1                  # Beta for smooth_l1/huber
+  grad_clip: 1.0                  # Gradient clipping (0 to disable)
+  amp: true                       # Automatic Mixed Precision
+  compile: "reduce-overhead"      # torch.compile mode (max-autotune, reduce-overhead, default, none)
+  grad_accum_steps: 4             # Gradient accumulation steps
+  ema_decay: null                 # EMA decay rate (null to disable, 0.999 typical)
   npho_weight: 1.0
   time:                           # Time-specific options (ignored if 'time' not in predict_channels)
     weight: 1.0
@@ -380,7 +409,6 @@ The LocalFitBaseline covers inner face sensors only (0-4091). Unmatched entries 
 **Generated outputs:**
 - `global_metrics.csv` - MAE, RMSE, bias, 68th/95th percentiles
 - `face_metrics.csv` - Per-face breakdown
-- `outliers.csv` - Predictions with large errors
 - `residual_distributions.pdf` - Histograms with Gaussian fit
 - `residual_per_face_*.pdf` - Per-face residual distributions
 - `scatter_truth_vs_pred.pdf` - 2D density plots
@@ -768,11 +796,12 @@ python macro/validate_inpainter.py \
 **Other options:**
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--n-mask-inner` | 10 | Healthy sensors to mask in inner face |
-| `--n-mask-other` | 1 | Healthy sensors to mask in other faces |
+| `--n-artificial` | 50 | Number of healthy sensors to mask artificially per event |
 | `--seed` | 42 | Random seed for reproducibility |
 | `--batch-size` | 64 | Batch size for inference |
 | `--max-events` | all | Limit number of events |
+| `--baselines` | off | Enable rule-based baseline computation (neighbor avg, solid angle) |
+| `--baseline-k` | 1 | k-hop parameter for baseline neighbor search |
 
 ### 9.4 Output Format
 
@@ -788,17 +817,17 @@ The output ROOT file has additional columns compared to training predictions:
 
 ### 9.5 Event Display
 
-Visualize individual events with `macro/show_inpainter_real.py`:
+Visualize individual events with `val_data/show_inpainter_real.py`:
 
 ```bash
 # By event index
-python macro/show_inpainter_real.py 0 \
+python val_data/show_inpainter_real.py 0 \
     --predictions validation_real/real_data_predictions.root \
     --original DataGammaAngle_430000-431000.root \
     --channel npho --save event_0.pdf
 
 # By run/event number
-python macro/show_inpainter_real.py \
+python val_data/show_inpainter_real.py \
     --predictions validation_real/real_data_predictions.root \
     --original DataGammaAngle_430000-431000.root \
     --run 430123 --event 456 \
@@ -1036,7 +1065,7 @@ done
 
 ### 11.3 Output
 
-**ROOT file:** `pseudo_experiment_run{RUN}.root`
+**ROOT file:** `predictions_{mc|real}_run{RUN}.root`
 | Branch | Type | Description |
 |--------|------|-------------|
 | `event_idx` | int32 | Event index |

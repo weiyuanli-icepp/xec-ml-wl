@@ -193,11 +193,13 @@ Key parameters in `config/mae/mae_config.yaml`:
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `model.predict_channels` | ["npho", "time"] | Which channels to predict (output). Use ["npho"] for npho-only mode |
-| `model.mask_ratio` | 0.65 | Fraction of valid sensors to mask |
+| `model.mask_ratio` | 0.6 | Fraction of valid sensors to mask |
 | `model.decoder_dim` | 128 | Lightweight decoder dimension (smaller forces encoder to learn more) |
-| `outer_mode` | "finegrid" | Outer face mode (`finegrid` or `split`) |
-| `outer_fine_pool` | [3, 3] | Pooling kernel for finegrid outer |
+| `model.outer_mode` | "finegrid" | Outer face mode (`finegrid` or `split`) |
+| `model.outer_fine_pool` | null | Pooling kernel for finegrid outer (e.g., [3, 3]) |
+| `model.encoder_dim` | 1024 | Encoder token dimension (must be divisible by 32) |
 | `training.loss_fn` | "smooth_l1" | Loss function (smooth_l1, mse, l1, huber) |
+| `training.loss_beta` | 1.0 | Beta for smooth_l1/huber (smaller = more sensitive) |
 | `training.npho_weight` | 1.0 | Weight for npho channel loss |
 | `training.time.weight` | 1.0 | Weight for time channel loss |
 | `training.time.mask_ratio_scale` | 1.0 | Bias masking toward valid-time sensors (>1.0 prefers valid-time) |
@@ -244,14 +246,18 @@ training:
 
 **Note:** Use the **new normalization scheme** (npho_scale=1000, sentinel_time=-1.0) for MAE pretraining. See [Data Pipeline](../architecture/data-pipeline.md) for details.
 
-## MAE/Inpainter-Specific Parameters
+## MAE/Inpainter Shared Parameters
 
-| Parameter | Config Path | Default | Description |
-|-----------|-------------|---------|-------------|
-| `mask_ratio` | `model.mask_ratio` | 0.6/0.05 | Fraction of valid sensors to mask |
-| `time_mask_ratio_scale` | `model.time_mask_ratio_scale` | 1.0 | Bias masking toward valid-time sensors |
-| `npho_threshold` | `training.npho_threshold` | 100 | Min npho for time loss computation |
-| `use_npho_time_weight` | `training.use_npho_time_weight` | true | Chi-square-like time weighting |
-| `track_mae_rmse` | `training.track_mae_rmse` | false | Compute MAE/RMSE metrics (slower) |
-| `track_metrics` | `training.track_metrics` | false | Per-face training metrics |
-| `freeze_encoder` | `model.freeze_encoder` | false | Freeze encoder during inpainter training |
+These parameters are shared between MAE and Inpainter training. All time-related options use the nested `training.time:` config path.
+
+| Parameter | Config Path | MAE Default | Inpainter Default | Description |
+|-----------|-------------|-------------|-------------------|-------------|
+| `mask_ratio` | `model.mask_ratio` | 0.6 | 0.05 | Fraction of valid sensors to mask |
+| `time.mask_ratio_scale` | `training.time.mask_ratio_scale` | 1.0 | 1.0 | Bias masking toward valid-time sensors |
+| `time.npho_threshold` | `training.time.npho_threshold` | 100 | 100 | Min npho for time loss computation |
+| `time.use_npho_weight` | `training.time.use_npho_weight` | true | true | Chi-square-like time weighting |
+| `track_mae_rmse` | `training.track_mae_rmse` | false | false | Compute MAE/RMSE metrics (slower) |
+| `track_metrics` | `training.track_metrics` | false | false | Per-face training metrics |
+| `freeze_encoder` | `model.freeze_encoder` | - | false | Freeze encoder during inpainter training |
+
+**Note:** Legacy flat config keys (`time_mask_ratio_scale`, `npho_threshold`, `use_npho_time_weight`) are auto-migrated to the nested `training.time:` structure but are deprecated. Use the nested paths above.

@@ -55,9 +55,9 @@ Only generated for enabled tasks. Scatter plots are included within resolution p
 | File | Description |
 |------|-------------|
 | `face_weights_{run_name}.pdf` | Model feature importance across detector faces |
-| `worst_events/worst_01_{run_name}.pdf` | Top-5 worst predictions with detector visualization |
+| `worst_events/worst_01_{run_name}.pdf` | Top-10 worst predictions with detector visualization |
 | `worst_events/worst_02_{run_name}.pdf` | (comprehensive 2-panel npho + timing display) |
-| ... up to `worst_05_{run_name}.pdf` | |
+| ... up to `worst_10_{run_name}.pdf` | |
 
 **Worst Case Event Display Details:**
 - Title shows: Run/Event ID, loss (×1000 scale), truth energy (MeV), first interaction point (u,v,w in cm)

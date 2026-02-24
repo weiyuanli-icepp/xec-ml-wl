@@ -145,10 +145,12 @@ graph TD
 
         subgraph "Regression Head"
             HeadLin1(Linear 6144 -> 256):::op
-            HeadLN(LayerNorm):::op
-            HeadGELU(GELU):::op
-            HeadDrop(Dropout 0.2):::op
-            HeadLin2(Linear 256 -> 2):::op
+            HeadLN1(LayerNorm):::op
+            HeadGELU1(GELU):::op
+            HeadDrop1(Dropout 0.2):::op
+            HeadLin2(Linear 256 -> 256):::op
+            HeadGELU2(GELU):::op
+            HeadLin3(Linear 256 -> 2):::op
         end
 
         FinalOut(("<b>Output</b><br/>Theta, Phi")):::tensor
@@ -173,7 +175,7 @@ graph TD
     FaceOut --> TokenStack
     HexOut --> TokenStack
     TokenStack --> PosEmbed --> TransL1 --> TransL2
-    TransL2 --> FlatAll --> HeadLin1 --> HeadLN --> HeadGELU --> HeadDrop --> HeadLin2 --> FinalOut
+    TransL2 --> FlatAll --> HeadLin1 --> HeadLN1 --> HeadGELU1 --> HeadDrop1 --> HeadLin2 --> HeadGELU2 --> HeadLin3 --> FinalOut
 ```
 
 ## B. Key Components
@@ -259,7 +261,7 @@ Output
 
 ### 2. Hexagonal Branch: HexNeXt (Graph Convolution)
 
-**Faces**: Top PMT array (334 nodes), Bottom PMT array (334 nodes)
+**Faces**: Top PMT array (73 nodes), Bottom PMT array (73 nodes)
 
 **Problem**: PMTs are arranged in a hexagonal lattice, not a rectangular grid. Standard 2D convolutions don't work here.
 
@@ -363,7 +365,7 @@ Output
 
 **Complete DeepHexEncoder** (`lib/models/regressor.py:19`):
 ```
-Input: (B, 334, 2)  # 334 PMT nodes, 2 channels
+Input: (B, 73, 2)  # 73 PMT nodes, 2 channels
     │
     ▼
 ┌─────────────────┐
@@ -377,7 +379,7 @@ Input: (B, 334, 2)  # 334 PMT nodes, 2 channels
     │
     ▼
 ┌─────────────────┐
-│ Global Mean Pool│  Average over all 334 nodes
+│ Global Mean Pool│  Average over all 73 nodes
 └─────────────────┘
     │
     ▼
@@ -437,7 +439,7 @@ Each branch produces a **1024-dimensional token** representing its face:
 │  HEXAGONAL FACES (via DeepHexEncoder):                         │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐         │
 │  │ Top PMTs    │    │ HexNeXt     │    │ Global Mean │         │
-│  │ (334×2)     │ →  │ → (334,96)  │ →  │ + Project   │ → 1024  │
+│  │ (73×2)      │ →  │ → (73,96)   │ →  │ + Project   │ → 1024  │
 │  └─────────────┘    └─────────────┘    └─────────────┘         │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
@@ -523,8 +525,8 @@ The `XECMultiHeadModel` extends the encoder with task-specific regression heads.
 │              ▼                      ▼                      ▼                    │
 │    ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐           │
 │    │  Rectangular    │    │  Rectangular    │    │   Hexagonal     │           │
-│    │  Inner (93×44)  │    │  Outer (15×24)  │    │  Top (334)      │           │
-│    │  US (24×6)      │    │                 │    │  Bottom (334)   │           │
+│    │  Inner (93×44)  │    │  Outer (15×24)  │    │  Top (73)       │           │
+│    │  US (24×6)      │    │                 │    │  Bottom (73)    │           │
 │    │  DS (24×6)      │    │                 │    │                 │           │
 │    └────────┬────────┘    └────────┬────────┘    └────────┬────────┘           │
 │             │                      │                      │                     │
@@ -707,7 +709,7 @@ This section summarizes the total number of layers in the architecture, confirmi
 
 | Component | Layers | Details |
 |-----------|--------|---------|
-| MLP | 2 Linear | Linear(6144→256→output) |
+| MLP | 3 Linear | Linear(6144→256) → LN → GELU → Dropout → Linear(256→256) → GELU → Linear(256→output) |
 
 #### Understanding the Transformer Configuration
 
@@ -733,15 +735,15 @@ bot     [✓      ✓     ✓    ✓    ✓     ✓ ]
 
 | Path | Total Layers |
 |------|--------------|
-| Rectangular face → Transformer → Head | 17 + 6 + 2 = **~25 layers** |
-| Hexagonal face → Transformer → Head | 18 + 6 + 2 = **~26 layers** |
+| Rectangular face → Transformer → Head | 17 + 6 + 3 = **~26 layers** |
+| Hexagonal face → Transformer → Head | 18 + 6 + 3 = **~27 layers** |
 
-With ~25-26 layers from input to output, this architecture clearly qualifies as **deep learning**. The threshold for "deep" is typically considered 3+ hidden layers.
+With ~26-27 layers from input to output, this architecture clearly qualifies as **deep learning**. The threshold for "deep" is typically considered 3+ hidden layers.
 
 #### Design Notes
 
 - **Similar depth across paths**: Rectangular (~17) and hexagonal (~18) paths have comparable depth, ensuring balanced feature extraction before fusion.
-- **Simple regression head**: Only 2 linear layers in the head is sufficient because the encoder does the heavy lifting. The head simply maps the fused 6144-dim features to the output dimension.
+- **Two-hidden-layer regression head**: The 3-linear-layer head (6144→256→256→output) uses LayerNorm, GELU, and Dropout between layers. This is sufficient because the encoder does the heavy lifting.
 - **8 heads vs 6 tokens**: Having more attention heads than tokens is acceptable. Each head (128-dim) can learn different relationship patterns among the 6 faces. With only 6 tokens, using 4-8 heads would all perform similarly.
 
 ---

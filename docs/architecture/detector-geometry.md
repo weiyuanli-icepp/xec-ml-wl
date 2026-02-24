@@ -49,9 +49,9 @@ The outer face has two sensor grids that are combined into a unified fine grid:
 │   │                                                             │    │
 │   │         ┌─────────────────────┐                             │    │
 │   │         │  Center Patch (5×6) │  ← Higher granularity       │    │
-│   │         │  30 sensors         │    Each cell = 3×2 fine     │    │
-│   │         │  at rows 3-4,       │                             │    │
-│   │         │  cols 10-13         │                             │    │
+│   │         │  30 index entries   │    Each cell = 3×2 fine     │    │
+│   │         │  (18 unique center  │    (5 rows × 3, 6 cols × 2)│    │
+│   │         │  + 12 shared coarse)│                             │    │
 │   │         └─────────────────────┘                             │    │
 │   │                                                             │    │
 │   └─────────────────────────────────────────────────────────────┘    │
@@ -62,8 +62,8 @@ The outer face has two sensor grids that are combined into a unified fine grid:
 ┌──────────────────────────────────────────────────────────────────────┐
 │                     Fine Grid (45×72)                                │
 │   - Coarse upsampled: 9×5=45 rows, 24×3=72 cols                      │
-│   - Center upsampled: 6×3=18 rows, 5×2=10 cols                       │
-│   - Center overlaid at position (15, 30) to (33, 40)                 │
+│   - Center upsampled: 5×3=15 rows, 6×2=12 cols                       │
+│   - Center overlaid at position (15, 30) to (30, 42)                 │
 │   - Npho divided by scale factor (extensive quantity)                │
 │   - Time unchanged (intensive quantity)                              │
 └──────────────────────────────────────────────────────────────────────┘
@@ -80,7 +80,7 @@ The outer face has two sensor grids that are combined into a unified fine grid:
 **Scale Factors:**
 | Grid | Coarse Scale | Center Scale | Position |
 |------|--------------|--------------|----------|
-| Fine (45×72) | 5×3 | 3×2 | Center starts at (15, 30) |
+| Fine (45×72) | 5×3 | 3×2 | Center overlaid at (15, 30) to (30, 42) |
 | Pooled (15×24) | pool 3×3 | pool 3×3 | - |
 
 **Key Function:** `build_outer_fine_grid_tensor(x_batch, pool_kernel)` in `lib/geom_utils.py`
@@ -133,14 +133,23 @@ The edge index tensor has shape `(3, num_edges)` with:
 
 There are **two normalization schemes** currently in use. See [Data Pipeline](data-pipeline.md) for detailed explanation.
 
-**Legacy Scheme** (in `lib/geom_defs.py` and `config/reg/train_config.yaml`):
+**Code defaults** (in `lib/geom_defs.py` — these are the **new scheme** values):
 ```python
-DEFAULT_NPHO_SCALE     = 0.58      # Npho normalization scale
-DEFAULT_NPHO_SCALE2    = 1.0       # Secondary npho scale (log1p only)
-DEFAULT_TIME_SCALE     = 6.5e-8    # Time normalization (seconds)
-DEFAULT_TIME_SHIFT     = 0.5       # Time offset after scaling
-DEFAULT_SENTINEL_TIME = -1.0      # Marker for invalid/masked sensors
-# npho_scheme = "log1p"            # Default normalization scheme
+DEFAULT_NPHO_SCALE     = 1000.0    # Npho normalization scale
+DEFAULT_NPHO_SCALE2    = 4.08      # Secondary npho scale (log1p only)
+DEFAULT_TIME_SCALE     = 1.14e-7   # Time normalization (seconds)
+DEFAULT_TIME_SHIFT     = -0.46     # Time offset after scaling
+DEFAULT_SENTINEL_TIME  = -1.0      # Marker for invalid/masked sensors
+```
+
+**Legacy Scheme** (in `config/reg/train_config.yaml` — overrides the above defaults):
+```python
+npho_scale     = 0.58       # Npho normalization scale
+npho_scale2    = 1.0        # Secondary npho scale (log1p only)
+time_scale     = 6.5e-8     # Time normalization (seconds)
+time_shift     = 0.5        # Time offset after scaling
+sentinel_time  = -1.0       # Marker for invalid/masked sensors
+# npho_scheme = "log1p"
 ```
 
 **New Scheme** (in `config/mae/mae_config.yaml` and `config/inp/inpainter_config.yaml`):
@@ -149,8 +158,8 @@ npho_scale     = 1000       # Npho normalization scale
 npho_scale2    = 4.08       # Secondary npho scale (log1p only)
 time_scale     = 1.14e-7    # Time normalization (seconds)
 time_shift     = -0.46      # Time offset after scaling
-sentinel_time = -1.0       # Marker for invalid/masked time sensors
-sentinel_npho = -1.0       # Marker for invalid/masked npho sensors
+sentinel_time  = -1.0       # Marker for invalid/masked time sensors
+sentinel_npho  = -1.0       # Marker for invalid/masked npho sensors
 # npho_scheme: "log1p" (MAE) or "sqrt" (inpainter)
 ```
 
