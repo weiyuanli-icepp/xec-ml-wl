@@ -170,17 +170,17 @@ def plot_resolution_profile(pred, true, root_data=None, bins=20, outfile=None):
         axs[1, 1].set_title("Phi Bias vs Phi")
 
         if has_energy:
-            true_energy = root_data['true_energy']
+            true_energy = root_data['true_energy'] * 1000.0  # GeV -> MeV
             x, y, ye = _get_binned_stat(true_energy, r_theta, mean_func, bins)
             axs[0, 2].errorbar(x, y, yerr=ye, marker='D', color='tab:green', ms=5, **_eb)
             axs[0, 2].axhline(0, color='gray', ls='--', lw=1)
-            axs[0, 2].set_xlabel("True Energy [GeV]"); axs[0, 2].set_ylabel("Mean dTheta [deg]")
+            axs[0, 2].set_xlabel("True Energy [MeV]"); axs[0, 2].set_ylabel("Mean dTheta [deg]")
             axs[0, 2].set_title("Theta Bias vs Energy")
 
             x, y, ye = _get_binned_stat(true_energy, r_phi, mean_func, bins)
             axs[1, 2].errorbar(x, y, yerr=ye, marker='D', color='tab:green', ms=5, **_eb)
             axs[1, 2].axhline(0, color='gray', ls='--', lw=1)
-            axs[1, 2].set_xlabel("True Energy [GeV]"); axs[1, 2].set_ylabel("Mean dPhi [deg]")
+            axs[1, 2].set_xlabel("True Energy [MeV]"); axs[1, 2].set_ylabel("Mean dPhi [deg]")
             axs[1, 2].set_title("Phi Bias vs Energy")
         else:
             axs[0, 2].axis('off')
@@ -197,15 +197,15 @@ def plot_resolution_profile(pred, true, root_data=None, bins=20, outfile=None):
             fig.suptitle("Angle Resolution vs Cross-Variables", fontsize=16)
 
             if has_energy:
-                true_energy = root_data['true_energy']
+                true_energy = root_data['true_energy'] * 1000.0  # GeV -> MeV
                 x, y, ye = _get_binned_stat(true_energy, d_theta, percentile_68, bins)
                 axs[0, 0].errorbar(x, y, yerr=ye, marker='o', color='tab:red', ms=5, **_eb)
-                axs[0, 0].set_xlabel("True Energy [GeV]"); axs[0, 0].set_ylabel("68% |dTheta| [deg]")
+                axs[0, 0].set_xlabel("True Energy [MeV]"); axs[0, 0].set_ylabel("68% |dTheta| [deg]")
                 axs[0, 0].set_title("Theta Resolution vs Energy")
 
                 x, y, ye = _get_binned_stat(true_energy, psi_deg, percentile_68, bins)
                 axs[1, 0].errorbar(x, y, yerr=ye, marker='s', color='tab:red', ms=5, **_eb)
-                axs[1, 0].set_xlabel("True Energy [GeV]"); axs[1, 0].set_ylabel("68% Opening Angle [deg]")
+                axs[1, 0].set_xlabel("True Energy [MeV]"); axs[1, 0].set_ylabel("68% Opening Angle [deg]")
                 axs[1, 0].set_title("Opening Angle Res vs Energy")
             else:
                 axs[0, 0].axis('off')
@@ -391,6 +391,10 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
     from matplotlib.colors import LogNorm
     from scipy.optimize import curve_fit
 
+    # Convert from internal GeV to MeV for display
+    pred = pred * 1000.0
+    true = true * 1000.0
+
     residual = pred - true
     abs_residual = np.abs(residual)
 
@@ -434,8 +438,8 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
     _eb = dict(fmt='none', capsize=3, elinewidth=0.8)
     x, y, ye = _get_binned_stat(true, abs_residual, percentile_68, bins)
     axs[idx_res].errorbar(x, y, yerr=ye, marker='o', color='tab:orange', ms=5, **_eb)
-    axs[idx_res].set_xlabel("True Energy [GeV]")
-    axs[idx_res].set_ylabel("68% |Residual| [GeV]")
+    axs[idx_res].set_xlabel("True Energy [MeV]")
+    axs[idx_res].set_ylabel("68% |Residual| [MeV]")
     axs[idx_res].set_title("Resolution vs True Energy")
 
     # Normalized Resolution (sigma/E) vs True Energy with fit
@@ -464,7 +468,7 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
     except Exception:
         pass  # Skip fit if it fails
 
-    axs[idx_rel].set_xlabel("True Energy [GeV]")
+    axs[idx_rel].set_xlabel("True Energy [MeV]")
     axs[idx_rel].set_ylabel("68% |Residual|/E")
     axs[idx_rel].set_title(f"Relative Resolution vs Energy{fit_label}")
     axs[idx_rel].legend(loc='upper right')
@@ -475,8 +479,8 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
     h = axs[idx_scatter].hist2d(true, pred, bins=50, range=[[vmin, vmax], [vmin, vmax]],
                   cmap='viridis', norm=LogNorm())
     axs[idx_scatter].plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=1, label='y=x')
-    axs[idx_scatter].set_xlabel("True Energy [GeV]")
-    axs[idx_scatter].set_ylabel("Pred Energy [GeV]")
+    axs[idx_scatter].set_xlabel("True Energy [MeV]")
+    axs[idx_scatter].set_ylabel("Pred Energy [MeV]")
     axs[idx_scatter].set_title("Pred vs True")
     axs[idx_scatter].legend()
     plt.colorbar(h[3], ax=axs[idx_scatter], label='Count')
@@ -495,7 +499,7 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
             x, y, ye = _get_binned_stat(uvw_val, abs_residual, percentile_68, bins)
             axs[1, i].errorbar(x, y, yerr=ye, marker=mk, color=color, ms=5, **_eb)
             axs[1, i].set_xlabel(f"True {label} [cm]")
-            axs[1, i].set_ylabel("68% |Residual| [GeV]")
+            axs[1, i].set_ylabel("68% |Residual| [MeV]")
             axs[1, i].set_title(f"Resolution vs {label}")
 
         # Row 2, Col 4: Hide unused subplot
@@ -561,7 +565,7 @@ def plot_timing_resolution_profile(pred, true, root_data=None, bins=20, outfile=
 
         # --- Page 2: Bias vs timing + resolution/bias vs energy ---
         if has_energy:
-            true_energy = root_data['true_energy']
+            true_energy = root_data['true_energy'] * 1000.0  # GeV -> MeV
             fig, axs = plt.subplots(1, 3, figsize=(15, 4))
             fig.suptitle("Timing: Bias & Cross-Variable (Energy)", fontsize=14)
 
@@ -573,13 +577,13 @@ def plot_timing_resolution_profile(pred, true, root_data=None, bins=20, outfile=
 
             x, y, ye = _get_binned_stat(true_energy, abs_residual, percentile_68, bins)
             axs[1].errorbar(x, y, yerr=ye, marker='s', color='tab:red', ms=5, **_eb)
-            axs[1].set_xlabel("True Energy [GeV]"); axs[1].set_ylabel("68% |Residual|")
+            axs[1].set_xlabel("True Energy [MeV]"); axs[1].set_ylabel("68% |Residual|")
             axs[1].set_title("Resolution vs Energy")
 
             x, y, ye = _get_binned_stat(true_energy, residual, mean_func, bins)
             axs[2].errorbar(x, y, yerr=ye, marker='D', color='tab:red', ms=5, **_eb)
             axs[2].axhline(0, color='gray', ls='--', lw=1)
-            axs[2].set_xlabel("True Energy [GeV]"); axs[2].set_ylabel("Mean Residual")
+            axs[2].set_xlabel("True Energy [MeV]"); axs[2].set_ylabel("Mean Residual")
             axs[2].set_title("Bias vs Energy")
 
             plt.tight_layout(rect=[0, 0.03, 1, 0.95])
@@ -685,11 +689,11 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None, bins=20
             axs[0, i].set_title(f"{labels[i]} Bias vs True {labels[i]}")
 
         if has_energy:
-            true_energy = root_data['true_energy']
+            true_energy = root_data['true_energy'] * 1000.0  # GeV -> MeV
             for i in range(3):
                 x, y, ye = _get_binned_stat(true_energy, abs_residuals[i], percentile_68, bins)
                 axs[1, i].errorbar(x, y, yerr=ye, marker=markers[i], color=colors[i], ms=5, **_eb)
-                axs[1, i].set_xlabel("True Energy [GeV]"); axs[1, i].set_ylabel("68% |Residual|")
+                axs[1, i].set_xlabel("True Energy [MeV]"); axs[1, i].set_ylabel("68% |Residual|")
                 axs[1, i].set_title(f"{labels[i]} Resolution vs Energy")
         else:
             for i in range(3):
@@ -702,7 +706,7 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None, bins=20
 
         # --- Page 3: Bias vs energy + 3D distance error profiles ---
         if has_energy:
-            true_energy = root_data['true_energy']
+            true_energy = root_data['true_energy'] * 1000.0  # GeV -> MeV
             fig, axs = plt.subplots(2, 3, figsize=(15, 8))
             fig.suptitle("Position Bias vs Energy & 3D Distance Profiles", fontsize=14)
 
@@ -710,12 +714,12 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None, bins=20
                 x, y, ye = _get_binned_stat(true_energy, residuals[i], mean_func, bins)
                 axs[0, i].errorbar(x, y, yerr=ye, marker=markers[i], color=colors[i], ms=5, **_eb)
                 axs[0, i].axhline(0, color='gray', ls='--', lw=1)
-                axs[0, i].set_xlabel("True Energy [GeV]"); axs[0, i].set_ylabel("Mean Residual")
+                axs[0, i].set_xlabel("True Energy [MeV]"); axs[0, i].set_ylabel("Mean Residual")
                 axs[0, i].set_title(f"{labels[i]} Bias vs Energy")
 
             x, y, ye = _get_binned_stat(true_energy, dist_3d, percentile_68, bins)
             axs[1, 0].errorbar(x, y, yerr=ye, marker='o', color='tab:red', ms=5, **_eb)
-            axs[1, 0].set_xlabel("True Energy [GeV]"); axs[1, 0].set_ylabel("68% 3D Distance")
+            axs[1, 0].set_xlabel("True Energy [MeV]"); axs[1, 0].set_ylabel("68% 3D Distance")
             axs[1, 0].set_title("3D Distance Res vs Energy")
 
             x, y, ye = _get_binned_stat(true_uvw[:, 0], dist_3d, percentile_68, bins)
