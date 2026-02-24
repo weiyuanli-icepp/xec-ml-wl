@@ -70,7 +70,7 @@ from lib.geom_defs import (
 )
 from lib.normalization import NphoTransform
 from lib.dataset import expand_path
-from lib.baselines import NeighborAverageBaseline, SolidAngleWeightedBaseline
+from lib.inpainter_baselines import NeighborAverageBaseline, SolidAngleWeightedBaseline
 
 # Constants
 N_CHANNELS = 4760
