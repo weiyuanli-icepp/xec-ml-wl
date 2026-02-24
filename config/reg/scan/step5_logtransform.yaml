@@ -6,7 +6,7 @@ data:
   train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_middle"
   val_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/val"
   tree_name: "tree"
-  batch_size: 4096
+  batch_size: 1024                    # OOM with 4096 on large model
   chunksize: 131072
   num_workers: 2
   prefetch_factor: 16
@@ -70,7 +70,7 @@ training:
   ema_decay: 0.999
   channel_dropout_rate: 0
   grad_clip: 1.0
-  grad_accum_steps: 1
+  grad_accum_steps: 4                  # effective batch = 1024*4 = 4096
   profile: false
   compile: none
   compile_fullgraph: false
