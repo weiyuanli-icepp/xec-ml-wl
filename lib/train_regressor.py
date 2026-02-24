@@ -134,7 +134,7 @@ def save_validation_artifacts(
         _safe_log_artifact(csv_path)
 
         res_pdf = os.path.join(artifact_dir, f"resolution_angle_{run_name}{suffix}.pdf")
-        plot_resolution_profile(angle_pred, angle_true, outfile=res_pdf)
+        plot_resolution_profile(angle_pred, angle_true, root_data=root_data, outfile=res_pdf)
         _safe_log_artifact(res_pdf)
 
     # --- Energy Task ---
@@ -172,7 +172,7 @@ def save_validation_artifacts(
             _safe_log_artifact(csv_path)
 
             res_pdf = os.path.join(artifact_dir, f"resolution_timing_{run_name}{suffix}.pdf")
-            plot_timing_resolution_profile(pred_timing, true_timing, outfile=res_pdf)
+            plot_timing_resolution_profile(pred_timing, true_timing, root_data=root_data, outfile=res_pdf)
             _safe_log_artifact(res_pdf)
 
     # --- Position Task (uvwFI) ---
@@ -194,7 +194,7 @@ def save_validation_artifacts(
             pred_uvw = np.stack([pred_u, pred_v, pred_w], axis=1)
             true_uvw = np.stack([true_u, true_v, true_w], axis=1)
             res_pdf = os.path.join(artifact_dir, f"resolution_uvwFI_{run_name}{suffix}.pdf")
-            plot_position_resolution_profile(pred_uvw, true_uvw, outfile=res_pdf)
+            plot_position_resolution_profile(pred_uvw, true_uvw, root_data=root_data, outfile=res_pdf)
             _safe_log_artifact(res_pdf)
 
     # --- Worst Case Events ---

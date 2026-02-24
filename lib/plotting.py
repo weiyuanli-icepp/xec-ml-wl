@@ -1,3 +1,4 @@
+import contextlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -5,6 +6,29 @@ from scipy.stats import binned_statistic
 
 from .utils import angles_deg_to_unit_vec
 from .metrics import get_opening_angle_deg
+
+
+def __get_binned_stat(x, y, stat_func, nbins):
+    """Bin y-values by x and apply stat_func per bin."""
+    if len(x) == 0:
+        return np.array([]), np.array([])
+    bin_edges = np.linspace(x.min(), x.max(), nbins + 1)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    bin_idx = np.digitize(x, bin_edges) - 1
+    y_vals = []
+    for i in range(nbins):
+        mask = bin_idx == i
+        if np.any(mask):
+            y_vals.append(stat_func(y[mask]))
+        else:
+            y_vals.append(np.nan)
+    return bin_centers, np.array(y_vals)
+
+
+@contextlib.contextmanager
+def _dummy_pdf():
+    """No-op context manager for interactive (non-file) mode."""
+    yield None
 
 
 def plot_scalar_scatter(pred, true, label="Value", outfile=None):
@@ -36,98 +60,176 @@ def plot_scalar_scatter(pred, true, label="Value", outfile=None):
     else:
         plt.show()
 
-def plot_resolution_profile(pred, true, bins=20, outfile=None):
+def plot_resolution_profile(pred, true, root_data=None, bins=20, outfile=None):
     """
-    Plots resolution profiles for analysis:
-    Rows: [Theta Analysis, Phi Analysis]
-    Cols: [Component Resolution, Opening Angle Resolution, Mean Opening Angle]
+    Plots angle resolution profiles:
+    Page 1 (2x3): Resolution vs own truth axes (theta, phi)
+    Page 2 (2x3): Bias (mean residual) vs theta, phi, energy
+    Page 3 (2x3): Resolution vs energy, U, V, W  (if root_data available)
     """
+    from matplotlib.backends.backend_pdf import PdfPages
+
     # 1. Opening Angle
     psi_deg = get_opening_angle_deg(pred, true)
-    
-    # 2. Component Residuals (Absolute errors for resolution)
-    d_theta = np.abs(pred[:, 0] - true[:, 0])
-    
-    # Handle Phi wrapping for residual: result in [-180, 180] then abs
-    d_phi_raw = pred[:, 1] - true[:, 1]
-    d_phi = np.abs((d_phi_raw + 180) % 360 - 180)
 
-    # Truth inputs for x-axes
+    # 2. Component Residuals
+    d_theta = np.abs(pred[:, 0] - true[:, 0])
+    r_theta = pred[:, 0] - true[:, 0]  # signed residual for bias
+
+    d_phi_raw = pred[:, 1] - true[:, 1]
+    r_phi = (d_phi_raw + 180) % 360 - 180  # signed, wrapped
+    d_phi = np.abs(r_phi)
+
     theta_true = true[:, 0]
     phi_true = true[:, 1]
-    
-    # Helper for binning and calculating statistics
-    def get_binned_stat(x, y, stat_func, nbins):
-        if len(x) == 0: return np.array([]), np.array([])
-        bin_edges = np.linspace(x.min(), x.max(), nbins + 1)
-        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-        bin_idx = np.digitize(x, bin_edges) - 1
-        
-        y_vals = []
-        for i in range(nbins):
-            mask = bin_idx == i
-            if np.any(mask):
-                y_vals.append(stat_func(y[mask]))
-            else:
-                y_vals.append(np.nan)
-        return bin_centers, np.array(y_vals)
+
+    # Check cross-variable availability
+    has_energy = (root_data is not None and
+                  'true_energy' in root_data and len(root_data.get('true_energy', [])) > 0)
+    has_uvw = (root_data is not None and
+               'true_u' in root_data and len(root_data.get('true_u', [])) > 0)
 
     percentile_68 = lambda x: np.percentile(x, 68)
     mean_func = np.mean
 
-    fig, axs = plt.subplots(2, 3, figsize=(18, 10))
-    fig.suptitle("Resolution Profiles", fontsize=16)
+    with PdfPages(outfile) if outfile else _dummy_pdf() as pdf:
+        # --- Page 1: Resolution vs own truth axes (existing) ---
+        fig, axs = plt.subplots(2, 3, figsize=(18, 10))
+        fig.suptitle("Angle Resolution vs Own Truth Axes", fontsize=16)
 
-    # --- Row 1: Theta Dependence ---
-    # 1. Theta Res vs Theta
-    x, y = get_binned_stat(theta_true, d_theta, percentile_68, bins)
-    axs[0, 0].plot(x, y, 'o', color='tab:blue', markersize=5)
-    axs[0, 0].set_xlabel("True Theta [deg]")
-    axs[0, 0].set_ylabel("68% |dTheta| [deg]")
-    axs[0, 0].set_title("Theta Resolution vs Theta")
+        x, y = __get_binned_stat(theta_true, d_theta, percentile_68, bins)
+        axs[0, 0].plot(x, y, 'o', color='tab:blue', markersize=5)
+        axs[0, 0].set_xlabel("True Theta [deg]"); axs[0, 0].set_ylabel("68% |dTheta| [deg]")
+        axs[0, 0].set_title("Theta Resolution vs Theta")
 
-    # 2. Opening Angle Res vs Theta
-    x, y = get_binned_stat(theta_true, psi_deg, percentile_68, bins)
-    axs[0, 1].plot(x, y, 's', color='tab:orange', markersize=5)
-    axs[0, 1].set_xlabel("True Theta [deg]")
-    axs[0, 1].set_ylabel("68% Opening Angle [deg]")
-    axs[0, 1].set_title("Opening Angle Res vs Theta")
+        x, y = __get_binned_stat(theta_true, psi_deg, percentile_68, bins)
+        axs[0, 1].plot(x, y, 's', color='tab:orange', markersize=5)
+        axs[0, 1].set_xlabel("True Theta [deg]"); axs[0, 1].set_ylabel("68% Opening Angle [deg]")
+        axs[0, 1].set_title("Opening Angle Res vs Theta")
 
-    # 3. Mean Opening Angle vs Theta
-    x, y = get_binned_stat(theta_true, psi_deg, mean_func, bins)
-    axs[0, 2].plot(x, y, '^', color='tab:green', markersize=5)
-    axs[0, 2].set_xlabel("True Theta [deg]")
-    axs[0, 2].set_ylabel("Mean Opening Angle [deg]")
-    axs[0, 2].set_title("Mean Opening Angle vs Theta")
+        x, y = __get_binned_stat(theta_true, psi_deg, mean_func, bins)
+        axs[0, 2].plot(x, y, '^', color='tab:green', markersize=5)
+        axs[0, 2].set_xlabel("True Theta [deg]"); axs[0, 2].set_ylabel("Mean Opening Angle [deg]")
+        axs[0, 2].set_title("Mean Opening Angle vs Theta")
 
-    # --- Row 2: Phi Dependence ---
-    # 4. Phi Res vs Phi
-    x, y = get_binned_stat(phi_true, d_phi, percentile_68, bins)
-    axs[1, 0].plot(x, y, 'o', color='tab:blue', markersize=5)
-    axs[1, 0].set_xlabel("True Phi [deg]")
-    axs[1, 0].set_ylabel("68% |dPhi| [deg]")
-    axs[1, 0].set_title("Phi Resolution vs Phi")
+        x, y = __get_binned_stat(phi_true, d_phi, percentile_68, bins)
+        axs[1, 0].plot(x, y, 'o', color='tab:blue', markersize=5)
+        axs[1, 0].set_xlabel("True Phi [deg]"); axs[1, 0].set_ylabel("68% |dPhi| [deg]")
+        axs[1, 0].set_title("Phi Resolution vs Phi")
 
-    # 5. Opening Angle Res vs Phi
-    x, y = get_binned_stat(phi_true, psi_deg, percentile_68, bins)
-    axs[1, 1].plot(x, y, 's', color='tab:orange', markersize=5)
-    axs[1, 1].set_xlabel("True Phi [deg]")
-    axs[1, 1].set_ylabel("68% Opening Angle [deg]")
-    axs[1, 1].set_title("Opening Angle Res vs Phi")
+        x, y = __get_binned_stat(phi_true, psi_deg, percentile_68, bins)
+        axs[1, 1].plot(x, y, 's', color='tab:orange', markersize=5)
+        axs[1, 1].set_xlabel("True Phi [deg]"); axs[1, 1].set_ylabel("68% Opening Angle [deg]")
+        axs[1, 1].set_title("Opening Angle Res vs Phi")
 
-    # 6. Mean Opening Angle vs Phi
-    x, y = get_binned_stat(phi_true, psi_deg, mean_func, bins)
-    axs[1, 2].plot(x, y, '^', color='tab:green', markersize=5)
-    axs[1, 2].set_xlabel("True Phi [deg]")
-    axs[1, 2].set_ylabel("Mean Opening Angle [deg]")
-    axs[1, 2].set_title("Mean Opening Angle vs Phi")
+        x, y = __get_binned_stat(phi_true, psi_deg, mean_func, bins)
+        axs[1, 2].plot(x, y, '^', color='tab:green', markersize=5)
+        axs[1, 2].set_xlabel("True Phi [deg]"); axs[1, 2].set_ylabel("Mean Opening Angle [deg]")
+        axs[1, 2].set_title("Mean Opening Angle vs Phi")
 
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    if outfile:
-        plt.savefig(outfile, dpi=120)
-        plt.close()
-    else:
-        plt.show()
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        if outfile: pdf.savefig(fig, dpi=120)
+        else: plt.show()
+        plt.close(fig)
+
+        # --- Page 2: Bias vs own truth axes + energy ---
+        fig, axs = plt.subplots(2, 3, figsize=(18, 10))
+        fig.suptitle("Angle Bias (Mean Residual) Profiles", fontsize=16)
+
+        x, y = __get_binned_stat(theta_true, r_theta, mean_func, bins)
+        axs[0, 0].plot(x, y, 'o', color='tab:blue', markersize=5)
+        axs[0, 0].axhline(0, color='gray', ls='--', lw=1)
+        axs[0, 0].set_xlabel("True Theta [deg]"); axs[0, 0].set_ylabel("Mean dTheta [deg]")
+        axs[0, 0].set_title("Theta Bias vs Theta")
+
+        x, y = __get_binned_stat(phi_true, r_theta, mean_func, bins)
+        axs[0, 1].plot(x, y, 'o', color='tab:orange', markersize=5)
+        axs[0, 1].axhline(0, color='gray', ls='--', lw=1)
+        axs[0, 1].set_xlabel("True Phi [deg]"); axs[0, 1].set_ylabel("Mean dTheta [deg]")
+        axs[0, 1].set_title("Theta Bias vs Phi")
+
+        x, y = __get_binned_stat(theta_true, r_phi, mean_func, bins)
+        axs[1, 0].plot(x, y, 'o', color='tab:blue', markersize=5)
+        axs[1, 0].axhline(0, color='gray', ls='--', lw=1)
+        axs[1, 0].set_xlabel("True Theta [deg]"); axs[1, 0].set_ylabel("Mean dPhi [deg]")
+        axs[1, 0].set_title("Phi Bias vs Theta")
+
+        x, y = __get_binned_stat(phi_true, r_phi, mean_func, bins)
+        axs[1, 1].plot(x, y, 'o', color='tab:orange', markersize=5)
+        axs[1, 1].axhline(0, color='gray', ls='--', lw=1)
+        axs[1, 1].set_xlabel("True Phi [deg]"); axs[1, 1].set_ylabel("Mean dPhi [deg]")
+        axs[1, 1].set_title("Phi Bias vs Phi")
+
+        if has_energy:
+            true_energy = root_data['true_energy']
+            x, y = __get_binned_stat(true_energy, r_theta, mean_func, bins)
+            axs[0, 2].plot(x, y, 'o', color='tab:green', markersize=5)
+            axs[0, 2].axhline(0, color='gray', ls='--', lw=1)
+            axs[0, 2].set_xlabel("True Energy [GeV]"); axs[0, 2].set_ylabel("Mean dTheta [deg]")
+            axs[0, 2].set_title("Theta Bias vs Energy")
+
+            x, y = __get_binned_stat(true_energy, r_phi, mean_func, bins)
+            axs[1, 2].plot(x, y, 'o', color='tab:green', markersize=5)
+            axs[1, 2].axhline(0, color='gray', ls='--', lw=1)
+            axs[1, 2].set_xlabel("True Energy [GeV]"); axs[1, 2].set_ylabel("Mean dPhi [deg]")
+            axs[1, 2].set_title("Phi Bias vs Energy")
+        else:
+            axs[0, 2].axis('off')
+            axs[1, 2].axis('off')
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        if outfile: pdf.savefig(fig, dpi=120)
+        else: plt.show()
+        plt.close(fig)
+
+        # --- Page 3: Resolution vs cross-variables (energy, U, V, W) ---
+        if has_energy or has_uvw:
+            fig, axs = plt.subplots(2, 3, figsize=(18, 10))
+            fig.suptitle("Angle Resolution vs Cross-Variables", fontsize=16)
+
+            if has_energy:
+                true_energy = root_data['true_energy']
+                x, y = __get_binned_stat(true_energy, d_theta, percentile_68, bins)
+                axs[0, 0].plot(x, y, 'o', color='tab:red', markersize=5)
+                axs[0, 0].set_xlabel("True Energy [GeV]"); axs[0, 0].set_ylabel("68% |dTheta| [deg]")
+                axs[0, 0].set_title("Theta Resolution vs Energy")
+
+                x, y = __get_binned_stat(true_energy, psi_deg, percentile_68, bins)
+                axs[1, 0].plot(x, y, 's', color='tab:red', markersize=5)
+                axs[1, 0].set_xlabel("True Energy [GeV]"); axs[1, 0].set_ylabel("68% Opening Angle [deg]")
+                axs[1, 0].set_title("Opening Angle Res vs Energy")
+            else:
+                axs[0, 0].axis('off')
+                axs[1, 0].axis('off')
+
+            if has_uvw:
+                for i, (key, label, color) in enumerate([
+                    ('true_u', 'U', 'tab:blue'), ('true_v', 'V', 'tab:orange'), ('true_w', 'W', 'tab:green')
+                ]):
+                    col = i if has_energy else i  # always cols 0,1,2 when no energy, shift if energy present
+                    if has_energy:
+                        col = i  # use cols 0,1,2 for row placement
+                    val = root_data[key]
+                    # Row 0: theta res vs U/V/W
+                    x, y = __get_binned_stat(val, d_theta, percentile_68, bins)
+                    axs[0, i].plot(x, y, 'o', color=color, markersize=5)
+                    axs[0, i].set_xlabel(f"True {label} [cm]"); axs[0, i].set_ylabel("68% |dTheta| [deg]")
+                    axs[0, i].set_title(f"Theta Res vs {label}")
+                    # Row 1: opening angle res vs U/V/W
+                    x, y = __get_binned_stat(val, psi_deg, percentile_68, bins)
+                    axs[1, i].plot(x, y, 's', color=color, markersize=5)
+                    axs[1, i].set_xlabel(f"True {label} [cm]"); axs[1, i].set_ylabel("68% Opening Angle [deg]")
+                    axs[1, i].set_title(f"Opening Angle Res vs {label}")
+            elif has_energy:
+                # Only energy, no uvw — hide remaining panels
+                for i in range(1, 3):
+                    axs[0, i].axis('off')
+                    axs[1, i].axis('off')
+
+            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+            if outfile: pdf.savefig(fig, dpi=120)
+            else: plt.show()
+            plt.close(fig)
 
 def plot_face_weights(model, outfile=None):
     """Plot face importance weights. Silently skips if model doesn't support it."""
@@ -289,23 +391,6 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
     residual = pred - true
     abs_residual = np.abs(residual)
 
-    # Helper for binning
-    def get_binned_stat(x, y, stat_func, nbins):
-        if len(x) == 0:
-            return np.array([]), np.array([])
-        bin_edges = np.linspace(x.min(), x.max(), nbins + 1)
-        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-        bin_idx = np.digitize(x, bin_edges) - 1
-
-        y_vals = []
-        for i in range(nbins):
-            mask = bin_idx == i
-            if np.any(mask):
-                y_vals.append(stat_func(y[mask]))
-            else:
-                y_vals.append(np.nan)
-        return bin_centers, np.array(y_vals)
-
     # Calorimeter resolution model: sigma/E = sqrt((a/sqrt(E))^2 + b^2 + (c/E)^2)
     # a = stochastic term, b = constant term, c = noise term
     def resolution_model(E, a, b, c):
@@ -343,7 +428,7 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
     axs[idx_hist].set_title(f"Residual Distribution\nBias={np.mean(residual):.4f}, 68%={np.percentile(abs_residual, 68):.4f}")
 
     # Resolution vs True Energy
-    x, y = get_binned_stat(true, abs_residual, percentile_68, bins)
+    x, y = _get_binned_stat(true, abs_residual, percentile_68, bins)
     axs[idx_res].plot(x, y, 'o', color='tab:orange', markersize=5)
     axs[idx_res].set_xlabel("True Energy [GeV]")
     axs[idx_res].set_ylabel("68% |Residual| [GeV]")
@@ -354,7 +439,7 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
     # Use small epsilon to avoid division by zero
     safe_true = np.where(np.abs(true) > 1e-6, true, 1e-6)
     rel_residual = abs_residual / np.abs(safe_true)
-    x, y = get_binned_stat(true, rel_residual, percentile_68, bins)
+    x, y = _get_binned_stat(true, rel_residual, percentile_68, bins)
     axs[idx_rel].plot(x, y, 'o', color='tab:green', markersize=5, label='Data')
 
     # Fit the resolution model
@@ -402,7 +487,7 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
         uvw_colors = ['tab:blue', 'tab:orange', 'tab:green']
 
         for i, (uvw_val, label, color) in enumerate(zip(uvw_data, uvw_labels, uvw_colors)):
-            x, y = get_binned_stat(uvw_val, abs_residual, percentile_68, bins)
+            x, y = _get_binned_stat(uvw_val, abs_residual, percentile_68, bins)
             axs[1, i].plot(x, y, 'o', color=color, markersize=5)
             axs[1, i].set_xlabel(f"True {label} [cm]")
             axs[1, i].set_ylabel("68% |Residual| [GeV]")
@@ -419,128 +504,230 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
         plt.show()
 
 
-def plot_timing_resolution_profile(pred, true, bins=20, outfile=None):
+def plot_timing_resolution_profile(pred, true, root_data=None, bins=20, outfile=None):
     """
-    Plots timing resolution profile:
-    - Residual distribution histogram
-    - Resolution (68% |residual|) vs true timing
-    - Pred vs True scatter plot
+    Plots timing resolution profiles (multi-page PDF):
+    Page 1: Residual histogram, resolution vs true timing, pred vs true scatter
+    Page 2: Bias vs true timing, resolution & bias vs energy (if available)
+    Page 3: Resolution & bias vs U, V, W (if available)
     """
+    from matplotlib.backends.backend_pdf import PdfPages
+    from matplotlib.colors import LogNorm
+
     residual = pred - true
     abs_residual = np.abs(residual)
 
-    # Helper for binning
-    def get_binned_stat(x, y, stat_func, nbins):
-        if len(x) == 0:
-            return np.array([]), np.array([])
-        bin_edges = np.linspace(x.min(), x.max(), nbins + 1)
-        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-        bin_idx = np.digitize(x, bin_edges) - 1
-
-        y_vals = []
-        for i in range(nbins):
-            mask = bin_idx == i
-            if np.any(mask):
-                y_vals.append(stat_func(y[mask]))
-            else:
-                y_vals.append(np.nan)
-        return bin_centers, np.array(y_vals)
+    has_energy = (root_data is not None and
+                  'true_energy' in root_data and len(root_data.get('true_energy', [])) > 0)
+    has_uvw = (root_data is not None and
+               'true_u' in root_data and len(root_data.get('true_u', [])) > 0)
 
     percentile_68 = lambda x: np.percentile(x, 68)
+    mean_func = np.mean
 
-    fig, axs = plt.subplots(1, 3, figsize=(15, 4))
-    fig.suptitle("Timing Resolution Profile", fontsize=14)
+    with PdfPages(outfile) if outfile else _dummy_pdf() as pdf:
+        # --- Page 1: Core plots (existing) ---
+        fig, axs = plt.subplots(1, 3, figsize=(15, 4))
+        fig.suptitle("Timing Resolution Profile", fontsize=14)
 
-    # 1. Residual histogram
-    axs[0].hist(residual, bins=100, alpha=0.7, color='tab:blue')
-    axs[0].axvline(0, color='red', linestyle='--', linewidth=1)
-    axs[0].set_xlabel("Residual (Pred - True)")
-    axs[0].set_ylabel("Count")
-    axs[0].set_title(f"Residual Distribution\nBias={np.mean(residual):.4f}, 68%={np.percentile(abs_residual, 68):.4f}")
+        axs[0].hist(residual, bins=100, alpha=0.7, color='tab:blue')
+        axs[0].axvline(0, color='red', linestyle='--', linewidth=1)
+        axs[0].set_xlabel("Residual (Pred - True)"); axs[0].set_ylabel("Count")
+        axs[0].set_title(f"Residual Distribution\nBias={np.mean(residual):.4f}, 68%={np.percentile(abs_residual, 68):.4f}")
 
-    # 2. Resolution vs True Timing
-    x, y = get_binned_stat(true, abs_residual, percentile_68, bins)
-    axs[1].plot(x, y, 'o', color='tab:orange', markersize=5)
-    axs[1].set_xlabel("True Timing")
-    axs[1].set_ylabel("68% |Residual|")
-    axs[1].set_title("Resolution vs True Timing")
+        x, y = __get_binned_stat(true, abs_residual, percentile_68, bins)
+        axs[1].plot(x, y, 'o', color='tab:orange', markersize=5)
+        axs[1].set_xlabel("True Timing"); axs[1].set_ylabel("68% |Residual|")
+        axs[1].set_title("Resolution vs True Timing")
 
-    # 3. Pred vs True scatter
-    from matplotlib.colors import LogNorm
-    vmin = min(true.min(), pred.min())
-    vmax = max(true.max(), pred.max())
-    axs[2].hist2d(true, pred, bins=50, range=[[vmin, vmax], [vmin, vmax]],
-                  cmap='viridis', norm=LogNorm())
-    axs[2].plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=1, label='y=x')
-    axs[2].set_xlabel("True Timing")
-    axs[2].set_ylabel("Pred Timing")
-    axs[2].set_title("Pred vs True")
-    axs[2].legend()
+        vmin = min(true.min(), pred.min()); vmax = max(true.max(), pred.max())
+        axs[2].hist2d(true, pred, bins=50, range=[[vmin, vmax], [vmin, vmax]],
+                      cmap='viridis', norm=LogNorm())
+        axs[2].plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=1, label='y=x')
+        axs[2].set_xlabel("True Timing"); axs[2].set_ylabel("Pred Timing")
+        axs[2].set_title("Pred vs True"); axs[2].legend()
 
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    if outfile:
-        plt.savefig(outfile, dpi=120)
-        plt.close()
-    else:
-        plt.show()
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        if outfile: pdf.savefig(fig, dpi=120)
+        else: plt.show()
+        plt.close(fig)
+
+        # --- Page 2: Bias vs timing + resolution/bias vs energy ---
+        if has_energy:
+            true_energy = root_data['true_energy']
+            fig, axs = plt.subplots(1, 3, figsize=(15, 4))
+            fig.suptitle("Timing: Bias & Cross-Variable (Energy)", fontsize=14)
+
+            x, y = __get_binned_stat(true, residual, mean_func, bins)
+            axs[0].plot(x, y, 'o', color='tab:blue', markersize=5)
+            axs[0].axhline(0, color='gray', ls='--', lw=1)
+            axs[0].set_xlabel("True Timing"); axs[0].set_ylabel("Mean Residual")
+            axs[0].set_title("Bias vs True Timing")
+
+            x, y = __get_binned_stat(true_energy, abs_residual, percentile_68, bins)
+            axs[1].plot(x, y, 'o', color='tab:red', markersize=5)
+            axs[1].set_xlabel("True Energy [GeV]"); axs[1].set_ylabel("68% |Residual|")
+            axs[1].set_title("Resolution vs Energy")
+
+            x, y = __get_binned_stat(true_energy, residual, mean_func, bins)
+            axs[2].plot(x, y, 'o', color='tab:red', markersize=5)
+            axs[2].axhline(0, color='gray', ls='--', lw=1)
+            axs[2].set_xlabel("True Energy [GeV]"); axs[2].set_ylabel("Mean Residual")
+            axs[2].set_title("Bias vs Energy")
+
+            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+            if outfile: pdf.savefig(fig, dpi=120)
+            else: plt.show()
+            plt.close(fig)
+        else:
+            # Still plot bias vs own truth even without energy
+            fig, ax = plt.subplots(1, 1, figsize=(6, 4))
+            fig.suptitle("Timing Bias", fontsize=14)
+            x, y = __get_binned_stat(true, residual, mean_func, bins)
+            ax.plot(x, y, 'o', color='tab:blue', markersize=5)
+            ax.axhline(0, color='gray', ls='--', lw=1)
+            ax.set_xlabel("True Timing"); ax.set_ylabel("Mean Residual")
+            ax.set_title("Bias vs True Timing")
+            plt.tight_layout()
+            if outfile: pdf.savefig(fig, dpi=120)
+            else: plt.show()
+            plt.close(fig)
+
+        # --- Page 3: Resolution & bias vs U, V, W ---
+        if has_uvw:
+            fig, axs = plt.subplots(2, 3, figsize=(18, 8))
+            fig.suptitle("Timing Resolution & Bias vs Position", fontsize=14)
+            for i, (key, label, color) in enumerate([
+                ('true_u', 'U', 'tab:blue'), ('true_v', 'V', 'tab:orange'), ('true_w', 'W', 'tab:green')
+            ]):
+                val = root_data[key]
+                x, y = __get_binned_stat(val, abs_residual, percentile_68, bins)
+                axs[0, i].plot(x, y, 'o', color=color, markersize=5)
+                axs[0, i].set_xlabel(f"True {label} [cm]"); axs[0, i].set_ylabel("68% |Residual|")
+                axs[0, i].set_title(f"Resolution vs {label}")
+
+                x, y = __get_binned_stat(val, residual, mean_func, bins)
+                axs[1, i].plot(x, y, 'o', color=color, markersize=5)
+                axs[1, i].axhline(0, color='gray', ls='--', lw=1)
+                axs[1, i].set_xlabel(f"True {label} [cm]"); axs[1, i].set_ylabel("Mean Residual")
+                axs[1, i].set_title(f"Bias vs {label}")
+
+            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+            if outfile: pdf.savefig(fig, dpi=120)
+            else: plt.show()
+            plt.close(fig)
 
 
-def plot_position_resolution_profile(pred_uvw, true_uvw, bins=20, outfile=None):
+def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None, bins=20, outfile=None):
     """
-    Plots position (uvwFI) resolution profile:
-    - Row 1: U, V, W residual histograms
-    - Row 2: U, V, W resolution vs true value
+    Plots position (uvwFI) resolution profiles (multi-page PDF):
+    Page 1: U, V, W residual histograms + resolution vs own true value
+    Page 2: U, V, W bias vs own true value + resolution vs energy (if available)
+    Page 3: Bias vs energy + 3D distance resolution vs energy, U, V, W (if available)
     """
+    from matplotlib.backends.backend_pdf import PdfPages
+
     labels = ['U', 'V', 'W']
     colors = ['tab:blue', 'tab:orange', 'tab:green']
 
-    # Helper for binning
-    def get_binned_stat(x, y, stat_func, nbins):
-        if len(x) == 0:
-            return np.array([]), np.array([])
-        bin_edges = np.linspace(x.min(), x.max(), nbins + 1)
-        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-        bin_idx = np.digitize(x, bin_edges) - 1
+    has_energy = (root_data is not None and
+                  'true_energy' in root_data and len(root_data.get('true_energy', [])) > 0)
 
-        y_vals = []
-        for i in range(nbins):
-            mask = bin_idx == i
-            if np.any(mask):
-                y_vals.append(stat_func(y[mask]))
-            else:
-                y_vals.append(np.nan)
-        return bin_centers, np.array(y_vals)
+    # Per-component residuals
+    residuals = [pred_uvw[:, i] - true_uvw[:, i] for i in range(3)]
+    abs_residuals = [np.abs(r) for r in residuals]
+    # 3D distance error
+    dist_3d = np.sqrt(sum(r**2 for r in residuals))
 
     percentile_68 = lambda x: np.percentile(x, 68)
+    mean_func = np.mean
 
-    fig, axs = plt.subplots(2, 3, figsize=(15, 8))
-    fig.suptitle("Position (uvwFI) Resolution Profile", fontsize=14)
+    with PdfPages(outfile) if outfile else _dummy_pdf() as pdf:
+        # --- Page 1: Residual histograms + resolution vs own true (existing) ---
+        fig, axs = plt.subplots(2, 3, figsize=(15, 8))
+        fig.suptitle("Position (uvwFI) Resolution Profile", fontsize=14)
 
-    for i in range(3):
-        residual = pred_uvw[:, i] - true_uvw[:, i]
-        abs_residual = np.abs(residual)
-        true_val = true_uvw[:, i]
+        for i in range(3):
+            axs[0, i].hist(residuals[i], bins=100, alpha=0.7, color=colors[i])
+            axs[0, i].axvline(0, color='red', linestyle='--', linewidth=1)
+            axs[0, i].set_xlabel(f"{labels[i]} Residual"); axs[0, i].set_ylabel("Count")
+            axs[0, i].set_title(f"{labels[i]}: Bias={np.mean(residuals[i]):.3f}, "
+                                f"68%={np.percentile(abs_residuals[i], 68):.3f}")
 
-        # Row 1: Residual histograms
-        axs[0, i].hist(residual, bins=100, alpha=0.7, color=colors[i])
-        axs[0, i].axvline(0, color='red', linestyle='--', linewidth=1)
-        axs[0, i].set_xlabel(f"{labels[i]} Residual")
-        axs[0, i].set_ylabel("Count")
-        axs[0, i].set_title(f"{labels[i]}: Bias={np.mean(residual):.3f}, 68%={np.percentile(abs_residual, 68):.3f}")
+            x, y = __get_binned_stat(true_uvw[:, i], abs_residuals[i], percentile_68, bins)
+            axs[1, i].plot(x, y, 'o', color=colors[i], markersize=5)
+            axs[1, i].set_xlabel(f"True {labels[i]}"); axs[1, i].set_ylabel("68% |Residual|")
+            axs[1, i].set_title(f"{labels[i]} Resolution vs True")
 
-        # Row 2: Resolution vs True
-        x, y = get_binned_stat(true_val, abs_residual, percentile_68, bins)
-        axs[1, i].plot(x, y, 'o', color=colors[i], markersize=5)
-        axs[1, i].set_xlabel(f"True {labels[i]}")
-        axs[1, i].set_ylabel("68% |Residual|")
-        axs[1, i].set_title(f"{labels[i]} Resolution vs True")
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        if outfile: pdf.savefig(fig, dpi=120)
+        else: plt.show()
+        plt.close(fig)
 
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    if outfile:
-        plt.savefig(outfile, dpi=120)
-        plt.close()
-    else:
-        plt.show()
+        # --- Page 2: Bias vs own true + resolution vs energy ---
+        ncols = 3 if has_energy else 3
+        fig, axs = plt.subplots(2, 3, figsize=(15, 8))
+        fig.suptitle("Position Bias vs Own Truth & Energy Cross-Variable", fontsize=14)
+
+        for i in range(3):
+            # Row 1: Bias vs own true coordinate
+            x, y = __get_binned_stat(true_uvw[:, i], residuals[i], mean_func, bins)
+            axs[0, i].plot(x, y, 'o', color=colors[i], markersize=5)
+            axs[0, i].axhline(0, color='gray', ls='--', lw=1)
+            axs[0, i].set_xlabel(f"True {labels[i]}"); axs[0, i].set_ylabel("Mean Residual")
+            axs[0, i].set_title(f"{labels[i]} Bias vs True {labels[i]}")
+
+        if has_energy:
+            true_energy = root_data['true_energy']
+            for i in range(3):
+                # Row 2: Resolution vs energy per component
+                x, y = __get_binned_stat(true_energy, abs_residuals[i], percentile_68, bins)
+                axs[1, i].plot(x, y, 'o', color=colors[i], markersize=5)
+                axs[1, i].set_xlabel("True Energy [GeV]"); axs[1, i].set_ylabel("68% |Residual|")
+                axs[1, i].set_title(f"{labels[i]} Resolution vs Energy")
+        else:
+            for i in range(3):
+                axs[1, i].axis('off')
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        if outfile: pdf.savefig(fig, dpi=120)
+        else: plt.show()
+        plt.close(fig)
+
+        # --- Page 3: Bias vs energy + 3D distance error profiles ---
+        if has_energy:
+            true_energy = root_data['true_energy']
+            fig, axs = plt.subplots(2, 3, figsize=(15, 8))
+            fig.suptitle("Position Bias vs Energy & 3D Distance Profiles", fontsize=14)
+
+            # Row 1: Bias vs energy per component
+            for i in range(3):
+                x, y = __get_binned_stat(true_energy, residuals[i], mean_func, bins)
+                axs[0, i].plot(x, y, 'o', color=colors[i], markersize=5)
+                axs[0, i].axhline(0, color='gray', ls='--', lw=1)
+                axs[0, i].set_xlabel("True Energy [GeV]"); axs[0, i].set_ylabel("Mean Residual")
+                axs[0, i].set_title(f"{labels[i]} Bias vs Energy")
+
+            # Row 2: 3D distance resolution vs energy, U, V
+            x, y = __get_binned_stat(true_energy, dist_3d, percentile_68, bins)
+            axs[1, 0].plot(x, y, 'o', color='tab:red', markersize=5)
+            axs[1, 0].set_xlabel("True Energy [GeV]"); axs[1, 0].set_ylabel("68% 3D Distance")
+            axs[1, 0].set_title("3D Distance Res vs Energy")
+
+            x, y = __get_binned_stat(true_uvw[:, 0], dist_3d, percentile_68, bins)
+            axs[1, 1].plot(x, y, 'o', color='tab:blue', markersize=5)
+            axs[1, 1].set_xlabel("True U"); axs[1, 1].set_ylabel("68% 3D Distance")
+            axs[1, 1].set_title("3D Distance Res vs U")
+
+            x, y = __get_binned_stat(true_uvw[:, 2], dist_3d, percentile_68, bins)
+            axs[1, 2].plot(x, y, 'o', color='tab:green', markersize=5)
+            axs[1, 2].set_xlabel("True W"); axs[1, 2].set_ylabel("68% 3D Distance")
+            axs[1, 2].set_title("3D Distance Res vs W")
+
+            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+            if outfile: pdf.savefig(fig, dpi=120)
+            else: plt.show()
+            plt.close(fig)
 
 
 def plot_mae_reconstruction(truth, masked_input, recon, title="MAE Reconstruction", savepath=None):
