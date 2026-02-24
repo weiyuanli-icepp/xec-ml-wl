@@ -69,6 +69,16 @@ def run_epoch_stream(
     criterion_l1 = nn.L1Loss(reduction="none")
     criterion_mse = nn.MSELoss(reduction="none")
 
+    # Build per-task smooth_l1 criteria so validation uses the same beta as training
+    task_criterion_smooth = {}
+    if task_weights:
+        for task, cfg in task_weights.items():
+            if isinstance(cfg, dict):
+                task_beta = cfg.get("loss_beta", loss_beta)
+            else:
+                task_beta = loss_beta
+            task_criterion_smooth[task] = nn.SmoothL1Loss(reduction="none", beta=task_beta)
+
     loss_sums = {"total_opt": 0.0, "smooth_l1": 0.0, "l1": 0.0, "mse": 0.0, "cos": 0.0, "cos_pos": 0.0}
     nobs = 0
 
@@ -339,10 +349,14 @@ def run_epoch_stream(
                         if not handler.is_active(preds, target_dict):
                             continue
 
+                        # Use task-specific smooth_l1 criterion (matches training beta)
+                        crit_smooth = task_criterion_smooth.get(
+                            handler.task_name, criterion_smooth)
+
                         # Compute losses using handler
                         losses = handler.compute_val_loss(
                             preds, target_dict,
-                            criterion_smooth, criterion_l1, criterion_mse
+                            crit_smooth, criterion_l1, criterion_mse
                         )
 
                         # Accumulate losses
