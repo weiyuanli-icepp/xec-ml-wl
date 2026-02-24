@@ -897,6 +897,12 @@ def main():
     parser.add_argument("--tree-name", type=str, default="tree",
                         help="TTree name in ROOT file (default: tree)")
 
+    # Model options
+    parser.add_argument("--predict-channels", type=str, nargs='+', default=None,
+                        choices=["npho", "time"],
+                        help="Override predict channels (e.g., --predict-channels npho). "
+                             "Required for TorchScript models that don't store this metadata.")
+
     # Baselines
     parser.add_argument("--baselines", action="store_true",
                         help="Enable rule-based baseline computation alongside ML")
@@ -966,6 +972,13 @@ def main():
         torchscript_path=args.torchscript,
         device=args.device
     )
+
+    # Override predict_channels if specified via CLI
+    if args.predict_channels is not None:
+        predict_channels = args.predict_channels
+        print(f"[INFO] Predict channels (from CLI): {predict_channels}")
+    else:
+        print(f"[INFO] Predict channels (auto-detected): {predict_channels}")
 
     # Run inference
     print(f"[INFO] Running inference on {args.device}...")
