@@ -104,7 +104,7 @@ Training is now **config-based** using `config/reg/train_config.yaml`. CLI argum
 | `--grad_clip` | `training.grad_clip` | `1.0` | Gradient clipping |
 | `--grad_accum_steps` | `training.grad_accum_steps` | `1` | Gradient accumulation steps |
 | `--channel_dropout_rate` | `training.channel_dropout_rate` | `0.1` | Random channel dropout rate |
-| `--lr_scheduler` | `training.lr_scheduler` | `cosine` | LR schedule (`cosine`, `onecycle`, `plateau`, `null`) |
+| `--lr_scheduler` | `training.lr_scheduler` | `null` | LR schedule (`cosine`, `onecycle`, `plateau`, `null`/`none`) |
 | `--compile` | `training.compile` | `max-autotune` | torch.compile mode (`max-autotune`, `reduce-overhead`, `default`, `none`) |
 | `--outer_mode` | `model.outer_mode` | `finegrid` | Outer face mode (`finegrid` or `split`) |
 | `--encoder_dim` | `model.encoder_dim` | `1024` | Encoder token dimension (must be divisible by 32) |

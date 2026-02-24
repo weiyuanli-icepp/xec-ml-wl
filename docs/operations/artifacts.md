@@ -107,7 +107,7 @@ Saved at: every 10 epochs, best epoch, and final epoch. Use these for fine-tunin
 - `pred_time` - Model predictions for time (only if `"time"` in `predict_channels`)
 - `err_npho` - Prediction errors for npho
 - `err_time` - Prediction errors for time (only if `"time"` in `predict_channels`)
-- `run_id` - Run number
+- Note: `run_id` is NOT stored as a branch (uproot can't write Unicode strings). The run ID is available from the filename and MLflow artifact metadata.
 
 **Metadata Tree (`metadata`):**
 
@@ -145,7 +145,7 @@ Output directory: `{save_path}/` (typically `artifacts/<RUN_NAME>/`)
 
 | File | Description | Contents |
 |------|-------------|----------|
-| `inpainter_checkpoint_best.pth` | Best inpainter checkpoint | epoch, model_state_dict, optimizer_state_dict, scaler_state_dict, scheduler_state_dict, best_val_loss, mlflow_run_id, config |
+| `inpainter_checkpoint_best.pth` | Best inpainter checkpoint | epoch, model_state_dict, ema_state_dict, optimizer_state_dict, scaler_state_dict, scheduler_state_dict, best_val_loss, mlflow_run_id, config |
 | `inpainter_checkpoint_last.pth` | Latest checkpoint (every 10 epochs + final) | Same as above |
 
 ### ROOT Predictions (if `checkpoint.save_predictions: true`)

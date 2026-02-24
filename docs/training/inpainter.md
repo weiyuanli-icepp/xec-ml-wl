@@ -790,7 +790,6 @@ python macro/validate_inpainter.py \
 | Option | Description |
 |--------|-------------|
 | `--torchscript PATH` | TorchScript model (.pt) - **recommended for speed** |
-| `--onnx PATH` | ONNX model (.onnx) |
 | `--checkpoint PATH` | Checkpoint file (.pth) - slower, for debugging |
 
 **Other options:**
@@ -1069,6 +1068,8 @@ done
 | Branch | Type | Description |
 |--------|------|-------------|
 | `event_idx` | int32 | Event index |
+| `run_number` | int64 | Run number |
+| `event_number` | int64 | Event number |
 | `sensor_id` | int32 | Sensor ID (0-4759) |
 | `face` | int32 | Face index (0=inner, 1=us, 2=ds, 3=outer, 4=top, 5=bot) |
 | `truth_npho` | float32 | Ground truth npho (from MC) |
