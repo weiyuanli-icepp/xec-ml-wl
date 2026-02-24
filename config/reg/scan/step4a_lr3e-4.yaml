@@ -94,7 +94,7 @@ distributed:
   num_gpus: 1
 
 mlflow:
-  experiment: "energy_scan"
+  experiment: "gamma_energy"
   run_name: null
 
 export:
