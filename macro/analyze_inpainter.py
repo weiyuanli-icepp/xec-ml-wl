@@ -403,8 +403,8 @@ def compute_baseline_metrics(data: Dict[str, np.ndarray],
             continue
 
         err_raw = data[error_key][eval_mask]
-        # Filter NaN (LocalFitBaseline has NaN for unmatched entries)
-        valid_bl = ~np.isnan(err_raw)
+        # Filter NaN and -999 sentinels (unmatched LocalFit entries)
+        valid_bl = ~np.isnan(err_raw) & (err_raw > -999)
         err = err_raw[valid_bl]
         if len(err) == 0:
             continue
@@ -426,7 +426,7 @@ def compute_baseline_metrics(data: Dict[str, np.ndarray],
             if face_mask.sum() == 0:
                 continue
             face_err_raw = data[error_key][face_mask]
-            face_valid = ~np.isnan(face_err_raw)
+            face_valid = ~np.isnan(face_err_raw) & (face_err_raw > -999)
             face_err = face_err_raw[face_valid]
             if len(face_err) == 0:
                 continue
@@ -474,8 +474,8 @@ def plot_baseline_comparison(data: Dict[str, np.ndarray], output_dir: str,
         if error_key not in data:
             continue
         err_b = data[error_key][valid]
-        # Filter NaN (LocalFitBaseline has NaN for unmatched entries)
-        err_b = err_b[~np.isnan(err_b)]
+        # Filter NaN and -999 sentinels (unmatched LocalFit entries)
+        err_b = err_b[~np.isnan(err_b) & (err_b > -999)]
         if len(err_b) == 0:
             continue
         ax.hist(err_b, bins=100, range=(-0.3, 0.4), density=True, alpha=0.4,
@@ -601,8 +601,8 @@ def plot_resolution_vs_signal_comparison(data: Dict[str, np.ndarray],
             if error_key not in data:
                 continue
             err_b = data[error_key][face_mask]
-            # Filter NaN (LocalFit only covers inner face)
-            finite = ~np.isnan(err_b)
+            # Filter NaN and -999 sentinels (LocalFit only covers inner face)
+            finite = ~np.isnan(err_b) & (err_b > -999)
             if finite.sum() < 100:
                 continue
             ft_b = ft[finite]
