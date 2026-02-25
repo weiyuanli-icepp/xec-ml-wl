@@ -1,7 +1,6 @@
-# Step 5: +log_transform for energy (uses best from step4)
-# Change from step4 winner: log_transform false->true
-# Model params locked to step3 winner (3b: large model)
-# NOTE: Update training lr/warmup/grad_clip to match step4 winner
+# Step 5: +log_transform for energy (uses best from step3b)
+# Change from step3b: log_transform false->true
+# Model and training params locked to step3b winner
 
 data:
   train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_middle"
@@ -57,11 +56,10 @@ tasks:
 training:
   epochs: 50
   amp: true
-  # TODO: Update lr/warmup/grad_clip to match step4 winner (4a or 4b)
-  lr: 3.0e-4
+  lr: 1.0e-4
   weight_decay: 1.0e-4
   lr_scheduler: "cosine"
-  warmup_epochs: 5
+  warmup_epochs: 0
   lr_min: 1.0e-6
   lr_patience: 5
   lr_factor: 0.5
@@ -69,7 +67,7 @@ training:
   pct_start: 0.3
   ema_decay: 0.999
   channel_dropout_rate: 0
-  grad_clip: 1.0
+  grad_clip: 0.1
   grad_accum_steps: 4                  # effective batch = 1024*4 = 4096
   profile: false
   compile: none
