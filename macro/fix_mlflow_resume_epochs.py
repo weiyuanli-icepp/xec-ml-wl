@@ -13,16 +13,21 @@ Usage:
 
     # Dry run (preview without modifying):
     python macro/fix_mlflow_resume_epochs.py --run-name scan_s2_ema --dry-run
+
+    # Explicit tracking URI:
+    python macro/fix_mlflow_resume_epochs.py --run-name scan_s2_ema --tracking-uri sqlite:///mlruns.db
 """
 
 import argparse
 import os
 
-# Set MLflow tracking URI before importing mlflow to avoid file store fallback
-if "MLFLOW_TRACKING_URI" not in os.environ:
-    os.environ["MLFLOW_TRACKING_URI"] = f"sqlite:///{os.getcwd()}/mlruns.db"
+# Force SQLite backend before importing mlflow
+os.environ["MLFLOW_TRACKING_URI"] = os.environ.get(
+    "MLFLOW_TRACKING_URI",
+    f"sqlite:///{os.path.join(os.getcwd(), 'mlruns.db')}"
+)
 
-import mlflow
+import mlflow  # noqa: E402
 
 
 def find_run_by_name(experiment_name, run_name):
@@ -30,7 +35,14 @@ def find_run_by_name(experiment_name, run_name):
     client = mlflow.tracking.MlflowClient()
     experiment = client.get_experiment_by_name(experiment_name)
     if experiment is None:
-        raise ValueError(f"Experiment '{experiment_name}' not found")
+        # List available experiments for debugging
+        experiments = client.search_experiments()
+        exp_names = [e.name for e in experiments]
+        raise ValueError(
+            f"Experiment '{experiment_name}' not found.\n"
+            f"  Available experiments: {exp_names}\n"
+            f"  Tracking URI: {mlflow.get_tracking_uri()}"
+        )
 
     runs = client.search_runs(
         experiment_ids=[experiment.experiment_id],
@@ -125,7 +137,12 @@ def main():
                         help="Epoch offset to add (default: 50)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview changes without modifying MLflow")
+    parser.add_argument("--tracking-uri", type=str, default=None,
+                        help="MLflow tracking URI (default: sqlite:///mlruns.db)")
     args = parser.parse_args()
+
+    if args.tracking_uri:
+        mlflow.set_tracking_uri(args.tracking_uri)
 
     print(f"MLflow tracking URI: {mlflow.get_tracking_uri()}")
 
