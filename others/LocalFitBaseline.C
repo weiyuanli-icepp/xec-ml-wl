@@ -473,6 +473,11 @@ void LocalFitBaseline(const char* inputFile  = "",
    Long64_t nEntries = tree->GetEntries();
    std::cout << "Processing " << nEntries << " events...\n";
 
+   // Suppress ROOT info messages (e.g. "ParameterSettings: lower/upper bounds
+   // outside current parameter value") during fitting loop
+   Int_t savedErrorLevel = gErrorIgnoreLevel;
+   gErrorIgnoreLevel = kWarning;
+
    Int_t nProcessed = 0, nFailed = 0;
 
    for (Long64_t iEntry = 0; iEntry < nEntries; iEntry++) {
@@ -693,6 +698,8 @@ void LocalFitBaseline(const char* inputFile  = "",
 
       nProcessed++;
    }
+
+   gErrorIgnoreLevel = savedErrorLevel;
 
    std::cout << "\nProcessed " << nProcessed << " events, " << nFailed << " failed Stage 2.\n";
 
