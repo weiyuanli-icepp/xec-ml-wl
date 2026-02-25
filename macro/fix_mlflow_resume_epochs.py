@@ -16,6 +16,8 @@ Usage:
 """
 
 import argparse
+import os
+
 import mlflow
 
 
@@ -120,6 +122,13 @@ def main():
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview changes without modifying MLflow")
     args = parser.parse_args()
+
+    # Set tracking URI to SQLite database (same as training scripts)
+    if not os.environ.get("MLFLOW_TRACKING_URI"):
+        db_path = os.path.join(os.getcwd(), "mlruns.db")
+        tracking_uri = f"sqlite:///{db_path}"
+        mlflow.set_tracking_uri(tracking_uri)
+        print(f"MLflow tracking URI: {tracking_uri}")
 
     if args.run_id:
         run_id = args.run_id
