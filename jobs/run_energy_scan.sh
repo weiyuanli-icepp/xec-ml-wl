@@ -18,8 +18,9 @@
 #   3br - Resume step 3b (cosine warm restart, +50 epochs)
 #   4a  - +LR=3e-4, warmup=5, grad_clip=1.0  (model=3b winner)
 #   4b  - +LR=5e-4, warmup=5, grad_clip=1.0  (model=3b winner)
-#   5   - +log_transform for energy          (update to step4 winner)
-#   6   - +energy reweighting                (update to step5 winner)
+#   5   - +log_transform for energy          (baseline=3b)
+#   5b  - +grad_clip=1.0 (isolate grad_clip, baseline=3b)
+#   6   - +energy reweighting                (baseline=3b)
 #
 # NOTE: Steps 2r/3ar/3br require resume_from to be set to the checkpoint path.
 #       Steps 5-6 have TODO markers for training params (lr/warmup/grad_clip).
@@ -47,6 +48,7 @@ STEP_CONFIG[3br]="step3b_resume.yaml"
 STEP_CONFIG[4a]="step4a_lr3e-4.yaml"
 STEP_CONFIG[4b]="step4b_lr5e-4.yaml"
 STEP_CONFIG[5]="step5_logtransform.yaml"
+STEP_CONFIG[5b]="step5b_gradclip.yaml"
 STEP_CONFIG[6]="step6_reweight.yaml"
 
 STEP_NAME[1]="scan_s1_baseline"
@@ -59,6 +61,7 @@ STEP_NAME[3br]="scan_s3b_model1024_resume"
 STEP_NAME[4a]="scan_s4a_lr3e-4"
 STEP_NAME[4b]="scan_s4b_lr5e-4"
 STEP_NAME[5]="scan_s5_logtransform"
+STEP_NAME[5b]="scan_s5b_gradclip1"
 STEP_NAME[6]="scan_s6_reweight"
 
 # Default: submit steps 1, 2, 3a, 3b (independent, can run in parallel)
@@ -91,7 +94,7 @@ for STEP in "${STEPS[@]}"; do
 
     if [ -z "$CONFIG" ]; then
         echo "[ERROR] Unknown step: $STEP"
-        echo "  Valid steps: 1, 2, 3a, 3b, 2r, 3ar, 3br, 4a, 4b, 5, 6"
+        echo "  Valid steps: 1, 2, 3a, 3b, 2r, 3ar, 3br, 4a, 4b, 5, 5b, 6"
         continue
     fi
 
