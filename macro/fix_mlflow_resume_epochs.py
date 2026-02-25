@@ -18,6 +18,10 @@ Usage:
 import argparse
 import os
 
+# Set MLflow tracking URI before importing mlflow to avoid file store fallback
+if "MLFLOW_TRACKING_URI" not in os.environ:
+    os.environ["MLFLOW_TRACKING_URI"] = f"sqlite:///{os.getcwd()}/mlruns.db"
+
 import mlflow
 
 
@@ -123,12 +127,7 @@ def main():
                         help="Preview changes without modifying MLflow")
     args = parser.parse_args()
 
-    # Set tracking URI to SQLite database (same as training scripts)
-    if not os.environ.get("MLFLOW_TRACKING_URI"):
-        db_path = os.path.join(os.getcwd(), "mlruns.db")
-        tracking_uri = f"sqlite:///{db_path}"
-        mlflow.set_tracking_uri(tracking_uri)
-        print(f"MLflow tracking URI: {tracking_uri}")
+    print(f"MLflow tracking URI: {mlflow.get_tracking_uri()}")
 
     if args.run_id:
         run_id = args.run_id
