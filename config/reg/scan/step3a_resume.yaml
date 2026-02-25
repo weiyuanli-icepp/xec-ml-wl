@@ -56,7 +56,7 @@ tasks:
 training:
   epochs: 50
   amp: true
-  lr: 5.0e-5                             # Reduced from 1e-4 for warm restart
+  lr: 5.0e-5
   weight_decay: 1.0e-4
   lr_scheduler: "cosine"
   warmup_epochs: 0
@@ -68,7 +68,7 @@ training:
   ema_decay: 0.999
   channel_dropout_rate: 0
   grad_clip: 0.1
-  grad_accum_steps: 2                    # effective_batch = 2048 * 2 = 4096
+  grad_accum_steps: 2
   profile: false
   compile: none
   compile_fullgraph: false
@@ -81,13 +81,13 @@ reweighting:
     nbins: 30
 
 checkpoint:
-  resume_from: FIXME                      # <-- Set to scan_s3a_model768 checkpoint path
+  resume_from: "~/meghome/xec-ml-wl/artifacts/scan_s3a_model768/checkpoint_last.pth"
   save_dir: "artifacts"
   save_interval: 10
   save_artifacts: true
   new_mlflow_run: false
-  reset_epoch: true                       # <-- Reset epoch counter
-  refresh_lr: true                        # <-- Fresh cosine schedule
+  reset_epoch: true
+  refresh_lr: true
 
 distributed:
   num_gpus: 1
