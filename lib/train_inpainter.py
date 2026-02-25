@@ -777,7 +777,7 @@ Examples:
                 "sentinel_time": sentinel_time,
                 "sentinel_npho": sentinel_npho,
                 "npho_scheme": npho_scheme,
-                "mask_ratio": mask_ratio,
+                "mask_ratio": str(mask_ratio) if isinstance(mask_ratio, dict) else mask_ratio,
                 "mask_npho_flat": mask_npho_flat,
                 "freeze_encoder": freeze_encoder,
                 "predict_channels": ",".join(predict_channels),

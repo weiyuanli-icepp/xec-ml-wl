@@ -713,7 +713,7 @@ class InpainterModelConfig:
     """Model configuration for inpainter."""
     outer_mode: str = "finegrid"
     outer_fine_pool: Optional[List[int]] = None
-    mask_ratio: float = 0.05  # Default 5% for realistic dead channel density
+    mask_ratio: Any = 0.05  # float for global, or dict for per-face e.g. {"inner": 0.05, "outer": 0.15}
     mask_npho_flat: bool = False  # CDF-based flat masking to uniformly sample across npho quantiles
     predict_channels: List[str] = field(default_factory=lambda: ["npho"])  # Output channels to predict
     freeze_encoder: bool = True  # Freeze encoder from MAE

@@ -21,7 +21,7 @@ from ..geom_defs import (
     TOP_HEX_ROWS, BOTTOM_HEX_ROWS,
     HEX_EDGE_INDEX_NP, OUTER_FINE_H, OUTER_FINE_W, flatten_hex_rows,
     OUTER_SENSOR_TO_FINEGRID, OUTER_ALL_SENSOR_IDS, OUTER_SENSOR_ID_TO_IDX,
-    CENTRAL_COARSE_IDS, DEFAULT_SENTINEL_TIME
+    CENTRAL_COARSE_IDS, DEFAULT_SENTINEL_TIME, FACE_SENSOR_IDS
 )
 from ..geom_utils import gather_face, build_outer_fine_grid_tensor, gather_hex_nodes
 from ..sensor_geometry import load_sensor_positions, build_sensor_face_ids, build_knn_graph
@@ -1422,6 +1422,15 @@ class XEC_Inpainter(nn.Module):
         self.register_buffer("top_hex_indices", torch.from_numpy(flatten_hex_rows(TOP_HEX_ROWS)).long())
         self.register_buffer("bottom_hex_indices", torch.from_numpy(flatten_hex_rows(BOTTOM_HEX_ROWS)).long())
 
+        # Per-face sensor indices for per-face masking
+        self._face_names = list(FACE_SENSOR_IDS.keys())
+        for fname, ids in FACE_SENSOR_IDS.items():
+            self.register_buffer(
+                f"_face_idx_{fname}",
+                torch.from_numpy(ids).long(),
+                persistent=False,
+            )
+
     def train(self, mode=True):
         """Override train to keep encoder frozen if specified."""
         super().train(mode)
@@ -1435,7 +1444,9 @@ class XEC_Inpainter(nn.Module):
 
         Args:
             x_flat: (B, 4760, 2) - flat sensor values (npho, time)
-            mask_ratio: fraction of valid sensors to mask
+            mask_ratio: fraction of valid sensors to mask (float), or dict mapping
+                        face name to per-face ratio (e.g. {"inner": 0.05, "outer": 0.15}).
+                        Faces not in dict default to 0.0 (no masking).
             sentinel: value used to mark invalid/masked sensors (defaults to self.sentinel_time)
             npho_threshold_norm: threshold in normalized npho space for stratified masking.
                                 If provided and time_mask_ratio_scale != 1.0, valid-time sensors
@@ -1454,6 +1465,10 @@ class XEC_Inpainter(nn.Module):
         """
         if sentinel is None:
             sentinel = self.sentinel_time
+
+        # Dispatch to per-face masking if mask_ratio is a dict
+        if isinstance(mask_ratio, dict):
+            return self._random_masking_per_face(x_flat, mask_ratio, sentinel, npho_threshold_norm)
 
         B, N, C = x_flat.shape
         device = x_flat.device
@@ -1558,6 +1573,115 @@ class XEC_Inpainter(nn.Module):
         mask_bool = mask.bool()  # (B, N)
         x_masked[:, :, 0].masked_fill_(mask_bool, self.sentinel_npho)  # npho -> npho sentinel
         x_masked[:, :, 1].masked_fill_(mask_bool, sentinel)                 # time -> sentinel
+
+        return x_masked, mask
+
+    def _random_masking_per_face(self, x_flat, mask_ratio_dict, sentinel, npho_threshold_norm=None):
+        """
+        Per-face random masking: each face uses its own mask ratio.
+
+        Args:
+            x_flat: (B, 4760, 2) - flat sensor values (npho, time)
+            mask_ratio_dict: dict mapping face name to ratio (e.g. {"inner": 0.05, "outer": 0.15}).
+                             Faces not in dict default to 0.0.
+            sentinel: value used to mark invalid/masked sensors
+            npho_threshold_norm: threshold for stratified masking (applied per-face)
+
+        Returns:
+            x_masked: (B, 4760, 2) - input with masked positions set to sentinel
+            mask: (B, 4760) - binary mask of randomly-masked positions (1 = masked)
+        """
+        B, N, C = x_flat.shape
+        device = x_flat.device
+
+        # Determine invalid sensors globally
+        if "time" in self.predict_channels:
+            already_invalid = (x_flat[:, :, 1] == sentinel)  # (B, N)
+        else:
+            already_invalid = (x_flat[:, :, 0] == self.sentinel_npho)  # (B, N)
+
+        mask = torch.zeros(B, N, device=device)
+
+        for fname in self._face_names:
+            face_ratio = mask_ratio_dict.get(fname, 0.0)
+            if face_ratio <= 0.0:
+                continue
+
+            face_idx = getattr(self, f"_face_idx_{fname}")  # (n_face,)
+            n_face = face_idx.shape[0]
+
+            # Get validity for this face: (B, n_face)
+            face_invalid = already_invalid[:, face_idx]
+            face_valid_count = (~face_invalid).sum(dim=1)  # (B,)
+
+            # Number to mask per sample
+            num_to_mask = (face_valid_count.float() * face_ratio).int()  # (B,)
+
+            # Generate noise for this face
+            noise = torch.rand(B, n_face, device=device)
+            noise[face_invalid] = float('inf')
+
+            # Flat npho masking within this face
+            if self.mask_npho_flat:
+                npho_vals = x_flat[:, face_idx, 0].clone()
+                npho_vals[face_invalid] = float('-inf')
+
+                eps = 0.01
+                log_npho = torch.log(npho_vals.clamp(min=eps))
+                log_npho[face_invalid] = float('-inf')
+
+                sorted_indices = torch.argsort(log_npho, dim=1)
+                sorted_log = log_npho.gather(1, sorted_indices)  # (B, n_face)
+
+                k_max = num_to_mask.max().item()
+                if k_max > 0:
+                    k_f = num_to_mask.unsqueeze(1).float().clamp(min=1)
+
+                    log_lo = torch.tensor(float(torch.log(torch.tensor(eps))),
+                                          device=device).view(1, 1).expand(B, 1)
+                    log_hi = sorted_log[:, -1:] + 0.001
+
+                    edge_idx = torch.arange(k_max + 1, device=device).unsqueeze(0).float()
+                    edges = log_lo + edge_idx * (log_hi - log_lo) / k_f
+
+                    edge_pos = torch.searchsorted(sorted_log, edges)
+                    lo = edge_pos[:, :-1]
+                    hi = edge_pos[:, 1:]
+                    bin_sz = hi - lo
+                    non_empty = (bin_sz > 0)
+
+                    safe_sz = bin_sz.clamp(min=1)
+                    rand_off = (torch.rand(B, k_max, device=device) * safe_sz.float()).long()
+                    sel_sorted = (lo + rand_off).clamp(max=n_face - 1)
+                    sel_orig = sorted_indices.gather(1, sel_sorted)
+
+                    bins_f = torch.arange(k_max, device=device).unsqueeze(0).expand(B, -1).float()
+                    noise = k_max + torch.rand(B, n_face, device=device)
+                    noise[face_invalid] = float('inf')
+                    sel_noise = bins_f + torch.rand(B, k_max, device=device)
+                    sel_noise[~non_empty] = float('inf')
+                    noise.scatter_(1, sel_orig, sel_noise)
+
+            # Stratified masking: bias toward valid-time sensors
+            if (self.time_mask_ratio_scale != 1.0 and npho_threshold_norm is not None):
+                valid_time = (x_flat[:, face_idx, 0] > npho_threshold_norm) & (~face_invalid)
+                noise[valid_time] = noise[valid_time] / self.time_mask_ratio_scale
+
+            # Sort and select top-k
+            ids_shuffle = torch.argsort(noise, dim=1)
+            position_in_sort = torch.arange(n_face, device=device).unsqueeze(0).expand(B, -1)
+            should_mask = (position_in_sort < num_to_mask.unsqueeze(1)).float()
+            face_mask = torch.zeros(B, n_face, device=device)
+            face_mask.scatter_(1, ids_shuffle, should_mask)
+
+            # Write face mask into global mask
+            mask[:, face_idx] = face_mask
+
+        # Apply sentinel values to masked positions
+        x_masked = x_flat.clone()
+        mask_bool = mask.bool()
+        x_masked[:, :, 0].masked_fill_(mask_bool, self.sentinel_npho)
+        x_masked[:, :, 1].masked_fill_(mask_bool, sentinel)
 
         return x_masked, mask
 

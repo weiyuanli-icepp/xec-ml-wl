@@ -34,7 +34,13 @@ normalization:
 model:
   outer_mode: "finegrid"
   outer_fine_pool: [2,2]
-  mask_ratio: 0.10                  # Match realistic dead channel density (~1.85%)
+  mask_ratio:                        # Per-face mask ratios
+    inner: 0.05                      # ~1.85% effective dead channel density
+    outer: 0.15
+    us: 0.15
+    ds: 0.15
+    top: 0.15
+    bot: 0.15
   mask_npho_flat: true
   freeze_encoder: true              # Freeze MAE encoder, train only cross-attn head
   use_local_context: true

@@ -150,6 +150,18 @@ OUTER_ALL_SENSOR_IDS = np.array(
 OUTER_SENSOR_ID_TO_IDX = {int(sid): idx for idx, sid in enumerate(OUTER_ALL_SENSOR_IDS)}
 
 
+# --- Face Sensor IDs ---
+# Dict mapping face name to sorted numpy array of global sensor indices.
+FACE_SENSOR_IDS = {
+    'inner': np.arange(0, 4092, dtype=np.int32),
+    'outer': OUTER_ALL_SENSOR_IDS,
+    'us':    US_INDEX_MAP.flatten().astype(np.int32),
+    'ds':    DS_INDEX_MAP.flatten().astype(np.int32),
+    'top':   flatten_hex_rows(TOP_HEX_ROWS),
+    'bot':   flatten_hex_rows(BOTTOM_HEX_ROWS),
+}
+
+
 # Default Normalization Factors
 # npho_norm = log1p(raw_npho / NPHO_SCALE) / NPHO_SCALE2
 # time_norm = (raw_time / TIME_SCALE) - TIME_SHIFT
