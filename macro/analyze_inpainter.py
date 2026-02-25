@@ -140,16 +140,26 @@ def load_predictions(input_path: str) -> Tuple[Dict[str, np.ndarray], Dict]:
         print(f"[INFO] pred_time branch missing - switching to npho-only mode")
         metadata['predict_channels'] = ['npho']
 
+    # Remap baseline_localfit_* -> baseline_lf_* for consistency
+    for suffix in ['npho', 'error_npho']:
+        src = f'baseline_localfit_{suffix}'
+        dst = f'baseline_lf_{suffix}'
+        if src in data and dst not in data:
+            data[dst] = data.pop(src)
+
     # Detect baseline branches
     has_avg = 'baseline_avg_npho' in data
     has_sa = 'baseline_sa_npho' in data
-    if has_avg or has_sa:
-        baselines = []
-        if has_avg:
-            baselines.append('neighbor_avg')
-        if has_sa:
-            baselines.append('solid_angle')
-        print(f"[INFO] Baseline data found: {', '.join(baselines)}")
+    has_lf = 'baseline_lf_npho' in data
+    detected = []
+    if has_avg:
+        detected.append('neighbor_avg')
+    if has_sa:
+        detected.append('solid_angle')
+    if has_lf:
+        detected.append('local_fit')
+    if detected:
+        print(f"[INFO] Baseline data found: {', '.join(detected)}")
 
     return data, metadata
 
