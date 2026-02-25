@@ -141,5 +141,9 @@ class PositionTaskHandler(TaskHandler):
             metrics["uvw_v_res_68pct"] = float(np.percentile(np.abs(v_res), 68))
             metrics["uvw_w_res_68pct"] = float(np.percentile(np.abs(w_res), 68))
             metrics["uvw_dist_68pct"] = float(np.percentile(dist, 68))
+            metrics["uvw_u_bias"] = float(np.mean(u_res))
+            metrics["uvw_v_bias"] = float(np.mean(v_res))
+            metrics["uvw_w_bias"] = float(np.mean(w_res))
+            metrics["uvw_dist_bias"] = float(np.mean(dist))
 
         return metrics
