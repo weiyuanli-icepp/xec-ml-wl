@@ -81,7 +81,7 @@ reweighting:
     nbins: 30
 
 checkpoint:
-  resume_from: "FIXME"
+  resume_from: "artifacts/scan_s5_logtransform/checkpoint_last.pth"
   save_dir: "artifacts"
   save_interval: 10
   save_artifacts: true
