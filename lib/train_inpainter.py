@@ -588,6 +588,10 @@ Examples:
     # Detect resume to auto-disable warmup
     # When resuming from a checkpoint, warmup is not needed since the model
     # is already past the initial training phase.
+    if resume_from and not os.path.exists(resume_from):
+        raise FileNotFoundError(
+            f"resume_from checkpoint not found: {resume_from}"
+        )
     if resume_from and os.path.exists(resume_from) and warmup_epochs > 0:
         try:
             ckpt_probe = torch.load(resume_from, map_location="cpu", weights_only=False)

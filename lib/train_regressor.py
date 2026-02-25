@@ -417,6 +417,10 @@ def train_with_config(config_path: str, profile: bool = None):
     # creating the scheduler to avoid unnecessary warmup.
     warmup_epochs = cfg.training.warmup_epochs
     is_resuming = False
+    if cfg.checkpoint.resume_from and not os.path.exists(cfg.checkpoint.resume_from):
+        raise FileNotFoundError(
+            f"resume_from checkpoint not found: {cfg.checkpoint.resume_from}"
+        )
     if cfg.checkpoint.resume_from and os.path.exists(cfg.checkpoint.resume_from):
         try:
             ckpt_probe = torch.load(cfg.checkpoint.resume_from, map_location="cpu", weights_only=False)
