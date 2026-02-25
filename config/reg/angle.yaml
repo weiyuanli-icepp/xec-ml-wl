@@ -43,7 +43,7 @@ tasks:
   angle:
     enabled: true
     loss_fn: "smooth_l1"
-    loss_beta: 1.0                        # Tune based on residuals (degrees scale)
+    loss_beta: 1.0
     weight: 1.0
   energy:
     enabled: false
@@ -67,7 +67,7 @@ training:
   ema_decay: 0.999
   channel_dropout_rate: 0
   grad_clip: 0.1
-  grad_accum_steps: 4                    # effective_batch = 1024 * 4 = 4096
+  grad_accum_steps: 4
   profile: false
   compile: none
   compile_fullgraph: false
