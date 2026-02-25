@@ -1,5 +1,5 @@
 # ===================================================
-# Inpainter — MAE Pretrained Encoder (Frozen), mask_ratio=0.20
+# Inpainter — MAE Pretrained Encoder (Frozen), mask_ratio=0.10
 # ===================================================
 # Phase 1: Freeze MAE encoder, train only cross-attention head.
 # Expect ~2-3x faster epochs vs from-scratch (no encoder backward pass).
@@ -34,7 +34,7 @@ normalization:
 model:
   outer_mode: "finegrid"
   outer_fine_pool: [2,2]
-  mask_ratio: 0.20                  # Doubled from 0.10 — more training signal per event
+  mask_ratio: 0.10                  # Match realistic dead channel density (~1.85%)
   mask_npho_flat: true
   freeze_encoder: true              # Freeze MAE encoder, train only cross-attn head
   use_local_context: true
@@ -88,7 +88,7 @@ training:
 # === Checkpointing ===
 checkpoint:
   resume_from: null
-  save_dir: "artifacts/mask0.20_mae_frozen_sqrt"
+  save_dir: "artifacts/mask0.10_mae_frozen_sqrt"
   save_interval: 10
   save_predictions: true
   root_save_interval: 10
@@ -103,4 +103,4 @@ distributed:
 # === MLflow ===
 mlflow:
   experiment: "inpainting"
-  run_name: "mask0.20_mae_frozen_sqrt"
+  run_name: "mask0.10_mae_frozen_sqrt"
