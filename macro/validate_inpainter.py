@@ -50,6 +50,8 @@ import os
 import sys
 import argparse
 import csv
+import subprocess
+import tempfile
 import numpy as np
 import torch
 import uproot
@@ -536,6 +538,163 @@ def run_baselines(x_original: np.ndarray, combined_mask: np.ndarray,
     return baseline_results
 
 
+def run_local_fit_baseline(
+    input_path: str,
+    dead_channels: np.ndarray,
+    x_original: np.ndarray,
+    combined_mask: np.ndarray,
+    artificial_mask: Optional[np.ndarray],
+    npho_scheme: str,
+    npho_scale: float = DEFAULT_NPHO_SCALE,
+    npho_scale2: float = DEFAULT_NPHO_SCALE2,
+    max_events: Optional[int] = None,
+) -> List[Dict]:
+    """Run LocalFitBaseline via ROOT macro and return normalized results.
+
+    The macro operates on raw npho (reads directly from ROOT file).
+    Predictions are normalized to match the ML model's normalized space.
+
+    Only inner-face dead channels (0-4091) are predicted by the macro.
+
+    Args:
+        input_path: Path to the input ROOT file (single file only).
+        dead_channels: Array of dead channel indices.
+        x_original: (N, 4760, 2) normalized original data (for truth values).
+        combined_mask: (N, 4760) bool mask.
+        artificial_mask: (N, 4760) bool or None.
+        npho_scheme: Normalization scheme for NphoTransform.
+        npho_scale: Scale parameter for NphoTransform.
+        npho_scale2: Scale2 parameter for NphoTransform.
+        max_events: Max events (must match what was used to load data).
+
+    Returns:
+        List of per-sensor prediction dicts (same format as other baselines).
+    """
+    # Resolve to a single file
+    file_list = expand_path(input_path)
+    if len(file_list) != 1:
+        print(f"[WARNING] LocalFitBaseline requires a single ROOT file, "
+              f"got {len(file_list)}. Using first file only.")
+    root_file = file_list[0]
+
+    # Macro path (relative to repo root)
+    macro_path = os.path.join(os.path.dirname(__file__), '..', 'others', 'LocalFitBaseline.C')
+    macro_path = os.path.abspath(macro_path)
+    if not os.path.isfile(macro_path):
+        raise FileNotFoundError(f"LocalFitBaseline.C not found at {macro_path}")
+
+    # Write dead channel list to temp file
+    dead_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+    try:
+        for ch in dead_channels:
+            dead_tmp.write(f"{ch}\n")
+        dead_tmp.close()
+
+        # Output temp file for ROOT macro results
+        out_tmp = tempfile.NamedTemporaryFile(suffix='.root', delete=False)
+        out_tmp.close()
+
+        # Call ROOT macro
+        cmd = (
+            f'root -l -b -q \'{macro_path}("{root_file}", '
+            f'"{dead_tmp.name}", "{out_tmp.name}")\''
+        )
+        print(f"[INFO] Running LocalFitBaseline macro...")
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"[ERROR] LocalFitBaseline macro failed (exit code {result.returncode})")
+            print(f"  stdout: {result.stdout[-500:]}" if result.stdout else "  (no stdout)")
+            print(f"  stderr: {result.stderr[-500:]}" if result.stderr else "  (no stderr)")
+            return []
+
+        # Load results from output ROOT file
+        with uproot.open(out_tmp.name) as f:
+            pred_tree = f['predictions']
+            lf_event_idx = pred_tree['event_idx'].array(library='np')
+            lf_sensor_id = pred_tree['sensor_id'].array(library='np')
+            lf_truth_raw = pred_tree['truth_npho'].array(library='np')
+            lf_pred_raw = pred_tree['pred_npho'].array(library='np')
+
+        print(f"[INFO] LocalFitBaseline: loaded {len(lf_event_idx)} predictions from macro")
+
+        # Normalize raw predictions and truth using NphoTransform
+        transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale,
+                                  npho_scale2=npho_scale2)
+
+        # Clamp raw values to domain minimum before transforming
+        domain_min = transform.domain_min()
+        lf_pred_safe = np.maximum(lf_pred_raw, domain_min)
+        lf_truth_safe = np.maximum(lf_truth_raw, domain_min)
+
+        lf_pred_norm = transform.forward(lf_pred_safe).astype(np.float32)
+        lf_truth_norm = transform.forward(lf_truth_safe).astype(np.float32)
+
+        # Apply max_events filter (macro processes all events in the file)
+        if max_events is not None:
+            keep = lf_event_idx < max_events
+            lf_event_idx = lf_event_idx[keep]
+            lf_sensor_id = lf_sensor_id[keep]
+            lf_pred_norm = lf_pred_norm[keep]
+            lf_truth_norm = lf_truth_norm[keep]
+
+        # Build a lookup: (event_idx, sensor_id) -> normalized prediction
+        lf_lookup = {}
+        for j in range(len(lf_event_idx)):
+            key = (int(lf_event_idx[j]), int(lf_sensor_id[j]))
+            lf_lookup[key] = float(lf_pred_norm[j])
+
+        # Build results list aligned with combined_mask (same structure as other baselines)
+        n_events = x_original.shape[0]
+        results = []
+        n_found = 0
+        for i in range(n_events):
+            masked_sensors = np.where(combined_mask[i])[0]
+            for sensor_id in masked_sensors:
+                is_artificial = artificial_mask[i, sensor_id] if artificial_mask is not None else True
+                mask_type = 0 if is_artificial else 1
+
+                # Use normalized truth from x_original (consistent with other baselines)
+                truth_npho = float(x_original[i, sensor_id, 0])
+
+                # Look up LocalFit prediction
+                key = (i, int(sensor_id))
+                if key in lf_lookup:
+                    pred_npho = lf_lookup[key]
+                    n_found += 1
+                else:
+                    # Macro didn't predict this sensor (non-inner or skipped event)
+                    pred_npho = -999.0
+
+                if truth_npho == MODEL_SENTINEL_NPHO or mask_type == 1:
+                    error_npho = -999.0
+                    if mask_type == 1:
+                        truth_npho = -999.0
+                elif pred_npho == -999.0:
+                    error_npho = -999.0
+                else:
+                    error_npho = pred_npho - truth_npho
+
+                results.append({
+                    'event_idx': i,
+                    'sensor_id': int(sensor_id),
+                    'mask_type': mask_type,
+                    'pred_npho': pred_npho,
+                    'truth_npho': truth_npho,
+                    'error_npho': error_npho,
+                })
+
+        print(f"[INFO] LocalFitBaseline: matched {n_found} predictions to masked sensors")
+
+    finally:
+        # Clean up temp files
+        if os.path.exists(dead_tmp.name):
+            os.unlink(dead_tmp.name)
+        if os.path.exists(out_tmp.name):
+            os.unlink(out_tmp.name)
+
+    return results
+
+
 def collect_predictions(predictions: np.ndarray, x_original: np.ndarray,
                         mask: np.ndarray, artificial_mask: np.ndarray,
                         dead_mask: np.ndarray,
@@ -765,6 +924,12 @@ def save_predictions(predictions: List[Dict], output_path: str,
                 [p['pred_npho'] for p in sa_list], dtype=np.float32)
             branches['baseline_sa_error_npho'] = np.array(
                 [p['error_npho'] for p in sa_list], dtype=np.float32)
+        if 'localfit' in baseline_results:
+            lf_list = baseline_results['localfit']
+            branches['baseline_localfit_npho'] = np.array(
+                [p['pred_npho'] for p in lf_list], dtype=np.float32)
+            branches['baseline_localfit_error_npho'] = np.array(
+                [p['error_npho'] for p in lf_list], dtype=np.float32)
 
     # Metadata for downstream analysis scripts
     metadata = {
@@ -839,6 +1004,7 @@ def print_summary(metrics: Dict, is_real_data: bool, run_number: Optional[int],
         baseline_name_map = {
             'avg': 'Neighbor Avg (k-hop)',
             'sa': 'Solid Angle Weighted',
+            'localfit': 'Local Fit (SA)',
         }
         for bname, bmetrics in baseline_metrics.items():
             label = baseline_name_map.get(bname, bname)
@@ -934,6 +1100,8 @@ def main():
                              "(enables solid-angle-weighted baseline)")
     parser.add_argument("--baseline-k", type=int, default=1,
                         help="k-hop parameter for baseline neighbor search (default: 1)")
+    parser.add_argument("--local-fit-baseline", action="store_true",
+                        help="Enable LocalFitBaseline via ROOT macro (requires ROOT in PATH)")
 
     args = parser.parse_args()
 
@@ -1041,6 +1209,23 @@ def main():
             event_numbers=data.get('event'),
         )
 
+    # --- LocalFitBaseline (if requested) ---
+    if args.local_fit_baseline:
+        if baseline_results is None:
+            baseline_results = {}
+        lf_results = run_local_fit_baseline(
+            input_path=args.input,
+            dead_channels=dead_channels,
+            x_original=x_original,
+            combined_mask=combined_mask,
+            artificial_mask=artificial_mask,
+            npho_scheme=npho_scheme,
+            max_events=args.max_events,
+        )
+        if lf_results:
+            baseline_results['localfit'] = lf_results
+
+    if baseline_results:
         # Compute baseline metrics
         baseline_metrics_dict = {}
         for bname, bpreds in baseline_results.items():
