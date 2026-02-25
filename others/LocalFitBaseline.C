@@ -700,12 +700,16 @@ void LocalFitBaseline(const char* inputFile  = "",
    outFile.cd();
    predTree->Write();
    posTree->Write();
+
+   Long64_t nPred = predTree->GetEntries();
+   Long64_t nPos  = posTree->GetEntries();
+
    outFile.Close();
    fIn->Close();
 
    std::cout << "Output written to: " << outName << std::endl;
-   std::cout << "  predictions tree: " << predTree->GetEntries() << " entries (dead ch predictions)\n";
-   std::cout << "  position tree: "    << posTree->GetEntries()  << " entries (event positions)\n";
+   std::cout << "  predictions tree: " << nPred << " entries (dead ch predictions)\n";
+   std::cout << "  position tree: "    << nPos  << " entries (event positions)\n";
 
    delete fFitPointU;
    delete fFitPointV;

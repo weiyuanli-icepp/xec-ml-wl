@@ -606,8 +606,17 @@ def run_local_fit_baseline(
         sys.stdout.flush()
         result = subprocess.run(cmd, shell=True)
         if result.returncode != 0:
-            print(f"[ERROR] LocalFitBaseline macro failed (exit code {result.returncode})")
-            return []
+            # ROOT often segfaults during cleanup (TApplication::Terminate).
+            # Check if the output file was written successfully before giving up.
+            try:
+                _test = uproot.open(out_tmp.name)
+                _test['predictions']
+                _test.close()
+                print(f"[WARNING] LocalFitBaseline macro exited with code {result.returncode} "
+                      f"(likely ROOT cleanup crash), but output file is valid — continuing.")
+            except Exception:
+                print(f"[ERROR] LocalFitBaseline macro failed (exit code {result.returncode})")
+                return []
 
         # Load results from output ROOT file
         with uproot.open(out_tmp.name) as f:
