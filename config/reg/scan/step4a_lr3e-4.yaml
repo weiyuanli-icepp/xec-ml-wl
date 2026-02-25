@@ -1,6 +1,6 @@
 # Step 4a: LR=3e-4 + warmup (uses best model from step3)
 # Change from step3 winner: lr 1e-4->3e-4, warmup_epochs 0->5, grad_clip 0.1->1.0
-# NOTE: Update encoder_dim/dim_feedforward/num_fusion_layers to match step3 winner
+# Model params locked to step3 winner (3b: large model)
 
 data:
   train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_middle"
@@ -35,7 +35,6 @@ model:
   outer_fine_pool: [2, 2]
   hidden_dim: 256
   drop_path_rate: 0.1
-  # TODO: Update these to match step3 winner
   encoder_dim: 1024
   dim_feedforward: 4096
   num_fusion_layers: 2

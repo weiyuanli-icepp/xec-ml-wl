@@ -1,12 +1,12 @@
-# Step 4b: LR=5e-4 + warmup (uses best model from step3)
-# Change from step3 winner: lr 1e-4->5e-4, warmup_epochs 0->5, grad_clip 0.1->1.0
-# Model params locked to step3 winner (3b: large model)
+# Step 3b resume: Cosine warm restart for large model run
+# Continue training for 50 more epochs with reduced LR
+# NOTE: Set resume_from to the actual checkpoint path before running
 
 data:
   train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_middle"
   val_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/val"
   tree_name: "tree"
-  batch_size: 1024                    # OOM with 4096 on large model
+  batch_size: 1024
   chunksize: 131072
   num_workers: 2
   prefetch_factor: 16
@@ -56,10 +56,10 @@ tasks:
 training:
   epochs: 50
   amp: true
-  lr: 5.0e-4                        # <-- CHANGED from 1e-4
+  lr: 5.0e-5                             # Reduced from 1e-4 for warm restart
   weight_decay: 1.0e-4
   lr_scheduler: "cosine"
-  warmup_epochs: 5                   # <-- CHANGED from 0
+  warmup_epochs: 0
   lr_min: 1.0e-6
   lr_patience: 5
   lr_factor: 0.5
@@ -67,8 +67,8 @@ training:
   pct_start: 0.3
   ema_decay: 0.999
   channel_dropout_rate: 0
-  grad_clip: 1.0                     # <-- CHANGED from 0.1
-  grad_accum_steps: 4                  # effective batch = 1024*4 = 4096
+  grad_clip: 0.1
+  grad_accum_steps: 4                    # effective_batch = 1024 * 4 = 4096
   profile: false
   compile: none
   compile_fullgraph: false
@@ -81,13 +81,13 @@ reweighting:
     nbins: 30
 
 checkpoint:
-  resume_from: null
+  resume_from: FIXME                      # <-- Set to scan_s3b_model1024 checkpoint path
   save_dir: "artifacts"
   save_interval: 10
   save_artifacts: true
   new_mlflow_run: false
-  reset_epoch: false
-  refresh_lr: false
+  reset_epoch: true                       # <-- Reset epoch counter
+  refresh_lr: true                        # <-- Fresh cosine schedule
 
 distributed:
   num_gpus: 1

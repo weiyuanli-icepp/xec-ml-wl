@@ -1,6 +1,7 @@
 # Step 6: +energy reweighting (uses best from step5)
 # Change from step5 winner: reweighting.energy.enabled false->true
-# NOTE: Update model/training/log_transform to match step5 winner
+# Model params locked to step3 winner (3b: large model)
+# NOTE: Update training lr/warmup/grad_clip and log_transform to match step5 winner
 
 data:
   train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_middle"
@@ -35,7 +36,6 @@ model:
   outer_fine_pool: [2, 2]
   hidden_dim: 256
   drop_path_rate: 0.1
-  # TODO: Update these to match step5 winner
   encoder_dim: 1024
   dim_feedforward: 4096
   num_fusion_layers: 2
@@ -48,7 +48,7 @@ tasks:
     loss_fn: "smooth_l1"
     loss_beta: 0.002
     weight: 1.0
-    # TODO: Update to match step5 winner (true or false)
+    # TODO: Update log_transform to match step5 winner (true or false)
     log_transform: true
   timing:
     enabled: false
