@@ -20,9 +20,13 @@
 #   4b  - +LR=5e-4, warmup=5, grad_clip=1.0  (model=3b winner)
 #   5   - +log_transform for energy          (baseline=3b)
 #   5b  - +grad_clip=1.0 (isolate grad_clip, baseline=3b)
+#   4ar - Resume step 4a (cosine warm restart, +50 epochs)
+#   5r  - Resume step 5 (cosine warm restart, +50 epochs)
+#   5br - Resume step 5b (cosine warm restart, +50 epochs)
 #   6   - +energy reweighting                (baseline=3b)
 #
 # NOTE: Steps 2r/3ar/3br require resume_from to be set to the checkpoint path.
+#       Steps 4ar/5r/5br require resume_from to be set to the checkpoint path.
 #       Steps 5-6 have TODO markers for training params (lr/warmup/grad_clip).
 # =============================================================================
 
@@ -49,6 +53,9 @@ STEP_CONFIG[4a]="step4a_lr3e-4.yaml"
 STEP_CONFIG[4b]="step4b_lr5e-4.yaml"
 STEP_CONFIG[5]="step5_logtransform.yaml"
 STEP_CONFIG[5b]="step5b_gradclip.yaml"
+STEP_CONFIG[4ar]="step4a_resume.yaml"
+STEP_CONFIG[5r]="step5_resume.yaml"
+STEP_CONFIG[5br]="step5b_resume.yaml"
 STEP_CONFIG[6]="step6_reweight.yaml"
 
 STEP_NAME[1]="scan_s1_baseline"
@@ -62,6 +69,9 @@ STEP_NAME[4a]="scan_s4a_lr3e-4"
 STEP_NAME[4b]="scan_s4b_lr5e-4"
 STEP_NAME[5]="scan_s5_logtransform"
 STEP_NAME[5b]="scan_s5b_gradclip1"
+STEP_NAME[4ar]="scan_s4a_lr3e-4_resume"
+STEP_NAME[5r]="scan_s5_logtransform_resume"
+STEP_NAME[5br]="scan_s5b_gradclip1_resume"
 STEP_NAME[6]="scan_s6_reweight"
 
 # Default: submit steps 1, 2, 3a, 3b (independent, can run in parallel)
@@ -94,7 +104,7 @@ for STEP in "${STEPS[@]}"; do
 
     if [ -z "$CONFIG" ]; then
         echo "[ERROR] Unknown step: $STEP"
-        echo "  Valid steps: 1, 2, 3a, 3b, 2r, 3ar, 3br, 4a, 4b, 5, 5b, 6"
+        echo "  Valid steps: 1, 2, 3a, 3b, 2r, 3ar, 3br, 4a, 4b, 4ar, 5, 5b, 5r, 5br, 6"
         continue
     fi
 
