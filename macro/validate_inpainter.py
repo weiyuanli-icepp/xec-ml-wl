@@ -594,17 +594,19 @@ def run_local_fit_baseline(
         out_tmp = tempfile.NamedTemporaryFile(suffix='.root', delete=False)
         out_tmp.close()
 
-        # Call ROOT macro
+        # Call ROOT macro (stream output so user can see progress)
         cmd = (
             f'root -l -b -q \'{macro_path}("{root_file}", '
             f'"{dead_tmp.name}", "{out_tmp.name}")\''
         )
-        print(f"[INFO] Running LocalFitBaseline macro...")
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        n_events = x_original.shape[0]
+        print(f"[INFO] Running LocalFitBaseline macro on {root_file}")
+        print(f"[INFO]   {len(dead_channels)} dead channels, "
+              f"~{n_events} events (this may take a while)...")
+        sys.stdout.flush()
+        result = subprocess.run(cmd, shell=True)
         if result.returncode != 0:
             print(f"[ERROR] LocalFitBaseline macro failed (exit code {result.returncode})")
-            print(f"  stdout: {result.stdout[-500:]}" if result.stdout else "  (no stdout)")
-            print(f"  stderr: {result.stderr[-500:]}" if result.stderr else "  (no stderr)")
             return []
 
         # Load results from output ROOT file
