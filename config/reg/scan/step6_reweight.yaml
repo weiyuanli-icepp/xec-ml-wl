@@ -1,7 +1,6 @@
-# Step 6: +energy reweighting (uses best from step3b)
-# Change from step3b: reweighting.energy.enabled false->true
-# Model and training params locked to step3b winner
-# NOTE: Update log_transform to match step5 winner (true or false)
+# Step 6: +energy reweighting (uses best from step4a)
+# Change from step4a: reweighting.energy.enabled false->true
+# Model and training params locked to step4a winner
 
 data:
   train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_middle"
@@ -48,8 +47,7 @@ tasks:
     loss_fn: "smooth_l1"
     loss_beta: 0.002
     weight: 1.0
-    # TODO: Update log_transform to match step5 winner (true or false)
-    log_transform: true
+    log_transform: false
   timing:
     enabled: false
   uvwFI:
@@ -58,10 +56,10 @@ tasks:
 training:
   epochs: 50
   amp: true
-  lr: 1.0e-4
+  lr: 3.0e-4                          # Same as step4a
   weight_decay: 1.0e-4
   lr_scheduler: "cosine"
-  warmup_epochs: 0
+  warmup_epochs: 5                     # Same as step4a
   lr_min: 1.0e-6
   lr_patience: 5
   lr_factor: 0.5
@@ -69,7 +67,7 @@ training:
   pct_start: 0.3
   ema_decay: 0.999
   channel_dropout_rate: 0
-  grad_clip: 0.1
+  grad_clip: 1.0                       # Same as step4a
   grad_accum_steps: 4                  # effective batch = 1024*4 = 4096
   profile: false
   compile: none
