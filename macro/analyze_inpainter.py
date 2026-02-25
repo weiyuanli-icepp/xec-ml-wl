@@ -534,6 +534,86 @@ def plot_baseline_comparison(data: Dict[str, np.ndarray], output_dir: str,
     print("[INFO] Saved baseline_residual_overlay.pdf + baseline_per_face_comparison.pdf")
 
 
+def plot_resolution_vs_signal_comparison(data: Dict[str, np.ndarray],
+                                          output_dir: str,
+                                          has_mask_type: bool,
+                                          baseline_metrics: Dict,
+                                          n_bins: int = 30):
+    """Plot MAE vs truth npho for ML and all baselines, one panel per face.
+
+    Produces a 2x3 grid PDF with one subplot per face showing how each
+    method's MAE varies with the true signal level.
+    """
+    if not HAS_MATPLOTLIB or not baseline_metrics:
+        return
+
+    if has_mask_type:
+        valid = (data['mask_type'] == 0) & (data['error_npho'] > -999)
+    else:
+        valid = data['error_npho'] > -999
+
+    if valid.sum() == 0:
+        return
+
+    # Global bin edges from 95th percentile of truth_npho
+    truth_all = data['truth_npho'][valid]
+    x_max = np.percentile(truth_all, 95)
+    x_min = max(0.0, truth_all.min())
+    if x_max <= x_min:
+        return
+    bin_edges = np.linspace(x_min, x_max, n_bins + 1)
+
+    colors = {'avg': 'orange', 'sa': 'green', 'lf': 'red'}
+    labels = {'avg': 'Neighbor Avg', 'sa': 'Solid Angle', 'lf': 'Local Fit'}
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    axes_flat = axes.flatten()
+
+    for idx, (face_int, face_name) in enumerate(FACE_INT_TO_NAME.items()):
+        ax = axes_flat[idx]
+        face_mask = valid & (data['face'] == face_int)
+
+        if face_mask.sum() < 100:
+            ax.set_title(f'{face_name} (too few sensors)')
+            ax.set_xlabel('Truth Npho (normalized)')
+            ax.set_ylabel('MAE (normalized)')
+            continue
+
+        # ML
+        ft = data['truth_npho'][face_mask]
+        fe = data['error_npho'][face_mask]
+        centers, ml_mae, _, _ = _compute_slice_metrics(ft, fe, bin_edges)
+        ax.plot(centers, ml_mae, 'o-', color='blue', markersize=3, label='ML')
+
+        # Baselines
+        for bname in ['avg', 'sa', 'lf']:
+            error_key = f'baseline_{bname}_error_npho'
+            if error_key not in data:
+                continue
+            err_b = data[error_key][face_mask]
+            # Filter NaN (LocalFit only covers inner face)
+            finite = ~np.isnan(err_b)
+            if finite.sum() < 100:
+                continue
+            ft_b = ft[finite]
+            err_b = err_b[finite]
+            _, b_mae, _, _ = _compute_slice_metrics(ft_b, err_b, bin_edges)
+            ax.plot(centers, b_mae, 's--', color=colors.get(bname, 'gray'),
+                    markersize=3, alpha=0.8,
+                    label=labels.get(bname, bname))
+
+        ax.set_xlabel('Truth Npho (normalized)')
+        ax.set_ylabel('MAE (normalized)')
+        ax.set_title(f'{face_name}')
+        ax.legend(fontsize=7)
+
+    fig.suptitle('MAE vs Truth Npho: ML vs Baselines (per face)', fontsize=14)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'resolution_vs_signal_baseline_comparison.pdf'))
+    plt.close()
+    print("[INFO] Saved resolution_vs_signal_baseline_comparison.pdf")
+
+
 def plot_residual_distributions(data: Dict[str, np.ndarray], output_dir: str,
                                  has_mask_type: bool,
                                  npho_scale: float, npho_scale2: float,
@@ -1414,6 +1494,8 @@ def main():
         if baseline_metrics:
             plot_baseline_comparison(data, args.output, has_mask_type,
                                       baseline_metrics, npho_scale, npho_scale2)
+            plot_resolution_vs_signal_comparison(data, args.output, has_mask_type,
+                                                  baseline_metrics)
 
     print(f"\n[INFO] Analysis complete! Results saved to {args.output}/")
 
