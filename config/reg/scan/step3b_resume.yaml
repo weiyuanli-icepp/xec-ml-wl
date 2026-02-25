@@ -54,7 +54,7 @@ tasks:
     enabled: false
 
 training:
-  epochs: 50
+  epochs: 100
   amp: true
   lr: 5.0e-5
   weight_decay: 1.0e-4
@@ -86,7 +86,7 @@ checkpoint:
   save_interval: 10
   save_artifacts: true
   new_mlflow_run: false
-  reset_epoch: true
+  reset_epoch: false
   refresh_lr: true
 
 distributed:
