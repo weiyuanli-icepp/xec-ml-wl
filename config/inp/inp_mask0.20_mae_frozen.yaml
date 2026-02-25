@@ -1,0 +1,106 @@
+# ===================================================
+# Inpainter — MAE Pretrained Encoder (Frozen), mask_ratio=0.20
+# ===================================================
+# Phase 1: Freeze MAE encoder, train only cross-attention head.
+# Expect ~2-3x faster epochs vs from-scratch (no encoder backward pass).
+# After convergence, unfreeze encoder for fine-tuning (Phase 2).
+
+# === Data Configuration ===
+data:
+  train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_max/"
+  val_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/val/"
+  tree_name: "tree"
+  batch_size: 2048
+  chunksize: 131072
+  num_workers: 2
+  prefetch_factor: 16
+  num_threads: 16
+  npho_branch: "npho"
+  time_branch: "relative_time"
+  log_invalid_npho: true
+
+# === Input Normalization ===
+# Must match MAE pretraining normalization
+normalization:
+  npho_scale: 20000
+  npho_scale2: 1.0
+  time_scale: 1.14e-7
+  time_shift: -0.46
+  sentinel_time: -1.0
+  sentinel_npho: -1.0
+  npho_scheme: sqrt
+
+# === Model Configuration ===
+model:
+  outer_mode: "finegrid"
+  outer_fine_pool: [2,2]
+  mask_ratio: 0.20                  # Doubled from 0.10 — more training signal per event
+  mask_npho_flat: true
+  freeze_encoder: true              # Freeze MAE encoder, train only cross-attn head
+  use_local_context: true
+  predict_channels: [npho]
+  use_masked_attention: true
+  head_type: cross_attention
+  sensor_positions_file: "/data/user/ext-li_w1/meghome/xec-ml-wl/lib/sensor_positions.txt"
+  cross_attn_k: 16
+  cross_attn_hidden: 64
+  cross_attn_latent_dim: 128
+  cross_attn_pos_dim: 96
+  # Must match MAE encoder architecture exactly
+  encoder_dim: 512
+  dim_feedforward: 2048
+  num_fusion_layers: 1
+
+# === Training Configuration ===
+training:
+  mae_checkpoint: "artifacts/mae/mae_checkpoint_best.pth"
+  epochs: 20
+  lr: 5.0e-4                       # Higher LR — only head params are updating
+  lr_scheduler: "cosine"
+  lr_min: 1.0e-5
+  warmup_epochs: 2
+  weight_decay: 1.0e-4
+  loss_fn: "mse"
+  loss_beta: 0.1
+  npho_weight: 1.0
+  grad_clip: 0.1
+  amp: true
+  compile: none
+  compile_fullgraph: false
+  track_mae_rmse: false
+  grad_accum_steps: 1
+  track_metrics: true
+  ema_decay: null
+  profile: false
+  time:
+    weight: 1.0
+    mask_ratio_scale: 1.0
+    use_npho_weight: true
+    npho_threshold: 100
+  npho_loss_weight:
+    enabled: true
+    alpha: 0.5
+  intensity_reweighting:
+    enabled: false
+    nbins: 100
+    target: uniform
+
+# === Checkpointing ===
+checkpoint:
+  resume_from: null
+  save_dir: "artifacts/mask0.20_mae_frozen_sqrt"
+  save_interval: 10
+  save_predictions: true
+  root_save_interval: 10
+  reset_epoch: false
+  refresh_lr: false
+  new_mlflow_run: false
+
+# === Distributed Training ===
+distributed:
+  num_gpus: 1
+
+# === MLflow ===
+mlflow:
+  experiment: "inpainting"
+  run_name: "mask0.20_mae_frozen_sqrt"
