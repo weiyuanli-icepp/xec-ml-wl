@@ -300,7 +300,7 @@ Examples:
         mlflow_experiment = args.mlflow_experiment or cfg.mlflow.experiment
         mlflow_run_name = args.mlflow_run_name or cfg.mlflow.run_name
         mlflow_new_run = getattr(cfg.checkpoint, 'new_mlflow_run', False)
-        resume_from = args.resume_from or cfg.checkpoint.resume_from
+        resume_from = os.path.expanduser(args.resume_from or cfg.checkpoint.resume_from or "")  or None
         reset_epoch = args.reset_epoch or getattr(cfg.checkpoint, 'reset_epoch', False)
         refresh_lr = args.refresh_lr or getattr(cfg.checkpoint, 'refresh_lr', False)
         save_predictions = args.save_predictions or getattr(cfg.checkpoint, 'save_predictions', False)
@@ -380,7 +380,7 @@ Examples:
         mlflow_experiment = args.mlflow_experiment or "mae_pretraining"
         mlflow_run_name = args.mlflow_run_name
         mlflow_new_run = False  # No config file, default to False
-        resume_from = args.resume_from
+        resume_from = os.path.expanduser(args.resume_from) if args.resume_from else None
         reset_epoch = args.reset_epoch
         refresh_lr = args.refresh_lr
         save_predictions = args.save_predictions

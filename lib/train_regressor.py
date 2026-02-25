@@ -1236,7 +1236,9 @@ def apply_cli_overrides(cfg, args):
 
     # Checkpoint
     if args.resume_from is not None:
-        cfg.checkpoint.resume_from = args.resume_from
+        cfg.checkpoint.resume_from = os.path.expanduser(args.resume_from)
+    elif cfg.checkpoint.resume_from:
+        cfg.checkpoint.resume_from = os.path.expanduser(cfg.checkpoint.resume_from)
     if args.save_dir is not None:
         cfg.checkpoint.save_dir = args.save_dir
     if getattr(args, 'refresh_lr', False):
