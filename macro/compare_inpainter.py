@@ -284,14 +284,13 @@ def main():
     print(f"[INFO] Saved {args.output} (3 pages: relative MAE, RMS, bias)")
 
     # --- Stdout summary ---
-    print()
-    print(f"{'Method':<30s}  {'Global MAE [photons]':>20s}")
-    print('-' * 53)
+
+    # Collect all methods: (label, truth_raw, error_raw, is_baseline)
+    methods = []
     for entry, d in loaded:
         cut = d['truth_raw'] >= TRUTH_RAW_MIN
-        mae_val = np.mean(np.abs(d['error_raw'][cut]))
-        print(f"{entry['label']:<30s}  {mae_val:>20.1f}")
-
+        methods.append((entry['label'], d['truth_raw'][cut], d['error_raw'][cut],
+                         d['face'][cut], False))
     if baseline_entry_idx is not None:
         bl_dict = loaded[baseline_entry_idx][1]['baselines']
         for bname, bdef in BASELINE_DEFS.items():
@@ -299,8 +298,82 @@ def main():
                 continue
             bl = bl_dict[bname]
             cut = bl['truth_raw'] >= TRUTH_RAW_MIN
-            mae_val = np.mean(np.abs(bl['error_raw'][cut]))
-            print(f"{bdef['label']:<30s}  {mae_val:>20.1f}")
+            methods.append((bdef['label'], bl['truth_raw'][cut], bl['error_raw'][cut],
+                             bl['face'][cut], True))
+
+    # --- Per-entry config ---
+    print()
+    print("=" * 70)
+    print("ENTRIES")
+    print("=" * 70)
+    for entry, d in loaded:
+        m = d['meta']
+        cut = d['truth_raw'] >= TRUTH_RAW_MIN
+        print(f"  {entry['label']}")
+        print(f"    path   : {entry['path']}")
+        print(f"    scheme : {m['npho_scheme']}  "
+              f"(scale={m['npho_scale']:.1f}, scale2={m['npho_scale2']:.2f})")
+        print(f"    sensors: {cut.sum():,} (truth >= {TRUTH_RAW_MIN:.0f} photons)")
+
+    # --- Global metrics table ---
+    print()
+    print("=" * 70)
+    print("GLOBAL METRICS  (truth >= 100 photons)")
+    print("=" * 70)
+    hdr = f"{'Method':<28s} {'MAE':>10s} {'RMS':>10s} {'Bias':>10s} {'Rel MAE':>10s} {'Rel RMS':>10s} {'N':>10s}"
+    print(hdr)
+    print("-" * len(hdr))
+    for label, tr, er, fc, is_bl in methods:
+        mae_val = np.mean(np.abs(er))
+        rms_val = np.sqrt(np.mean(er ** 2))
+        bias_val = np.mean(er)
+        rel_mae = np.mean(np.abs(er) / tr)
+        rel_rms = np.sqrt(np.mean((er / tr) ** 2))
+        tag = " *" if is_bl else ""
+        print(f"{label:<28s} {mae_val:>10.1f} {rms_val:>10.1f} {bias_val:>+10.1f} "
+              f"{rel_mae:>10.3f} {rel_rms:>10.3f} {len(tr):>10,}{tag}")
+
+    # --- Per-face breakdown ---
+    print()
+    print("=" * 70)
+    print("PER-FACE MAE  (truth >= 100 photons)")
+    print("=" * 70)
+    face_names = list(FACE_INT_TO_NAME.values())
+    hdr = f"{'Method':<28s} " + " ".join(f"{fn:>10s}" for fn in face_names)
+    print(hdr)
+    print("-" * len(hdr))
+    for label, tr, er, fc, is_bl in methods:
+        vals = []
+        for fi in FACE_INT_TO_NAME:
+            m = fc == fi
+            if m.sum() < MIN_BIN_COUNT:
+                vals.append(f"{'---':>10s}")
+            else:
+                vals.append(f"{np.mean(np.abs(er[m])):>10.1f}")
+        tag = " *" if is_bl else ""
+        print(f"{label:<28s} " + " ".join(vals) + tag)
+
+    # --- Per-face relative MAE ---
+    print()
+    print("=" * 70)
+    print("PER-FACE RELATIVE MAE  (truth >= 100 photons)")
+    print("=" * 70)
+    print(hdr)
+    print("-" * len(hdr))
+    for label, tr, er, fc, is_bl in methods:
+        vals = []
+        for fi in FACE_INT_TO_NAME:
+            m = fc == fi
+            if m.sum() < MIN_BIN_COUNT:
+                vals.append(f"{'---':>10s}")
+            else:
+                vals.append(f"{np.mean(np.abs(er[m]) / tr[m]):>10.3f}")
+        tag = " *" if is_bl else ""
+        print(f"{label:<28s} " + " ".join(vals) + tag)
+
+    print()
+    print("  (* = baseline)")
+    print(f"  Output: {args.output}")
 
 
 if __name__ == '__main__':
