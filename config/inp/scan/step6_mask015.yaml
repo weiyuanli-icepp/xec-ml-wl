@@ -1,0 +1,97 @@
+# ===================================================
+# Inpainter Scan Step 6: Higher Mask Ratio (0.15)
+# ===================================================
+# Change from step1: mask_ratio 0.10 -> 0.15
+# Harder task forces model to learn longer-range spatial correlations.
+# May push past the early plateau seen at 20 epochs with 0.10.
+
+data:
+  train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_middle/"
+  val_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/val/"
+  tree_name: "tree"
+  batch_size: 8192
+  chunksize: 131072
+  num_workers: 2
+  prefetch_factor: 16
+  num_threads: 16
+  npho_branch: "npho"
+  time_branch: "relative_time"
+  log_invalid_npho: true
+
+normalization:
+  npho_scheme: log1p
+  npho_scale: 1000
+  npho_scale2: 4.08
+  time_scale: 1.14e-7
+  time_shift: -0.46
+  sentinel_time: -1.0
+  sentinel_npho: -1.0
+
+model:
+  outer_mode: "finegrid"
+  outer_fine_pool: [2, 2]
+  mask_ratio: 0.15                   # <-- CHANGED from 0.10
+  mask_npho_flat: false
+  freeze_encoder: false
+  use_local_context: true
+  predict_channels: [npho]
+  use_masked_attention: true
+  head_type: cross_attention
+  sensor_positions_file: "/data/user/ext-li_w1/meghome/xec-ml-wl/lib/sensor_positions.txt"
+  cross_attn_k: 16
+  cross_attn_hidden: 64
+  cross_attn_latent_dim: 128
+  cross_attn_pos_dim: 96
+  encoder_dim: 1024
+  dim_feedforward: 4096
+  num_fusion_layers: 2
+
+training:
+  mae_checkpoint: null
+  epochs: 50
+  lr: 1.0e-4
+  lr_scheduler: "cosine"
+  lr_min: 1.0e-6
+  warmup_epochs: 3
+  weight_decay: 1.0e-4
+  loss_fn: "smooth_l1"
+  loss_beta: 0.1
+  npho_weight: 1.0
+  grad_clip: 1.0
+  amp: true
+  compile: none
+  compile_fullgraph: false
+  track_mae_rmse: false
+  grad_accum_steps: 1
+  track_metrics: true
+  ema_decay: null
+  profile: false
+  time:
+    weight: 1.0
+    mask_ratio_scale: 1.0
+    use_npho_weight: true
+    npho_threshold: 100
+  npho_loss_weight:
+    enabled: false
+    alpha: 0.5
+  intensity_reweighting:
+    enabled: false
+    nbins: 5
+    target: uniform
+
+checkpoint:
+  resume_from: null
+  save_dir: "artifacts/inp_scan_s6"
+  save_interval: 10
+  save_predictions: true
+  root_save_interval: 10
+  reset_epoch: false
+  refresh_lr: false
+  new_mlflow_run: false
+
+distributed:
+  num_gpus: 1
+
+mlflow:
+  experiment: "inpainting_scan"
+  run_name: "inp_scan_s6_mask015"
