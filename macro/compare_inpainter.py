@@ -18,6 +18,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 import numpy as np
 import uproot
 
@@ -139,13 +140,13 @@ def _load_entry(entry):
 
 
 def _compute_slice_metrics(truth, error, bin_edges):
-    """Binned MAE, bias, 68-th percentile of |error|."""
+    """Binned MAE, bias, RMS of error.  Returns bin_centers and all three."""
     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     indices = np.clip(np.digitize(truth, bin_edges) - 1, 0, len(bin_centers) - 1)
 
     mae = np.full(len(bin_centers), np.nan)
     bias = np.full(len(bin_centers), np.nan)
-    pct68 = np.full(len(bin_centers), np.nan)
+    rms = np.full(len(bin_centers), np.nan)
 
     for i in range(len(bin_centers)):
         m = indices == i
@@ -154,9 +155,9 @@ def _compute_slice_metrics(truth, error, bin_edges):
         err = error[m]
         mae[i] = np.mean(np.abs(err))
         bias[i] = np.mean(err)
-        pct68[i] = np.percentile(np.abs(err), 68)
+        rms[i] = np.sqrt(np.mean(err ** 2))
 
-    return bin_centers, mae, bias, pct68
+    return bin_centers, mae, bias, rms
 
 
 # ---------------------------------------------------------------------------
@@ -193,14 +194,11 @@ def main():
             baseline_entry_idx = i
             break
 
-    # --- Plot ---
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-    axes_flat = axes.flatten()
-
-    for idx, (face_int, face_name) in enumerate(FACE_INT_TO_NAME.items()):
-        ax = axes_flat[idx]
-
-        for entry, d in loaded:
+    # --- Precompute per-face metrics for all entries & baselines ---
+    # metrics_cache[(entry_idx_or_bname, face_int)] = (centers, mae, bias, rms)
+    metrics_cache = {}
+    for ei, (entry, d) in enumerate(loaded):
+        for face_int in FACE_INT_TO_NAME:
             fm = d['face'] == face_int
             tr = d['truth_raw'][fm]
             er = d['error_raw'][fm]
@@ -208,17 +206,15 @@ def main():
             tr, er = tr[cut], er[cut]
             if len(tr) < MIN_BIN_COUNT:
                 continue
-            centers, mae, _, _ = _compute_slice_metrics(tr, er, bin_edges)
-            ax.plot(centers, mae, 'o-', color=entry['color'], markersize=3,
-                    label=entry['label'])
+            metrics_cache[(ei, face_int)] = _compute_slice_metrics(tr, er, bin_edges)
 
-        # Baselines from one entry
-        if baseline_entry_idx is not None:
-            bl_dict = loaded[baseline_entry_idx][1]['baselines']
-            for bname, bdef in BASELINE_DEFS.items():
-                if bname not in bl_dict:
-                    continue
-                bl = bl_dict[bname]
+    if baseline_entry_idx is not None:
+        bl_dict = loaded[baseline_entry_idx][1]['baselines']
+        for bname in BASELINE_DEFS:
+            if bname not in bl_dict:
+                continue
+            bl = bl_dict[bname]
+            for face_int in FACE_INT_TO_NAME:
                 fm = bl['face'] == face_int
                 tr = bl['truth_raw'][fm]
                 er = bl['error_raw'][fm]
@@ -226,21 +222,66 @@ def main():
                 tr, er = tr[cut], er[cut]
                 if len(tr) < MIN_BIN_COUNT:
                     continue
-                centers, mae, _, _ = _compute_slice_metrics(tr, er, bin_edges)
-                ax.plot(centers, mae, 's--', color=bdef['color'], markersize=3,
-                        alpha=0.8, label=bdef['label'])
+                metrics_cache[(bname, face_int)] = _compute_slice_metrics(tr, er, bin_edges)
 
-        ax.set_xscale('log')
-        ax.set_xlabel('Truth Npho [photons]')
-        ax.set_ylabel('MAE [photons]')
-        ax.set_title(face_name)
-        ax.legend(fontsize=7)
+    # --- Multi-page PDF: relative MAE, relative RMS, relative bias ---
+    page_defs = [
+        ('mae',  'Relative MAE vs Truth Npho (per face)',  'Relative MAE'),
+        ('rms',  'Relative RMS vs Truth Npho (per face)',  'Relative RMS'),
+        ('bias', 'Relative Bias vs Truth Npho (per face)', 'Relative Bias'),
+    ]
 
-    fig.suptitle('MAE vs Truth Npho: Model Comparison (per face)', fontsize=14)
-    plt.tight_layout()
-    plt.savefig(args.output)
-    plt.close()
-    print(f"[INFO] Saved {args.output}")
+    with PdfPages(args.output) as pdf:
+        for metric_key, suptitle, ylabel in page_defs:
+            fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+            axes_flat = axes.flatten()
+
+            for idx, (face_int, face_name) in enumerate(FACE_INT_TO_NAME.items()):
+                ax = axes_flat[idx]
+
+                # ML entries
+                for ei, (entry, _) in enumerate(loaded):
+                    key = (ei, face_int)
+                    if key not in metrics_cache:
+                        continue
+                    centers, mae, bias, rms = metrics_cache[key]
+                    if metric_key == 'mae':
+                        vals = mae / centers
+                    elif metric_key == 'rms':
+                        vals = rms / centers
+                    else:
+                        vals = bias / centers
+                    ax.plot(centers, vals, 'o-', color=entry['color'],
+                            markersize=3, label=entry['label'])
+
+                # Baselines
+                if baseline_entry_idx is not None:
+                    for bname, bdef in BASELINE_DEFS.items():
+                        key = (bname, face_int)
+                        if key not in metrics_cache:
+                            continue
+                        centers, mae, bias, rms = metrics_cache[key]
+                        if metric_key == 'mae':
+                            vals = mae / centers
+                        elif metric_key == 'rms':
+                            vals = rms / centers
+                        else:
+                            vals = bias / centers
+                        ax.plot(centers, vals, 's--', color=bdef['color'],
+                                markersize=3, alpha=0.8, label=bdef['label'])
+
+                ax.set_xscale('log')
+                ax.set_xlabel('Truth Npho [photons]')
+                ax.set_ylabel(ylabel)
+                ax.set_title(face_name)
+                ax.legend(fontsize=7)
+
+            fig.suptitle(suptitle, fontsize=14)
+            plt.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    print(f"[INFO] Saved {args.output} (3 pages: relative MAE, RMS, bias)")
 
     # --- Stdout summary ---
     print()
