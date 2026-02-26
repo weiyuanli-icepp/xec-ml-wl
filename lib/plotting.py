@@ -380,6 +380,7 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
     Plots energy resolution profile:
     - Row 1: Residual histogram, Resolution vs energy, Normalized resolution (sigma/E) vs energy
     - Row 2: Pred vs True scatter, Resolution vs U, V, W (first interaction point)
+    - Row 3: Relative resolution vs U, V, W for signal region (50-55 MeV)
 
     Args:
         pred: Predicted energy values
@@ -409,9 +410,9 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
     has_uvw = (root_data is not None and
                'true_u' in root_data and len(root_data.get('true_u', [])) > 0)
 
-    # 2x4 if we have uvwFI data, otherwise 2x2
+    # 3x4 if we have uvwFI data, otherwise 2x2
     if has_uvw:
-        fig, axs = plt.subplots(2, 4, figsize=(18, 9))
+        fig, axs = plt.subplots(3, 4, figsize=(18, 13))
         fig.suptitle("Energy Resolution Profile", fontsize=14)
         # Indices for the 4 main plots (first row)
         idx_hist = (0, 0)
@@ -504,6 +505,26 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
 
         # Row 2, Col 4: Hide unused subplot
         axs[1, 3].axis('off')
+
+        # Row 3: Relative resolution vs U, V, W for signal region (50-55 MeV)
+        sig_mask = (true >= 50.0) & (true <= 55.0)
+        n_sig = np.sum(sig_mask)
+        sig_true = true[sig_mask]
+        sig_rel_residual = rel_residual[sig_mask]
+        sig_u = true_u[sig_mask]
+        sig_v = true_v[sig_mask]
+        sig_w = true_w[sig_mask]
+        sig_uvw_data = [sig_u, sig_v, sig_w]
+
+        for i, (uvw_val, label, color, mk) in enumerate(zip(sig_uvw_data, uvw_labels, uvw_colors, uvw_markers)):
+            if n_sig > 0:
+                x, y, ye = _get_binned_stat(uvw_val, sig_rel_residual, percentile_68, bins)
+                axs[2, i].errorbar(x, y, yerr=ye, marker=mk, color=color, ms=5, **_eb)
+            axs[2, i].set_xlabel(f"True {label} [cm]")
+            axs[2, i].set_ylabel("68% |Residual|/E")
+            axs[2, i].set_title(f"Rel. Resolution vs {label}\n(50–55 MeV, N={n_sig})")
+
+        axs[2, 3].axis('off')
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     if outfile:
