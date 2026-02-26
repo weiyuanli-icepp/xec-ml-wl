@@ -1,5 +1,6 @@
 # Step 4a full-data: Best config (step4a) trained on train_max with 4 GPUs
-# Baseline reference run for full dataset performance
+# Resume from step4a weights, retrain on full dataset
+# NOTE: Set resume_from to the step4a checkpoint path before running
 
 data:
   train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_max"
@@ -80,20 +81,20 @@ reweighting:
     nbins: 30
 
 checkpoint:
-  resume_from: null
+  resume_from: "FIXME"
   save_dir: "artifacts"
   save_interval: 10
   save_artifacts: true
-  new_mlflow_run: false
-  reset_epoch: false
-  refresh_lr: false
+  new_mlflow_run: true
+  reset_epoch: true
+  refresh_lr: true
 
 distributed:
   num_gpus: 4
 
 mlflow:
   experiment: "gamma_energy"
-  run_name: null
+  run_name: "scan_s4a_fulldata"
 
 export:
   onnx: null
