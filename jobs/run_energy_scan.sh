@@ -18,6 +18,7 @@
 #   3br - Resume step 3b (cosine warm restart, +50 epochs)
 #   4a  - +LR=3e-4, warmup=5, grad_clip=1.0  (model=3b winner)
 #   4b  - +LR=5e-4, warmup=5, grad_clip=1.0  (model=3b winner)
+#   4af - Full dataset training (train_max, 4 GPUs, baseline=4a)
 #   5   - +log_transform for energy          (baseline=3b)
 #   5b  - +grad_clip=1.0 (isolate grad_clip, baseline=3b)
 #   4ar - Resume step 4a (cosine warm restart, +50 epochs)
@@ -56,6 +57,7 @@ STEP_CONFIG[5b]="step5b_gradclip.yaml"
 STEP_CONFIG[4ar]="step4a_resume.yaml"
 STEP_CONFIG[5r]="step5_resume.yaml"
 STEP_CONFIG[5br]="step5b_resume.yaml"
+STEP_CONFIG[4af]="step4a_fulldata.yaml"
 STEP_CONFIG[6]="step6_reweight.yaml"
 
 STEP_NAME[1]="scan_s1_baseline"
@@ -72,6 +74,7 @@ STEP_NAME[5b]="scan_s5b_gradclip1"
 STEP_NAME[4ar]="scan_s4a_lr3e-4_resume"
 STEP_NAME[5r]="scan_s5_logtransform_resume"
 STEP_NAME[5br]="scan_s5b_gradclip1_resume"
+STEP_NAME[4af]="scan_s4a_fulldata"
 STEP_NAME[6]="scan_s6_reweight"
 
 # Default: submit steps 1, 2, 3a, 3b (independent, can run in parallel)
@@ -104,7 +107,7 @@ for STEP in "${STEPS[@]}"; do
 
     if [ -z "$CONFIG" ]; then
         echo "[ERROR] Unknown step: $STEP"
-        echo "  Valid steps: 1, 2, 3a, 3b, 2r, 3ar, 3br, 4a, 4b, 4ar, 5, 5b, 5r, 5br, 6"
+        echo "  Valid steps: 1, 2, 3a, 3b, 2r, 3ar, 3br, 4a, 4b, 4ar, 4af, 5, 5b, 5r, 5br, 6"
         continue
     fi
 
