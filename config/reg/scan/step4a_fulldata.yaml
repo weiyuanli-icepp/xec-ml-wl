@@ -67,7 +67,7 @@ training:
   ema_decay: 0.999
   channel_dropout_rate: 0
   grad_clip: 1.0
-  grad_accum_steps: 4                  # effective batch = 1024*4*4gpu = 16384
+  grad_accum_steps: 1                  # effective batch = 1024*1*4gpu = 4096 (same as scan)
   profile: false
   compile: none
   compile_fullgraph: false
