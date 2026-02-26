@@ -1,0 +1,112 @@
+# ===================================================
+# Inpainter — MAE Pretrained Encoder (Fine-tune), mask_ratio=0.10
+# ===================================================
+# Phase 2: Unfreeze MAE encoder and fine-tune end-to-end.
+# Resume from Phase 1 (frozen encoder) best checkpoint.
+# Lower LR to avoid destroying pretrained features.
+
+# === Data Configuration ===
+data:
+  train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_max/"
+  val_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/val/"
+  tree_name: "tree"
+  batch_size: 2048
+  chunksize: 131072
+  num_workers: 2
+  prefetch_factor: 16
+  num_threads: 16
+  npho_branch: "npho"
+  time_branch: "relative_time"
+  log_invalid_npho: true
+
+# === Input Normalization ===
+# Must match MAE pretraining normalization
+normalization:
+  npho_scale: 20000
+  npho_scale2: 1.0
+  time_scale: 1.14e-7
+  time_shift: -0.46
+  sentinel_time: -1.0
+  sentinel_npho: -1.0
+  npho_scheme: sqrt
+
+# === Model Configuration ===
+model:
+  outer_mode: "finegrid"
+  outer_fine_pool: [2,2]
+  mask_ratio:                        # Per-face mask ratios
+    inner: 0.05
+    outer: 0.15
+    us: 0.15
+    ds: 0.15
+    top: 0.15
+    bot: 0.15
+  mask_npho_flat: true
+  freeze_encoder: false              # Unfreeze encoder for end-to-end fine-tuning
+  use_local_context: true
+  predict_channels: [npho]
+  use_masked_attention: true
+  head_type: cross_attention
+  sensor_positions_file: "/data/user/ext-li_w1/meghome/xec-ml-wl/lib/sensor_positions.txt"
+  cross_attn_k: 16
+  cross_attn_hidden: 64
+  cross_attn_latent_dim: 128
+  cross_attn_pos_dim: 96
+  # Must match MAE encoder architecture exactly
+  encoder_dim: 512
+  dim_feedforward: 2048
+  num_fusion_layers: 1
+
+# === Training Configuration ===
+training:
+  mae_checkpoint: null               # Not needed — weights come from Phase 1 checkpoint
+  epochs: 30
+  lr: 5.0e-5                        # 10x lower than Phase 1 to preserve encoder features
+  lr_scheduler: "cosine"
+  lr_min: 1.0e-6
+  warmup_epochs: 2
+  weight_decay: 1.0e-4
+  loss_fn: "mse"
+  loss_beta: 0.1
+  npho_weight: 1.0
+  grad_clip: 0.5                     # Relaxed from 0.1 — encoder grads need room
+  amp: true
+  compile: none
+  compile_fullgraph: false
+  track_mae_rmse: false
+  grad_accum_steps: 1
+  track_metrics: true
+  ema_decay: null
+  profile: false
+  time:
+    weight: 1.0
+    mask_ratio_scale: 1.0
+    use_npho_weight: true
+    npho_threshold: 100
+  npho_loss_weight:
+    enabled: true
+    alpha: 0.5
+  intensity_reweighting:
+    enabled: false
+    nbins: 100
+    target: uniform
+
+# === Checkpointing ===
+checkpoint:
+  resume_from: "~/meghome/xec-ml-wl/artifacts/mask0.10_mae_frozen_sqrt/inpainter_checkpoint_best.pth"
+  save_dir: "artifacts/mask0.10_mae_finetune_sqrt"
+  save_interval: 10
+  save_predictions: true
+  root_save_interval: 10
+  reset_epoch: true                  # Start from epoch 0 for fresh LR schedule
+  refresh_lr: true                   # Reset LR scheduler for the fine-tuning phase
+  new_mlflow_run: true               # New run so Phase 1 metrics are not overwritten
+
+# === Distributed Training ===
+distributed:
+  num_gpus: 1
+
+# === MLflow ===
+mlflow:
+  experiment: "inpainting"
+  run_name: "mask0.10_mae_finetune_sqrt"
