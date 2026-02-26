@@ -856,8 +856,10 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
         fig, axs = plt.subplots(2, 3, figsize=(15, 8))
         fig.suptitle("3D Distance Error Profile", fontsize=14)
 
-        axs[0, 0].hist(dist_3d, bins=100, alpha=0.7, color='tab:red')
+        axs[0, 0].hist(dist_3d, bins=100, range=(-1, 15), alpha=0.7, color='tab:red')
         axs[0, 0].set_xlabel("3D Distance [cm]"); axs[0, 0].set_ylabel("Count")
+        axs[0, 0].set_yscale('log')
+        axs[0, 0].set_xlim(-1, 15)
         axs[0, 0].set_title(f"3D Distance Distribution\n"
                             f"68%={np.percentile(dist_3d, 68):.3f}, "
                             f"median={np.median(dist_3d):.3f}")
