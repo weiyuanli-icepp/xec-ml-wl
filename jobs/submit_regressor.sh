@@ -24,6 +24,7 @@ RUN_NAME="${RUN_NAME:-}"
 PARTITION="${PARTITION:-a100-daily}"
 TIME="${TIME:-12:00:00}"
 DRY_RUN="${DRY_RUN:-0}"
+MEM="${MEM:-}"            # Empty = auto-scale with GPUs
 NUM_GPUS="${NUM_GPUS:-}"  # Empty = read from config
 
 # Optional overrides (empty string means no override)
@@ -135,6 +136,11 @@ if [[ -z "$NUM_GPUS" ]]; then
     fi
 fi
 
+# Auto-scale memory with number of GPUs (each process needs ~40G for large model + data loading)
+if [[ -z "$MEM" ]]; then
+    MEM="$(( 48 * NUM_GPUS ))G"
+fi
+
 # Use RUN_NAME from env, or from config, or generate timestamp
 if [[ -z "$RUN_NAME" ]]; then
     if [[ -n "$CFG_RUN_NAME" && "$CFG_RUN_NAME" != "null" ]]; then
@@ -242,6 +248,7 @@ if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
     echo "=== Job Settings ==="
     echo "  Partition:     $PARTITION"
     echo "  GPUs:          $NUM_GPUS"
+    echo "  Memory:        $MEM"
     echo "  Time limit:    $TIME"
     echo "  Environment:   $ENV_NAME"
     echo "  Log file:      $LOG_FILE"
@@ -358,7 +365,7 @@ echo "  Config:     $CONFIG_PATH"
 echo "  Run:        $RUN_NAME"
 echo "  Experiment: $EFF_EXPERIMENT"
 echo "  Epochs:     $EFF_EPOCHS | Batch: $EFF_BATCH | LR: $EFF_LR"
-echo "  Partition:  $PARTITION | GPUs: $NUM_GPUS | Time: $TIME"
+echo "  Partition:  $PARTITION | GPUs: $NUM_GPUS | Mem: $MEM | Time: $TIME"
 
 # Build CLI override arguments
 CLI_ARGS=""
@@ -396,7 +403,7 @@ sbatch <<EOF
 #SBATCH --time=${TIME}
 #SBATCH --partition=${PARTITION}
 #SBATCH --gres=gpu:${NUM_GPUS}
-#SBATCH --mem=48G
+#SBATCH --mem=${MEM}
 #SBATCH --clusters=gmerlin7
 
 set -e
