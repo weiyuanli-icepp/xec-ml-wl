@@ -829,8 +829,9 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
         fig.suptitle("Position (uvwFI) Resolution Profile", fontsize=14)
 
         for i in range(3):
-            axs[0, i].hist(residuals[i], bins=100, alpha=0.7, color=colors[i])
+            axs[0, i].hist(residuals[i], bins=100, range=(-15, 15), alpha=0.7, color=colors[i])
             axs[0, i].axvline(0, color='red', linestyle='--', linewidth=1)
+            axs[0, i].set_xlim(-15, 15); axs[0, i].set_yscale('log')
             axs[0, i].set_xlabel(f"{labels[i]} Residual"); axs[0, i].set_ylabel("Count")
             axs[0, i].set_title(f"{labels[i]}: Bias={np.mean(residuals[i]):.3f}, "
                                 f"68%={np.percentile(abs_residuals[i], 68):.3f}")
