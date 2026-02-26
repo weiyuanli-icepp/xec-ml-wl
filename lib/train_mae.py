@@ -600,7 +600,12 @@ Examples:
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             model_without_ddp.load_state_dict(checkpoint['model_state_dict'])
             if "optimizer_state_dict" in checkpoint:
-                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                try:
+                    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                except ValueError as e:
+                    if is_main_process():
+                        print(f"[WARN] Could not load optimizer state (parameter groups changed): {e}")
+                        print("[WARN] Using fresh optimizer")
             if "ema_state_dict" in checkpoint and ema_model is not None:
                 ema_model.load_state_dict(checkpoint['ema_state_dict'])
             if "scaler_state_dict" in checkpoint:

@@ -546,7 +546,12 @@ def train_with_config(config_path: str, profile: bool = None):
                 print(f"[INFO] Detected full regressor checkpoint. Resuming training state.")
             model_without_ddp.load_state_dict(checkpoint["model_state_dict"])
             if "optimizer_state_dict" in checkpoint:
-                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                try:
+                    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                except ValueError as e:
+                    if is_main_process():
+                        print(f"[WARN] Could not load optimizer state (parameter groups changed): {e}")
+                        print("[WARN] Using fresh optimizer")
             checkpoint_epoch = checkpoint.get("epoch", 0)
             best_val = checkpoint.get("best_val_loss", checkpoint.get("best_val", float("inf")))
             mlflow_run_id = checkpoint.get("mlflow_run_id", None)
