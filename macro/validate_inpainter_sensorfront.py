@@ -20,6 +20,9 @@ Usage:
         [--device cpu|cuda]
 """
 
+from __future__ import annotations
+
+import gc
 import os
 import sys
 import argparse
@@ -28,6 +31,7 @@ import numpy as np
 import torch
 import uproot
 from pathlib import Path
+from typing import Optional
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -44,11 +48,8 @@ from lib.sensor_geometry import load_sensor_positions
 # Reuse functions from validate_inpainter
 from macro.validate_inpainter import (
     load_model,
-    load_data,
-    load_solid_angles,
     normalize_data,
     run_inference,
-    run_local_fit_baseline,
     collect_predictions,
     compute_metrics,
     compute_baseline_metrics,
@@ -177,46 +178,126 @@ def match_events_to_sensors(
 
 
 # =========================================================
-#  Read uvwTruth from ROOT file
+#  Memory-efficient streaming loader
 # =========================================================
 
-def read_uvw_truth(
+def load_and_match_streaming(
     input_path: str,
+    sensor_uvw: np.ndarray,
+    npho_scheme: str,
     tree_name: str = "tree",
-    max_events: int | None = None,
-) -> np.ndarray:
-    """Read uvwTruth branch from ROOT file(s).
+    max_events: Optional[int] = None,
+    du: float = 0.5,
+    dv: float = 0.5,
+    w_max: float = 1.0,
+    sa_branch: Optional[str] = None,
+) -> dict:
+    """Load ROOT files one at a time, match events, keep only matched.
 
-    Returns:
-        uvw_truth: (N, 3) array of (u, v, w) in cm.
+    This avoids loading all files into memory simultaneously.  Peak memory
+    is proportional to the largest single file, not the total.
+
+    Returns dict with keys: x_input, x_original, uvw_matched, matched_sid,
+    run_numbers, event_numbers, solid_angles (or None), n_total,
+    matched_orig_idx (global indices into concatenated files, for local-fit).
     """
     file_list = expand_path(input_path)
-    all_uvw = []
-    total = 0
+    print(f"[INFO] Loading data from {len(file_list)} file(s) (streaming)")
+    for f in file_list[:5]:
+        print(f"  - {f}")
+    if len(file_list) > 5:
+        print(f"  ... and {len(file_list) - 5} more")
+
+    accum = {
+        "x_norm": [], "uvw_matched": [],
+        "matched_sid": [], "run": [], "event": [],
+        "sa": [], "matched_orig_idx": [],
+        "truth_at_mask": [],  # (M, 2) — truth values at the masked sensor
+    }
+    global_offset = 0  # running event counter across files
+    n_total = 0
 
     for fp in file_list:
-        if max_events and total >= max_events:
+        if max_events and n_total >= max_events:
             break
+
         with uproot.open(fp) as f:
             tree = f[tree_name]
-            if "uvwTruth" not in tree.keys():
-                raise ValueError(
-                    f"Branch 'uvwTruth' not found in {fp}. "
-                    f"Available: {list(tree.keys())}"
-                )
-            arr = tree["uvwTruth"].array(library="np")
-            n = len(arr)
-            if max_events:
-                remaining = max_events - total
-                if n > remaining:
-                    arr = arr[:remaining]
-                    n = remaining
-            all_uvw.append(arr)
-            total += n
 
-    uvw = np.concatenate(all_uvw)
-    print(f"[INFO] Loaded uvwTruth: shape {uvw.shape}")
-    return uvw
+            # --- read branches ---
+            npho_branch = "npho" if "npho" in tree.keys() else "relative_npho"
+            npho = tree[npho_branch].array(library="np")
+            time = tree["relative_time"].array(library="np")
+            uvw = tree["uvwTruth"].array(library="np")
+
+            n_file = len(npho)
+            if max_events:
+                remaining = max_events - n_total
+                if n_file > remaining:
+                    npho = npho[:remaining]
+                    time = time[:remaining]
+                    uvw = uvw[:remaining]
+                    n_file = remaining
+
+            # optional branches
+            run_arr = tree["run"].array(library="np")[:n_file] if "run" in tree.keys() else None
+            event_arr = tree["event"].array(library="np")[:n_file] if "event" in tree.keys() else None
+
+            sa_arr = None
+            if sa_branch and sa_branch in tree.keys():
+                sa_arr = tree[sa_branch].array(library="np")[:n_file]
+
+        # --- normalize (one file at a time) ---
+        x_norm = normalize_data(npho, time, npho_scheme=npho_scheme)
+        del npho, time  # free raw arrays
+
+        # --- match events ---
+        m_idx, m_sid = match_events_to_sensors(
+            uvw, sensor_uvw, du=du, dv=dv, w_max=w_max,
+        )
+
+        if len(m_idx) > 0:
+            matched_x = x_norm[m_idx]
+            # Save truth at the masked sensor BEFORE sentinel is applied
+            truth = matched_x[np.arange(len(m_idx)), m_sid, :].copy()  # (M, 2)
+            accum["truth_at_mask"].append(truth)
+            accum["x_norm"].append(matched_x)
+            accum["uvw_matched"].append(uvw[m_idx])
+            accum["matched_sid"].append(m_sid)
+            accum["matched_orig_idx"].append(m_idx + global_offset)
+            if run_arr is not None:
+                accum["run"].append(run_arr[m_idx])
+            if event_arr is not None:
+                accum["event"].append(event_arr[m_idx])
+            if sa_arr is not None:
+                accum["sa"].append(sa_arr[m_idx])
+
+        n_total += n_file
+        global_offset += n_file
+        del x_norm, uvw, sa_arr, run_arr, event_arr
+        gc.collect()
+
+    print(f"[INFO] Loaded {n_total:,} events total (streaming)")
+
+    if not accum["x_norm"]:
+        return {"n_total": n_total, "n_matched": 0}
+
+    result = {
+        "x_norm": np.concatenate(accum["x_norm"]),
+        "truth_at_mask": np.concatenate(accum["truth_at_mask"]),
+        "uvw_matched": np.concatenate(accum["uvw_matched"]),
+        "matched_sid": np.concatenate(accum["matched_sid"]),
+        "matched_orig_idx": np.concatenate(accum["matched_orig_idx"]),
+        "n_total": n_total,
+    }
+    result["run_numbers"] = (np.concatenate(accum["run"])
+                             if accum["run"] else None)
+    result["event_numbers"] = (np.concatenate(accum["event"])
+                               if accum["event"] else None)
+    result["solid_angles"] = (np.concatenate(accum["sa"])
+                              if accum["sa"] else None)
+    result["n_matched"] = len(result["x_norm"])
+    return result
 
 
 # =========================================================
@@ -290,35 +371,27 @@ def main():
         print(f"[WARN] Npho scheme unknown, using default: {npho_scheme}")
 
     # ------------------------------------------------------------------
-    # 2. Load raw data + uvwTruth
-    # ------------------------------------------------------------------
-    data = load_data(
-        args.input, tree_name=args.tree_name, max_events=args.max_events
-    )
-    uvw_truth = read_uvw_truth(
-        args.input, tree_name=args.tree_name, max_events=args.max_events
-    )
-    n_total = len(data["npho"])
-    assert len(uvw_truth) == n_total, (
-        f"Event count mismatch: npho={n_total}, uvwTruth={len(uvw_truth)}"
-    )
-
-    # ------------------------------------------------------------------
-    # 3. Normalize
-    # ------------------------------------------------------------------
-    print(f"[INFO] Normalizing data (npho_scheme={npho_scheme})...")
-    x_input = normalize_data(data["npho"], data["time"], npho_scheme=npho_scheme)
-    x_original = x_input.copy()
-
-    # ------------------------------------------------------------------
-    # 4. Build inner-sensor UVW lookup & match events
+    # 2. Build inner-sensor UVW lookup
     # ------------------------------------------------------------------
     sensor_uvw = build_inner_sensor_uvw()  # (4092, 3)
-    matched_idx, matched_sid = match_events_to_sensors(
-        uvw_truth, sensor_uvw,
+
+    # ------------------------------------------------------------------
+    # 3. Stream-load files: normalize, match, keep only matched events
+    #    Peak memory ≈ one file (~13K events × 4760 × 2 × 4 bytes ≈ 470 MB)
+    #    instead of all files (~4.7 GB + copies).
+    # ------------------------------------------------------------------
+    loaded = load_and_match_streaming(
+        input_path=args.input,
+        sensor_uvw=sensor_uvw,
+        npho_scheme=npho_scheme,
+        tree_name=args.tree_name,
+        max_events=args.max_events,
         du=args.du, dv=args.dv, w_max=args.w_max,
+        sa_branch=args.solid_angle_branch,
     )
-    n_matched = len(matched_idx)
+
+    n_total = loaded["n_total"]
+    n_matched = loaded.get("n_matched", 0)
     print(f"\n[INFO] Events total:   {n_total:>8,}")
     print(f"[INFO] Events matched: {n_matched:>8,} "
           f"({n_matched / n_total * 100:.1f}%)")
@@ -327,136 +400,89 @@ def main():
         print("[ERROR] No events matched any sensor front region. Exiting.")
         sys.exit(1)
 
-    # ------------------------------------------------------------------
-    # 5. Subset to matched events
-    # ------------------------------------------------------------------
-    x_input = x_input[matched_idx]
-    x_original = x_original[matched_idx]
-    uvw_matched = uvw_truth[matched_idx]
-    run_numbers = data.get("run")
-    event_numbers = data.get("event")
-    if run_numbers is not None:
-        run_numbers = run_numbers[matched_idx]
-    if event_numbers is not None:
-        event_numbers = event_numbers[matched_idx]
+    x_norm = loaded["x_norm"]           # (M, 4760, 2) — unmasked
+    truth_at_mask = loaded["truth_at_mask"]  # (M, 2) — truth at masked sensor
+    uvw_matched = loaded["uvw_matched"]
+    matched_sid = loaded["matched_sid"]
+    matched_orig_idx = loaded["matched_orig_idx"]
+    run_numbers = loaded["run_numbers"]
+    event_numbers = loaded["event_numbers"]
+    solid_angles = loaded["solid_angles"]
+    del loaded
+    gc.collect()
 
     # ------------------------------------------------------------------
-    # 6. Build per-event mask (exactly one sensor per event)
+    # 4. Build per-event mask & run baselines BEFORE applying sentinels
+    #    (baselines need the unmasked data)
     # ------------------------------------------------------------------
+    ev_range = np.arange(n_matched)
     combined_mask = np.zeros((n_matched, N_CHANNELS), dtype=bool)
-    combined_mask[np.arange(n_matched), matched_sid] = True
+    combined_mask[ev_range, matched_sid] = True
 
-    # Apply sentinels
-    x_input[combined_mask, 0] = MODEL_SENTINEL_NPHO
-    x_input[combined_mask, 1] = MODEL_SENTINEL_TIME
+    print(f"[INFO] Masked sensors: {n_matched:,} (1 per event)")
 
-    n_masked = int(combined_mask.sum())
-    print(f"[INFO] Masked sensors: {n_masked:,} (1 per event)")
-
-    # ------------------------------------------------------------------
-    # 7. Run inference
-    # ------------------------------------------------------------------
-    print(f"[INFO] Running inference on {args.device}...")
-    predictions = run_inference(
-        model, model_type, x_input, combined_mask,
-        batch_size=args.batch_size, device=args.device,
-        predict_channels=predict_channels,
-    )
-
-    # ------------------------------------------------------------------
-    # 8. Run baselines
-    # ------------------------------------------------------------------
-    # For collect_predictions / baselines: no dead channels, all masks are
-    # "artificial" (we always have truth)
     dead_mask = np.zeros(N_CHANNELS, dtype=bool)
-    artificial_mask = combined_mask  # all masked sensors have truth
+    artificial_mask = combined_mask
 
     baseline_results = {}
 
-    # Neighbor average
     from lib.inpainter_baselines import (
         NeighborAverageBaseline, SolidAngleWeightedBaseline,
     )
 
+    # Baselines run on unmasked npho (x_norm still has original values)
+    x_npho_orig = x_norm[:, :, 0]
+
     print("[INFO] Running NeighborAverageBaseline...")
     avg_baseline = NeighborAverageBaseline(k=1)
-    x_npho_orig = x_original[:, :, 0]
     avg_preds = avg_baseline.predict(x_npho_orig, combined_mask)
-    avg_results = _collect_baseline(
-        avg_preds, x_original, combined_mask, run_numbers, event_numbers,
+    avg_results = _collect_baseline_fast(
+        avg_preds, truth_at_mask, matched_sid, n_matched,
     )
+    del avg_preds
     baseline_results["avg"] = avg_results
 
-    # Solid-angle weighted
-    if args.solid_angle_branch:
-        solid_angles = load_solid_angles(
-            args.input, args.solid_angle_branch,
-            tree_name=args.tree_name, max_events=args.max_events,
-        )
-        # Subset to matched events
-        solid_angles = solid_angles[matched_idx]
-
+    if solid_angles is not None:
         print("[INFO] Running SolidAngleWeightedBaseline...")
         sa_baseline = SolidAngleWeightedBaseline(k=1)
         sa_preds = sa_baseline.predict(x_npho_orig, combined_mask,
                                        solid_angles=solid_angles)
-        sa_results = _collect_baseline(
-            sa_preds, x_original, combined_mask, run_numbers, event_numbers,
+        sa_results = _collect_baseline_fast(
+            sa_preds, truth_at_mask, matched_sid, n_matched,
         )
+        del sa_preds, solid_angles
         baseline_results["sa"] = sa_results
+    del x_npho_orig
+    gc.collect()
+
+    # ------------------------------------------------------------------
+    # 5. Apply sentinels & run inference
+    # ------------------------------------------------------------------
+    x_norm[ev_range, matched_sid, 0] = MODEL_SENTINEL_NPHO
+    x_norm[ev_range, matched_sid, 1] = MODEL_SENTINEL_TIME
+
+    print(f"[INFO] Running inference on {args.device}...")
+    predictions = run_inference(
+        model, model_type, x_norm, combined_mask,
+        batch_size=args.batch_size, device=args.device,
+        predict_channels=predict_channels,
+    )
+
+    # Restore truth at masked sensors so x_norm acts as x_original for
+    # collect_predictions (avoids keeping a separate full copy)
+    x_norm[ev_range, matched_sid, :] = truth_at_mask
+    x_original = x_norm  # alias — no copy needed
+    del x_norm
+    gc.collect()
 
     # Local fit
     if args.local_fit_baseline:
-        # The ROOT macro applies a global dead channel list uniformly to all
-        # events, but here the masked sensor varies per event.  We run the
-        # macro with ALL unique matched sensors as "dead", then keep only the
-        # (event, sensor) pair that matches our per-event mask.
-        unique_sids = np.unique(matched_sid)
-
-        # Build full-file x_original and combined_mask for the macro wrapper.
-        # The macro reads raw data from the ROOT file, so x_original_full is
-        # only needed for truth lookup by the wrapper.
-        x_full = normalize_data(data["npho"], data["time"],
-                                npho_scheme=npho_scheme)
-        mask_full = np.zeros((n_total, N_CHANNELS), dtype=bool)
-        mask_full[:, unique_sids] = True
-        # artificial_mask_full: only the per-event FIP sensor is "artificial"
-        art_full = np.zeros((n_total, N_CHANNELS), dtype=bool)
-        for i, ev_orig in enumerate(matched_idx):
-            art_full[ev_orig, matched_sid[i]] = True
-
-        lf_results_full = run_local_fit_baseline(
-            input_path=args.input,
-            dead_channels=unique_sids,
-            x_original=x_full,
-            combined_mask=mask_full,
-            artificial_mask=art_full,
-            npho_scheme=npho_scheme,
-            npho_scale=DEFAULT_NPHO_SCALE,
-            npho_scale2=DEFAULT_NPHO_SCALE2,
-            max_events=args.max_events,
+        lf_results = _run_local_fit_lightweight(
+            args.input, matched_orig_idx, matched_sid, truth_at_mask,
+            npho_scheme,
         )
-        if lf_results_full:
-            # Filter: keep only entries where mask_type==0 (artificial, i.e.
-            # the per-event FIP sensor) and remap event_idx to subsetted index.
-            orig_to_sub = {int(ev_orig): sub_i
-                           for sub_i, ev_orig in enumerate(matched_idx)}
-            lf_filtered = []
-            for entry in lf_results_full:
-                if entry["mask_type"] != 0:
-                    continue
-                sub_i = orig_to_sub.get(entry["event_idx"])
-                if sub_i is None:
-                    continue
-                # Verify this is the correct per-event sensor
-                if entry["sensor_id"] != int(matched_sid[sub_i]):
-                    continue
-                entry["event_idx"] = sub_i
-                lf_filtered.append(entry)
-            if lf_filtered:
-                baseline_results["localfit"] = lf_filtered
-                print(f"[INFO] LocalFitBaseline: {len(lf_filtered)} "
-                      f"matched predictions kept")
+        if lf_results:
+            baseline_results["localfit"] = lf_results
 
     # ------------------------------------------------------------------
     # 9. Compute baseline metrics
@@ -525,33 +551,141 @@ def main():
 #  Helpers
 # =========================================================
 
-def _collect_baseline(
-    full_preds: np.ndarray,
-    x_original: np.ndarray,
-    combined_mask: np.ndarray,
-    run_numbers,
-    event_numbers,
+def _run_local_fit_lightweight(
+    input_path: str,
+    matched_orig_idx: np.ndarray,
+    matched_sid: np.ndarray,
+    truth_at_mask: np.ndarray,
+    npho_scheme: str,
 ) -> list:
-    """Collect per-sensor baseline results (all mask_type=0)."""
+    """Run LocalFitBaseline macro and match results — no large arrays.
+
+    Calls the ROOT macro directly with the unique dead channel list, then
+    reads the macro output and matches (event_idx, sensor_id) to our
+    per-event mask.  Avoids allocating full n_total × 4760 arrays.
+    """
+    import subprocess
+    import tempfile
+
+    unique_sids = np.unique(matched_sid)
+
+    macro_path = os.path.join(
+        os.path.dirname(__file__), '..', 'others', 'LocalFitBaseline.C')
+    macro_path = os.path.abspath(macro_path)
+    if not os.path.isfile(macro_path):
+        print(f"[WARNING] LocalFitBaseline.C not found at {macro_path}")
+        return []
+
+    file_list = expand_path(input_path)
+    if len(file_list) != 1:
+        print(f"[WARNING] LocalFitBaseline requires a single ROOT file, "
+              f"got {len(file_list)}. Using first file only.")
+    root_file = file_list[0]
+
+    dead_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+    out_tmp = tempfile.NamedTemporaryFile(suffix='.root', delete=False)
+    try:
+        for ch in unique_sids:
+            dead_tmp.write(f"{ch}\n")
+        dead_tmp.close()
+        out_tmp.close()
+
+        cmd = (f'root -l -b -q \'{macro_path}("{root_file}", '
+               f'"{dead_tmp.name}", "{out_tmp.name}")\'')
+        print(f"[INFO] Running LocalFitBaseline macro on {root_file}")
+        print(f"[INFO]   {len(unique_sids)} dead channels")
+        sys.stdout.flush()
+        result = subprocess.run(cmd, shell=True)
+        if result.returncode != 0:
+            try:
+                _t = uproot.open(out_tmp.name)
+                _t['predictions']
+                _t.close()
+            except Exception:
+                print(f"[ERROR] LocalFitBaseline macro failed")
+                return []
+
+        # Read macro output
+        with uproot.open(out_tmp.name) as f:
+            pt = f['predictions']
+            lf_ev = pt['event_idx'].array(library='np')
+            lf_sid = pt['sensor_id'].array(library='np')
+            lf_pred_raw = pt['pred_npho'].array(library='np')
+
+    finally:
+        for p in (dead_tmp.name, out_tmp.name):
+            if os.path.exists(p):
+                os.unlink(p)
+
+    # Normalize macro predictions
+    transform = NphoTransform(scheme=npho_scheme)
+    lf_pred_norm = transform.forward(
+        np.maximum(lf_pred_raw, transform.domain_min())
+    ).astype(np.float32)
+
+    # Build lookup: (orig_event_idx, sensor_id) -> normalized prediction
+    lf_lookup = {}
+    for j in range(len(lf_ev)):
+        lf_lookup[(int(lf_ev[j]), int(lf_sid[j]))] = float(lf_pred_norm[j])
+
+    # Match to our per-event mask
     results = []
-    n = x_original.shape[0]
-    for i in range(n):
-        masked = np.where(combined_mask[i])[0]
-        for sid in masked:
-            pred_npho = float(full_preds[i, sid])
-            truth_npho = float(x_original[i, sid, 0])
-            if truth_npho == MODEL_SENTINEL_NPHO:
-                error_npho = -999.0
-            else:
-                error_npho = pred_npho - truth_npho
-            results.append({
-                "event_idx": i,
-                "sensor_id": int(sid),
-                "mask_type": 0,
-                "pred_npho": pred_npho,
-                "truth_npho": truth_npho,
-                "error_npho": error_npho,
-            })
+    n_found = 0
+    for sub_i in range(len(matched_orig_idx)):
+        ev_orig = int(matched_orig_idx[sub_i])
+        sid = int(matched_sid[sub_i])
+        truth_npho = float(truth_at_mask[sub_i, 0])
+
+        key = (ev_orig, sid)
+        if key in lf_lookup:
+            pred_npho = lf_lookup[key]
+            n_found += 1
+        else:
+            pred_npho = -999.0
+
+        if truth_npho == MODEL_SENTINEL_NPHO or pred_npho == -999.0:
+            error_npho = -999.0
+        else:
+            error_npho = pred_npho - truth_npho
+
+        results.append({
+            "event_idx": sub_i,
+            "sensor_id": sid,
+            "mask_type": 0,
+            "pred_npho": pred_npho,
+            "truth_npho": truth_npho,
+            "error_npho": error_npho,
+        })
+
+    print(f"[INFO] LocalFitBaseline: {n_found}/{len(matched_orig_idx)} "
+          f"matched predictions")
+    return results
+
+
+def _collect_baseline_fast(
+    full_preds: np.ndarray,
+    truth_at_mask: np.ndarray,
+    matched_sid: np.ndarray,
+    n_matched: int,
+) -> list:
+    """Collect per-sensor baseline results (1 masked sensor per event)."""
+    results = []
+    for i in range(n_matched):
+        sid = int(matched_sid[i])
+        pred_npho = float(full_preds[i, sid])
+        truth_npho = float(truth_at_mask[i, 0])
+        if truth_npho == MODEL_SENTINEL_NPHO:
+            error_npho = -999.0
+        else:
+            error_npho = pred_npho - truth_npho
+        results.append({
+            "event_idx": i,
+            "sensor_id": sid,
+            "mask_type": 0,
+            "pred_npho": pred_npho,
+            "truth_npho": truth_npho,
+            "error_npho": error_npho,
+        })
     return results
 
 
