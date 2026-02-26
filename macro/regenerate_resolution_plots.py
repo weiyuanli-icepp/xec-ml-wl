@@ -89,6 +89,9 @@ Examples:
                         help="Tasks to regenerate plots for (default: all available)")
     parser.add_argument("--suffix", type=str, default="_regenerated",
                         help="Suffix to add to output filenames (default: _regenerated)")
+    parser.add_argument("--gaussian-fit", action="store_true",
+                        help="Use Gaussian fits for resolution error bars and "
+                             "append per-bin histogram diagnostic pages (energy only)")
 
     args = parser.parse_args()
 
@@ -141,7 +144,8 @@ Examples:
                 for key in ['true_u', 'true_v', 'true_w']:
                     if key in df.columns and key not in energy_root_data:
                         energy_root_data[key] = df[key].values
-                plot_energy_resolution_profile(pred, true, root_data=energy_root_data, outfile=outfile)
+                plot_energy_resolution_profile(pred, true, root_data=energy_root_data,
+                                               outfile=outfile, gaussian_fit=args.gaussian_fit)
                 print(f"[OK] Generated: {outfile}")
 
             elif task == "timing":

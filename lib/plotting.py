@@ -32,6 +32,107 @@ def _get_binned_stat(x, y, stat_func, nbins):
     return bin_centers, np.array(y_vals), np.array(y_errs)
 
 
+def _gaussian(x, A, mu, sigma):
+    """Un-normalised Gaussian for histogram fitting."""
+    return A * np.exp(-0.5 * ((x - mu) / sigma) ** 2)
+
+
+def _get_binned_gaussian(x, y, nbins):
+    """Bin y by x, fit a Gaussian in each bin.
+
+    Returns (bin_centers, sigmas, sigma_errors, bin_info) where bin_info
+    is a list of (values, popt_or_None, bin_lo, bin_hi) for histogram
+    diagnostic plotting.
+    """
+    from scipy.optimize import curve_fit as _curve_fit
+
+    if len(x) == 0:
+        return np.array([]), np.array([]), np.array([]), []
+    bin_edges = np.linspace(x.min(), x.max(), nbins + 1)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    bin_idx = np.digitize(x, bin_edges) - 1
+
+    sigmas, sigma_errs, bin_info = [], [], []
+    for i in range(nbins):
+        mask = bin_idx == i
+        vals = y[mask]
+        lo, hi = bin_edges[i], bin_edges[i + 1]
+
+        if len(vals) < 10:
+            sigmas.append(np.nan)
+            sigma_errs.append(np.nan)
+            bin_info.append((vals, None, lo, hi))
+            continue
+
+        try:
+            counts, edges = np.histogram(vals, bins='auto')
+            centers = (edges[:-1] + edges[1:]) / 2
+            mu0 = np.mean(vals)
+            sig0 = np.std(vals)
+            dx = edges[1] - edges[0]
+            A0 = len(vals) * dx / (sig0 * np.sqrt(2 * np.pi))
+
+            popt, pcov = _curve_fit(
+                _gaussian, centers, counts.astype(float),
+                p0=[A0, mu0, sig0],
+                bounds=([0, -np.inf, 1e-8], [np.inf, np.inf, np.inf]),
+            )
+            sigmas.append(abs(popt[2]))
+            sigma_errs.append(np.sqrt(pcov[2, 2]))
+            bin_info.append((vals, popt, lo, hi))
+        except Exception:
+            # Fallback: std with analytic error
+            sigmas.append(np.std(vals))
+            sigma_errs.append(np.std(vals) / np.sqrt(2 * max(len(vals) - 1, 1)))
+            bin_info.append((vals, None, lo, hi))
+
+    return bin_centers, np.array(sigmas), np.array(sigma_errs), bin_info
+
+
+def _plot_bin_histograms(bin_info, xlabel, title):
+    """Create a grid figure with per-bin histograms + Gaussian overlays.
+
+    Args:
+        bin_info: list of (values, popt_or_None, bin_lo, bin_hi)
+        xlabel: x-axis label for histograms
+        title: suptitle
+
+    Returns:
+        matplotlib Figure
+    """
+    n = len(bin_info)
+    ncols = min(5, n)
+    nrows = max(1, (n + ncols - 1) // ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3.5 * ncols, 3 * nrows))
+    fig.suptitle(title, fontsize=13)
+    axes = np.atleast_1d(axes).flatten()
+
+    for i, (vals, popt, lo, hi) in enumerate(bin_info):
+        ax = axes[i]
+        if len(vals) == 0:
+            ax.set_title(f"[{lo:.1f}, {hi:.1f}]\nEmpty", fontsize=8)
+            ax.axis('off')
+            continue
+        counts, edges, _ = ax.hist(vals, bins='auto', alpha=0.7,
+                                   color='tab:blue', density=False)
+        if popt is not None:
+            x_fit = np.linspace(edges[0], edges[-1], 200)
+            ax.plot(x_fit, _gaussian(x_fit, *popt), 'r-', linewidth=1.5)
+            ax.set_title(f"[{lo:.1f}, {hi:.1f}]\n"
+                         f"μ={popt[1]:.3f} σ={abs(popt[2]):.3f}",
+                         fontsize=8)
+        else:
+            ax.set_title(f"[{lo:.1f}, {hi:.1f}]\nno fit (N={len(vals)})",
+                         fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.set_xlabel(xlabel, fontsize=7)
+
+    for j in range(n, len(axes)):
+        axes[j].axis('off')
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    return fig
+
+
 @contextlib.contextmanager
 def _dummy_pdf():
     """No-op context manager for interactive (non-file) mode."""
@@ -375,12 +476,17 @@ def plot_saliency_profile(saliency_data, outfile=None):
     else:
         plt.show()
         
-def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=None):
+def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
+                                   outfile=None, gaussian_fit=False):
     """
     Plots energy resolution profile:
     - Row 1: Residual histogram, Resolution vs energy, Normalized resolution (sigma/E) vs energy
     - Row 2: Pred vs True scatter, Resolution vs U, V, W (first interaction point)
     - Row 3: Relative resolution vs U, V, W for signal region (50-55 MeV)
+
+    When gaussian_fit=True, resolution and error bars come from per-bin
+    Gaussian fits (sigma ± fit error) instead of 68th-percentile / SEM.
+    Additional PDF pages show the per-bin histograms with fit overlays.
 
     Args:
         pred: Predicted energy values
@@ -388,6 +494,7 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
         root_data: Dict with 'true_u', 'true_v', 'true_w' for position-profiled plots
         bins: Number of bins for profiling
         outfile: Output file path
+        gaussian_fit: If True, use Gaussian fits for resolution & error bars
     """
     from matplotlib.colors import LogNorm
     from scipy.optimize import curve_fit
@@ -405,6 +512,9 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
         return np.sqrt((a / np.sqrt(E))**2 + b**2 + (c / E)**2)
 
     percentile_68 = lambda x: np.percentile(x, 68)
+
+    # Collect extra histogram-diagnostic figures (only when gaussian_fit)
+    hist_figs = []
 
     # Check if we have uvwFI data for position-profiled plots
     has_uvw = (root_data is not None and
@@ -437,40 +547,47 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
 
     # Resolution vs True Energy
     _eb = dict(fmt='none', capsize=3, elinewidth=0.8)
-    x, y, ye = _get_binned_stat(true, abs_residual, percentile_68, bins)
+    if gaussian_fit:
+        x, y, ye, binfo = _get_binned_gaussian(true, residual, bins)
+        hist_figs.append(_plot_bin_histograms(
+            binfo, "Residual [MeV]", "Resolution vs True Energy – Bin Histograms"))
+    else:
+        x, y, ye = _get_binned_stat(true, abs_residual, percentile_68, bins)
     axs[idx_res].errorbar(x, y, yerr=ye, marker='o', color='tab:orange', ms=5, **_eb)
     axs[idx_res].set_xlabel("True Energy [MeV]")
-    axs[idx_res].set_ylabel("68% |Residual| [MeV]")
+    axs[idx_res].set_ylabel("σ [MeV] (Gauss fit)" if gaussian_fit else "68% |Residual| [MeV]")
     axs[idx_res].set_title("Resolution vs True Energy")
 
     # Normalized Resolution (sigma/E) vs True Energy with fit
-    # Compute relative resolution: |residual| / true_energy
-    # Use small epsilon to avoid division by zero
-    safe_true = np.where(np.abs(true) > 1e-6, true, 1e-6)
-    rel_residual = abs_residual / np.abs(safe_true)
-    x, y, ye = _get_binned_stat(true, rel_residual, percentile_68, bins)
-    axs[idx_rel].errorbar(x, y, yerr=ye, marker='o', color='tab:green', ms=5, label='Data', **_eb)
+    if gaussian_fit:
+        # sigma / E_bin_center for relative resolution
+        safe_x = np.where(x > 1e-6, x, 1e-6)
+        x_rel, y_rel, ye_rel = x, y / safe_x, ye / safe_x
+    else:
+        safe_true = np.where(np.abs(true) > 1e-6, true, 1e-6)
+        rel_residual = abs_residual / np.abs(safe_true)
+        x_rel, y_rel, ye_rel = _get_binned_stat(true, rel_residual, percentile_68, bins)
+    axs[idx_rel].errorbar(x_rel, y_rel, yerr=ye_rel, marker='o', color='tab:green',
+                          ms=5, label='Data', **_eb)
 
     # Fit the resolution model
     fit_label = ""
     try:
-        # Filter out NaN values for fitting
-        valid = ~np.isnan(y) & ~np.isnan(x) & (x > 0)
-        if np.sum(valid) >= 3:  # Need at least 3 points for 3 parameters
-            popt, pcov = curve_fit(resolution_model, x[valid], y[valid],
+        valid = ~np.isnan(y_rel) & ~np.isnan(x_rel) & (x_rel > 0)
+        if np.sum(valid) >= 3:
+            popt, pcov = curve_fit(resolution_model, x_rel[valid], y_rel[valid],
                                    p0=[0.02, 0.01, 0.001],
                                    bounds=([0, 0, 0], [1, 1, 1]))
             a_fit, b_fit, c_fit = popt
-            # Plot fit curve
-            x_fit = np.linspace(x[valid].min(), x[valid].max(), 100)
+            x_fit = np.linspace(x_rel[valid].min(), x_rel[valid].max(), 100)
             y_fit = resolution_model(x_fit, a_fit, b_fit, c_fit)
             axs[idx_rel].plot(x_fit, y_fit, '-', color='tab:red', linewidth=1.5, label='Fit')
             fit_label = f"\na={a_fit*100:.2f}%/√E, b={b_fit*100:.2f}%, c={c_fit*100:.2f}%/E"
     except Exception:
-        pass  # Skip fit if it fails
+        pass
 
     axs[idx_rel].set_xlabel("True Energy [MeV]")
-    axs[idx_rel].set_ylabel("68% |Residual|/E")
+    axs[idx_rel].set_ylabel("σ/E (Gauss fit)" if gaussian_fit else "68% |Residual|/E")
     axs[idx_rel].set_title(f"Relative Resolution vs Energy{fit_label}")
     axs[idx_rel].legend(loc='upper right')
 
@@ -497,10 +614,15 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
 
         uvw_markers = ['o', 's', 'D']
         for i, (uvw_val, label, color, mk) in enumerate(zip(uvw_data, uvw_labels, uvw_colors, uvw_markers)):
-            x, y, ye = _get_binned_stat(uvw_val, abs_residual, percentile_68, bins)
+            if gaussian_fit:
+                x, y, ye, binfo = _get_binned_gaussian(uvw_val, residual, bins)
+                hist_figs.append(_plot_bin_histograms(
+                    binfo, "Residual [MeV]", f"Resolution vs {label} – Bin Histograms"))
+            else:
+                x, y, ye = _get_binned_stat(uvw_val, abs_residual, percentile_68, bins)
             axs[1, i].errorbar(x, y, yerr=ye, marker=mk, color=color, ms=5, **_eb)
             axs[1, i].set_xlabel(f"True {label} [cm]")
-            axs[1, i].set_ylabel("68% |Residual| [MeV]")
+            axs[1, i].set_ylabel("σ [MeV] (Gauss fit)" if gaussian_fit else "68% |Residual| [MeV]")
             axs[1, i].set_title(f"Resolution vs {label}")
 
         # Row 2, Col 4: Hide unused subplot
@@ -509,29 +631,57 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20, outfile=
         # Row 3: Relative resolution vs U, V, W for signal region (50-55 MeV)
         sig_mask = (true >= 50.0) & (true <= 55.0)
         n_sig = np.sum(sig_mask)
+        sig_residual = residual[sig_mask]
         sig_true = true[sig_mask]
-        sig_rel_residual = rel_residual[sig_mask]
         sig_u = true_u[sig_mask]
         sig_v = true_v[sig_mask]
         sig_w = true_w[sig_mask]
         sig_uvw_data = [sig_u, sig_v, sig_w]
+        mean_sig_e = np.mean(sig_true) if n_sig > 0 else 1.0
+
+        if not gaussian_fit:
+            safe_true_all = np.where(np.abs(true) > 1e-6, true, 1e-6)
+            rel_residual = np.abs(residual) / np.abs(safe_true_all)
+            sig_rel_residual = rel_residual[sig_mask]
 
         for i, (uvw_val, label, color, mk) in enumerate(zip(sig_uvw_data, uvw_labels, uvw_colors, uvw_markers)):
             if n_sig > 0:
-                x, y, ye = _get_binned_stat(uvw_val, sig_rel_residual, percentile_68, bins)
+                if gaussian_fit:
+                    x, y, ye, binfo = _get_binned_gaussian(uvw_val, sig_residual, bins)
+                    hist_figs.append(_plot_bin_histograms(
+                        binfo, "Residual [MeV]",
+                        f"Rel. Res. vs {label} (50–55 MeV) – Bin Histograms"))
+                    # Convert absolute sigma to relative: sigma / <E>
+                    y = y / mean_sig_e
+                    ye = ye / mean_sig_e
+                else:
+                    x, y, ye = _get_binned_stat(uvw_val, sig_rel_residual, percentile_68, bins)
                 axs[2, i].errorbar(x, y, yerr=ye, marker=mk, color=color, ms=5, **_eb)
             axs[2, i].set_xlabel(f"True {label} [cm]")
-            axs[2, i].set_ylabel("68% |Residual|/E")
+            axs[2, i].set_ylabel("σ/E (Gauss fit)" if gaussian_fit else "68% |Residual|/E")
             axs[2, i].set_title(f"Rel. Resolution vs {label}\n(50–55 MeV, N={n_sig})")
 
         axs[2, 3].axis('off')
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    if outfile:
+
+    # Save — use PdfPages when we have histogram diagnostic pages
+    if outfile and hist_figs:
+        from matplotlib.backends.backend_pdf import PdfPages
+        with PdfPages(outfile) as pdf:
+            pdf.savefig(fig, dpi=120)
+            for hf in hist_figs:
+                pdf.savefig(hf, dpi=120)
+        plt.close(fig)
+        for hf in hist_figs:
+            plt.close(hf)
+    elif outfile:
         plt.savefig(outfile, dpi=120)
         plt.close()
     else:
         plt.show()
+        for hf in hist_figs:
+            plt.show()
 
 
 def plot_timing_resolution_profile(pred, true, root_data=None, bins=20, outfile=None):
