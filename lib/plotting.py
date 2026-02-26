@@ -790,12 +790,17 @@ def plot_timing_resolution_profile(pred, true, root_data=None, bins=20, outfile=
             plt.close(fig)
 
 
-def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None, bins=20, outfile=None):
+def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
+                                     bins=20, outfile=None, gaussian_fit=False):
     """
     Plots position (uvwFI) resolution profiles (multi-page PDF):
     Page 1: U, V, W residual histograms + resolution vs own true value
-    Page 2: U, V, W bias vs own true value + resolution vs energy (if available)
-    Page 3: Bias vs energy + 3D distance resolution vs energy, U, V, W (if available)
+    Page 2: 3D distance histogram + 3D distance resolution vs U, V, W
+    Page 3: U, V, W bias vs own true value + resolution vs energy (if available)
+    Page 4: Bias vs energy + 3D distance resolution vs energy, U, V, W (if available)
+
+    When gaussian_fit=True, per-bin Gaussian fits are used for resolution
+    and error bars, with diagnostic histogram pages appended.
     """
     from matplotlib.backends.backend_pdf import PdfPages
 
@@ -816,6 +821,7 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None, bins=20
 
     markers = ['o', 's', 'D']
     _eb = dict(fmt='none', capsize=3, elinewidth=0.8)
+    hist_figs = []
 
     with PdfPages(outfile) if outfile else _dummy_pdf() as pdf:
         # --- Page 1: Residual histograms + resolution vs own true ---
@@ -829,9 +835,16 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None, bins=20
             axs[0, i].set_title(f"{labels[i]}: Bias={np.mean(residuals[i]):.3f}, "
                                 f"68%={np.percentile(abs_residuals[i], 68):.3f}")
 
-            x, y, ye = _get_binned_stat(true_uvw[:, i], abs_residuals[i], percentile_68, bins)
+            if gaussian_fit:
+                x, y, ye, binfo = _get_binned_gaussian(true_uvw[:, i], residuals[i], bins)
+                hist_figs.append(_plot_bin_histograms(
+                    binfo, f"{labels[i]} Residual",
+                    f"{labels[i]} Resolution vs True – Bin Histograms"))
+            else:
+                x, y, ye = _get_binned_stat(true_uvw[:, i], abs_residuals[i], percentile_68, bins)
             axs[1, i].errorbar(x, y, yerr=ye, marker=markers[i], color=colors[i], ms=5, **_eb)
-            axs[1, i].set_xlabel(f"True {labels[i]}"); axs[1, i].set_ylabel("68% |Residual|")
+            axs[1, i].set_xlabel(f"True {labels[i]}")
+            axs[1, i].set_ylabel("σ [cm]" if gaussian_fit else "68% |Residual|")
             axs[1, i].set_title(f"{labels[i]} Resolution vs True")
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
@@ -839,7 +852,36 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None, bins=20
         else: plt.show()
         plt.close(fig)
 
-        # --- Page 2: Bias vs own true + resolution vs energy ---
+        # --- Page 2: 3D distance histogram + 3D distance vs U, V, W ---
+        fig, axs = plt.subplots(2, 3, figsize=(15, 8))
+        fig.suptitle("3D Distance Error Profile", fontsize=14)
+
+        axs[0, 0].hist(dist_3d, bins=100, alpha=0.7, color='tab:red')
+        axs[0, 0].set_xlabel("3D Distance [cm]"); axs[0, 0].set_ylabel("Count")
+        axs[0, 0].set_title(f"3D Distance Distribution\n"
+                            f"68%={np.percentile(dist_3d, 68):.3f}, "
+                            f"median={np.median(dist_3d):.3f}")
+        axs[0, 1].axis('off')
+        axs[0, 2].axis('off')
+
+        for i in range(3):
+            if gaussian_fit:
+                # Gaussian fit of signed residual, then compute 3D from per-bin sigmas
+                # — not meaningful for 3D distance; use percentile here
+                x, y, ye = _get_binned_stat(true_uvw[:, i], dist_3d, percentile_68, bins)
+            else:
+                x, y, ye = _get_binned_stat(true_uvw[:, i], dist_3d, percentile_68, bins)
+            axs[1, i].errorbar(x, y, yerr=ye, marker=markers[i], color=colors[i], ms=5, **_eb)
+            axs[1, i].set_xlabel(f"True {labels[i]}")
+            axs[1, i].set_ylabel("68% 3D Distance")
+            axs[1, i].set_title(f"3D Distance vs {labels[i]}")
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        if outfile: pdf.savefig(fig, dpi=120)
+        else: plt.show()
+        plt.close(fig)
+
+        # --- Page 3: Bias vs own true + resolution vs energy ---
         fig, axs = plt.subplots(2, 3, figsize=(15, 8))
         fig.suptitle("Position Bias vs Own Truth & Energy Cross-Variable", fontsize=14)
 
@@ -853,9 +895,16 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None, bins=20
         if has_energy:
             true_energy = root_data['true_energy'] * 1000.0  # GeV -> MeV
             for i in range(3):
-                x, y, ye = _get_binned_stat(true_energy, abs_residuals[i], percentile_68, bins)
+                if gaussian_fit:
+                    x, y, ye, binfo = _get_binned_gaussian(true_energy, residuals[i], bins)
+                    hist_figs.append(_plot_bin_histograms(
+                        binfo, f"{labels[i]} Residual",
+                        f"{labels[i]} Res vs Energy – Bin Histograms"))
+                else:
+                    x, y, ye = _get_binned_stat(true_energy, abs_residuals[i], percentile_68, bins)
                 axs[1, i].errorbar(x, y, yerr=ye, marker=markers[i], color=colors[i], ms=5, **_eb)
-                axs[1, i].set_xlabel("True Energy [MeV]"); axs[1, i].set_ylabel("68% |Residual|")
+                axs[1, i].set_xlabel("True Energy [MeV]")
+                axs[1, i].set_ylabel("σ [cm]" if gaussian_fit else "68% |Residual|")
                 axs[1, i].set_title(f"{labels[i]} Resolution vs Energy")
         else:
             for i in range(3):
@@ -866,7 +915,7 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None, bins=20
         else: plt.show()
         plt.close(fig)
 
-        # --- Page 3: Bias vs energy + 3D distance error profiles ---
+        # --- Page 4: Bias vs energy + 3D distance error profiles ---
         if has_energy:
             true_energy = root_data['true_energy'] * 1000.0  # GeV -> MeV
             fig, axs = plt.subplots(2, 3, figsize=(15, 8))
@@ -898,6 +947,12 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None, bins=20
             if outfile: pdf.savefig(fig, dpi=120)
             else: plt.show()
             plt.close(fig)
+
+        # Append Gaussian-fit histogram diagnostic pages
+        for hf in hist_figs:
+            if outfile: pdf.savefig(hf, dpi=120)
+            else: hf.show()
+            plt.close(hf)
 
 
 def plot_mae_reconstruction(truth, masked_input, recon, title="MAE Reconstruction", savepath=None):

@@ -105,10 +105,10 @@ Examples:
     tasks = args.tasks or ["angle", "energy", "timing", "uvwFI"]
     suffix = args.suffix
 
-    # Build root_data dict for energy plots (needs uvwFI data)
+    # Build root_data dicts for cross-task information
     root_data = {}
 
-    # Load uvwFI predictions first (needed for energy resolution vs position plots)
+    # Load uvwFI predictions (needed for energy resolution vs position plots)
     uvwFI_df = load_predictions(args.artifact_dir, "uvwFI")
     if uvwFI_df is not None:
         root_data['true_u'] = uvwFI_df['true_u'].values
@@ -117,6 +117,12 @@ Examples:
         root_data['pred_u'] = uvwFI_df['pred_u'].values
         root_data['pred_v'] = uvwFI_df['pred_v'].values
         root_data['pred_w'] = uvwFI_df['pred_w'].values
+
+    # Load energy predictions (needed for position resolution vs energy plots)
+    energy_df = load_predictions(args.artifact_dir, "energy")
+    pos_root_data = {}
+    if energy_df is not None:
+        pos_root_data['true_energy'] = energy_df['true_energy'].values
 
     # Process each task
     for task in tasks:
@@ -157,7 +163,8 @@ Examples:
             elif task == "uvwFI":
                 pred_uvw = np.stack([df['pred_u'].values, df['pred_v'].values, df['pred_w'].values], axis=1)
                 true_uvw = np.stack([df['true_u'].values, df['true_v'].values, df['true_w'].values], axis=1)
-                plot_position_resolution_profile(pred_uvw, true_uvw, outfile=outfile)
+                plot_position_resolution_profile(pred_uvw, true_uvw, root_data=pos_root_data,
+                                                 outfile=outfile, gaussian_fit=args.gaussian_fit)
                 print(f"[OK] Generated: {outfile}")
 
         except Exception as e:
