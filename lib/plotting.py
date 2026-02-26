@@ -479,10 +479,11 @@ def plot_saliency_profile(saliency_data, outfile=None):
 def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
                                    outfile=None, gaussian_fit=False):
     """
-    Plots energy resolution profile:
-    - Row 1: Residual histogram, Resolution vs energy, Normalized resolution (sigma/E) vs energy
-    - Row 2: Pred vs True scatter, Resolution vs U, V, W (first interaction point)
-    - Row 3: Relative resolution vs U, V, W for signal region (50-55 MeV)
+    Plots energy resolution profile (multi-page PDF when UVW data available):
+    - Page 1: Residual histogram, Resolution vs energy, Relative resolution
+              (sigma/E) vs energy, Pred vs True scatter.
+    - Page 2 (if UVW): Resolution vs U/V/W, Relative resolution vs U/V/W
+              for signal region (50-55 MeV).
 
     When gaussian_fit=True, resolution and error bars come from per-bin
     Gaussian fits (sigma ± fit error) instead of 68th-percentile / SEM.
@@ -513,6 +514,8 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
 
     percentile_68 = lambda x: np.percentile(x, 68)
 
+    # Collect all figures in page order
+    all_figs = []
     # Collect extra histogram-diagnostic figures (only when gaussian_fit)
     hist_figs = []
 
@@ -520,30 +523,18 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
     has_uvw = (root_data is not None and
                'true_u' in root_data and len(root_data.get('true_u', [])) > 0)
 
-    # 3x4 if we have uvwFI data, otherwise 2x2
-    if has_uvw:
-        fig, axs = plt.subplots(3, 4, figsize=(18, 13))
-        fig.suptitle("Energy Resolution Profile", fontsize=14)
-        # Indices for the 4 main plots (first row)
-        idx_hist = (0, 0)
-        idx_res = (0, 1)
-        idx_rel = (0, 2)
-        idx_scatter = (0, 3)
-    else:
-        fig, axs = plt.subplots(2, 2, figsize=(10, 8))
-        fig.suptitle("Energy Resolution Profile", fontsize=14)
-        # Indices for 2x2 layout
-        idx_hist = (0, 0)
-        idx_res = (0, 1)
-        idx_rel = (1, 0)
-        idx_scatter = (1, 1)
+    # --- Page 1: core energy plots (always 2x2) ---
+    fig1, axs1 = plt.subplots(2, 2, figsize=(10, 8))
+    fig1.suptitle("Energy Resolution Profile", fontsize=14)
+    all_figs.append(fig1)
 
     # Residual histogram
-    axs[idx_hist].hist(residual, bins=100, alpha=0.7, color='tab:blue')
-    axs[idx_hist].axvline(0, color='red', linestyle='--', linewidth=1)
-    axs[idx_hist].set_xlabel("Residual (Pred - True)")
-    axs[idx_hist].set_ylabel("Count")
-    axs[idx_hist].set_title(f"Residual Distribution\nBias={np.mean(residual):.4f}, 68%={np.percentile(abs_residual, 68):.4f}")
+    axs1[0, 0].hist(residual, bins=100, alpha=0.7, color='tab:blue')
+    axs1[0, 0].axvline(0, color='red', linestyle='--', linewidth=1)
+    axs1[0, 0].set_xlabel("Residual (Pred - True)")
+    axs1[0, 0].set_ylabel("Count")
+    axs1[0, 0].set_title(f"Residual Distribution\nBias={np.mean(residual):.4f}, "
+                          f"68%={np.percentile(abs_residual, 68):.4f}")
 
     # Resolution vs True Energy
     _eb = dict(fmt='none', capsize=3, elinewidth=0.8)
@@ -553,22 +544,21 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
             binfo, "Residual [MeV]", "Resolution vs True Energy – Bin Histograms"))
     else:
         x, y, ye = _get_binned_stat(true, abs_residual, percentile_68, bins)
-    axs[idx_res].errorbar(x, y, yerr=ye, marker='o', color='tab:orange', ms=5, **_eb)
-    axs[idx_res].set_xlabel("True Energy [MeV]")
-    axs[idx_res].set_ylabel("σ [MeV] (Gauss fit)" if gaussian_fit else "68% |Residual| [MeV]")
-    axs[idx_res].set_title("Resolution vs True Energy")
+    axs1[0, 1].errorbar(x, y, yerr=ye, marker='o', color='tab:orange', ms=5, **_eb)
+    axs1[0, 1].set_xlabel("True Energy [MeV]")
+    axs1[0, 1].set_ylabel("σ [MeV] (Gauss fit)" if gaussian_fit else "68% |Residual| [MeV]")
+    axs1[0, 1].set_title("Resolution vs True Energy")
 
     # Normalized Resolution (sigma/E) vs True Energy with fit
     if gaussian_fit:
-        # sigma / E_bin_center for relative resolution
         safe_x = np.where(x > 1e-6, x, 1e-6)
         x_rel, y_rel, ye_rel = x, y / safe_x, ye / safe_x
     else:
         safe_true = np.where(np.abs(true) > 1e-6, true, 1e-6)
         rel_residual = abs_residual / np.abs(safe_true)
         x_rel, y_rel, ye_rel = _get_binned_stat(true, rel_residual, percentile_68, bins)
-    axs[idx_rel].errorbar(x_rel, y_rel, yerr=ye_rel, marker='o', color='tab:green',
-                          ms=5, label='Data', **_eb)
+    axs1[1, 0].errorbar(x_rel, y_rel, yerr=ye_rel, marker='o', color='tab:green',
+                         ms=5, label='Data', **_eb)
 
     # Fit the resolution model
     fit_label = ""
@@ -581,38 +571,45 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
             a_fit, b_fit, c_fit = popt
             x_fit = np.linspace(x_rel[valid].min(), x_rel[valid].max(), 100)
             y_fit = resolution_model(x_fit, a_fit, b_fit, c_fit)
-            axs[idx_rel].plot(x_fit, y_fit, '-', color='tab:red', linewidth=1.5, label='Fit')
+            axs1[1, 0].plot(x_fit, y_fit, '-', color='tab:red', linewidth=1.5, label='Fit')
             fit_label = f"\na={a_fit*100:.2f}%/√E, b={b_fit*100:.2f}%, c={c_fit*100:.2f}%/E"
     except Exception:
         pass
 
-    axs[idx_rel].set_xlabel("True Energy [MeV]")
-    axs[idx_rel].set_ylabel("σ/E (Gauss fit)" if gaussian_fit else "68% |Residual|/E")
-    axs[idx_rel].set_title(f"Relative Resolution vs Energy{fit_label}")
-    axs[idx_rel].legend(loc='upper right')
+    axs1[1, 0].set_xlabel("True Energy [MeV]")
+    axs1[1, 0].set_ylabel("σ/E (Gauss fit)" if gaussian_fit else "68% |Residual|/E")
+    axs1[1, 0].set_title(f"Relative Resolution vs Energy{fit_label}")
+    axs1[1, 0].legend(loc='upper right')
 
     # Pred vs True scatter
     vmin = min(true.min(), pred.min())
     vmax = max(true.max(), pred.max())
-    h = axs[idx_scatter].hist2d(true, pred, bins=50, range=[[vmin, vmax], [vmin, vmax]],
-                  cmap='viridis', norm=LogNorm())
-    axs[idx_scatter].plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=1, label='y=x')
-    axs[idx_scatter].set_xlabel("True Energy [MeV]")
-    axs[idx_scatter].set_ylabel("Pred Energy [MeV]")
-    axs[idx_scatter].set_title("Pred vs True")
-    axs[idx_scatter].legend()
-    plt.colorbar(h[3], ax=axs[idx_scatter], label='Count')
+    h = axs1[1, 1].hist2d(true, pred, bins=50, range=[[vmin, vmax], [vmin, vmax]],
+                           cmap='viridis', norm=LogNorm())
+    axs1[1, 1].plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=1, label='y=x')
+    axs1[1, 1].set_xlabel("True Energy [MeV]")
+    axs1[1, 1].set_ylabel("Pred Energy [MeV]")
+    axs1[1, 1].set_title("Pred vs True")
+    axs1[1, 1].legend()
+    fig1.colorbar(h[3], ax=axs1[1, 1], label='Count')
 
+    fig1.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+    # --- Page 2: Resolution vs position (only when UVW available) ---
     if has_uvw:
-        # Row 2: Resolution vs U, V, W (first interaction point)
         true_u = root_data['true_u']
         true_v = root_data['true_v']
         true_w = root_data['true_w']
         uvw_labels = ['U', 'V', 'W']
         uvw_data = [true_u, true_v, true_w]
         uvw_colors = ['tab:blue', 'tab:orange', 'tab:green']
-
         uvw_markers = ['o', 's', 'D']
+
+        fig2, axs2 = plt.subplots(2, 3, figsize=(15, 9))
+        fig2.suptitle("Energy Resolution vs Position", fontsize=14)
+        all_figs.append(fig2)
+
+        # Row 1: Absolute resolution vs U, V, W
         for i, (uvw_val, label, color, mk) in enumerate(zip(uvw_data, uvw_labels, uvw_colors, uvw_markers)):
             if gaussian_fit:
                 x, y, ye, binfo = _get_binned_gaussian(uvw_val, residual, bins)
@@ -620,15 +617,12 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
                     binfo, "Residual [MeV]", f"Resolution vs {label} – Bin Histograms"))
             else:
                 x, y, ye = _get_binned_stat(uvw_val, abs_residual, percentile_68, bins)
-            axs[1, i].errorbar(x, y, yerr=ye, marker=mk, color=color, ms=5, **_eb)
-            axs[1, i].set_xlabel(f"True {label} [cm]")
-            axs[1, i].set_ylabel("σ [MeV] (Gauss fit)" if gaussian_fit else "68% |Residual| [MeV]")
-            axs[1, i].set_title(f"Resolution vs {label}")
+            axs2[0, i].errorbar(x, y, yerr=ye, marker=mk, color=color, ms=5, **_eb)
+            axs2[0, i].set_xlabel(f"True {label} [cm]")
+            axs2[0, i].set_ylabel("σ [MeV] (Gauss fit)" if gaussian_fit else "68% |Residual| [MeV]")
+            axs2[0, i].set_title(f"Resolution vs {label}")
 
-        # Row 2, Col 4: Hide unused subplot
-        axs[1, 3].axis('off')
-
-        # Row 3: Relative resolution vs U, V, W for signal region (50-55 MeV)
+        # Row 2: Relative resolution vs U, V, W for signal region (50-55 MeV)
         sig_mask = (true >= 50.0) & (true <= 55.0)
         n_sig = np.sum(sig_mask)
         sig_residual = residual[sig_mask]
@@ -641,8 +635,8 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
 
         if not gaussian_fit:
             safe_true_all = np.where(np.abs(true) > 1e-6, true, 1e-6)
-            rel_residual = np.abs(residual) / np.abs(safe_true_all)
-            sig_rel_residual = rel_residual[sig_mask]
+            rel_residual_all = np.abs(residual) / np.abs(safe_true_all)
+            sig_rel_residual = rel_residual_all[sig_mask]
 
         for i, (uvw_val, label, color, mk) in enumerate(zip(sig_uvw_data, uvw_labels, uvw_colors, uvw_markers)):
             if n_sig > 0:
@@ -651,37 +645,34 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
                     hist_figs.append(_plot_bin_histograms(
                         binfo, "Residual [MeV]",
                         f"Rel. Res. vs {label} (50–55 MeV) – Bin Histograms"))
-                    # Convert absolute sigma to relative: sigma / <E>
                     y = y / mean_sig_e
                     ye = ye / mean_sig_e
                 else:
                     x, y, ye = _get_binned_stat(uvw_val, sig_rel_residual, percentile_68, bins)
-                axs[2, i].errorbar(x, y, yerr=ye, marker=mk, color=color, ms=5, **_eb)
-            axs[2, i].set_xlabel(f"True {label} [cm]")
-            axs[2, i].set_ylabel("σ/E (Gauss fit)" if gaussian_fit else "68% |Residual|/E")
-            axs[2, i].set_title(f"Rel. Resolution vs {label}\n(50–55 MeV, N={n_sig})")
+                axs2[1, i].errorbar(x, y, yerr=ye, marker=mk, color=color, ms=5, **_eb)
+            axs2[1, i].set_xlabel(f"True {label} [cm]")
+            axs2[1, i].set_ylabel("σ/E (Gauss fit)" if gaussian_fit else "68% |Residual|/E")
+            axs2[1, i].set_title(f"Rel. Resolution vs {label}\n(50–55 MeV, N={n_sig})")
 
-        axs[2, 3].axis('off')
+        fig2.tight_layout(rect=[0, 0.03, 1, 0.95])
 
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-
-    # Save — use PdfPages when we have histogram diagnostic pages
-    if outfile and hist_figs:
+    # --- Save ---
+    extra_figs = all_figs + hist_figs
+    if outfile and len(extra_figs) > 1:
         from matplotlib.backends.backend_pdf import PdfPages
         with PdfPages(outfile) as pdf:
-            pdf.savefig(fig, dpi=120)
-            for hf in hist_figs:
-                pdf.savefig(hf, dpi=120)
-        plt.close(fig)
-        for hf in hist_figs:
-            plt.close(hf)
+            for f in all_figs:
+                pdf.savefig(f, dpi=120)
+            for f in hist_figs:
+                pdf.savefig(f, dpi=120)
+        for f in extra_figs:
+            plt.close(f)
     elif outfile:
         plt.savefig(outfile, dpi=120)
         plt.close()
     else:
-        plt.show()
-        for hf in hist_figs:
-            plt.show()
+        for f in extra_figs:
+            f.show()
 
 
 def plot_timing_resolution_profile(pred, true, root_data=None, bins=20, outfile=None):
