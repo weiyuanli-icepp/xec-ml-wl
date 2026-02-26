@@ -546,7 +546,7 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
         x, y, ye = _get_binned_stat(true, abs_residual, percentile_68, bins)
     axs1[0, 1].errorbar(x, y, yerr=ye, marker='o', color='tab:orange', ms=5, **_eb)
     axs1[0, 1].set_xlabel("True Energy [MeV]")
-    axs1[0, 1].set_ylabel("σ [MeV] (Gauss fit)" if gaussian_fit else "68% |Residual| [MeV]")
+    axs1[0, 1].set_ylabel("σ [MeV]" if gaussian_fit else "68% |Residual| [MeV]")
     axs1[0, 1].set_title("Resolution vs True Energy")
 
     # Normalized Resolution (sigma/E) vs True Energy with fit
@@ -577,7 +577,7 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
         pass
 
     axs1[1, 0].set_xlabel("True Energy [MeV]")
-    axs1[1, 0].set_ylabel("σ/E (Gauss fit)" if gaussian_fit else "68% |Residual|/E")
+    axs1[1, 0].set_ylabel("σ/E" if gaussian_fit else "68% |Residual|/E")
     axs1[1, 0].set_title(f"Relative Resolution vs Energy{fit_label}")
     axs1[1, 0].legend(loc='upper right')
 
@@ -619,7 +619,7 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
                 x, y, ye = _get_binned_stat(uvw_val, abs_residual, percentile_68, bins)
             axs2[0, i].errorbar(x, y, yerr=ye, marker=mk, color=color, ms=5, **_eb)
             axs2[0, i].set_xlabel(f"True {label} [cm]")
-            axs2[0, i].set_ylabel("σ [MeV] (Gauss fit)" if gaussian_fit else "68% |Residual| [MeV]")
+            axs2[0, i].set_ylabel("σ [MeV]" if gaussian_fit else "68% |Residual| [MeV]")
             axs2[0, i].set_title(f"Resolution vs {label}")
 
         # Row 2: Relative resolution vs U, V, W for signal region (50-55 MeV)
@@ -651,7 +651,7 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
                     x, y, ye = _get_binned_stat(uvw_val, sig_rel_residual, percentile_68, bins)
                 axs2[1, i].errorbar(x, y, yerr=ye, marker=mk, color=color, ms=5, **_eb)
             axs2[1, i].set_xlabel(f"True {label} [cm]")
-            axs2[1, i].set_ylabel("σ/E (Gauss fit)" if gaussian_fit else "68% |Residual|/E")
+            axs2[1, i].set_ylabel("σ/E" if gaussian_fit else "68% |Residual|/E")
             axs2[1, i].set_title(f"Rel. Resolution vs {label}\n(50–55 MeV, N={n_sig})")
 
         fig2.tight_layout(rect=[0, 0.03, 1, 0.95])
