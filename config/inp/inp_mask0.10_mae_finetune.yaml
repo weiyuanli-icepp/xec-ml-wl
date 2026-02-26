@@ -104,7 +104,7 @@ checkpoint:
 
 # === Distributed Training ===
 distributed:
-  num_gpus: 1
+  num_gpus: 4
 
 # === MLflow ===
 mlflow:

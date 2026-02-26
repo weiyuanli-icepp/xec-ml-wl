@@ -1,6 +1,5 @@
 # Step 4a full-data: Best config (step4a) trained on train_max with 4 GPUs
 # Resume from step4a weights, retrain on full dataset
-# NOTE: Set resume_from to the step4a checkpoint path before running
 
 data:
   train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_max"
@@ -81,7 +80,7 @@ reweighting:
     nbins: 30
 
 checkpoint:
-  resume_from: "FIXME"
+  resume_from: "~/meghome/xec-ml-wl/artifacts/scan_s4a_lr3e-4_resume/checkpoint_best.pth"
   save_dir: "artifacts"
   save_interval: 10
   save_artifacts: true
