@@ -456,21 +456,41 @@ def main():
     gc.collect()
 
     # ------------------------------------------------------------------
-    # 5. Apply sentinels & run inference
+    # 5. Apply sentinels & run inference (with cache)
     # ------------------------------------------------------------------
-    x_norm[ev_range, matched_sid, 0] = MODEL_SENTINEL_NPHO
-    x_norm[ev_range, matched_sid, 1] = MODEL_SENTINEL_TIME
+    cache_file = os.path.join(args.output, "_inference_cache.npz")
+    predictions = None
 
-    print(f"[INFO] Running inference on {args.device}...")
-    predictions = run_inference(
-        model, model_type, x_norm, combined_mask,
-        batch_size=args.batch_size, device=args.device,
-        predict_channels=predict_channels,
-    )
+    if os.path.isfile(cache_file):
+        try:
+            cached = np.load(cache_file)
+            if (cached["predictions"].shape[0] == n_matched and
+                    np.array_equal(cached["matched_sid"], matched_sid)):
+                predictions = cached["predictions"]
+                print(f"[INFO] Loaded cached inference ({cache_file})")
+        except Exception:
+            pass
 
-    # Restore truth at masked sensors so x_norm acts as x_original for
-    # collect_predictions (avoids keeping a separate full copy)
-    x_norm[ev_range, matched_sid, :] = truth_at_mask
+    if predictions is None:
+        x_norm[ev_range, matched_sid, 0] = MODEL_SENTINEL_NPHO
+        x_norm[ev_range, matched_sid, 1] = MODEL_SENTINEL_TIME
+
+        print(f"[INFO] Running inference on {args.device}...")
+        predictions = run_inference(
+            model, model_type, x_norm, combined_mask,
+            batch_size=args.batch_size, device=args.device,
+            predict_channels=predict_channels,
+        )
+
+        # Save cache for re-runs
+        np.savez_compressed(cache_file,
+                            predictions=predictions,
+                            matched_sid=matched_sid)
+        print(f"[INFO] Saved inference cache to {cache_file}")
+
+        # Restore truth at masked sensors
+        x_norm[ev_range, matched_sid, :] = truth_at_mask
+
     x_original = x_norm  # alias — no copy needed
     del x_norm
     gc.collect()
