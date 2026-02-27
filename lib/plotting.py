@@ -104,14 +104,18 @@ def _get_binned_gaussian(x, y, nbins):
 
 
 def _sigma_eff(values):
-    """Half-width of the smallest interval containing 68% of *values*."""
+    """Half-width of the smallest interval containing 68% of *values*.
+
+    Returns (sigma_eff, interval_lo, interval_hi).
+    """
     sv = np.sort(values)
     n = len(sv)
     n68 = int(np.ceil(0.68 * n))
     if n68 >= n:
-        return (sv[-1] - sv[0]) / 2.0
+        return (sv[-1] - sv[0]) / 2.0, sv[0], sv[-1]
     widths = sv[n68 - 1:] - sv[:n - n68 + 1]
-    return widths.min() / 2.0
+    idx = np.argmin(widths)
+    return widths[idx] / 2.0, sv[idx], sv[idx + n68 - 1]
 
 
 def _get_binned_sigma_eff(x, y, nbins, n_bootstrap=200):
@@ -121,10 +125,11 @@ def _get_binned_sigma_eff(x, y, nbins, n_bootstrap=200):
         nbins: int for uniform binning, or array of bin edges.
         n_bootstrap: number of bootstrap resamples for error estimation.
 
-    Returns (bin_centers, sigma_effs, sigma_eff_errors).
+    Returns (bin_centers, sigma_effs, sigma_eff_errors, bin_info) where
+    bin_info is a list of (values, sigma_eff, iv_lo, iv_hi, bin_lo, bin_hi).
     """
     if len(x) == 0:
-        return np.array([]), np.array([]), np.array([])
+        return np.array([]), np.array([]), np.array([]), []
     if np.ndim(nbins) == 0:
         bin_edges = np.linspace(x.min(), x.max(), int(nbins) + 1)
     else:
@@ -134,20 +139,23 @@ def _get_binned_sigma_eff(x, y, nbins, n_bootstrap=200):
     bin_idx = np.digitize(x, bin_edges) - 1
     rng = np.random.default_rng(42)
 
-    vals_list, errs_list = [], []
+    vals_list, errs_list, bin_info = [], [], []
     for i in range(n):
         mask = bin_idx == i
         vals = y[mask]
+        lo, hi = bin_edges[i], bin_edges[i + 1]
         if len(vals) < 10:
             vals_list.append(np.nan)
             errs_list.append(np.nan)
+            bin_info.append((vals, np.nan, np.nan, np.nan, lo, hi))
             continue
-        se = _sigma_eff(vals)
-        boot = [_sigma_eff(vals[rng.integers(0, len(vals), size=len(vals))])
+        se, iv_lo, iv_hi = _sigma_eff(vals)
+        boot = [_sigma_eff(vals[rng.integers(0, len(vals), size=len(vals))])[0]
                 for _ in range(n_bootstrap)]
         vals_list.append(se)
         errs_list.append(np.std(boot))
-    return bin_centers, np.array(vals_list), np.array(errs_list)
+        bin_info.append((vals, se, iv_lo, iv_hi, lo, hi))
+    return bin_centers, np.array(vals_list), np.array(errs_list), bin_info
 
 
 def _plot_bin_histograms(bin_info, xlabel, title):
@@ -185,6 +193,47 @@ def _plot_bin_histograms(bin_info, xlabel, title):
         else:
             ax.set_title(f"[{lo:.1f}, {hi:.1f}]\nno fit (N={len(vals)})",
                          fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.set_xlabel(xlabel, fontsize=7)
+
+    for j in range(n, len(axes)):
+        axes[j].axis('off')
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    return fig
+
+
+def _plot_bin_histograms_dist(bin_info, xlabel, title):
+    """Create a grid figure with per-bin distance histograms + σ_eff interval.
+
+    Args:
+        bin_info: list of (values, sigma_eff, iv_lo, iv_hi, bin_lo, bin_hi)
+        xlabel: x-axis label for histograms
+        title: suptitle
+
+    Returns:
+        matplotlib Figure
+    """
+    n = len(bin_info)
+    ncols = min(5, n)
+    nrows = max(1, (n + ncols - 1) // ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3.5 * ncols, 3 * nrows))
+    fig.suptitle(title, fontsize=13)
+    axes = np.atleast_1d(axes).flatten()
+
+    for i, (vals, se, iv_lo, iv_hi, lo, hi) in enumerate(bin_info):
+        ax = axes[i]
+        if len(vals) == 0:
+            ax.set_title(f"[{lo:.1f}, {hi:.1f}]\nEmpty", fontsize=8)
+            ax.axis('off')
+            continue
+        ax.hist(vals, bins='auto', alpha=0.7, color='tab:blue', density=False)
+        if not np.isnan(se):
+            ax.axvspan(iv_lo, iv_hi, alpha=0.25, color='tab:red',
+                       label=f'68% interval')
+            ax.set_title(f"[{lo:.1f}, {hi:.1f}]\n"
+                         f"σ_eff={se:.3f} (N={len(vals)})", fontsize=8)
+        else:
+            ax.set_title(f"[{lo:.1f}, {hi:.1f}]\nN={len(vals)}", fontsize=8)
         ax.tick_params(labelsize=7)
         ax.set_xlabel(xlabel, fontsize=7)
 
@@ -935,7 +984,7 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
         fig, axs = plt.subplots(2, 3, figsize=(15, 8))
         fig.suptitle("Distance Error Profile", fontsize=14)
 
-        se_all = _sigma_eff(dist_3d)
+        se_all, _, _ = _sigma_eff(dist_3d)
         axs[0, 0].hist(dist_3d, bins=100, range=(-1, 15), alpha=0.7, color='tab:red')
         axs[0, 0].set_xlabel("Distance [cm]"); axs[0, 0].set_ylabel("Count")
         axs[0, 0].set_yscale('log')
@@ -947,11 +996,14 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
         axs[0, 2].axis('off')
 
         for i in range(3):
-            x, y, ye = _get_binned_sigma_eff(true_uvw[:, i], dist_3d, comp_bins[i])
+            x, y, ye, binfo = _get_binned_sigma_eff(true_uvw[:, i], dist_3d, comp_bins[i])
             axs[1, i].errorbar(x, y, yerr=ye, marker=markers[i], color=colors[i], ms=5, **_eb)
             axs[1, i].set_xlabel(f"True {labels[i]}")
             axs[1, i].set_ylabel("σ_eff [cm]")
             axs[1, i].set_title(f"Distance σ_eff vs {labels[i]}")
+            hist_figs.append(_plot_bin_histograms_dist(
+                binfo, "Distance [cm]",
+                f"Distance vs {labels[i]} – Bin Histograms"))
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         if outfile: pdf.savefig(fig, dpi=120)
@@ -1005,20 +1057,26 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
                 axs[0, i].set_xlabel("True Energy [MeV]"); axs[0, i].set_ylabel("Mean Residual")
                 axs[0, i].set_title(f"{labels[i]} Bias vs Energy")
 
-            x, y, ye = _get_binned_sigma_eff(true_energy, dist_3d, bins)
+            x, y, ye, binfo = _get_binned_sigma_eff(true_energy, dist_3d, bins)
             axs[1, 0].errorbar(x, y, yerr=ye, marker='o', color='tab:red', ms=5, **_eb)
             axs[1, 0].set_xlabel("True Energy [MeV]"); axs[1, 0].set_ylabel("σ_eff [cm]")
             axs[1, 0].set_title("Distance σ_eff vs Energy")
+            hist_figs.append(_plot_bin_histograms_dist(
+                binfo, "Distance [cm]", "Distance vs Energy – Bin Histograms"))
 
-            x, y, ye = _get_binned_sigma_eff(true_uvw[:, 0], dist_3d, comp_bins[0])
+            x, y, ye, binfo = _get_binned_sigma_eff(true_uvw[:, 0], dist_3d, comp_bins[0])
             axs[1, 1].errorbar(x, y, yerr=ye, marker='s', color='tab:blue', ms=5, **_eb)
             axs[1, 1].set_xlabel("True U"); axs[1, 1].set_ylabel("σ_eff [cm]")
             axs[1, 1].set_title("Distance σ_eff vs U")
+            hist_figs.append(_plot_bin_histograms_dist(
+                binfo, "Distance [cm]", "Distance vs U – Bin Histograms"))
 
-            x, y, ye = _get_binned_sigma_eff(true_uvw[:, 2], dist_3d, comp_bins[2])
+            x, y, ye, binfo = _get_binned_sigma_eff(true_uvw[:, 2], dist_3d, comp_bins[2])
             axs[1, 2].errorbar(x, y, yerr=ye, marker='D', color='tab:green', ms=5, **_eb)
             axs[1, 2].set_xlabel("True W"); axs[1, 2].set_ylabel("σ_eff [cm]")
             axs[1, 2].set_title("Distance σ_eff vs W")
+            hist_figs.append(_plot_bin_histograms_dist(
+                binfo, "Distance [cm]", "Distance vs W – Bin Histograms"))
 
             plt.tight_layout(rect=[0, 0.03, 1, 0.95])
             if outfile: pdf.savefig(fig, dpi=120)
