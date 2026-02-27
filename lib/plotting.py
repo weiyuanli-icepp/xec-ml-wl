@@ -103,6 +103,53 @@ def _get_binned_gaussian(x, y, nbins):
     return bin_centers, np.array(sigmas), np.array(sigma_errs), bin_info
 
 
+def _sigma_eff(values):
+    """Half-width of the smallest interval containing 68% of *values*."""
+    sv = np.sort(values)
+    n = len(sv)
+    n68 = int(np.ceil(0.68 * n))
+    if n68 >= n:
+        return (sv[-1] - sv[0]) / 2.0
+    widths = sv[n68 - 1:] - sv[:n - n68 + 1]
+    return widths.min() / 2.0
+
+
+def _get_binned_sigma_eff(x, y, nbins, n_bootstrap=200):
+    """Bin y by x, compute sigma_eff with bootstrap uncertainty per bin.
+
+    Args:
+        nbins: int for uniform binning, or array of bin edges.
+        n_bootstrap: number of bootstrap resamples for error estimation.
+
+    Returns (bin_centers, sigma_effs, sigma_eff_errors).
+    """
+    if len(x) == 0:
+        return np.array([]), np.array([]), np.array([])
+    if np.ndim(nbins) == 0:
+        bin_edges = np.linspace(x.min(), x.max(), int(nbins) + 1)
+    else:
+        bin_edges = np.asarray(nbins, dtype=float)
+    n = len(bin_edges) - 1
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    bin_idx = np.digitize(x, bin_edges) - 1
+    rng = np.random.default_rng(42)
+
+    vals_list, errs_list = [], []
+    for i in range(n):
+        mask = bin_idx == i
+        vals = y[mask]
+        if len(vals) < 10:
+            vals_list.append(np.nan)
+            errs_list.append(np.nan)
+            continue
+        se = _sigma_eff(vals)
+        boot = [_sigma_eff(vals[rng.integers(0, len(vals), size=len(vals))])
+                for _ in range(n_bootstrap)]
+        vals_list.append(se)
+        errs_list.append(np.std(boot))
+    return bin_centers, np.array(vals_list), np.array(errs_list)
+
+
 def _plot_bin_histograms(bin_info, xlabel, title):
     """Create a grid figure with per-bin histograms + Gaussian overlays.
 
@@ -809,9 +856,9 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
     """
     Plots position (uvwFI) resolution profiles (multi-page PDF):
     Page 1: U, V, W residual histograms + resolution vs own true value
-    Page 2: 3D distance histogram + 3D distance resolution vs U, V, W
+    Page 2: Distance histogram + distance σ_eff vs U, V, W
     Page 3: U, V, W bias vs own true value + resolution vs energy (if available)
-    Page 4: Bias vs energy + 3D distance resolution vs energy, U, V, W (if available)
+    Page 4: Bias vs energy + distance σ_eff vs energy, U, V, W (if available)
 
     When gaussian_fit=True, per-bin Gaussian fits are used for resolution
     and error bars, with diagnostic histogram pages appended.
@@ -827,7 +874,7 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
     # Per-component residuals
     residuals = [pred_uvw[:, i] - true_uvw[:, i] for i in range(3)]
     abs_residuals = [np.abs(r) for r in residuals]
-    # 3D distance error
+    # Distance error (3D)
     dist_3d = np.sqrt(sum(r**2 for r in residuals))
 
     percentile_68 = lambda x: np.percentile(x, 68)
@@ -843,8 +890,8 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
     if w_hi > 30.0 and w_lo < 30.0:
         n_fine = max(1, int(bins * (30.0 - w_lo) / (w_hi - w_lo)))
         n_coarse = max(1, bins - n_fine)
-        # ~half the density above 30
-        n_coarse = max(1, n_coarse // 2)
+        # ~1/3 the density above 30 (sparse statistics at large W)
+        n_coarse = max(1, n_coarse // 3)
         w_bin_edges = np.concatenate([
             np.linspace(w_lo, 30.0, n_fine + 1),
             np.linspace(30.0, w_hi, n_coarse + 1)[1:],
@@ -884,26 +931,27 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
         else: plt.show()
         plt.close(fig)
 
-        # --- Page 2: 3D distance histogram + 3D distance vs U, V, W ---
+        # --- Page 2: Distance histogram + σ_eff vs U, V, W ---
         fig, axs = plt.subplots(2, 3, figsize=(15, 8))
-        fig.suptitle("3D Distance Error Profile", fontsize=14)
+        fig.suptitle("Distance Error Profile", fontsize=14)
 
+        se_all = _sigma_eff(dist_3d)
         axs[0, 0].hist(dist_3d, bins=100, range=(-1, 15), alpha=0.7, color='tab:red')
-        axs[0, 0].set_xlabel("3D Distance [cm]"); axs[0, 0].set_ylabel("Count")
+        axs[0, 0].set_xlabel("Distance [cm]"); axs[0, 0].set_ylabel("Count")
         axs[0, 0].set_yscale('log')
         axs[0, 0].set_xlim(-1, 15)
-        axs[0, 0].set_title(f"3D Distance Distribution\n"
-                            f"68%={np.percentile(dist_3d, 68):.3f}, "
+        axs[0, 0].set_title(f"Distance Distribution\n"
+                            f"σ_eff={se_all:.3f}, "
                             f"median={np.median(dist_3d):.3f}")
         axs[0, 1].axis('off')
         axs[0, 2].axis('off')
 
         for i in range(3):
-            x, y, ye = _get_binned_stat(true_uvw[:, i], dist_3d, percentile_68, comp_bins[i])
+            x, y, ye = _get_binned_sigma_eff(true_uvw[:, i], dist_3d, comp_bins[i])
             axs[1, i].errorbar(x, y, yerr=ye, marker=markers[i], color=colors[i], ms=5, **_eb)
             axs[1, i].set_xlabel(f"True {labels[i]}")
-            axs[1, i].set_ylabel("68% 3D Distance")
-            axs[1, i].set_title(f"3D Distance vs {labels[i]}")
+            axs[1, i].set_ylabel("σ_eff [cm]")
+            axs[1, i].set_title(f"Distance σ_eff vs {labels[i]}")
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         if outfile: pdf.savefig(fig, dpi=120)
@@ -944,11 +992,11 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
         else: plt.show()
         plt.close(fig)
 
-        # --- Page 4: Bias vs energy + 3D distance error profiles ---
+        # --- Page 4: Bias vs energy + distance σ_eff profiles ---
         if has_energy:
             true_energy = root_data['true_energy'] * 1000.0  # GeV -> MeV
             fig, axs = plt.subplots(2, 3, figsize=(15, 8))
-            fig.suptitle("Position Bias vs Energy & 3D Distance Profiles", fontsize=14)
+            fig.suptitle("Position Bias vs Energy & Distance Profiles", fontsize=14)
 
             for i in range(3):
                 x, y, ye = _get_binned_stat(true_energy, residuals[i], mean_func, bins)
@@ -957,20 +1005,20 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
                 axs[0, i].set_xlabel("True Energy [MeV]"); axs[0, i].set_ylabel("Mean Residual")
                 axs[0, i].set_title(f"{labels[i]} Bias vs Energy")
 
-            x, y, ye = _get_binned_stat(true_energy, dist_3d, percentile_68, bins)
+            x, y, ye = _get_binned_sigma_eff(true_energy, dist_3d, bins)
             axs[1, 0].errorbar(x, y, yerr=ye, marker='o', color='tab:red', ms=5, **_eb)
-            axs[1, 0].set_xlabel("True Energy [MeV]"); axs[1, 0].set_ylabel("68% 3D Distance")
-            axs[1, 0].set_title("3D Distance Res vs Energy")
+            axs[1, 0].set_xlabel("True Energy [MeV]"); axs[1, 0].set_ylabel("σ_eff [cm]")
+            axs[1, 0].set_title("Distance σ_eff vs Energy")
 
-            x, y, ye = _get_binned_stat(true_uvw[:, 0], dist_3d, percentile_68, comp_bins[0])
+            x, y, ye = _get_binned_sigma_eff(true_uvw[:, 0], dist_3d, comp_bins[0])
             axs[1, 1].errorbar(x, y, yerr=ye, marker='s', color='tab:blue', ms=5, **_eb)
-            axs[1, 1].set_xlabel("True U"); axs[1, 1].set_ylabel("68% 3D Distance")
-            axs[1, 1].set_title("3D Distance Res vs U")
+            axs[1, 1].set_xlabel("True U"); axs[1, 1].set_ylabel("σ_eff [cm]")
+            axs[1, 1].set_title("Distance σ_eff vs U")
 
-            x, y, ye = _get_binned_stat(true_uvw[:, 2], dist_3d, percentile_68, comp_bins[2])
+            x, y, ye = _get_binned_sigma_eff(true_uvw[:, 2], dist_3d, comp_bins[2])
             axs[1, 2].errorbar(x, y, yerr=ye, marker='D', color='tab:green', ms=5, **_eb)
-            axs[1, 2].set_xlabel("True W"); axs[1, 2].set_ylabel("68% 3D Distance")
-            axs[1, 2].set_title("3D Distance Res vs W")
+            axs[1, 2].set_xlabel("True W"); axs[1, 2].set_ylabel("σ_eff [cm]")
+            axs[1, 2].set_title("Distance σ_eff vs W")
 
             plt.tight_layout(rect=[0, 0.03, 1, 0.95])
             if outfile: pdf.savefig(fig, dpi=120)
