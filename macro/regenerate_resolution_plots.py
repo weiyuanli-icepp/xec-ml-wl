@@ -5,6 +5,21 @@ Regenerate resolution plots from saved predictions CSV files.
 This macro reads predictions_*.csv files from an artifact directory and
 regenerates the resolution_*.pdf plots with the updated plotting functions.
 
+Resolution metrics
+------------------
+* **Per-component (U/V/W, energy, timing)** — When ``--gaussian-fit`` is
+  enabled, a Gaussian is fitted to the residual distribution in each bin.
+  The fitted σ is the resolution; the fit uncertainty on σ is the error bar.
+  Without ``--gaussian-fit``, the 68th percentile of |residual| is used.
+
+* **Distance (position regressor)** — Uses the *effective sigma* (σ_eff),
+  defined as **half the width of the smallest interval that contains 68 %
+  of the distribution** (the same metric used by CMS ECAL,
+  see arXiv:1306.2016).  Unlike a Gaussian fit, σ_eff makes no assumption
+  about the shape of the distribution, which is important for the
+  positive-definite distance variable.  Error bars are obtained via
+  bootstrap resampling (200 resamples per bin by default).
+
 Usage:
     python macro/regenerate_resolution_plots.py artifacts/<RUN_NAME>/
     python macro/regenerate_resolution_plots.py artifacts/<RUN_NAME>/ --output_dir plots/

@@ -202,13 +202,20 @@ def _plot_bin_histograms(bin_info, xlabel, title):
     return fig
 
 
-def _plot_bin_histograms_dist(bin_info, xlabel, title):
+def _plot_bin_histograms_dist(bin_info, xlabel, title, xlim_max=None):
     """Create a grid figure with per-bin distance histograms + σ_eff interval.
+
+    σ_eff is the *effective sigma*: half the width of the smallest interval
+    that contains 68 % of the distribution.  The red shaded band shows that
+    interval.  Bootstrap resampling is used for the error bars on the
+    profiled σ_eff plots.
 
     Args:
         bin_info: list of (values, sigma_eff, iv_lo, iv_hi, bin_lo, bin_hi)
         xlabel: x-axis label for histograms
         title: suptitle
+        xlim_max: upper x-axis limit.  May be a single float (same for all
+                  bins) or a list of floats (one per bin).  None = auto.
 
     Returns:
         matplotlib Figure
@@ -226,10 +233,19 @@ def _plot_bin_histograms_dist(bin_info, xlabel, title):
             ax.set_title(f"[{lo:.1f}, {hi:.1f}]\nEmpty", fontsize=8)
             ax.axis('off')
             continue
-        ax.hist(vals, bins='auto', alpha=0.7, color='tab:blue', density=False)
+        # Determine per-bin xlim
+        xmax = (xlim_max[i] if isinstance(xlim_max, (list, np.ndarray))
+                else xlim_max)
+        if xmax is not None:
+            ax.hist(vals, bins='auto', alpha=0.7, color='tab:blue',
+                    density=False, range=(0, xmax))
+            ax.set_xlim(0, xmax)
+        else:
+            ax.hist(vals, bins='auto', alpha=0.7, color='tab:blue',
+                    density=False)
         if not np.isnan(se):
             ax.axvspan(iv_lo, iv_hi, alpha=0.25, color='tab:red',
-                       label=f'68% interval')
+                       label='68% interval')
             ax.set_title(f"[{lo:.1f}, {hi:.1f}]\n"
                          f"σ_eff={se:.3f} (N={len(vals)})", fontsize=8)
         else:
@@ -950,9 +966,15 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
     # Per-component bins: U and V use uniform, W uses custom edges
     comp_bins = [bins, bins, w_bin_edges]
 
+    # Build per-bin xlim for distance histograms:
+    # U/V: max 10 cm.  W: max 10 cm for bins with hi <= 26, else 20 cm.
+    def _w_dist_xlims(binfo):
+        return [10.0 if hi <= 26.0 else 20.0
+                for (_, _, _, _, _, hi) in binfo]
+
     with PdfPages(outfile) if outfile else _dummy_pdf() as pdf:
         # --- Page 1: Residual histograms + resolution vs own true ---
-        fig, axs = plt.subplots(2, 3, figsize=(15, 8))
+        fig, axs = plt.subplots(2, 3, figsize=(15, 10))
         fig.suptitle("Position (uvwFI) Resolution Profile", fontsize=14)
 
         for i in range(3):
@@ -975,13 +997,13 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
             axs[1, i].set_ylabel("σ [cm]" if gaussian_fit else "68% |Residual|")
             axs[1, i].set_title(f"{labels[i]} Resolution vs True")
 
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
         if outfile: pdf.savefig(fig, dpi=120)
         else: plt.show()
         plt.close(fig)
 
         # --- Page 2: Distance histogram + σ_eff vs U, V, W ---
-        fig, axs = plt.subplots(2, 3, figsize=(15, 8))
+        fig, axs = plt.subplots(2, 3, figsize=(15, 10))
         fig.suptitle("Distance Error Profile", fontsize=14)
 
         se_all, _, _ = _sigma_eff(dist_3d)
@@ -1001,11 +1023,13 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
             axs[1, i].set_xlabel(f"True {labels[i]}")
             axs[1, i].set_ylabel("σ_eff [cm]")
             axs[1, i].set_title(f"Distance σ_eff vs {labels[i]}")
+            xlm = _w_dist_xlims(binfo) if i == 2 else 10.0
             hist_figs.append(_plot_bin_histograms_dist(
                 binfo, "Distance [cm]",
-                f"Distance vs {labels[i]} – Bin Histograms"))
+                f"Distance vs {labels[i]} – Bin Histograms",
+                xlim_max=xlm))
 
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
         if outfile: pdf.savefig(fig, dpi=120)
         else: plt.show()
         plt.close(fig)
@@ -1062,21 +1086,24 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
             axs[1, 0].set_xlabel("True Energy [MeV]"); axs[1, 0].set_ylabel("σ_eff [cm]")
             axs[1, 0].set_title("Distance σ_eff vs Energy")
             hist_figs.append(_plot_bin_histograms_dist(
-                binfo, "Distance [cm]", "Distance vs Energy – Bin Histograms"))
+                binfo, "Distance [cm]", "Distance vs Energy – Bin Histograms",
+                xlim_max=10.0))
 
             x, y, ye, binfo = _get_binned_sigma_eff(true_uvw[:, 0], dist_3d, comp_bins[0])
             axs[1, 1].errorbar(x, y, yerr=ye, marker='s', color='tab:blue', ms=5, **_eb)
             axs[1, 1].set_xlabel("True U"); axs[1, 1].set_ylabel("σ_eff [cm]")
             axs[1, 1].set_title("Distance σ_eff vs U")
             hist_figs.append(_plot_bin_histograms_dist(
-                binfo, "Distance [cm]", "Distance vs U – Bin Histograms"))
+                binfo, "Distance [cm]", "Distance vs U – Bin Histograms",
+                xlim_max=10.0))
 
             x, y, ye, binfo = _get_binned_sigma_eff(true_uvw[:, 2], dist_3d, comp_bins[2])
             axs[1, 2].errorbar(x, y, yerr=ye, marker='D', color='tab:green', ms=5, **_eb)
             axs[1, 2].set_xlabel("True W"); axs[1, 2].set_ylabel("σ_eff [cm]")
             axs[1, 2].set_title("Distance σ_eff vs W")
             hist_figs.append(_plot_bin_histograms_dist(
-                binfo, "Distance [cm]", "Distance vs W – Bin Histograms"))
+                binfo, "Distance [cm]", "Distance vs W – Bin Histograms",
+                xlim_max=_w_dist_xlims(binfo)))
 
             plt.tight_layout(rect=[0, 0.03, 1, 0.95])
             if outfile: pdf.savefig(fig, dpi=120)
