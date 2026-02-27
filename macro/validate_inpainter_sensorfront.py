@@ -578,15 +578,6 @@ def _run_local_fit_lightweight(
         return []
 
     file_list = expand_path(input_path)
-
-    # Write dead channel list once (reused for every file)
-    dead_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-    for ch in unique_sids:
-        dead_tmp.write(f"{ch}\n")
-    dead_tmp.close()
-
-    # Build lookup: global_event_idx -> (sub_i, sensor_id)
-    # so we can match macro output to our per-event mask.
     transform = NphoTransform(scheme=npho_scheme)
 
     # Run the macro on each file, accumulating a global lookup
@@ -594,35 +585,45 @@ def _run_local_fit_lightweight(
     global_offset = 0
     total_events_seen = 0
 
-    try:
-        for fi, root_file in enumerate(file_list):
-            if max_events and total_events_seen >= max_events:
-                break
+    for fi, root_file in enumerate(file_list):
+        if max_events and total_events_seen >= max_events:
+            break
 
-            # Count events in this file
-            with uproot.open(root_file) as rf:
-                n_in_file = rf["tree"].num_entries
-            if max_events:
-                n_in_file = min(n_in_file, max_events - total_events_seen)
+        # Count events in this file
+        with uproot.open(root_file) as rf:
+            n_in_file = rf["tree"].num_entries
+        if max_events:
+            n_in_file = min(n_in_file, max_events - total_events_seen)
 
-            # Check if any matched events fall in this file's range
-            file_start = global_offset
-            file_end = global_offset + n_in_file
-            in_file = ((matched_orig_idx >= file_start) &
-                       (matched_orig_idx < file_end))
-            if not in_file.any():
-                global_offset += n_in_file
-                total_events_seen += n_in_file
-                continue
+        # Find matched events that fall in this file's range
+        file_start = global_offset
+        file_end = global_offset + n_in_file
+        in_file = ((matched_orig_idx >= file_start) &
+                   (matched_orig_idx < file_end))
+        if not in_file.any():
+            global_offset += n_in_file
+            total_events_seen += n_in_file
+            continue
 
-            out_tmp = tempfile.NamedTemporaryFile(suffix='.root', delete=False)
+        # Only pass the sensors needed for this file's matched events
+        file_sids = np.unique(matched_sid[in_file])
+        n_file_matched = int(in_file.sum())
+
+        dead_tmp = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.txt', delete=False)
+        out_tmp = tempfile.NamedTemporaryFile(suffix='.root', delete=False)
+        try:
+            for ch in file_sids:
+                dead_tmp.write(f"{ch}\n")
+            dead_tmp.close()
             out_tmp.close()
 
             cmd = (f'root -l -b -q \'{macro_path}("{root_file}", '
                    f'"{dead_tmp.name}", "{out_tmp.name}")\'')
             print(f"[INFO] Running LocalFitBaseline macro on "
                   f"{os.path.basename(root_file)} "
-                  f"(file {fi+1}/{len(file_list)})")
+                  f"(file {fi+1}/{len(file_list)}, "
+                  f"{n_file_matched} matched, {len(file_sids)} sensors)")
             sys.stdout.flush()
             result = subprocess.run(cmd, shell=True)
 
@@ -643,24 +644,29 @@ def _run_local_fit_lightweight(
                     lf_sid = pt['sensor_id'].array(library='np')
                     lf_pred_raw = pt['pred_npho'].array(library='np')
 
+                # Only keep predictions for (event, sensor) pairs we need
+                file_need = set()
+                for sub_i in np.where(in_file)[0]:
+                    ev_local = int(matched_orig_idx[sub_i]) - global_offset
+                    file_need.add((ev_local, int(matched_sid[sub_i])))
+
                 lf_pred_norm = transform.forward(
                     np.maximum(lf_pred_raw, transform.domain_min())
                 ).astype(np.float32)
 
-                # event_idx from macro is file-local; add global_offset
                 for j in range(len(lf_ev)):
-                    gev = int(lf_ev[j]) + global_offset
-                    lf_lookup[(gev, int(lf_sid[j]))] = float(lf_pred_norm[j])
+                    key_local = (int(lf_ev[j]), int(lf_sid[j]))
+                    if key_local in file_need:
+                        gev = int(lf_ev[j]) + global_offset
+                        lf_lookup[(gev, key_local[1])] = float(lf_pred_norm[j])
 
-            if os.path.exists(out_tmp.name):
-                os.unlink(out_tmp.name)
+        finally:
+            for p in (dead_tmp.name, out_tmp.name):
+                if os.path.exists(p):
+                    os.unlink(p)
 
-            global_offset += n_in_file
-            total_events_seen += n_in_file
-
-    finally:
-        if os.path.exists(dead_tmp.name):
-            os.unlink(dead_tmp.name)
+        global_offset += n_in_file
+        total_events_seen += n_in_file
 
     # Match to our per-event mask
     results = []
