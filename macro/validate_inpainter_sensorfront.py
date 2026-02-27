@@ -479,7 +479,7 @@ def main():
     if args.local_fit_baseline:
         lf_results = _run_local_fit_lightweight(
             args.input, matched_orig_idx, matched_sid, truth_at_mask,
-            npho_scheme,
+            npho_scheme, max_events=args.max_events,
         )
         if lf_results:
             baseline_results["localfit"] = lf_results
@@ -557,12 +557,13 @@ def _run_local_fit_lightweight(
     matched_sid: np.ndarray,
     truth_at_mask: np.ndarray,
     npho_scheme: str,
+    max_events: Optional[int] = None,
 ) -> list:
-    """Run LocalFitBaseline macro and match results — no large arrays.
+    """Run LocalFitBaseline macro on each file and match results.
 
-    Calls the ROOT macro directly with the unique dead channel list, then
-    reads the macro output and matches (event_idx, sensor_id) to our
-    per-event mask.  Avoids allocating full n_total × 4760 arrays.
+    Calls the ROOT macro once per input file with the unique dead channel
+    list, then reads the macro output and matches (event_idx, sensor_id) to
+    our per-event mask.  Avoids allocating full n_total × 4760 arrays.
     """
     import subprocess
     import tempfile
@@ -577,56 +578,89 @@ def _run_local_fit_lightweight(
         return []
 
     file_list = expand_path(input_path)
-    if len(file_list) != 1:
-        print(f"[WARNING] LocalFitBaseline requires a single ROOT file, "
-              f"got {len(file_list)}. Using first file only.")
-    root_file = file_list[0]
 
+    # Write dead channel list once (reused for every file)
     dead_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-    out_tmp = tempfile.NamedTemporaryFile(suffix='.root', delete=False)
+    for ch in unique_sids:
+        dead_tmp.write(f"{ch}\n")
+    dead_tmp.close()
+
+    # Build lookup: global_event_idx -> (sub_i, sensor_id)
+    # so we can match macro output to our per-event mask.
+    transform = NphoTransform(scheme=npho_scheme)
+
+    # Run the macro on each file, accumulating a global lookup
+    lf_lookup = {}  # (global_event_idx, sensor_id) -> norm prediction
+    global_offset = 0
+    total_events_seen = 0
+
     try:
-        for ch in unique_sids:
-            dead_tmp.write(f"{ch}\n")
-        dead_tmp.close()
-        out_tmp.close()
+        for fi, root_file in enumerate(file_list):
+            if max_events and total_events_seen >= max_events:
+                break
 
-        cmd = (f'root -l -b -q \'{macro_path}("{root_file}", '
-               f'"{dead_tmp.name}", "{out_tmp.name}")\'')
-        print(f"[INFO] Running LocalFitBaseline macro on {root_file}")
-        print(f"[INFO]   {len(unique_sids)} dead channels")
-        sys.stdout.flush()
-        result = subprocess.run(cmd, shell=True)
-        if result.returncode != 0:
-            try:
-                _t = uproot.open(out_tmp.name)
-                _t['predictions']
-                _t.close()
-            except Exception:
-                print(f"[ERROR] LocalFitBaseline macro failed")
-                return []
+            # Count events in this file
+            with uproot.open(root_file) as rf:
+                n_in_file = rf["tree"].num_entries
+            if max_events:
+                n_in_file = min(n_in_file, max_events - total_events_seen)
 
-        # Read macro output
-        with uproot.open(out_tmp.name) as f:
-            pt = f['predictions']
-            lf_ev = pt['event_idx'].array(library='np')
-            lf_sid = pt['sensor_id'].array(library='np')
-            lf_pred_raw = pt['pred_npho'].array(library='np')
+            # Check if any matched events fall in this file's range
+            file_start = global_offset
+            file_end = global_offset + n_in_file
+            in_file = ((matched_orig_idx >= file_start) &
+                       (matched_orig_idx < file_end))
+            if not in_file.any():
+                global_offset += n_in_file
+                total_events_seen += n_in_file
+                continue
+
+            out_tmp = tempfile.NamedTemporaryFile(suffix='.root', delete=False)
+            out_tmp.close()
+
+            cmd = (f'root -l -b -q \'{macro_path}("{root_file}", '
+                   f'"{dead_tmp.name}", "{out_tmp.name}")\'')
+            print(f"[INFO] Running LocalFitBaseline macro on "
+                  f"{os.path.basename(root_file)} "
+                  f"(file {fi+1}/{len(file_list)})")
+            sys.stdout.flush()
+            result = subprocess.run(cmd, shell=True)
+
+            ok = True
+            if result.returncode != 0:
+                try:
+                    _t = uproot.open(out_tmp.name)
+                    _t['predictions']
+                    _t.close()
+                except Exception:
+                    print(f"[WARNING] macro failed on {root_file}, skipping")
+                    ok = False
+
+            if ok:
+                with uproot.open(out_tmp.name) as f:
+                    pt = f['predictions']
+                    lf_ev = pt['event_idx'].array(library='np')
+                    lf_sid = pt['sensor_id'].array(library='np')
+                    lf_pred_raw = pt['pred_npho'].array(library='np')
+
+                lf_pred_norm = transform.forward(
+                    np.maximum(lf_pred_raw, transform.domain_min())
+                ).astype(np.float32)
+
+                # event_idx from macro is file-local; add global_offset
+                for j in range(len(lf_ev)):
+                    gev = int(lf_ev[j]) + global_offset
+                    lf_lookup[(gev, int(lf_sid[j]))] = float(lf_pred_norm[j])
+
+            if os.path.exists(out_tmp.name):
+                os.unlink(out_tmp.name)
+
+            global_offset += n_in_file
+            total_events_seen += n_in_file
 
     finally:
-        for p in (dead_tmp.name, out_tmp.name):
-            if os.path.exists(p):
-                os.unlink(p)
-
-    # Normalize macro predictions
-    transform = NphoTransform(scheme=npho_scheme)
-    lf_pred_norm = transform.forward(
-        np.maximum(lf_pred_raw, transform.domain_min())
-    ).astype(np.float32)
-
-    # Build lookup: (orig_event_idx, sensor_id) -> normalized prediction
-    lf_lookup = {}
-    for j in range(len(lf_ev)):
-        lf_lookup[(int(lf_ev[j]), int(lf_sid[j]))] = float(lf_pred_norm[j])
+        if os.path.exists(dead_tmp.name):
+            os.unlink(dead_tmp.name)
 
     # Match to our per-event mask
     results = []
