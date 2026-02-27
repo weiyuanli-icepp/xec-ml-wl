@@ -605,12 +605,6 @@ def _run_local_fit_lightweight(
     global_offset = 0
     total_events_seen = 0
 
-    # Branches the macro reads from the input ROOT file
-    _MACRO_BRANCHES = [
-        "run", "event", "npho", "uvwRecoFI", "uvwTruth",
-        "xyzTruth", "energyTruth",
-    ]
-
     for fi, root_file in enumerate(file_list):
         if max_events and total_events_seen >= max_events:
             break
@@ -635,25 +629,11 @@ def _run_local_fit_lightweight(
         file_sids = np.unique(matched_sid[in_file])
         n_file_matched = int(in_file.sum())
 
-        # File-local event indices of matched events
-        local_indices = matched_orig_idx[in_file] - global_offset
-
-        # Write a filtered ROOT file containing only matched events
-        # so the macro processes ~700 events instead of ~13,000.
-        filtered_tmp = tempfile.NamedTemporaryFile(
-            suffix='.root', delete=False)
-        filtered_tmp.close()
-        with uproot.open(root_file) as rf:
-            tree = rf["tree"]
-            avail = [b for b in _MACRO_BRANCHES if b in tree.keys()]
-            branches = {b: tree[b].array(library="np")[local_indices]
-                        for b in avail}
-        with uproot.recreate(filtered_tmp.name) as wf:
-            wf.mktree("tree", branches)
-
-        # Map from filtered event index back to original file-local index
-        filtered_to_local = {i: int(local_indices[i])
-                             for i in range(n_file_matched)}
+        # Build set of (file-local event_idx, sensor_id) pairs we need
+        file_need = set()
+        for sub_i in np.where(in_file)[0]:
+            ev_local = int(matched_orig_idx[sub_i]) - global_offset
+            file_need.add((ev_local, int(matched_sid[sub_i])))
 
         dead_tmp = tempfile.NamedTemporaryFile(
             mode='w', suffix='.txt', delete=False)
@@ -664,7 +644,9 @@ def _run_local_fit_lightweight(
             dead_tmp.close()
             out_tmp.close()
 
-            cmd = (f'root -l -b -q \'{macro_path}("{filtered_tmp.name}", '
+            # Run macro on the original ROOT file (uproot-written files
+            # have incompatible branch layout for ROOT C++ SetBranchAddress)
+            cmd = (f'root -l -b -q \'{macro_path}("{root_file}", '
                    f'"{dead_tmp.name}", "{out_tmp.name}")\'')
             print(f"[INFO] Running LocalFitBaseline macro on "
                   f"{os.path.basename(root_file)} "
@@ -694,19 +676,15 @@ def _run_local_fit_lightweight(
                     np.maximum(lf_pred_raw, transform.domain_min())
                 ).astype(np.float32)
 
-                # lf_ev is the index into the filtered file; map back to
-                # original file-local index, then to global index.
+                # Only keep the (event, sensor) pairs we actually need
                 for j in range(len(lf_ev)):
-                    filt_idx = int(lf_ev[j])
-                    local_idx = filtered_to_local.get(filt_idx)
-                    if local_idx is None:
-                        continue
-                    gev = local_idx + global_offset
-                    sid = int(lf_sid[j])
-                    lf_lookup[(gev, sid)] = float(lf_pred_norm[j])
+                    key_local = (int(lf_ev[j]), int(lf_sid[j]))
+                    if key_local in file_need:
+                        gev = key_local[0] + global_offset
+                        lf_lookup[(gev, key_local[1])] = float(lf_pred_norm[j])
 
         finally:
-            for p in (dead_tmp.name, out_tmp.name, filtered_tmp.name):
+            for p in (dead_tmp.name, out_tmp.name):
                 if os.path.exists(p):
                     os.unlink(p)
 
