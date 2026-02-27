@@ -11,17 +11,24 @@ from .metrics import get_opening_angle_deg
 def _get_binned_stat(x, y, stat_func, nbins):
     """Bin y-values by x and apply stat_func per bin.
 
+    Args:
+        nbins: int for uniform binning, or array of bin edges.
+
     Returns (bin_centers, values, errors) where errors is the standard
     error of the mean for each bin (usable as yerr in errorbar plots).
     """
     if len(x) == 0:
         return np.array([]), np.array([]), np.array([])
-    bin_edges = np.linspace(x.min(), x.max(), nbins + 1)
+    if np.ndim(nbins) == 0:
+        bin_edges = np.linspace(x.min(), x.max(), int(nbins) + 1)
+    else:
+        bin_edges = np.asarray(nbins, dtype=float)
+    n = len(bin_edges) - 1
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
     bin_idx = np.digitize(x, bin_edges) - 1
     y_vals = []
     y_errs = []
-    for i in range(nbins):
+    for i in range(n):
         mask = bin_idx == i
         if np.any(mask):
             y_vals.append(stat_func(y[mask]))
@@ -40,6 +47,9 @@ def _gaussian(x, A, mu, sigma):
 def _get_binned_gaussian(x, y, nbins):
     """Bin y by x, fit a Gaussian in each bin.
 
+    Args:
+        nbins: int for uniform binning, or array of bin edges.
+
     Returns (bin_centers, sigmas, sigma_errors, bin_info) where bin_info
     is a list of (values, popt_or_None, bin_lo, bin_hi) for histogram
     diagnostic plotting.
@@ -48,12 +58,16 @@ def _get_binned_gaussian(x, y, nbins):
 
     if len(x) == 0:
         return np.array([]), np.array([]), np.array([]), []
-    bin_edges = np.linspace(x.min(), x.max(), nbins + 1)
+    if np.ndim(nbins) == 0:
+        bin_edges = np.linspace(x.min(), x.max(), int(nbins) + 1)
+    else:
+        bin_edges = np.asarray(nbins, dtype=float)
+    n = len(bin_edges) - 1
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
     bin_idx = np.digitize(x, bin_edges) - 1
 
     sigmas, sigma_errs, bin_info = [], [], []
-    for i in range(nbins):
+    for i in range(n):
         mask = bin_idx == i
         vals = y[mask]
         lo, hi = bin_edges[i], bin_edges[i + 1]
@@ -823,6 +837,23 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
     _eb = dict(fmt='none', capsize=3, elinewidth=0.8)
     hist_figs = []
 
+    # Custom bin edges for W: finer below 30, wider above 30
+    w_vals = true_uvw[:, 2]
+    w_lo, w_hi = w_vals.min(), w_vals.max()
+    if w_hi > 30.0 and w_lo < 30.0:
+        n_fine = max(1, int(bins * (30.0 - w_lo) / (w_hi - w_lo)))
+        n_coarse = max(1, bins - n_fine)
+        # ~half the density above 30
+        n_coarse = max(1, n_coarse // 2)
+        w_bin_edges = np.concatenate([
+            np.linspace(w_lo, 30.0, n_fine + 1),
+            np.linspace(30.0, w_hi, n_coarse + 1)[1:],
+        ])
+    else:
+        w_bin_edges = bins  # fall back to uniform
+    # Per-component bins: U and V use uniform, W uses custom edges
+    comp_bins = [bins, bins, w_bin_edges]
+
     with PdfPages(outfile) if outfile else _dummy_pdf() as pdf:
         # --- Page 1: Residual histograms + resolution vs own true ---
         fig, axs = plt.subplots(2, 3, figsize=(15, 8))
@@ -837,12 +868,12 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
                                 f"68%={np.percentile(abs_residuals[i], 68):.3f}")
 
             if gaussian_fit:
-                x, y, ye, binfo = _get_binned_gaussian(true_uvw[:, i], residuals[i], bins)
+                x, y, ye, binfo = _get_binned_gaussian(true_uvw[:, i], residuals[i], comp_bins[i])
                 hist_figs.append(_plot_bin_histograms(
                     binfo, f"{labels[i]} Residual",
                     f"{labels[i]} Resolution vs True – Bin Histograms"))
             else:
-                x, y, ye = _get_binned_stat(true_uvw[:, i], abs_residuals[i], percentile_68, bins)
+                x, y, ye = _get_binned_stat(true_uvw[:, i], abs_residuals[i], percentile_68, comp_bins[i])
             axs[1, i].errorbar(x, y, yerr=ye, marker=markers[i], color=colors[i], ms=5, **_eb)
             axs[1, i].set_xlabel(f"True {labels[i]}")
             axs[1, i].set_ylabel("σ [cm]" if gaussian_fit else "68% |Residual|")
@@ -868,12 +899,7 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
         axs[0, 2].axis('off')
 
         for i in range(3):
-            if gaussian_fit:
-                # Gaussian fit of signed residual, then compute 3D from per-bin sigmas
-                # — not meaningful for 3D distance; use percentile here
-                x, y, ye = _get_binned_stat(true_uvw[:, i], dist_3d, percentile_68, bins)
-            else:
-                x, y, ye = _get_binned_stat(true_uvw[:, i], dist_3d, percentile_68, bins)
+            x, y, ye = _get_binned_stat(true_uvw[:, i], dist_3d, percentile_68, comp_bins[i])
             axs[1, i].errorbar(x, y, yerr=ye, marker=markers[i], color=colors[i], ms=5, **_eb)
             axs[1, i].set_xlabel(f"True {labels[i]}")
             axs[1, i].set_ylabel("68% 3D Distance")
@@ -889,7 +915,7 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
         fig.suptitle("Position Bias vs Own Truth & Energy Cross-Variable", fontsize=14)
 
         for i in range(3):
-            x, y, ye = _get_binned_stat(true_uvw[:, i], residuals[i], mean_func, bins)
+            x, y, ye = _get_binned_stat(true_uvw[:, i], residuals[i], mean_func, comp_bins[i])
             axs[0, i].errorbar(x, y, yerr=ye, marker=markers[i], color=colors[i], ms=5, **_eb)
             axs[0, i].axhline(0, color='gray', ls='--', lw=1)
             axs[0, i].set_xlabel(f"True {labels[i]}"); axs[0, i].set_ylabel("Mean Residual")
@@ -936,12 +962,12 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
             axs[1, 0].set_xlabel("True Energy [MeV]"); axs[1, 0].set_ylabel("68% 3D Distance")
             axs[1, 0].set_title("3D Distance Res vs Energy")
 
-            x, y, ye = _get_binned_stat(true_uvw[:, 0], dist_3d, percentile_68, bins)
+            x, y, ye = _get_binned_stat(true_uvw[:, 0], dist_3d, percentile_68, comp_bins[0])
             axs[1, 1].errorbar(x, y, yerr=ye, marker='s', color='tab:blue', ms=5, **_eb)
             axs[1, 1].set_xlabel("True U"); axs[1, 1].set_ylabel("68% 3D Distance")
             axs[1, 1].set_title("3D Distance Res vs U")
 
-            x, y, ye = _get_binned_stat(true_uvw[:, 2], dist_3d, percentile_68, bins)
+            x, y, ye = _get_binned_stat(true_uvw[:, 2], dist_3d, percentile_68, comp_bins[2])
             axs[1, 2].errorbar(x, y, yerr=ye, marker='D', color='tab:green', ms=5, **_eb)
             axs[1, 2].set_xlabel("True W"); axs[1, 2].set_ylabel("68% 3D Distance")
             axs[1, 2].set_title("3D Distance Res vs W")
