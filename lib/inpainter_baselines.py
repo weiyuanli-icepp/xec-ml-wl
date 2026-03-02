@@ -308,13 +308,6 @@ class NeighborAverageBaseline:
         N = x_npho.shape[0]
         predictions = x_npho.copy()
 
-        # Work in raw space when a transform is provided
-        if npho_transform is not None:
-            x_work = npho_transform.inverse(x_npho)
-            x_work = np.maximum(x_work, 0.0)
-        else:
-            x_work = x_npho
-
         nbr_idx = self.nbr_indices   # (4760, max_nbrs)
         nbr_cnt = self.nbr_counts    # (4760,)
         max_nbrs = nbr_idx.shape[1]
@@ -340,8 +333,12 @@ class NeighborAverageBaseline:
             valid = in_range & neighbor_unmasked                # (n_masked, max_nbrs)
 
             # Neighbor npho values (use 0 for invalid slots so they don't
-            # affect the sum).
-            nbr_vals = x_work[i][nbrs]                         # (n_masked, max_nbrs)
+            # affect the sum).  Denormalize only gathered values to avoid
+            # allocating a full (N, 4760) array.
+            nbr_vals = x_npho[i][nbrs]                         # (n_masked, max_nbrs)
+            if npho_transform is not None:
+                nbr_vals = npho_transform.inverse(nbr_vals)
+                nbr_vals = np.maximum(nbr_vals, 0.0)
             nbr_vals = np.where(valid, nbr_vals, 0.0)
 
             n_valid = valid.sum(axis=1).astype(np.float64)     # (n_masked,)
@@ -422,13 +419,6 @@ class SolidAngleWeightedBaseline:
         N = x_npho.shape[0]
         predictions = x_npho.copy()
 
-        # Work in raw space when a transform is provided
-        if npho_transform is not None:
-            x_work = npho_transform.inverse(x_npho)
-            x_work = np.maximum(x_work, 0.0)
-        else:
-            x_work = x_npho
-
         nbr_idx = self.nbr_indices
         nbr_cnt = self.nbr_counts
         max_nbrs = nbr_idx.shape[1]
@@ -446,7 +436,11 @@ class SolidAngleWeightedBaseline:
             neighbor_unmasked = ~mask[i][nbrs]
             valid = in_range & neighbor_unmasked
 
-            nbr_vals = x_work[i][nbrs]
+            # Denormalize only gathered neighbor values (not the full array)
+            nbr_vals = x_npho[i][nbrs]
+            if npho_transform is not None:
+                nbr_vals = npho_transform.inverse(nbr_vals)
+                nbr_vals = np.maximum(nbr_vals, 0.0)
 
             if solid_angles is not None:
                 # omega_m: solid angle of each masked sensor.

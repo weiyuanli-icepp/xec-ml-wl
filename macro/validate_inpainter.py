@@ -46,6 +46,7 @@ Usage:
         --output validation/
 """
 
+import gc
 import os
 import sys
 import argparse
@@ -1163,6 +1164,10 @@ def main():
     x_input = normalize_data(data['npho'], data['time'], npho_scheme=npho_scheme)
     x_original = x_input.copy()
 
+    # Free raw arrays (no longer needed after normalization)
+    del data['npho'], data['time']
+    gc.collect()
+
     # Get dead channels
     dead_channels = get_dead_channels(
         run_number=args.run,
@@ -1203,6 +1208,10 @@ def main():
         batch_size=args.batch_size, device=args.device,
         predict_channels=predict_channels
     )
+
+    # Free masked input and model (no longer needed)
+    del x_input, model
+    gc.collect()
 
     # --- Run baselines (if requested) ---
     baseline_results = None
