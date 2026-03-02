@@ -31,8 +31,13 @@
 #include "TClonesArray.h"
 #include "Riostream.h"
 
-#include <ROMETreeInfo.h>
-#include "/data/user/ext-li_w1/meghome/offline/analyzer/include/generated/MEGAllFolders.h"
+#if !defined(__CLING__) || defined(__ROOTCLING__)
+#   include <ROMEString.h>
+#   include <ROMETreeInfo.h>
+#   include "include/generated/MEGAllFolders.h"
+#else
+class ROMETreeInfo;
+#endif
 
 void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
                    TString outputDir = ".")
