@@ -23,7 +23,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PARTITION="${PARTITION:-gh-daily}"
-TIME="${TIME:-12:00:00}"
+TIME="${TIME:-23:59:59}"
 DRY_RUN="${DRY_RUN:-0}"
 
 SCAN_CONFIG_DIR="config/inp/scan"
