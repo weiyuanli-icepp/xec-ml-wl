@@ -53,7 +53,7 @@ for STEP in "${STEPS[@]}"; do
         continue
     fi
 
-    CKPT="artifacts/inp_scan_${LABEL}/checkpoint_best.pth"
+    CKPT="artifacts/inp_scan_${LABEL}/inpainter_checkpoint_best.pth"
     OUTDIR="artifacts/inp_scan_${LABEL}/validation_mc/"
 
     echo "--- Step ${STEP}: ${LABEL} ---"
