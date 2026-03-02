@@ -22,7 +22,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PARTITION="${PARTITION:-a100-daily}"
+PARTITION="${PARTITION:-gh-daily}"
 TIME="${TIME:-12:00:00}"
 DRY_RUN="${DRY_RUN:-0}"
 
