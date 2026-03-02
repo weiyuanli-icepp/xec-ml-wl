@@ -10,7 +10,7 @@ data:
   train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_middle/"
   val_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/val/"
   tree_name: "tree"
-  batch_size: 8192
+  batch_size: 4096
   chunksize: 131072
   num_workers: 2
   prefetch_factor: 16
@@ -63,7 +63,7 @@ training:
   compile: none
   compile_fullgraph: false
   track_mae_rmse: false
-  grad_accum_steps: 1
+  grad_accum_steps: 2
   track_metrics: true
   ema_decay: null
   profile: false
