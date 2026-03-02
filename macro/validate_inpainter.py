@@ -445,6 +445,7 @@ def run_baselines(x_original: np.ndarray, combined_mask: np.ndarray,
                   solid_angles: Optional[np.ndarray] = None,
                   run_numbers: Optional[np.ndarray] = None,
                   event_numbers: Optional[np.ndarray] = None,
+                  npho_transform: Optional[NphoTransform] = None,
                   ) -> Dict[str, List[Dict]]:
     """Run baseline predictions and collect results per masked sensor.
 
@@ -457,6 +458,7 @@ def run_baselines(x_original: np.ndarray, combined_mask: np.ndarray,
         solid_angles: (N, 4760) solid angles or None.
         run_numbers: optional run number per event.
         event_numbers: optional event number per event.
+        npho_transform: NphoTransform for averaging in raw npho space.
 
     Returns:
         Dictionary with keys 'avg' (and optionally 'sa') mapping to lists
@@ -469,7 +471,8 @@ def run_baselines(x_original: np.ndarray, combined_mask: np.ndarray,
     # --- Neighbor Average Baseline ---
     print("[INFO] Running NeighborAverageBaseline...")
     avg_baseline = NeighborAverageBaseline(k=baseline_k)
-    avg_preds_full = avg_baseline.predict(x_npho, combined_mask)  # (N, 4760)
+    avg_preds_full = avg_baseline.predict(x_npho, combined_mask,
+                                          npho_transform=npho_transform)  # (N, 4760)
 
     baseline_results = {}
 
@@ -506,7 +509,8 @@ def run_baselines(x_original: np.ndarray, combined_mask: np.ndarray,
         print("[INFO] Running SolidAngleWeightedBaseline...")
         sa_baseline = SolidAngleWeightedBaseline(k=baseline_k)
         sa_preds_full = sa_baseline.predict(x_npho, combined_mask,
-                                            solid_angles=solid_angles)
+                                            solid_angles=solid_angles,
+                                            npho_transform=npho_transform)
 
         sa_results = []
         for i in range(n_events):
@@ -1212,12 +1216,14 @@ def main():
                 tree_name=args.tree_name, max_events=args.max_events
             )
 
+        npho_xf = NphoTransform(scheme=npho_scheme)
         baseline_results = run_baselines(
             x_original, combined_mask, artificial_mask, dead_mask,
             baseline_k=args.baseline_k,
             solid_angles=solid_angles,
             run_numbers=data.get('run'),
             event_numbers=data.get('event'),
+            npho_transform=npho_xf,
         )
 
     # --- LocalFitBaseline (if requested) ---

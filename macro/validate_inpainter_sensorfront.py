@@ -446,9 +446,12 @@ def main():
     # Baselines run on unmasked npho (x_norm still has original values)
     x_npho_orig = x_norm[:, :, 0]
 
+    npho_xf = NphoTransform(scheme=npho_scheme)
+
     print("[INFO] Running NeighborAverageBaseline...")
     avg_baseline = NeighborAverageBaseline(k=1)
-    avg_preds = avg_baseline.predict(x_npho_orig, combined_mask)
+    avg_preds = avg_baseline.predict(x_npho_orig, combined_mask,
+                                     npho_transform=npho_xf)
     avg_results = _collect_baseline_fast(
         avg_preds, truth_at_mask, matched_sid, n_matched,
     )
@@ -459,7 +462,8 @@ def main():
         print("[INFO] Running SolidAngleWeightedBaseline...")
         sa_baseline = SolidAngleWeightedBaseline(k=1)
         sa_preds = sa_baseline.predict(x_npho_orig, combined_mask,
-                                       solid_angles=solid_angles)
+                                       solid_angles=solid_angles,
+                                       npho_transform=npho_xf)
         sa_results = _collect_baseline_fast(
             sa_preds, truth_at_mask, matched_sid, n_matched,
         )

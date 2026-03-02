@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import numpy as np
 from collections import deque
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .normalization import NphoTransform
 
 from .geom_defs import (
     INNER_INDEX_MAP,
@@ -279,7 +282,8 @@ class NeighborAverageBaseline:
             self.neighbor_map
         )
 
-    def predict(self, x_npho: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    def predict(self, x_npho: np.ndarray, mask: np.ndarray,
+                npho_transform: Optional[NphoTransform] = None) -> np.ndarray:
         """Predict values for masked sensors.
 
         Parameters
@@ -289,6 +293,10 @@ class NeighborAverageBaseline:
             sentinel value (sentinel_npho = -1.0) or 0.
         mask : ndarray, shape (N_events, 4760)
             Boolean array where True marks a masked / dead channel.
+        npho_transform : NphoTransform, optional
+            If provided, averaging is done in raw (linear) npho space
+            and the result is re-normalised.  This is the correct
+            behaviour for nonlinear schemes (log1p, sqrt, etc.).
 
         Returns
         -------
@@ -299,6 +307,13 @@ class NeighborAverageBaseline:
         """
         N = x_npho.shape[0]
         predictions = x_npho.copy()
+
+        # Work in raw space when a transform is provided
+        if npho_transform is not None:
+            x_work = npho_transform.inverse(x_npho)
+            x_work = np.maximum(x_work, 0.0)
+        else:
+            x_work = x_npho
 
         nbr_idx = self.nbr_indices   # (4760, max_nbrs)
         nbr_cnt = self.nbr_counts    # (4760,)
@@ -326,7 +341,7 @@ class NeighborAverageBaseline:
 
             # Neighbor npho values (use 0 for invalid slots so they don't
             # affect the sum).
-            nbr_vals = x_npho[i][nbrs]                         # (n_masked, max_nbrs)
+            nbr_vals = x_work[i][nbrs]                         # (n_masked, max_nbrs)
             nbr_vals = np.where(valid, nbr_vals, 0.0)
 
             n_valid = valid.sum(axis=1).astype(np.float64)     # (n_masked,)
@@ -336,6 +351,11 @@ class NeighborAverageBaseline:
             # the np.where ensures 0.0 is returned when n_valid == 0.
             safe_n = np.maximum(n_valid, 1.0)
             avg = np.where(n_valid > 0, total / safe_n, 0.0)
+
+            # Re-normalise back to normalised space
+            if npho_transform is not None:
+                avg = npho_transform.forward(np.maximum(avg, 0.0))
+
             predictions[i, masked_sensors] = avg
 
         return predictions
@@ -377,6 +397,7 @@ class SolidAngleWeightedBaseline:
         x_npho: np.ndarray,
         mask: np.ndarray,
         solid_angles: Optional[np.ndarray] = None,
+        npho_transform: Optional[NphoTransform] = None,
     ) -> np.ndarray:
         """Predict values for masked sensors.
 
@@ -389,6 +410,9 @@ class SolidAngleWeightedBaseline:
         solid_angles : ndarray, shape (N_events, 4760), optional
             Per-event solid angle of each sensor.  If None, falls back to
             simple (unweighted) neighbor averaging.
+        npho_transform : NphoTransform, optional
+            If provided, averaging is done in raw (linear) npho space
+            and the result is re-normalised.
 
         Returns
         -------
@@ -397,6 +421,13 @@ class SolidAngleWeightedBaseline:
         """
         N = x_npho.shape[0]
         predictions = x_npho.copy()
+
+        # Work in raw space when a transform is provided
+        if npho_transform is not None:
+            x_work = npho_transform.inverse(x_npho)
+            x_work = np.maximum(x_work, 0.0)
+        else:
+            x_work = x_npho
 
         nbr_idx = self.nbr_indices
         nbr_cnt = self.nbr_counts
@@ -415,7 +446,7 @@ class SolidAngleWeightedBaseline:
             neighbor_unmasked = ~mask[i][nbrs]
             valid = in_range & neighbor_unmasked
 
-            nbr_vals = x_npho[i][nbrs]
+            nbr_vals = x_work[i][nbrs]
 
             if solid_angles is not None:
                 # omega_m: solid angle of each masked sensor.
@@ -439,6 +470,10 @@ class SolidAngleWeightedBaseline:
                 total = nbr_vals.sum(axis=1)
                 safe_n = np.maximum(n_valid, 1.0)
                 avg = np.where(n_valid > 0, total / safe_n, 0.0)
+
+            # Re-normalise back to normalised space
+            if npho_transform is not None:
+                avg = npho_transform.forward(np.maximum(avg, 0.0))
 
             predictions[i, masked_sensors] = avg
 
