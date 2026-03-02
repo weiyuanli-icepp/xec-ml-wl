@@ -105,6 +105,10 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
   Short_t ch_npho_max = -1, ch_time_min = -1;
   Float_t npho_max_used = 1e10f, time_min_used = 1e10f;
 
+  // Dead channel tracking
+  Bool_t  dead[kXECNChan];
+  Int_t   nDeadChannels = 0;
+
   // CEX-specific metadata
   Float_t Ebgo = 0, Angle = 0;
   Int_t   gstatus = 0;
@@ -138,6 +142,10 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
   tree->Branch("ch_time_min",  &ch_time_min,  "ch_time_min/S");
   tree->Branch("npho_max_used", &npho_max_used, "npho_max_used/F");
   tree->Branch("time_min_used", &time_min_used, "time_min_used/F");
+
+  // Dead channel branches
+  tree->Branch("dead",  dead,           Form("dead[%d]/O", kXECNChan));
+  tree->Branch("nDead", &nDeadChannels, "nDead/I");
 
   // CEX-specific branches (useful for diagnostics/cuts)
   tree->Branch("Ebgo",    &Ebgo,    "Ebgo/F");
@@ -200,6 +208,76 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
     runsProcessed++;
     std::cout << "Run " << iRun << " | Patch " << patchNumber
               << " | " << rundescription << std::endl;
+
+    // --- Query dead channels from DB for this run ---
+    // Chain: RunCatalog → XECConf_id → XECPMStatusDB_id → XECPMStatus_id → dead channels
+    for (Int_t ch = 0; ch < kXECNChan; ch++) dead[ch] = kFALSE;
+    nDeadChannels = 0;
+
+    {
+      // Step 1: RunCatalog → XECConf_id
+      TString qConf;
+      qConf.Form("SELECT XECConf_id FROM RunCatalog WHERE id=%d;", iRun);
+      TSQLResult *rConf = SQLServer->Query(qConf.Data());
+      Int_t xecConfId = -1;
+      if (rConf) {
+        TSQLRow *rowConf = rConf->Next();
+        if (rowConf && rowConf->GetField(0))
+          xecConfId = TString(rowConf->GetField(0)).Atoi();
+        delete rowConf;
+        delete rConf;
+      }
+
+      if (xecConfId >= 0) {
+        // Step 2: XECConf → XECPMStatusDB_id
+        TString qStatusDB;
+        qStatusDB.Form("SELECT XECPMStatusDB_id FROM XECConf WHERE id=%d;", xecConfId);
+        TSQLResult *rStatusDB = SQLServer->Query(qStatusDB.Data());
+        Int_t pmStatusDBId = -1;
+        if (rStatusDB) {
+          TSQLRow *rowSDB = rStatusDB->Next();
+          if (rowSDB && rowSDB->GetField(0))
+            pmStatusDBId = TString(rowSDB->GetField(0)).Atoi();
+          delete rowSDB;
+          delete rStatusDB;
+        }
+
+        if (pmStatusDBId >= 0) {
+          // Step 3: XECPMStatusDB → XECPMStatus_id
+          TString qStatusId;
+          qStatusId.Form("SELECT XECPMStatus_id FROM XECPMStatusDB WHERE id=%d;", pmStatusDBId);
+          TSQLResult *rStatusId = SQLServer->Query(qStatusId.Data());
+          Int_t pmStatusId = -1;
+          if (rStatusId) {
+            TSQLRow *rowSId = rStatusId->Next();
+            if (rowSId && rowSId->GetField(0))
+              pmStatusId = TString(rowSId->GetField(0)).Atoi();
+            delete rowSId;
+            delete rStatusId;
+          }
+
+          if (pmStatusId >= 0) {
+            // Step 4: XECPMStatus WHERE IsBad=1 → dead channel indices
+            TString qDead;
+            qDead.Form("SELECT idx FROM XECPMStatus WHERE id=%d AND IsBad=1;", pmStatusId);
+            TSQLResult *rDead = SQLServer->Query(qDead.Data());
+            if (rDead) {
+              TSQLRow *rowDead;
+              while ((rowDead = rDead->Next())) {
+                Int_t idx = TString(rowDead->GetField(0)).Atoi();
+                if (idx >= 0 && idx < kXECNChan) {
+                  dead[idx] = kTRUE;
+                  nDeadChannels++;
+                }
+                delete rowDead;
+              }
+              delete rDead;
+            }
+          }
+        }
+      }
+    }
+    std::cout << "  Dead channels: " << nDeadChannels << std::endl;
 
     // --- Set branch addresses ---
     MEGEventHeader *recEventHeader = new MEGEventHeader();
