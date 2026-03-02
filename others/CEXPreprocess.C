@@ -26,6 +26,7 @@
 #include "TLeaf.h"
 #include "TString.h"
 #include "TMath.h"
+#include "TSystem.h"
 #include "TSQLServer.h"
 #include "TSQLResult.h"
 #include "TSQLRow.h"
@@ -44,7 +45,12 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
   const Float_t min55 = 0.054;
   const Float_t max55 = 0.057;
 
-  // --- Connect to MySQL for geometry and run catalog ---
+  // --- Load MySQL plugin and connect ---
+  if (gSystem->Load("libRMySQL") < 0) {
+    std::cerr << "Error: cannot load libRMySQL plugin. "
+              << "Check that ROOT was built with MySQL support." << std::endl;
+    return;
+  }
   TSQLServer *SQLServer = TSQLServer::Connect("mysql://meg.sql.psi.ch",
                                                "meg_ro", "readonly");
   if (!SQLServer || SQLServer->IsZombie()) {
