@@ -33,7 +33,6 @@ import sys
 import numpy as np
 import uproot
 from pathlib import Path
-from scipy.optimize import curve_fit
 
 import matplotlib
 matplotlib.use("Agg")
@@ -63,13 +62,6 @@ QE_SIPM = 0.12
 # PM intervals
 PM_INTERVAL_U = 1.5097727  # cm
 PM_INTERVAL_V = XE_PHI_RAD * REFF / N_ROWS  # cm
-
-# Stage 1 fixed parameters
-HALF_SIZE_U = SIPM_SIZE / (2.0 * PM_INTERVAL_U)      # in PM units
-HALF_PHI_V = np.arcsin(SIPM_SIZE / XERIN) / 2.0       # half phi of SiPM
-ATTEN_U = ATTEN / PM_INTERVAL_U                        # in PM units
-ATTEN_V = ATTEN / PM_INTERVAL_V                        # in PM units
-RADIUS_V = XERIN / PM_INTERVAL_V                       # in PM units
 
 # Solid angle chip layout
 CHIP_DISTANCE = 0.05     # cm (0.5 mm gap)
@@ -224,129 +216,6 @@ def compute_predicted_npho(view_xyz, fit_scale, pm_pos, pm_dir):
 
 
 # =========================================================================
-#  Stage 1 fit functions (port from C++)
-# =========================================================================
-
-def fit_func_u(x, scale, u, w, half_size=HALF_SIZE_U, atten=ATTEN_U):
-    """Stage 1 U projection fit function (FitFunc1PointU)."""
-    w = np.maximum(w, 1e-4)
-    # Arctan profile
-    fitval = np.arctan2((x - u) - half_size, w) - np.arctan2((x - u) + half_size, w)
-    norm = np.arctan2(-half_size, w) - np.arctan2(half_size, w)
-    with np.errstate(invalid='ignore', divide='ignore'):
-        fitval = np.where(norm != 0, fitval / norm, 0.0)
-    # Exponential attenuation
-    dist = np.sqrt((x - u)**2 + w**2)
-    return scale * fitval * np.exp(-dist / atten)
-
-
-def fit_func_v(x, scale, v, w, half_phi=HALF_PHI_V, radius=RADIUS_V,
-               atten=ATTEN_V):
-    """Stage 1 V projection fit function (FitFunc1PointV)."""
-    w = np.maximum(w, 1e-4)
-    half_phi = np.maximum(half_phi, 1e-4)
-    phi_plus = (x - v) / radius + half_phi
-    phi_minus = (x - v) / radius - half_phi
-    fitval = (np.arctan2(radius * np.sin(phi_plus),
-                         w + radius - radius * np.cos(phi_plus))
-              - np.arctan2(radius * np.sin(phi_minus),
-                           w + radius - radius * np.cos(phi_minus)))
-    norm = (np.arctan2(radius * np.sin(half_phi),
-                       w + radius - radius * np.cos(half_phi))
-            - np.arctan2(radius * np.sin(-half_phi),
-                         w + radius - radius * np.cos(-half_phi)))
-    with np.errstate(invalid='ignore', divide='ignore'):
-        fitval = np.where(norm != 0, fitval / norm, 0.0)
-    dist = np.sqrt((x - v)**2 + w**2)
-    return scale * fitval * np.exp(-dist / atten)
-
-
-def do_stage1_fit_u(proj_u, uvw_recofi):
-    """Perform Stage 1 U projection fit.
-
-    Args:
-        proj_u: (44,) projection histogram values
-        uvw_recofi: (3,) RecoFI position in UVW [cm]
-
-    Returns:
-        popt: (scale, u_pm, w_pm) fitted parameters in PM units
-        x_bins: (44,) bin centers in PM units
-    """
-    x_bins = np.arange(N_COLS) - N_COLS / 2.0 + 0.5
-    region = 10.0
-
-    mid_u = uvw_recofi[0] / PM_INTERVAL_U
-    mask = (x_bins >= mid_u - region) & (x_bins <= mid_u + region)
-    x_fit = x_bins[mask]
-    y_fit = proj_u[mask]
-
-    if len(x_fit) < 3 or np.max(y_fit) < 1:
-        return None, x_bins
-
-    rms = np.sqrt(np.average(x_fit**2, weights=np.maximum(y_fit, 1))
-                  - np.average(x_fit, weights=np.maximum(y_fit, 1))**2)
-    if rms < 0.5:
-        rms = 1.0
-
-    p0 = [np.max(y_fit), mid_u, rms]
-    bounds_lo = [0, mid_u - 0.5 * region, 0.1 * rms]
-    bounds_hi = [np.inf, mid_u + 0.5 * region, 1.5 * rms]
-
-    try:
-        popt, _ = curve_fit(
-            lambda x, s, u, w: fit_func_u(x, s, u, w),
-            x_fit, y_fit, p0=p0,
-            bounds=(bounds_lo, bounds_hi), maxfev=5000)
-        return popt, x_bins
-    except Exception:
-        return None, x_bins
-
-
-def do_stage1_fit_v(proj_v, uvw_recofi):
-    """Perform Stage 1 V projection fit.
-
-    Args:
-        proj_v: (93,) projection histogram values
-        uvw_recofi: (3,) RecoFI position in UVW [cm]
-
-    Returns:
-        popt: (scale, v_pm, w_pm) fitted parameters in PM units
-        x_bins: (93,) bin centers in PM units
-    """
-    x_bins = np.arange(N_ROWS) - N_ROWS / 2.0 + 0.5
-    region = 10.0
-
-    # Note: negative sign, same as C++ macro
-    mid_v = -uvw_recofi[1] / PM_INTERVAL_V
-    lo = max(-N_ROWS / 2.0, mid_v - region)
-    hi = min(N_ROWS / 2.0, mid_v + region)
-    mask = (x_bins >= lo) & (x_bins <= hi)
-    x_fit = x_bins[mask]
-    y_fit = proj_v[mask]
-
-    if len(x_fit) < 3 or np.max(y_fit) < 1:
-        return None, x_bins
-
-    rms = np.sqrt(np.average(x_fit**2, weights=np.maximum(y_fit, 1))
-                  - np.average(x_fit, weights=np.maximum(y_fit, 1))**2)
-    if rms < 0.5:
-        rms = 1.0
-
-    p0 = [np.max(y_fit), mid_v, rms]
-    bounds_lo = [0, lo, 0.1 * rms]
-    bounds_hi = [np.inf, hi, 1.5 * rms]
-
-    try:
-        popt, _ = curve_fit(
-            lambda x, s, v, w: fit_func_v(x, s, v, w),
-            x_fit, y_fit, p0=p0,
-            bounds=(bounds_lo, bounds_hi), maxfev=5000)
-        return popt, x_bins
-    except Exception:
-        return None, x_bins
-
-
-# =========================================================================
 #  Data loading
 # =========================================================================
 
@@ -495,13 +364,18 @@ def plot_event_page(fig, event_info, pm_pos, pm_dir, pm_u, pm_v):
                  fontsize=7, fontfamily="monospace",
                  verticalalignment="top")
 
-    # --- Panel (A): U Projection + Stage 1 Fit ---
-    ax_u = fig.add_subplot(gs[1, 0])
-    _plot_u_projection(ax_u, ei, pm_u)
+    # Pre-compute Stage 2 predicted npho for all inner sensors (shared by panels)
+    fit_xyz = uvw_to_xyz(ei["uvw_fit"])
+    pred_all = compute_predicted_npho(fit_xyz, ei["fit_scale"], pm_pos, pm_dir)
+    ei["_pred_inner"] = pred_all
 
-    # --- Panel (B): V Projection + Stage 1 Fit ---
+    # --- Panel (A): U Projection + Stage 2 prediction ---
+    ax_u = fig.add_subplot(gs[1, 0])
+    _plot_u_projection(ax_u, ei)
+
+    # --- Panel (B): V Projection + Stage 2 prediction ---
     ax_v = fig.add_subplot(gs[1, 1])
-    _plot_v_projection(ax_v, ei, pm_v)
+    _plot_v_projection(ax_v, ei)
 
     # --- Panel (C): 2D Truth Npho ---
     ax_truth = fig.add_subplot(gs[1, 2])
@@ -509,15 +383,15 @@ def plot_event_page(fig, event_info, pm_pos, pm_dir, pm_u, pm_v):
 
     # --- Panel (D): 2D Predicted Npho ---
     ax_pred = fig.add_subplot(gs[2, 0])
-    _plot_2d_pred(ax_pred, ei, pm_pos, pm_dir, vmin, vmax)
+    _plot_2d_pred(ax_pred, ei, vmin, vmax)
 
     # --- Panel (E): 2D Residual ---
     ax_resid = fig.add_subplot(gs[2, 1])
-    _plot_2d_residual(ax_resid, ei, pm_pos, pm_dir)
+    _plot_2d_residual(ax_resid, ei)
 
     # --- Panel (F): Truth vs Predicted Scatter ---
     ax_scatter = fig.add_subplot(gs[2, 2])
-    _plot_scatter(ax_scatter, ei, pm_pos, pm_dir)
+    _plot_scatter(ax_scatter, ei)
 
 
 def _uvw_to_grid(u_cm, v_cm):
@@ -527,26 +401,19 @@ def _uvw_to_grid(u_cm, v_cm):
     return col, row
 
 
-def _plot_u_projection(ax, ei, pm_u):
-    """Panel A: U projection histogram with fit curve."""
+def _plot_u_projection(ax, ei):
+    """Panel A: U projection of data vs Stage 2 predicted npho."""
     x_bins = np.arange(N_COLS) - N_COLS / 2.0 + 0.5
     ax.bar(x_bins, ei["proj_u"], width=0.9, color="steelblue", alpha=0.7,
            label="Data")
 
-    if ei["fit_u"] is not None:
-        x_fine = np.linspace(x_bins[0] - 0.5, x_bins[-1] + 0.5, 300)
-        y_fit = fit_func_u(x_fine, *ei["fit_u"])
-        ax.plot(x_fine, y_fit, "r-", linewidth=1.5, label="Stage1 fit")
-
-    # Position markers
-    truth_u_pm = ei["uvw_truth"][0] / PM_INTERVAL_U
-    recofi_u_pm = ei["uvw_recofi"][0] / PM_INTERVAL_U
-    fit_u_pm = ei["uvw_fit"][0] / PM_INTERVAL_U
-
-    ymax = ax.get_ylim()[1]
-    ax.axvline(truth_u_pm, color="green", ls="--", lw=1, label="Truth")
-    ax.axvline(fit_u_pm, color="red", ls=":", lw=1, label="Fit")
-    ax.axvline(recofi_u_pm, color="blue", ls="-.", lw=1, label="RecoFI")
+    # Stage 2 predicted projection (sum along V / rows)
+    pred = ei["_pred_inner"].copy()
+    pred[~np.isfinite(pred) | (pred < 0)] = 0.0
+    pred_grid = pred[:N_INNER].reshape(N_ROWS, N_COLS)
+    pred_proj_u = pred_grid.sum(axis=0)  # (44,)
+    ax.bar(x_bins, pred_proj_u, width=0.9, color="red", alpha=0.4,
+           label="Stage2 fit")
 
     ax.set_xlabel("U [PM units]", fontsize=8)
     ax.set_ylabel("Sum npho", fontsize=8)
@@ -555,25 +422,19 @@ def _plot_u_projection(ax, ei, pm_u):
     ax.tick_params(labelsize=7)
 
 
-def _plot_v_projection(ax, ei, pm_v):
-    """Panel B: V projection histogram with fit curve."""
+def _plot_v_projection(ax, ei):
+    """Panel B: V projection of data vs Stage 2 predicted npho."""
     x_bins = np.arange(N_ROWS) - N_ROWS / 2.0 + 0.5
     ax.bar(x_bins, ei["proj_v"], width=0.9, color="steelblue", alpha=0.7,
            label="Data")
 
-    if ei["fit_v"] is not None:
-        x_fine = np.linspace(x_bins[0] - 0.5, x_bins[-1] + 0.5, 500)
-        y_fit = fit_func_v(x_fine, *ei["fit_v"])
-        ax.plot(x_fine, y_fit, "r-", linewidth=1.5, label="Stage1 fit")
-
-    # Note: V has negative sign convention for PM units
-    truth_v_pm = -ei["uvw_truth"][1] / PM_INTERVAL_V
-    recofi_v_pm = -ei["uvw_recofi"][1] / PM_INTERVAL_V
-    fit_v_pm = -ei["uvw_fit"][1] / PM_INTERVAL_V
-
-    ax.axvline(truth_v_pm, color="green", ls="--", lw=1, label="Truth")
-    ax.axvline(fit_v_pm, color="red", ls=":", lw=1, label="Fit")
-    ax.axvline(recofi_v_pm, color="blue", ls="-.", lw=1, label="RecoFI")
+    # Stage 2 predicted projection (sum along U / columns)
+    pred = ei["_pred_inner"].copy()
+    pred[~np.isfinite(pred) | (pred < 0)] = 0.0
+    pred_grid = pred[:N_INNER].reshape(N_ROWS, N_COLS)
+    pred_proj_v = pred_grid.sum(axis=1)  # (93,)
+    ax.bar(x_bins, pred_proj_v, width=0.9, color="red", alpha=0.4,
+           label="Stage2 fit")
 
     ax.set_xlabel("V [PM units]", fontsize=8)
     ax.set_ylabel("Sum npho", fontsize=8)
@@ -626,13 +487,10 @@ def _plot_2d_truth(ax, ei):
     return vmin, vmax
 
 
-def _plot_2d_pred(ax, ei, pm_pos, pm_dir, vmin, vmax):
-    """Panel D: 2D predicted npho map."""
-    fit_uvw = ei["uvw_fit"]
-    fit_xyz = uvw_to_xyz(fit_uvw)
-    pred = compute_predicted_npho(fit_xyz, ei["fit_scale"], pm_pos, pm_dir)
+def _plot_2d_pred(ax, ei, vmin, vmax):
+    """Panel D: 2D predicted npho map (from Stage 2 solid-angle fit)."""
+    pred = ei["_pred_inner"].copy()
     pred[pred <= 0] = np.nan
-    ei["_pred_inner"] = pred  # cache for residual/scatter
 
     grid = _inner_to_grid(pred)
 
@@ -649,13 +507,8 @@ def _plot_2d_pred(ax, ei, pm_pos, pm_dir, vmin, vmax):
     ax.tick_params(labelsize=7)
 
 
-def _plot_2d_residual(ax, ei, pm_pos, pm_dir):
+def _plot_2d_residual(ax, ei):
     """Panel E: 2D residual (truth - predicted) map."""
-    if "_pred_inner" not in ei:
-        fit_xyz = uvw_to_xyz(ei["uvw_fit"])
-        pred = compute_predicted_npho(fit_xyz, ei["fit_scale"], pm_pos, pm_dir)
-        ei["_pred_inner"] = pred
-
     truth = ei["npho_inner"][:N_INNER].copy().astype(float)
     pred = ei["_pred_inner"].copy()
     truth[truth <= 0] = 0.0
@@ -677,13 +530,8 @@ def _plot_2d_residual(ax, ei, pm_pos, pm_dir):
     ax.tick_params(labelsize=7)
 
 
-def _plot_scatter(ax, ei, pm_pos, pm_dir):
+def _plot_scatter(ax, ei):
     """Panel F: Truth vs Predicted scatter for sensors in fit region."""
-    if "_pred_inner" not in ei:
-        fit_xyz = uvw_to_xyz(ei["uvw_fit"])
-        pred = compute_predicted_npho(fit_xyz, ei["fit_scale"], pm_pos, pm_dir)
-        ei["_pred_inner"] = pred
-
     truth = ei["npho_inner"][:N_INNER].copy().astype(float)
     pred = ei["_pred_inner"].copy()
 
@@ -856,15 +704,11 @@ def main():
             dead_ch_set = {ds["sid"] for ds in dead_sensors}
             proj_u, proj_v = build_projections(npho_inner, dead_ch_set)
 
-            uvw_recofi = pos["uvwRecoFI"][pi]
-            fit_u, x_u = do_stage1_fit_u(proj_u, uvw_recofi)
-            fit_v, x_v = do_stage1_fit_v(proj_v, uvw_recofi)
-
             event_info = {
                 "event_idx":   ev_idx,
                 "energy":      float(pos["energyTruth"][pi]),
                 "uvw_truth":   pos["uvwTruth"][pi],
-                "uvw_recofi":  uvw_recofi,
+                "uvw_recofi":  pos["uvwRecoFI"][pi],
                 "uvw_stage1":  pos["uvwStage1"][pi],
                 "uvw_fit":     pos["uvwFitNoDead"][pi],
                 "fit_scale":   float(pos["fitScale"][pi]),
@@ -874,8 +718,6 @@ def main():
                 "npho_inner":  npho_inner,
                 "proj_u":      proj_u,
                 "proj_v":      proj_v,
-                "fit_u":       fit_u,
-                "fit_v":       fit_v,
             }
 
             fig = plt.figure(figsize=(14, 10))
