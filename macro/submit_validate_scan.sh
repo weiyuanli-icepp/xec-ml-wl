@@ -76,7 +76,7 @@ for STEP in "${STEPS[@]}"; do
 #SBATCH --time=5:00:00
 #SBATCH --hint=nomultithread
 #SBATCH --ntasks=1
-#SBATCH --mem-per-cpu=16000
+#SBATCH --mem-per-cpu=20000
 #SBATCH --job-name=val_scan_${LABEL}
 #SBATCH --output=$HOME/meghome/xec-ml-wl/log/val_scan_${LABEL}_%j.log
 
