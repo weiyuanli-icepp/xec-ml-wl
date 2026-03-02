@@ -1,12 +1,12 @@
 // CEXPreprocess.C — Real-data CEX preprocessing for energy regressor validation
 //
-// Reads reconstructed π⁰ CEX calibration runs and outputs a ROOT tree
-// in the same format as MCXECPreprocess.C so the regressor data loader
-// (lib/dataset.py) can consume it directly.
+// Standalone macro (no MEG framework headers needed). Reads rec files using
+// leaf-level access via GetLeaf()->GetValue(), which works with ROOT's
+// embedded StreamerInfo.
 //
 // Usage:
-//   root -l -b -q 'CEXPreprocess.C(557545, 100, 13)'
-//   root -l -b -q 'CEXPreprocess.C(557545, 100, 13, "/my/output/dir")'
+//   root -l -b -q 'others/CEXPreprocess.C(557545, 100, 13)'
+//   root -l -b -q 'others/CEXPreprocess.C(557545, 100, 13, "/my/output/dir")'
 //
 // Arguments:
 //   sRun        — starting run number
@@ -23,21 +23,13 @@
 
 #include "TFile.h"
 #include "TTree.h"
+#include "TLeaf.h"
 #include "TString.h"
 #include "TMath.h"
 #include "TSQLServer.h"
 #include "TSQLResult.h"
 #include "TSQLRow.h"
-#include "TClonesArray.h"
 #include "Riostream.h"
-
-#if !defined(__CLING__) || defined(__ROOTCLING__)
-#   include <ROMEString.h>
-#   include <ROMETreeInfo.h>
-#   include "include/generated/MEGAllFolders.h"
-#else
-class ROMETreeInfo;
-#endif
 
 void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
                    TString outputDir = ".")
@@ -62,7 +54,6 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
   SQLServer->SelectDataBase("MEG2");
 
   // --- Load sensor geometry from DB (for index validation only) ---
-  // We do not need positions for the output (no solid angle computation).
   std::cout << "Loading XEC geometry from database..." << std::endl;
   TSQLResult *geoRes = SQLServer->Query(
       "SELECT idx FROM XECGeometry WHERE id = 3;");
@@ -278,22 +269,43 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
     }
     std::cout << "  Dead channels: " << nDeadChannels << std::endl;
 
-    // --- Set branch addresses ---
-    MEGEventHeader *recEventHeader = new MEGEventHeader();
-    TBranch *branchEventHeader = rec->GetBranch("eventheader.");
-    if (branchEventHeader) branchEventHeader->SetAddress(&recEventHeader);
+    // --- Resolve leaf pointers (standalone: no MEG headers needed) ---
+    // ROME convention: GetXXX() → member fXXX stored as leaf "branch.fXXX"
+    // Read one entry to populate leaf structure
+    rec->GetEntry(0);
 
-    TClonesArray *recXECPMCluster = new TClonesArray("MEGXECPMCluster");
-    TBranch *branchXecCl = rec->GetBranch("xeccl");
-    if (branchXecCl) branchXecCl->SetAddress(&recXECPMCluster);
+    TLeaf *leaf_mask       = rec->GetLeaf("eventheader.fmask");
+    TLeaf *leaf_EGamma     = rec->GetLeaf("reco.fEGamma");
+    TLeaf *leaf_EvstatGamma = rec->GetLeaf("reco.fEvstatGamma");
+    TLeaf *leaf_UGamma     = rec->GetLeaf("reco.fUGamma");
+    TLeaf *leaf_VGamma     = rec->GetLeaf("reco.fVGamma");
+    TLeaf *leaf_WGamma     = rec->GetLeaf("reco.fWGamma");
+    TLeaf *leaf_npho       = rec->GetLeaf("xeccl.fnpho");
+    TLeaf *leaf_nphe       = rec->GetLeaf("xeccl.fnphe");
+    TLeaf *leaf_tpm        = rec->GetLeaf("xeccl.ftpm");
+    TLeaf *leaf_openAngle  = rec->GetLeaf("bgocexresult.fopeningAngle");
+    TLeaf *leaf_bgoEnergy  = rec->GetLeaf("bgocexresult.fbgoEnergy");
 
-    MEGRecData *pReco = new MEGRecData;
-    TBranch *bReco = nullptr;
-    rec->SetBranchAddress("reco.", &pReco, &bReco);
+    // Validate critical leaves
+    if (!leaf_mask || !leaf_EGamma || !leaf_npho || !leaf_tpm || !leaf_openAngle) {
+      std::cerr << "  ERROR: Missing critical leaves in rec tree. Available leaves:" << std::endl;
+      if (!leaf_mask)      std::cerr << "    - eventheader.fmask NOT FOUND" << std::endl;
+      if (!leaf_EGamma)    std::cerr << "    - reco.fEGamma NOT FOUND" << std::endl;
+      if (!leaf_npho)      std::cerr << "    - xeccl.fnpho NOT FOUND" << std::endl;
+      if (!leaf_tpm)       std::cerr << "    - xeccl.ftpm NOT FOUND" << std::endl;
+      if (!leaf_openAngle) std::cerr << "    - bgocexresult.fopeningAngle NOT FOUND" << std::endl;
+      std::cerr << "  Skipping run " << iRun << ". Use rec->Print() to inspect leaf names." << std::endl;
+      file->Close();
+      delete file;
+      continue;
+    }
 
-    TClonesArray *recBGOCEX = new TClonesArray("MEGBGOCEXResult");
-    TBranch *branchBGOCEX = rec->GetBranch("bgocexresult");
-    if (branchBGOCEX) branchBGOCEX->SetAddress(&recBGOCEX);
+    // Determine stride for xeccl array members (fnpho is [nChannels][nFitResults])
+    // Total leaf length / nChannels gives nFitResults per channel.
+    Int_t nphoLen = leaf_npho->GetLen();
+    Int_t stride = (nphoLen >= kXECNChan) ? nphoLen / kXECNChan : 1;
+    if (stride > 1)
+      std::cout << "  xeccl stride = " << stride << " (nFitResults per channel)" << std::endl;
 
     // --- Event loop ---
     Int_t Nevent = rec->GetEntries();
@@ -307,26 +319,22 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
       if (ev == Nevent - 1)
         std::cout << "]" << std::endl;
 
-      // Read event header for trigger mask
-      if (branchEventHeader) branchEventHeader->GetEntry(ev);
-      Int_t triggermask = recEventHeader->Getmask();
+      rec->GetEntry(ev);
+
+      // Read trigger mask
+      Int_t triggermask = (Int_t)leaf_mask->GetValue(0);
 
       // Keep only physics triggers (50, 51); skip pedestal (63) and others
       if (triggermask != 50 && triggermask != 51) continue;
 
-      // Read reconstruction
-      if (bReco) bReco->GetEntry(ev);
-      if (branchBGOCEX) branchBGOCEX->GetEntry(ev);
-      if (branchXecCl) branchXecCl->GetEntry(ev);
-
       // --- Reconstruction quantities ---
-      Float_t erec = pReco->GetEGammaAt(0);
+      Float_t erec = (Float_t)leaf_EGamma->GetValue(0);
 
       // Energy window: 55 MeV peak only
       if (erec < min55 || erec > max55) continue;
 
       // Opening angle and Etrue from 2-body kinematics
-      Float_t openingangle = ((MEGBGOCEXResult*)(recBGOCEX->At(0)))->GetopeningAngle();
+      Float_t openingangle = (Float_t)leaf_openAngle->GetValue(0);
       Float_t sqrtarg = 0.25f * Epi0 * Epi0
                         - mpi0 * mpi0 / (2.0f * (1.0f - TMath::Cos(openingangle * TMath::Pi() / 180.0f)));
       if (sqrtarg < 0) continue;  // unphysical — skip
@@ -338,14 +346,14 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
 
       energyTruth = etrue;
       energyReco  = erec;
-      gstatus     = pReco->GetEvstatGammaAt(0);
+      gstatus     = leaf_EvstatGamma ? (Int_t)leaf_EvstatGamma->GetValue(0) : 0;
 
-      uvwRecoFI[0] = pReco->GetUGammaAt(0);
-      uvwRecoFI[1] = pReco->GetVGammaAt(0);
-      uvwRecoFI[2] = pReco->GetWGammaAt(0);
+      uvwRecoFI[0] = leaf_UGamma ? (Float_t)leaf_UGamma->GetValue(0) : 1e10f;
+      uvwRecoFI[1] = leaf_VGamma ? (Float_t)leaf_VGamma->GetValue(0) : 1e10f;
+      uvwRecoFI[2] = leaf_WGamma ? (Float_t)leaf_WGamma->GetValue(0) : 1e10f;
 
       Angle = openingangle;
-      Ebgo  = ((MEGBGOCEXResult*)(recBGOCEX->At(0)))->GetbgoEnergy();
+      Ebgo  = leaf_bgoEnergy ? (Float_t)leaf_bgoEnergy->GetValue(0) : 1e10f;
 
       // Truth branches not available for real data — fill with 1e10 sentinel
       timeTruth = 1e10f;
@@ -366,12 +374,11 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
         relative_time[ch] = 1e10f;
       }
 
-      if (recXECPMCluster->GetEntries() >= kXECNChan) {
+      if (leaf_npho->GetLen() >= kXECNChan) {
         for (Int_t ch = 0; ch < kXECNChan; ch++) {
-          MEGXECPMCluster *cl = (MEGXECPMCluster*)(recXECPMCluster->At(ch));
-          npho[ch] = cl->GetnphoAt(0);
-          nphe[ch] = cl->GetnpheAt(0);
-          time_arr[ch] = cl->GettpmAt(0);
+          npho[ch]     = (Float_t)leaf_npho->GetValue(ch * stride);
+          if (leaf_nphe) nphe[ch] = (Float_t)leaf_nphe->GetValue(ch * stride);
+          time_arr[ch] = (Float_t)leaf_tpm->GetValue(ch * stride);
         }
       }
 
@@ -420,11 +427,6 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
     totalEvents += eventsThisRun;
     std::cout << "  -> " << eventsThisRun << " events selected" << std::endl;
 
-    // Cleanup
-    delete recEventHeader;
-    delete recXECPMCluster;
-    delete pReco;
-    delete recBGOCEX;
     file->Close();
     delete file;
 
