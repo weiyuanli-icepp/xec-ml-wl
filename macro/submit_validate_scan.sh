@@ -16,6 +16,7 @@ DRY_RUN="${DRY_RUN:-0}"
 RUN_NUMBER="${RUN_NUMBER:-430000}"
 VAL_PATH="${VAL_PATH:-data/E15to60_AngUni_PosSQ/val2/}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
+MAX_EVENTS="${MAX_EVENTS:-}"  # empty = all events
 
 # Steps to submit
 if [ $# -eq 0 ]; then
@@ -76,7 +77,7 @@ for STEP in "${STEPS[@]}"; do
 #SBATCH --time=5:00:00
 #SBATCH --hint=nomultithread
 #SBATCH --ntasks=1
-#SBATCH --mem-per-cpu=20000
+#SBATCH --mem-per-cpu=30000
 #SBATCH --job-name=val_scan_${LABEL}
 #SBATCH --output=$HOME/meghome/xec-ml-wl/log/val_scan_${LABEL}_%j.log
 
@@ -121,7 +122,8 @@ python macro/validate_inpainter.py \\
     --baselines \\
     --solid-angle-branch solid_angle \\
     --device cpu \\
-    --batch-size ${BATCH_SIZE}
+    --batch-size ${BATCH_SIZE} \\
+    ${MAX_EVENTS:+--max-events ${MAX_EVENTS}}
 
 echo ""
 echo "=== Done: \$(date) ==="
