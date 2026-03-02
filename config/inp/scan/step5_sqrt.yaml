@@ -63,7 +63,7 @@ training:
   compile: none
   compile_fullgraph: false
   track_mae_rmse: false
-  grad_accum_steps: 8
+  grad_accum_steps: 1
   track_metrics: true
   ema_decay: null
   profile: false
