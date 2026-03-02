@@ -21,7 +21,9 @@
 
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <set>
+#include <sstream>
 #include <cmath>
 
 // ========================================================================
@@ -60,8 +62,13 @@ static Double_t gPMPos[kXECNChan][3];
 static Double_t gPMDir[kXECNChan][3];
 static Double_t gPMU[kNInner], gPMV[kNInner]; // UVW coordinates of inner SiPMs
 
-// Dead channel set
+// Dead channel set (global, used when per-event map is not provided)
 static std::set<Int_t> gDeadSet;
+
+// Per-event dead channel map: event_index -> set of dead channel IDs
+// When loaded, overrides gDeadSet on a per-event basis.
+static std::map<Int_t, std::set<Int_t>> gPerEventDead;
+static Bool_t gUsePerEventDead = kFALSE;
 
 // QE values for chi-square weighting
 static const Double_t kQE_SiPM = 0.12;
@@ -346,12 +353,45 @@ Int_t LoadDeadChannels(const char* deadFile)
 }
 
 // ========================================================================
+//  Load per-event dead channels from file
+//  Format: one line per mapping, "event_index sensor_id"
+//  e.g.:  "0 1234\n1 567\n2 890\n"
+// ========================================================================
+
+Int_t LoadPerEventDeadChannels(const char* mapFile)
+{
+   gPerEventDead.clear();
+   std::ifstream fin(mapFile);
+   if (!fin.is_open()) {
+      std::cerr << "ERROR: Cannot open per-event dead channel file: " << mapFile << std::endl;
+      return -1;
+   }
+   std::string line;
+   Int_t count = 0;
+   while (std::getline(fin, line)) {
+      if (line.empty() || line[0] == '#') continue;
+      std::istringstream iss(line);
+      Int_t ev, ch;
+      if (iss >> ev >> ch) {
+         if (ch >= 0 && ch < kXECNChan) {
+            gPerEventDead[ev].insert(ch);
+            count++;
+         }
+      }
+   }
+   fin.close();
+   gUsePerEventDead = kTRUE;
+   return count;
+}
+
+// ========================================================================
 //  Main Macro
 // ========================================================================
 
 void LocalFitBaseline(const char* inputFile  = "",
                       const char* deadFile   = "",
-                      const char* outPath    = "")
+                      const char* outPath    = "",
+                      const char* perEventDeadFile = "")
 {
    if (strlen(inputFile) == 0) {
       std::cerr << "Usage: root -l -b -q 'LocalFitBaseline.C(\"MCGamma.root\", \"dead_channels.txt\" [, \"output.root\"])'\n";
@@ -366,6 +406,15 @@ void LocalFitBaseline(const char* inputFile  = "",
       std::cout << "Loaded " << nDead << " dead channels from " << deadFile << std::endl;
    } else {
       std::cout << "WARNING: No dead channel file specified. Running without dead channel exclusion.\n";
+   }
+
+   // --- Load per-event dead channels (optional, overrides global dead set) ---
+   if (strlen(perEventDeadFile) > 0) {
+      Int_t nMappings = LoadPerEventDeadChannels(perEventDeadFile);
+      if (nMappings < 0) return;
+      std::cout << "Loaded " << nMappings << " per-event dead channel mappings "
+                << "for " << gPerEventDead.size() << " events from "
+                << perEventDeadFile << std::endl;
    }
 
    // --- Compute PM intervals ---
@@ -491,6 +540,10 @@ void LocalFitBaseline(const char* inputFile  = "",
       if (!std::isfinite(uvwRecoFI[0]) || std::abs(uvwRecoFI[0]) > 1e5) continue;
       if (!std::isfinite(uvwTruth[0])  || std::abs(uvwTruth[0])  > 1e5) continue;
 
+      // Resolve dead channels for this event
+      const std::set<Int_t>& deadForEvent =
+         gUsePerEventDead ? gPerEventDead[(Int_t)iEntry] : gDeadSet;
+
       // ================================================================
       //  Stage 1: Local Projection Fit (with dead channel exclusion)
       // ================================================================
@@ -502,7 +555,7 @@ void LocalFitBaseline(const char* inputFile  = "",
       Double_t binError2V[kNRows] = {0};
 
       for (Int_t ch = 0; ch < kNInner; ch++) {
-         if (gDeadSet.count(ch)) continue; // SKIP dead channels
+         if (deadForEvent.count(ch)) continue; // SKIP dead channels
 
          Float_t n = npho[ch];
          if (!std::isfinite(n) || n <= 0 || n > 1e9) continue;
@@ -582,7 +635,7 @@ void LocalFitBaseline(const char* inputFile  = "",
          gPMUsed[ch] = kFALSE;
          gNphoArr[ch] = 0;
 
-         if (gDeadSet.count(ch)) continue; // SKIP dead channels
+         if (deadForEvent.count(ch)) continue; // SKIP dead channels
 
          Float_t n = npho[ch];
          if (!std::isfinite(n) || n <= 0 || n > 1e9) continue;
@@ -672,7 +725,7 @@ void LocalFitBaseline(const char* inputFile  = "",
 
       TVector3 viewFit = UVW2XYZVec(fitU, fitV, fitW);
 
-      for (Int_t ch : gDeadSet) {
+      for (Int_t ch : deadForEvent) {
          if (ch >= kNInner) continue; // only predict inner face
 
          o_event_idx    = (Int_t)iEntry;

@@ -95,6 +95,9 @@ def run_localfit_one_file(
     # File-local event indices of matched events
     local_indices = matched_orig_idx[in_file] - global_offset
 
+    # Per-event sensor IDs for this file's matched events
+    file_matched_sids = matched_sid[in_file]
+
     print(f"[INFO] File {file_index}: {os.path.basename(root_file)}")
     print(f"       {n_file_matched} matched events, "
           f"{len(file_sids)} unique sensors")
@@ -114,16 +117,21 @@ def run_localfit_one_file(
     filtered_to_local = {i: int(local_indices[i])
                          for i in range(n_file_matched)}
 
-    dead_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+    # Write per-event dead channel file: "filtered_event_idx sensor_id"
+    # Each event masks exactly 1 sensor (the one in front of the FIP)
+    perevent_tmp = tempfile.NamedTemporaryFile(
+        mode='w', suffix='.txt', delete=False)
+    for i in range(n_file_matched):
+        perevent_tmp.write(f"{i} {int(file_matched_sids[i])}\n")
+    perevent_tmp.close()
+
     out_tmp = tempfile.NamedTemporaryFile(suffix='.root', delete=False)
     try:
-        for ch in file_sids:
-            dead_tmp.write(f"{ch}\n")
-        dead_tmp.close()
         out_tmp.close()
 
+        # Use per-event dead channels (4th argument) instead of global dead list
         cmd = (f'root -l -b -q \'{macro_path}("{filtered_tmp.name}", '
-               f'"{dead_tmp.name}", "{out_tmp.name}")\'')
+               f'"", "{out_tmp.name}", "{perevent_tmp.name}")\'')
         print(f"[INFO] Running: {cmd}")
         sys.stdout.flush()
         result = subprocess.run(cmd, shell=True)
@@ -175,7 +183,7 @@ def run_localfit_one_file(
         return out_path
 
     finally:
-        for p in (dead_tmp.name, out_tmp.name, filtered_tmp.name):
+        for p in (perevent_tmp.name, out_tmp.name, filtered_tmp.name):
             if os.path.exists(p):
                 os.unlink(p)
 
