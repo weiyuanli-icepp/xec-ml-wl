@@ -93,5 +93,5 @@ distributed:
   num_gpus: 1
 
 mlflow:
-  experiment: "inpainting_scan"
+  experiment: "inpainting"
   run_name: "inp_scan_s6_mask015"
