@@ -57,6 +57,7 @@ def run_localfit_one_file(
     global_offset: int,
     n_in_file: int,
     output_dir: str,
+    keep_localfit_root: bool = False,
 ) -> Optional[str]:
     """Run LocalFitBaseline macro on one file's matched events.
 
@@ -183,7 +184,17 @@ def run_localfit_one_file(
         return out_path
 
     finally:
-        for p in (perevent_tmp.name, out_tmp.name, filtered_tmp.name):
+        # Optionally preserve the macro output ROOT file for visualization
+        if keep_localfit_root and os.path.exists(out_tmp.name):
+            kept_path = os.path.join(
+                output_dir, f"localfit_file{file_index:04d}.root")
+            os.makedirs(output_dir, exist_ok=True)
+            os.rename(out_tmp.name, kept_path)
+            print(f"[INFO] Kept localfit ROOT file: {kept_path}")
+        else:
+            if os.path.exists(out_tmp.name):
+                os.unlink(out_tmp.name)
+        for p in (perevent_tmp.name, filtered_tmp.name):
             if os.path.exists(p):
                 os.unlink(p)
 
@@ -203,6 +214,9 @@ def main():
                        help="Process all files sequentially")
     parser.add_argument("--output-dir", "-o", type=str, default=None,
                         help="Output directory (default: <manifest_dir>/localfit_results/)")
+    parser.add_argument("--keep-localfit-root", action="store_true",
+                        help="Preserve macro output ROOT file for visualization "
+                             "with show_localfit_event.py")
 
     args = parser.parse_args()
 
@@ -261,6 +275,7 @@ def main():
             global_offset=offset,
             n_in_file=n_in,
             output_dir=output_dir,
+            keep_localfit_root=args.keep_localfit_root,
         )
 
     print("[INFO] Done.")
