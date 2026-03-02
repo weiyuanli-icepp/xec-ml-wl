@@ -28,7 +28,6 @@
 #include "TSQLServer.h"
 #include "TSQLResult.h"
 #include "TSQLRow.h"
-#include "TMySQLServer.h"
 #include "TClonesArray.h"
 #include "Riostream.h"
 
@@ -54,8 +53,8 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
   const Float_t max55 = 0.057;
 
   // --- Connect to MySQL for geometry and run catalog ---
-  TSQLServer *SQLServer = TMySQLServer::Connect("mysql://meg.sql.psi.ch",
-                                                 "meg_ro", "readonly");
+  TSQLServer *SQLServer = TSQLServer::Connect("mysql://meg.sql.psi.ch",
+                                               "meg_ro", "readonly");
   if (!SQLServer || SQLServer->IsZombie()) {
     std::cerr << "Error connecting to MySQL server" << std::endl;
     return;
