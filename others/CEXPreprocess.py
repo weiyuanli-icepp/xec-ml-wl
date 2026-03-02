@@ -74,50 +74,27 @@ def process_run(iRun, dead_mask, out_arrays):
     print(f"Run {iRun} ({filename})")
 
     # --- Read branches ---
-    # uproot reads non-split object/TClonesArray members via StreamerInfo.
-    # Discover what's available on first run if needed.
+    # uproot key names (from rec tree StreamerInfo):
+    #   Single-object branches: "branch./branch.member"
+    #   TClonesArray branches:  "branch/branch.member"
+    key_mask      = "eventheader./eventheader.mask"
+    key_egamma    = "reco./reco.EGamma"
+    key_evstat    = "reco./reco.EvstatGamma"
+    key_ugamma    = "reco./reco.UGamma"
+    key_vgamma    = "reco./reco.VGamma"
+    key_wgamma    = "reco./reco.WGamma"
+    key_npho      = "xeccl/xeccl.npho"
+    key_nphe      = "xeccl/xeccl.nphe"
+    key_tpm       = "xeccl/xeccl.tpm"
+    key_openangle = "bgocexresult/bgocexresult.openingAngle"
+    key_bgoenergy = "bgocexresult/bgocexresult.bgoEnergy"
+
+    # Check critical branches exist
     available = set(rec.keys())
-
-    # Find the right key names (uproot may use different naming conventions)
-    # Try common patterns for the branches we need
-    def find_key(patterns):
-        for p in patterns:
-            if p in available:
-                return p
-        return None
-
-    key_mask = find_key(["eventheader./fmask", "eventheader.fmask",
-                         "eventheader./eventheader.fmask"])
-    key_egamma = find_key(["reco./fEGamma", "reco.fEGamma",
-                           "reco./reco.fEGamma"])
-    key_evstat = find_key(["reco./fEvstatGamma", "reco.fEvstatGamma",
-                           "reco./reco.fEvstatGamma"])
-    key_ugamma = find_key(["reco./fUGamma", "reco.fUGamma",
-                           "reco./reco.fUGamma"])
-    key_vgamma = find_key(["reco./fVGamma", "reco.fVGamma",
-                           "reco./reco.fVGamma"])
-    key_wgamma = find_key(["reco./fWGamma", "reco.fWGamma",
-                           "reco./reco.fWGamma"])
-    key_npho = find_key(["xeccl/xeccl.fnpho", "xeccl.fnpho",
-                         "xeccl/fnpho"])
-    key_nphe = find_key(["xeccl/xeccl.fnphe", "xeccl.fnphe",
-                         "xeccl/fnphe"])
-    key_tpm = find_key(["xeccl/xeccl.ftpm", "xeccl.ftpm",
-                        "xeccl/ftpm"])
-    key_openangle = find_key(["bgocexresult/bgocexresult.fopeningAngle",
-                              "bgocexresult.fopeningAngle",
-                              "bgocexresult/fopeningAngle"])
-    key_bgoenergy = find_key(["bgocexresult/bgocexresult.fbgoEnergy",
-                              "bgocexresult.fbgoEnergy",
-                              "bgocexresult/fbgoEnergy"])
-
-    # Check critical branches
-    missing = []
-    for name, key in [("trigger mask", key_mask), ("EGamma", key_egamma),
-                      ("npho", key_npho), ("tpm", key_tpm),
-                      ("openingAngle", key_openangle)]:
-        if key is None:
-            missing.append(name)
+    critical = {"trigger mask": key_mask, "EGamma": key_egamma,
+                "npho": key_npho, "tpm": key_tpm,
+                "openingAngle": key_openangle}
+    missing = [name for name, key in critical.items() if key not in available]
 
     if missing:
         print(f"  ERROR: Cannot find branches: {missing}")
@@ -125,10 +102,11 @@ def process_run(iRun, dead_mask, out_arrays):
         return -1
 
     # Read all data at once
-    read_keys = [k for k in [key_mask, key_egamma, key_evstat,
-                             key_ugamma, key_vgamma, key_wgamma,
-                             key_npho, key_nphe, key_tpm,
-                             key_openangle, key_bgoenergy] if k is not None]
+    read_keys = [key_mask, key_egamma, key_evstat,
+                 key_ugamma, key_vgamma, key_wgamma,
+                 key_npho, key_nphe, key_tpm,
+                 key_openangle, key_bgoenergy]
+    read_keys = [k for k in read_keys if k in available]
 
     arrays = rec.arrays(read_keys, library="np")
 
@@ -139,12 +117,12 @@ def process_run(iRun, dead_mask, out_arrays):
     openangle_arr = arrays[key_openangle]
 
     # Optional branches
-    evstat_arr = arrays.get(key_evstat) if key_evstat else None
-    ugamma_arr = arrays.get(key_ugamma) if key_ugamma else None
-    vgamma_arr = arrays.get(key_vgamma) if key_vgamma else None
-    wgamma_arr = arrays.get(key_wgamma) if key_wgamma else None
-    nphe_arr = arrays.get(key_nphe) if key_nphe else None
-    bgoenergy_arr = arrays.get(key_bgoenergy) if key_bgoenergy else None
+    evstat_arr = arrays.get(key_evstat)
+    ugamma_arr = arrays.get(key_ugamma)
+    vgamma_arr = arrays.get(key_vgamma)
+    wgamma_arr = arrays.get(key_wgamma)
+    nphe_arr = arrays.get(key_nphe)
+    bgoenergy_arr = arrays.get(key_bgoenergy)
 
     # --- Handle array shapes ---
     # For multi-dimensional members (e.g. fEGamma[nGamma]), take index 0
