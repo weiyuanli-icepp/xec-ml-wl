@@ -43,6 +43,8 @@ echo "Dry run:    ${DRY_RUN}"
 echo "============================================"
 echo ""
 
+mkdir -p logs
+
 SUBMITTED=0
 for STEP in "${STEPS[@]}"; do
     LABEL="${STEP_LABELS[$STEP]:-}"
@@ -76,7 +78,7 @@ for STEP in "${STEPS[@]}"; do
 #SBATCH --ntasks=1
 #SBATCH --mem-per-cpu=16000
 #SBATCH --job-name=val_scan_${LABEL}
-#SBATCH --output=val_scan_${LABEL}_%j.log
+#SBATCH --output=$HOME/meghome/xec-ml-wl/logs/val_scan_${LABEL}_%j.log
 
 echo "=== Validate inpainter scan: ${LABEL} ==="
 echo "Host: \$(hostname)"
