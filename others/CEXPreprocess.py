@@ -132,34 +132,49 @@ def process_run(iRun, dead_mask, out_arrays):
             return arr[:, 0]
         return arr
 
-    mask_vals = get_col0(mask_arr)
-    egamma_vals = get_col0(egamma_arr)
-    openangle_vals = get_col0(openangle_arr)
-    bgoenergy_vals = get_col0(bgoenergy_arr) if bgoenergy_arr is not None else None
+    def to_float(arr):
+        """Convert object arrays (from TClonesArray) to float32."""
+        if arr is None:
+            return None
+        arr = get_col0(arr)
+        if arr.dtype == object:
+            arr = np.array(arr, dtype=np.float32)
+        return arr.astype(np.float32)
 
-    evstat_vals = get_col0(evstat_arr) if evstat_arr is not None else None
-    ugamma_vals = get_col0(ugamma_arr) if ugamma_arr is not None else None
-    vgamma_vals = get_col0(vgamma_arr) if vgamma_arr is not None else None
-    wgamma_vals = get_col0(wgamma_arr) if wgamma_arr is not None else None
+    def to_int(arr):
+        if arr is None:
+            return None
+        arr = get_col0(arr)
+        if arr.dtype == object:
+            arr = np.array(arr, dtype=np.int32)
+        return arr.astype(np.int32)
 
-    # npho/nphe/tpm: shape might be (N, 4760) or (N, 4760, nFit)
-    if npho_arr.ndim == 3:
-        npho_vals = npho_arr[:, :, 0]
-    else:
-        npho_vals = npho_arr
+    mask_vals = to_int(mask_arr)
+    egamma_vals = to_float(egamma_arr)
+    openangle_vals = to_float(openangle_arr)
+    bgoenergy_vals = to_float(bgoenergy_arr)
 
-    if tpm_arr.ndim == 3:
-        tpm_vals = tpm_arr[:, :, 0]
-    else:
-        tpm_vals = tpm_arr
+    evstat_vals = to_int(evstat_arr)
+    ugamma_vals = to_float(ugamma_arr)
+    vgamma_vals = to_float(vgamma_arr)
+    wgamma_vals = to_float(wgamma_arr)
 
-    if nphe_arr is not None:
-        if nphe_arr.ndim == 3:
-            nphe_vals = nphe_arr[:, :, 0]
+    # npho/nphe/tpm: shape might be (N, 4760) or (N, 4760, nFit) or object
+    def to_2d_float(arr, fallback_shape=None):
+        """Convert xeccl member array to (N, 4760) float32."""
+        if arr is None:
+            return np.full(fallback_shape, 1e10, dtype=np.float32) if fallback_shape else None
+        if arr.dtype == object:
+            arr = np.array(arr.tolist(), dtype=np.float32)
         else:
-            nphe_vals = nphe_arr
-    else:
-        nphe_vals = np.full_like(npho_vals, 1e10)
+            arr = arr.astype(np.float32)
+        if arr.ndim == 3:
+            arr = arr[:, :, 0]
+        return arr
+
+    npho_vals = to_2d_float(npho_arr)
+    tpm_vals = to_2d_float(tpm_arr)
+    nphe_vals = to_2d_float(nphe_arr, fallback_shape=npho_vals.shape)
 
     # --- Event selection (vectorized) ---
     # 1. Physics triggers only (50, 51)
