@@ -380,7 +380,7 @@ def load_model(checkpoint_path: Optional[str] = None,
         )
 
         # Load weights (prefer EMA)
-        if 'ema_state_dict' in checkpoint:
+        if checkpoint.get('ema_state_dict') is not None:
             state_dict = checkpoint['ema_state_dict']
             print("[INFO] Using EMA weights")
         elif 'model_state_dict' in checkpoint:
