@@ -31,14 +31,34 @@ from lib.normalization import NphoTransform
 # ---------------------------------------------------------------------------
 ENTRIES = [
     {
-        "path": "artifacts/mask0.10_nopre_ep20_cr-at/validation_mc/predictions_mc_runcustom.root",
-        "label": "log1p (no pretrain)",
+        "path": "artifacts/inp_scan_s1_baseline/validation_mc/predictions_mc_run430000.root",
+        "label": "S1: baseline",
         "color": "blue",
     },
     {
-        "path": "artifacts/mask0.10_nopre_ep30_cr-at_sqrt/validation_mc/predictions_mc_run430000.root",
-        "label": "sqrt + flat mask + npho wt",
+        "path": "artifacts/inp_scan_s2_flatmask/validation_mc/predictions_mc_run430000.root",
+        "label": "S2: +flat mask",
+        "color": "orange",
+    },
+    {
+        "path": "artifacts/inp_scan_s3_nphowt/validation_mc/predictions_mc_run430000.root",
+        "label": "S3: +npho wt",
+        "color": "green",
+    },
+    {
+        "path": "artifacts/inp_scan_s4_flat_nphowt/validation_mc/predictions_mc_run430000.root",
+        "label": "S4: flat+npho wt",
         "color": "red",
+    },
+    {
+        "path": "artifacts/inp_scan_s5_sqrt/validation_mc/predictions_mc_run430000.root",
+        "label": "S5: sqrt",
+        "color": "purple",
+    },
+    {
+        "path": "artifacts/inp_scan_s6_mask015/validation_mc/predictions_mc_run430000.root",
+        "label": "S6: mask 0.15",
+        "color": "brown",
     },
 ]
 
