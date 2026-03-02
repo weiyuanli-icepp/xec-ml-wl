@@ -1,18 +1,24 @@
 // CEXPreprocess.C — Real-data CEX preprocessing for energy regressor validation
 //
-// Standalone macro (no MEG framework headers needed). Reads rec files using
-// leaf-level access via GetLeaf()->GetValue(), which works with ROOT's
-// embedded StreamerInfo.
+// Standalone macro (no MEG framework or MySQL needed). Reads rec files using
+// leaf-level access via GetLeaf()->GetValue().
 //
 // Usage:
-//   root -l -b -q 'others/CEXPreprocess.C(557545, 100, 13)'
-//   root -l -b -q 'others/CEXPreprocess.C(557545, 100, 13, "/my/output/dir")'
+//   root -l -b -q 'others/CEXPreprocess.C(557545, 1, 13)'
+//   root -l -b -q 'others/CEXPreprocess.C(557545, 100, 13, ".", "dead_channels.txt")'
 //
 // Arguments:
-//   sRun        — starting run number
-//   nfiles      — number of consecutive runs to scan
-//   patchnumber — CEX patch number to select
-//   outputDir   — output directory (default: current directory)
+//   sRun            — starting run number
+//   nfiles          — number of consecutive runs to try
+//   patchnumber     — CEX patch number (for output filename only)
+//   outputDir       — output directory (default: current directory)
+//   deadChannelFile — text file with one dead channel index per line
+//                     (generate with: python -m lib.db_utils RUN -o dead.txt)
+//                     If empty, dead channels are detected from sentinel values.
+//
+// Note: Without DB access, all runs in [sRun, sRun+nfiles) are attempted.
+//       Non-existent rec files are skipped. The energy window cut (54-57 MeV)
+//       naturally rejects non-CEX events.
 
 #include <iostream>
 #include <string>
@@ -20,20 +26,17 @@
 #include <vector>
 #include <limits>
 #include <cmath>
+#include <set>
 
 #include "TFile.h"
 #include "TTree.h"
 #include "TLeaf.h"
 #include "TString.h"
 #include "TMath.h"
-#include "TSystem.h"
-#include "TSQLServer.h"
-#include "TSQLResult.h"
-#include "TSQLRow.h"
 #include "Riostream.h"
 
 void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
-                   TString outputDir = ".")
+                   TString outputDir = ".", TString deadChannelFile = "")
 {
   static const Int_t kXECNChan = 4760;
 
@@ -45,34 +48,25 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
   const Float_t min55 = 0.054;
   const Float_t max55 = 0.057;
 
-  // --- Load MySQL plugin and connect ---
-  if (gSystem->Load("libRMySQL") < 0) {
-    std::cerr << "Error: cannot load libRMySQL plugin. "
-              << "Check that ROOT was built with MySQL support." << std::endl;
-    return;
-  }
-  TSQLServer *SQLServer = TSQLServer::Connect("mysql://meg.sql.psi.ch",
-                                               "meg_ro", "readonly");
-  if (!SQLServer || SQLServer->IsZombie()) {
-    std::cerr << "Error connecting to MySQL server" << std::endl;
-    return;
-  }
-  SQLServer->SelectDataBase("MEG2");
-
-  // --- Load sensor geometry from DB (for index validation only) ---
-  std::cout << "Loading XEC geometry from database..." << std::endl;
-  TSQLResult *geoRes = SQLServer->Query(
-      "SELECT idx FROM XECGeometry WHERE id = 3;");
-  Int_t nGeomLoaded = 0;
-  if (geoRes) {
-    while (TSQLRow *row = geoRes->Next()) {
-      Int_t ch = TString(row->GetField(0)).Atoi();
-      if (ch >= 0 && ch < kXECNChan) nGeomLoaded++;
-      delete row;
+  // --- Load dead channel list from file (if provided) ---
+  std::set<Int_t> deadFromFile;
+  if (deadChannelFile.Length() > 0) {
+    std::ifstream fin(deadChannelFile.Data());
+    if (!fin.is_open()) {
+      std::cerr << "Warning: cannot open dead channel file: "
+                << deadChannelFile << std::endl;
+    } else {
+      std::string line;
+      while (std::getline(fin, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        Int_t idx = std::stoi(line);
+        if (idx >= 0 && idx < kXECNChan) deadFromFile.insert(idx);
+      }
+      fin.close();
+      std::cout << "Loaded " << deadFromFile.size()
+                << " dead channels from " << deadChannelFile << std::endl;
     }
-    delete geoRes;
   }
-  std::cout << "  Loaded " << nGeomLoaded << " channels from XECGeometry" << std::endl;
 
   // --- Output file ---
   TString foutname = Form("%s/CEX23_patch%d_r%d_n%d.root",
@@ -155,40 +149,13 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
 
   for (Int_t iRun = sRun; iRun < sRun + nfiles; iRun++) {
 
-    // --- Query RunCatalog ---
-    TString query;
-    query.Form("SELECT Junk, RunDescription, Physics FROM RunCatalog WHERE id=%d;",
-               iRun);
-    TSQLResult *SQLResult = SQLServer->Query(query.Data());
-    if (!SQLResult) continue;
-    TSQLRow *SQLRow = SQLResult->Next();
-    if (!SQLRow) { delete SQLResult; continue; }
-
-    Int_t junk = SQLRow->GetFieldLength(0) ? atoi(SQLRow->GetField(0)) : 1;
-    TString rundescription = SQLRow->GetField(1);
-    delete SQLRow;
-    delete SQLResult;
-
-    // Skip junk runs
-    if (junk) continue;
-
-    // Must be "Pi0 CEX" run
-    if (!rundescription.Contains("Pi0 CEX", TString::kIgnoreCase)) continue;
-
-    // Must match requested patch number
-    Ssiz_t patchPos = rundescription.Index("patch number", 11, TString::kIgnoreCase);
-    if (patchPos == kNPOS) continue;
-    TString patchStr = rundescription(patchPos + 12, 3);
-    Int_t patchNumber = -1;
-    sscanf(patchStr.Data(), "%d", &patchNumber);
-    if (patchNumber != patchnumber) continue;
-
     // --- Open rec file ---
     TString filename = Form("%s/%3dxxx/rec%05d.root",
                             inputrecdir.Data(), iRun / 1000, iRun);
     TFile *file = TFile::Open(filename);
     if (!file || file->IsZombie()) {
-      std::cerr << "Warning: could not open " << filename << std::endl;
+      if (nfiles == 1)
+        std::cerr << "Warning: could not open " << filename << std::endl;
       delete file;
       continue;
     }
@@ -202,82 +169,27 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
     }
 
     runsProcessed++;
-    std::cout << "Run " << iRun << " | Patch " << patchNumber
-              << " | " << rundescription << std::endl;
+    std::cout << "Run " << iRun << " (" << filename << ")" << std::endl;
 
-    // --- Query dead channels from DB for this run ---
-    // Chain: RunCatalog → XECConf_id → XECPMStatusDB_id → XECPMStatus_id → dead channels
+    // --- Set dead channel mask ---
     for (Int_t ch = 0; ch < kXECNChan; ch++) dead[ch] = kFALSE;
     nDeadChannels = 0;
 
-    {
-      // Step 1: RunCatalog → XECConf_id
-      TString qConf;
-      qConf.Form("SELECT XECConf_id FROM RunCatalog WHERE id=%d;", iRun);
-      TSQLResult *rConf = SQLServer->Query(qConf.Data());
-      Int_t xecConfId = -1;
-      if (rConf) {
-        TSQLRow *rowConf = rConf->Next();
-        if (rowConf && rowConf->GetField(0))
-          xecConfId = TString(rowConf->GetField(0)).Atoi();
-        delete rowConf;
-        delete rConf;
-      }
-
-      if (xecConfId >= 0) {
-        // Step 2: XECConf → XECPMStatusDB_id
-        TString qStatusDB;
-        qStatusDB.Form("SELECT XECPMStatusDB_id FROM XECConf WHERE id=%d;", xecConfId);
-        TSQLResult *rStatusDB = SQLServer->Query(qStatusDB.Data());
-        Int_t pmStatusDBId = -1;
-        if (rStatusDB) {
-          TSQLRow *rowSDB = rStatusDB->Next();
-          if (rowSDB && rowSDB->GetField(0))
-            pmStatusDBId = TString(rowSDB->GetField(0)).Atoi();
-          delete rowSDB;
-          delete rStatusDB;
-        }
-
-        if (pmStatusDBId >= 0) {
-          // Step 3: XECPMStatusDB → XECPMStatus_id
-          TString qStatusId;
-          qStatusId.Form("SELECT XECPMStatus_id FROM XECPMStatusDB WHERE id=%d;", pmStatusDBId);
-          TSQLResult *rStatusId = SQLServer->Query(qStatusId.Data());
-          Int_t pmStatusId = -1;
-          if (rStatusId) {
-            TSQLRow *rowSId = rStatusId->Next();
-            if (rowSId && rowSId->GetField(0))
-              pmStatusId = TString(rowSId->GetField(0)).Atoi();
-            delete rowSId;
-            delete rStatusId;
-          }
-
-          if (pmStatusId >= 0) {
-            // Step 4: XECPMStatus WHERE IsBad=1 → dead channel indices
-            TString qDead;
-            qDead.Form("SELECT idx FROM XECPMStatus WHERE id=%d AND IsBad=1;", pmStatusId);
-            TSQLResult *rDead = SQLServer->Query(qDead.Data());
-            if (rDead) {
-              TSQLRow *rowDead;
-              while ((rowDead = rDead->Next())) {
-                Int_t idx = TString(rowDead->GetField(0)).Atoi();
-                if (idx >= 0 && idx < kXECNChan) {
-                  dead[idx] = kTRUE;
-                  nDeadChannels++;
-                }
-                delete rowDead;
-              }
-              delete rDead;
-            }
-          }
-        }
+    if (!deadFromFile.empty()) {
+      // From file
+      for (Int_t idx : deadFromFile) {
+        dead[idx] = kTRUE;
+        nDeadChannels++;
       }
     }
-    std::cout << "  Dead channels: " << nDeadChannels << std::endl;
+    // If no file provided, dead channels will be detectable downstream
+    // from sentinel values (npho = 1e10) in the output.
+    std::cout << "  Dead channels: " << nDeadChannels
+              << (deadFromFile.empty() ? " (detect from sentinels downstream)" : " (from file)")
+              << std::endl;
 
     // --- Resolve leaf pointers (standalone: no MEG headers needed) ---
     // ROME convention: GetXXX() → member fXXX stored as leaf "branch.fXXX"
-    // Read one entry to populate leaf structure
     rec->GetEntry(0);
 
     TLeaf *leaf_mask       = rec->GetLeaf("eventheader.fmask");
@@ -294,20 +206,19 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
 
     // Validate critical leaves
     if (!leaf_mask || !leaf_EGamma || !leaf_npho || !leaf_tpm || !leaf_openAngle) {
-      std::cerr << "  ERROR: Missing critical leaves in rec tree. Available leaves:" << std::endl;
+      std::cerr << "  ERROR: Missing critical leaves in rec tree:" << std::endl;
       if (!leaf_mask)      std::cerr << "    - eventheader.fmask NOT FOUND" << std::endl;
       if (!leaf_EGamma)    std::cerr << "    - reco.fEGamma NOT FOUND" << std::endl;
       if (!leaf_npho)      std::cerr << "    - xeccl.fnpho NOT FOUND" << std::endl;
       if (!leaf_tpm)       std::cerr << "    - xeccl.ftpm NOT FOUND" << std::endl;
       if (!leaf_openAngle) std::cerr << "    - bgocexresult.fopeningAngle NOT FOUND" << std::endl;
-      std::cerr << "  Skipping run " << iRun << ". Use rec->Print() to inspect leaf names." << std::endl;
+      std::cerr << "  Use rec->Print() to inspect leaf names. Skipping run." << std::endl;
       file->Close();
       delete file;
       continue;
     }
 
     // Determine stride for xeccl array members (fnpho is [nChannels][nFitResults])
-    // Total leaf length / nChannels gives nFitResults per channel.
     Int_t nphoLen = leaf_npho->GetLen();
     Int_t stride = (nphoLen >= kXECNChan) ? nphoLen / kXECNChan : 1;
     if (stride > 1)
@@ -447,6 +358,4 @@ void CEXPreprocess(Int_t sRun, Int_t nfiles, Int_t patchnumber,
   std::cout << "Runs processed: " << runsProcessed << std::endl;
   std::cout << "Events selected: " << totalEvents << std::endl;
   std::cout << "Output: " << foutname << std::endl;
-
-  delete SQLServer;
 }
