@@ -28,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import argparse
 import subprocess
@@ -189,7 +190,7 @@ def run_localfit_one_file(
             kept_path = os.path.join(
                 output_dir, f"localfit_file{file_index:04d}.root")
             os.makedirs(output_dir, exist_ok=True)
-            os.rename(out_tmp.name, kept_path)
+            shutil.move(out_tmp.name, kept_path)
             print(f"[INFO] Kept localfit ROOT file: {kept_path}")
         else:
             if os.path.exists(out_tmp.name):
