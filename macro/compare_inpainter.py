@@ -3,12 +3,13 @@
 Cross-configuration inpainter comparison.
 
 Overlays per-face MAE vs truth npho (denormalized, raw photons) for multiple
-inpainter runs on a single 2x3 grid.  Edit the ENTRIES list below to add or
-remove models.
+inpainter runs on a single 2x3 grid.  Use --mode to switch between validation
+types.
 
 Usage:
-    python macro/compare_inpainter.py                # default output
-    python macro/compare_inpainter.py -o out.pdf     # custom output path
+    python macro/compare_inpainter.py --mode mc            # MC validation (default)
+    python macro/compare_inpainter.py --mode sensorfront   # sensor-front validation
+    python macro/compare_inpainter.py -o out.pdf           # custom output path
 """
 
 import argparse
@@ -27,40 +28,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.normalization import NphoTransform
 
 # ---------------------------------------------------------------------------
-# Configuration — edit this list to add/remove runs
+# Configuration — edit these lists to add/remove runs
 # ---------------------------------------------------------------------------
-ENTRIES = [
-    {
-        "path": "artifacts/inp_scan_s1_baseline/validation_mc/predictions_mc_run430000.root",
-        "label": "S1: baseline",
-        "color": "blue",
-    },
-    {
-        "path": "artifacts/inp_scan_s2_flatmask/validation_mc/predictions_mc_run430000.root",
-        "label": "S2: +flat mask",
-        "color": "orange",
-    },
-    {
-        "path": "artifacts/inp_scan_s3_nphowt/validation_mc/predictions_mc_run430000.root",
-        "label": "S3: +npho wt",
-        "color": "green",
-    },
-    {
-        "path": "artifacts/inp_scan_s4_flat_nphowt/validation_mc/predictions_mc_run430000.root",
-        "label": "S4: flat+npho wt",
-        "color": "red",
-    },
-    {
-        "path": "artifacts/inp_scan_s5_sqrt/validation_mc/predictions_mc_run430000.root",
-        "label": "S5: sqrt",
-        "color": "purple",
-    },
-    {
-        "path": "artifacts/inp_scan_s6_mask015/validation_mc/predictions_mc_run430000.root",
-        "label": "S6: mask 0.15",
-        "color": "brown",
-    },
+_SCAN_STEPS = [
+    {"label": "S1: baseline",    "color": "blue",   "dir": "inp_scan_s1_baseline"},
+    {"label": "S2: +flat mask",  "color": "orange", "dir": "inp_scan_s2_flatmask"},
+    {"label": "S3: +npho wt",   "color": "green",  "dir": "inp_scan_s3_nphowt"},
+    {"label": "S4: flat+npho wt","color": "red",    "dir": "inp_scan_s4_flat_nphowt"},
+    {"label": "S5: sqrt",       "color": "purple", "dir": "inp_scan_s5_sqrt"},
+    {"label": "S6: mask 0.15",  "color": "brown",  "dir": "inp_scan_s6_mask015"},
 ]
+
+ENTRIES_MC = [
+    {**s, "path": f"artifacts/{s['dir']}/validation_mc/predictions_mc_run430000.root"}
+    for s in _SCAN_STEPS
+]
+
+ENTRIES_SENSORFRONT = [
+    {**s, "path": f"artifacts/{s['dir']}/validation_sensorfront/predictions_sensorfront.root"}
+    for s in _SCAN_STEPS
+]
+
+ENTRIES_BY_MODE = {
+    "mc": ENTRIES_MC,
+    "sensorfront": ENTRIES_SENSORFRONT,
+}
 
 FACE_INT_TO_NAME = {0: 'inner', 1: 'us', 2: 'ds', 3: 'outer', 4: 'top', 5: 'bot'}
 
@@ -188,13 +180,22 @@ def main():
     parser = argparse.ArgumentParser(
         description="Compare inpainter runs (per-face MAE in raw photons)",
     )
-    parser.add_argument('-o', '--output', type=str, default='compare_inpainter.pdf',
-                        help='Output PDF path')
+    parser.add_argument('-o', '--output', type=str, default=None,
+                        help='Output PDF path (default: compare_inpainter_{mode}.pdf)')
+    parser.add_argument('--mode', type=str, default='mc',
+                        choices=list(ENTRIES_BY_MODE.keys()),
+                        help='Validation type to compare (default: mc)')
     args = parser.parse_args()
+
+    if args.output is None:
+        args.output = f'compare_inpainter_{args.mode}.pdf'
+
+    entries = ENTRIES_BY_MODE[args.mode]
+    print(f"[INFO] Mode: {args.mode} ({len(entries)} entries)")
 
     # Load all entries
     loaded = []
-    for entry in ENTRIES:
+    for entry in entries:
         loaded.append((entry, _load_entry(entry)))
 
     # Shared bin edges (log-spaced in raw photons)
