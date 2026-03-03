@@ -369,6 +369,11 @@ def plot_event_page(fig, event_info, pm_pos, pm_dir, pm_u, pm_v):
     pred_all = compute_predicted_npho(fit_xyz, ei["fit_scale"], pm_pos, pm_dir)
     ei["_pred_inner"] = pred_all
 
+    # Pre-compute Stage 1 predicted npho (same scale, different position)
+    stage1_xyz = uvw_to_xyz(ei["uvw_stage1"])
+    pred_stage1 = compute_predicted_npho(stage1_xyz, ei["fit_scale"], pm_pos, pm_dir)
+    ei["_pred_stage1"] = pred_stage1
+
     # --- Panel (A): U Projection + Stage 2 prediction ---
     ax_u = fig.add_subplot(gs[1, 0])
     _plot_u_projection(ax_u, ei)
@@ -402,18 +407,26 @@ def _uvw_to_grid(u_cm, v_cm):
 
 
 def _plot_u_projection(ax, ei):
-    """Panel A: U projection of data vs Stage 2 predicted npho."""
+    """Panel A: U projection of data vs Stage 1 & 2 predicted npho."""
     x_bins = np.arange(N_COLS) - N_COLS / 2.0 + 0.5
     ax.bar(x_bins, ei["proj_u"], width=0.9, color="steelblue", alpha=0.7,
            label="Data")
 
-    # Stage 2 predicted projection (sum along V / rows)
-    pred = ei["_pred_inner"].copy()
-    pred[~np.isfinite(pred) | (pred < 0)] = 0.0
-    pred_grid = pred[:N_INNER].reshape(N_ROWS, N_COLS)
-    pred_proj_u = pred_grid.sum(axis=0)  # (44,)
-    ax.bar(x_bins, pred_proj_u, width=0.9, color="red", alpha=0.4,
-           label="Stage2 fit")
+    # Stage 1 predicted projection
+    s1 = ei["_pred_stage1"].copy()
+    s1[~np.isfinite(s1) | (s1 < 0)] = 0.0
+    s1_grid = s1[:N_INNER].reshape(N_ROWS, N_COLS)
+    s1_proj_u = s1_grid.sum(axis=0)  # (44,)
+    ax.bar(x_bins, s1_proj_u, width=0.9, color="orange", alpha=0.4,
+           label="Stage1")
+
+    # Stage 2 predicted projection
+    s2 = ei["_pred_inner"].copy()
+    s2[~np.isfinite(s2) | (s2 < 0)] = 0.0
+    s2_grid = s2[:N_INNER].reshape(N_ROWS, N_COLS)
+    s2_proj_u = s2_grid.sum(axis=0)  # (44,)
+    ax.bar(x_bins, s2_proj_u, width=0.9, color="red", alpha=0.4,
+           label="Stage2")
 
     ax.set_xlabel("U [PM units]", fontsize=8)
     ax.set_ylabel("Sum npho", fontsize=8)
@@ -423,18 +436,26 @@ def _plot_u_projection(ax, ei):
 
 
 def _plot_v_projection(ax, ei):
-    """Panel B: V projection of data vs Stage 2 predicted npho."""
+    """Panel B: V projection of data vs Stage 1 & 2 predicted npho."""
     x_bins = np.arange(N_ROWS) - N_ROWS / 2.0 + 0.5
     ax.bar(x_bins, ei["proj_v"], width=0.9, color="steelblue", alpha=0.7,
            label="Data")
 
-    # Stage 2 predicted projection (sum along U / columns)
-    pred = ei["_pred_inner"].copy()
-    pred[~np.isfinite(pred) | (pred < 0)] = 0.0
-    pred_grid = pred[:N_INNER].reshape(N_ROWS, N_COLS)
-    pred_proj_v = pred_grid.sum(axis=1)  # (93,)
-    ax.bar(x_bins, pred_proj_v, width=0.9, color="red", alpha=0.4,
-           label="Stage2 fit")
+    # Stage 1 predicted projection
+    s1 = ei["_pred_stage1"].copy()
+    s1[~np.isfinite(s1) | (s1 < 0)] = 0.0
+    s1_grid = s1[:N_INNER].reshape(N_ROWS, N_COLS)
+    s1_proj_v = s1_grid.sum(axis=1)  # (93,)
+    ax.bar(x_bins, s1_proj_v, width=0.9, color="orange", alpha=0.4,
+           label="Stage1")
+
+    # Stage 2 predicted projection
+    s2 = ei["_pred_inner"].copy()
+    s2[~np.isfinite(s2) | (s2 < 0)] = 0.0
+    s2_grid = s2[:N_INNER].reshape(N_ROWS, N_COLS)
+    s2_proj_v = s2_grid.sum(axis=1)  # (93,)
+    ax.bar(x_bins, s2_proj_v, width=0.9, color="red", alpha=0.4,
+           label="Stage2")
 
     ax.set_xlabel("V [PM units]", fontsize=8)
     ax.set_ylabel("Sum npho", fontsize=8)
