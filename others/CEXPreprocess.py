@@ -14,6 +14,7 @@ import os
 import sys
 import argparse
 import numpy as np
+import awkward as ak
 import uproot
 import time
 
@@ -101,97 +102,46 @@ def process_run(iRun, dead_mask, out_arrays):
         discover_branches(rec)
         return -1
 
-    # Read all data at once
+    # Read all data at once using awkward arrays (handles jagged/nested data)
     read_keys = [key_mask, key_egamma, key_evstat,
                  key_ugamma, key_vgamma, key_wgamma,
                  key_npho, key_nphe, key_tpm,
                  key_openangle, key_bgoenergy]
     read_keys = [k for k in read_keys if k in available]
 
-    arrays = rec.arrays(read_keys, library="np")
+    arrays = rec.arrays(read_keys, library="ak")
 
-    mask_arr = arrays[key_mask]
-    egamma_arr = arrays[key_egamma]
-    npho_arr = arrays[key_npho]
-    tpm_arr = arrays[key_tpm]
-    openangle_arr = arrays[key_openangle]
-
-    # Optional branches
-    evstat_arr = arrays.get(key_evstat)
-    ugamma_arr = arrays.get(key_ugamma)
-    vgamma_arr = arrays.get(key_vgamma)
-    wgamma_arr = arrays.get(key_wgamma)
-    nphe_arr = arrays.get(key_nphe)
-    bgoenergy_arr = arrays.get(key_bgoenergy)
-
-    # --- Handle array shapes ---
-    # For multi-dimensional members (e.g. fEGamma[nGamma]), take index 0
-    def get_col0(arr):
-        """Get first column if 2D, else return as-is."""
-        if arr is not None and arr.ndim > 1:
-            return arr[:, 0]
-        return arr
-
-    def to_float(arr):
-        """Convert to flat float32 array, handling jagged TClonesArray members."""
+    def ak_to_flat(arr, dtype=np.float32):
+        """Convert awkward array to flat 1-D numpy, taking index 0 for nested dims."""
         if arr is None:
             return None
-        if arr.dtype == object:
-            # Jagged array — extract first element per event
-            vals = []
-            for x in arr:
-                if hasattr(x, '__len__'):
-                    vals.append(float(x[0]) if len(x) > 0 else np.nan)
-                else:
-                    vals.append(float(x))
-            return np.array(vals, dtype=np.float32)
-        arr = arr.astype(np.float32)
-        if arr.ndim > 1:
+        # Peel nested dimensions until 1-D
+        while arr.ndim > 1:
             arr = arr[:, 0]
-        return arr
+        return ak.to_numpy(arr).astype(dtype)
 
-    def to_int(arr):
+    def ak_to_2d(arr, fallback_shape=None, dtype=np.float32):
+        """Convert awkward array to (N, 4760) numpy, taking index 0 of innermost dim."""
         if arr is None:
-            return None
-        if arr.dtype == object:
-            vals = []
-            for x in arr:
-                if hasattr(x, '__len__'):
-                    vals.append(int(x[0]) if len(x) > 0 else 0)
-                else:
-                    vals.append(int(x))
-            return np.array(vals, dtype=np.int32)
-        arr = arr.astype(np.int32)
-        if arr.ndim > 1:
-            arr = arr[:, 0]
-        return arr
-
-    mask_vals = to_int(mask_arr)
-    egamma_vals = to_float(egamma_arr)
-    openangle_vals = to_float(openangle_arr)
-    bgoenergy_vals = to_float(bgoenergy_arr)
-
-    evstat_vals = to_int(evstat_arr)
-    ugamma_vals = to_float(ugamma_arr)
-    vgamma_vals = to_float(vgamma_arr)
-    wgamma_vals = to_float(wgamma_arr)
-
-    # npho/nphe/tpm: shape might be (N, 4760) or (N, 4760, nFit) or object
-    def to_2d_float(arr, fallback_shape=None):
-        """Convert xeccl member array to (N, 4760) float32."""
-        if arr is None:
-            return np.full(fallback_shape, 1e10, dtype=np.float32) if fallback_shape else None
-        if arr.dtype == object:
-            arr = np.array(arr.tolist(), dtype=np.float32)
-        else:
-            arr = arr.astype(np.float32)
-        if arr.ndim == 3:
+            return np.full(fallback_shape, 1e10, dtype=dtype) if fallback_shape else None
+        # xeccl members are (N, 4760, nFit) — take fit result 0
+        while arr.ndim > 2:
             arr = arr[:, :, 0]
-        return arr
+        return ak.to_numpy(arr).astype(dtype)
 
-    npho_vals = to_2d_float(npho_arr)
-    tpm_vals = to_2d_float(tpm_arr)
-    nphe_vals = to_2d_float(nphe_arr, fallback_shape=npho_vals.shape)
+    mask_vals = ak_to_flat(arrays.get(key_mask), dtype=np.int32)
+    egamma_vals = ak_to_flat(arrays.get(key_egamma))
+    openangle_vals = ak_to_flat(arrays.get(key_openangle))
+    bgoenergy_vals = ak_to_flat(arrays.get(key_bgoenergy))
+
+    evstat_vals = ak_to_flat(arrays.get(key_evstat), dtype=np.int32)
+    ugamma_vals = ak_to_flat(arrays.get(key_ugamma))
+    vgamma_vals = ak_to_flat(arrays.get(key_vgamma))
+    wgamma_vals = ak_to_flat(arrays.get(key_wgamma))
+
+    npho_vals = ak_to_2d(arrays.get(key_npho))
+    tpm_vals = ak_to_2d(arrays.get(key_tpm))
+    nphe_vals = ak_to_2d(arrays.get(key_nphe), fallback_shape=npho_vals.shape)
 
     # --- Event selection (vectorized) ---
     # 1. Physics triggers only (50, 51)
