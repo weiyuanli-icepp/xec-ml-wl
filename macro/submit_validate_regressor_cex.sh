@@ -9,7 +9,8 @@
 #   DRY_RUN=1 bash macro/submit_validate_regressor_cex.sh          # Preview
 #
 # Environment variables:
-#   CHECKPOINT  — path to regressor checkpoint (default: best step3b)
+#   CHECKPOINT  — path to model (.pth or .onnx, default: ene_50epoch_sqrt_DSmax ONNX)
+#   CONFIG      — config YAML for normalization params (default: step3b_model_large)
 #   CEX_DIR     — directory with CEX ROOT files (default: data/cex)
 #   OUTPUT_BASE — output base directory (default: artifacts/energy_cex_validation)
 #   PARTITION   — SLURM partition (default: mu3e)
@@ -20,7 +21,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DRY_RUN="${DRY_RUN:-0}"
-CHECKPOINT="${CHECKPOINT:-artifacts/scan_s3b_model1024/checkpoint_best.pth}"
+CHECKPOINT="${CHECKPOINT:-~/meghome/xec-ml-wl/artifacts/ene_50epoch_sqrt_DSmax/meg2ene.onnx}"
+CONFIG="${CONFIG:-config/reg/scan/step3b_model_large.yaml}"
 CEX_DIR="${CEX_DIR:-data/cex}"
 OUTPUT_BASE="${OUTPUT_BASE:-artifacts/energy_cex_validation}"
 PARTITION="${PARTITION:-mu3e}"
@@ -40,22 +42,26 @@ fi
 echo "============================================"
 echo "Energy Regressor CEX Validation"
 echo "============================================"
-echo "Checkpoint: ${CHECKPOINT}"
-echo "CEX data:   ${CEX_DIR}"
-echo "Output:     ${OUTPUT_BASE}"
-echo "Patches:    ${PATCHES[*]}"
-echo "Dry run:    ${DRY_RUN}"
+echo "Model:    ${CHECKPOINT}"
+echo "Config:   ${CONFIG}"
+echo "CEX data: ${CEX_DIR}"
+echo "Output:   ${OUTPUT_BASE}"
+echo "Patches:  ${PATCHES[*]}"
+echo "Dry run:  ${DRY_RUN}"
 echo "============================================"
 echo ""
 
-# Verify checkpoint exists (relative to repo root)
-if [ "$DRY_RUN" != "1" ] && [ ! -f "$CHECKPOINT" ]; then
-    echo "[ERROR] Checkpoint not found: $CHECKPOINT"
-    echo "  Available checkpoints:"
-    find artifacts/ -name "checkpoint_best.pth" -path "*/scan_s3b*" 2>/dev/null || echo "    (none found)"
-    echo ""
-    echo "  Set CHECKPOINT= to the correct path."
-    exit 1
+# Verify model and config exist
+CHECKPOINT_EXPANDED="${CHECKPOINT/#\~/$HOME}"
+if [ "$DRY_RUN" != "1" ]; then
+    if [ ! -f "$CHECKPOINT_EXPANDED" ]; then
+        echo "[ERROR] Model not found: $CHECKPOINT"
+        exit 1
+    fi
+    if [ -n "$CONFIG" ] && [ ! -f "$CONFIG" ]; then
+        echo "[ERROR] Config not found: $CONFIG"
+        exit 1
+    fi
 fi
 
 mkdir -p log "${OUTPUT_BASE}"
@@ -147,6 +153,7 @@ echo "[JOB] Directory: \$(pwd)"
 python macro/validate_regressor.py \\
     ${CHECKPOINT} \\
     --val_path "${VAL_PATH}" \\
+    --config ${CONFIG} \\
     --tasks energy \\
     --output_dir ${OUTDIR} \\
     --batch_size ${BATCH_SIZE} \\
