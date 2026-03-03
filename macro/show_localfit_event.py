@@ -276,6 +276,8 @@ def load_localfit_data(localfit_root: str):
         pos_tree = f["position"]
         pos = {
             "event_idx":    pos_tree["event_idx"].array(library="np"),
+            "run_number":   pos_tree["run_number"].array(library="np"),
+            "event_number": pos_tree["event_number"].array(library="np"),
             "uvwTruth":     pos_tree["uvwTruth"].array(library="np"),
             "uvwRecoFI":    pos_tree["uvwRecoFI"].array(library="np"),
             "uvwFitNoDead": pos_tree["uvwFitNoDead"].array(library="np"),
@@ -298,8 +300,15 @@ def load_localfit_data(localfit_root: str):
     return pos, pred
 
 
-def load_input_npho(input_root: str, event_indices: np.ndarray):
-    """Load npho[4760] for selected event indices from input ROOT file.
+def load_input_npho(input_root: str, event_indices: np.ndarray,
+                    pos: dict = None):
+    """Load npho[4760] for selected events from input ROOT file.
+
+    When ``pos`` is provided (with run_number/event_number arrays), events
+    are matched by (run, event) instead of by entry index.  This is
+    essential when the localfit was run on a filtered file (e.g. sensorfront
+    validation) where event_idx refers to filtered-file entry indices,
+    not the original file.
 
     Returns:
         npho_dict: dict mapping event_idx -> npho array (4760,)
@@ -311,6 +320,37 @@ def load_input_npho(input_root: str, event_indices: np.ndarray):
         tree = f["tree"]
         npho_all = tree["npho"].array(library="np")
         uvw_all = tree["uvwRecoFI"].array(library="np")
+
+        # Match by (run, event) if available
+        if (pos is not None and "run_number" in pos
+                and "event_number" in pos):
+            run_all = tree["run"].array(library="np") if "run" in tree.keys() else None
+            event_all = tree["event"].array(library="np") if "event" in tree.keys() else None
+
+            if run_all is not None and event_all is not None:
+                # Build lookup: (run, event) -> entry index in original file
+                orig_lookup = {}
+                for j in range(len(run_all)):
+                    orig_lookup[(int(run_all[j]), int(event_all[j]))] = j
+
+                for ev_idx in event_indices:
+                    ev_idx = int(ev_idx)
+                    pi = np.where(pos["event_idx"] == ev_idx)[0]
+                    if len(pi) == 0:
+                        continue
+                    pi = pi[0]
+                    key = (int(pos["run_number"][pi]),
+                           int(pos["event_number"][pi]))
+                    orig_j = orig_lookup.get(key)
+                    if orig_j is not None:
+                        npho_dict[ev_idx] = npho_all[orig_j]
+                        uvw_dict[ev_idx] = uvw_all[orig_j]
+                    else:
+                        print(f"[WARN] Event {ev_idx} (run={key[0]}, "
+                              f"event={key[1]}) not found in input file")
+                return npho_dict, uvw_dict
+
+        # Fallback: use event_idx as direct entry index
         for idx in event_indices:
             if idx < len(npho_all):
                 npho_dict[int(idx)] = npho_all[idx]
@@ -746,7 +786,7 @@ def main():
     print(f"Loading npho from {args.input_root} for "
           f"{len(event_indices)} events ...")
     npho_dict, uvw_recofi_dict = load_input_npho(
-        args.input_root, event_indices)
+        args.input_root, event_indices, pos=pos)
 
     # Compute PM geometry once
     print("Computing inner PM geometry ...")
