@@ -337,14 +337,15 @@ def main():
     with uproot.recreate(outpath) as f_out:
         branch_types = {}
         for key, arr in final.items():
-            if arr.dtype == np.int32:
-                branch_types[key] = np.int32
-            elif arr.dtype == np.int16:
-                branch_types[key] = np.int16
-            elif arr.dtype == np.bool_:
-                branch_types[key] = np.bool_
+            base = arr.dtype
+            if base == np.float64:
+                base = np.float32
+                final[key] = arr.astype(np.float32)
+            # For multi-dim arrays, encode inner shape into the dtype
+            if arr.ndim == 1:
+                branch_types[key] = base
             else:
-                branch_types[key] = np.float32
+                branch_types[key] = np.dtype((base, arr.shape[1:]))
 
         f_out.mktree("tree", branch_types)
         f_out["tree"].extend(final)
