@@ -347,23 +347,34 @@ def load_dead_channel_list(input_path: str) -> np.ndarray:
 def print_dead_channel_summary(run_number: int, login_path: str = DEFAULT_LOGIN_PATH,
                                database: str = DEFAULT_DATABASE):
     """
-    Print a summary of dead channels for a run.
+    Print a summary of dead channels for a run, including per-face percentages.
 
     Args:
         run_number: Run number
         login_path: MySQL login path
         database: Database name
     """
+    from .geom_defs import FACE_SENSOR_IDS
+
     info = get_dead_channel_info(run_number, login_path, database)
+
+    # Per-face totals from geometry
+    face_totals = {face: len(ids) for face, ids in FACE_SENSOR_IDS.items()}
 
     print("\n" + "=" * 50)
     print("Dead Channel Summary for Run {}".format(run_number))
     print("=" * 50)
     print("XECPMStatus_id: {}".format(info['xec_pm_status_id']))
     print("Total dead: {} / 4760 ({:.2f}%)".format(info['n_dead'], info['dead_fraction'] * 100))
+
+    # Recount dead per face using FACE_SENSOR_IDS for accuracy
+    dead_set = set(info['dead_channels'])
     print("\nDead by face:")
-    for face, count in info['dead_by_face'].items():
-        print("  {:>6}: {}".format(face, count))
+    for face in ['inner', 'outer', 'us', 'ds', 'top', 'bot']:
+        total = face_totals.get(face, 0)
+        count = sum(1 for idx in FACE_SENSOR_IDS[face] if int(idx) in dead_set)
+        pct = 100.0 * count / total if total > 0 else 0.0
+        print("  {:>6}: {:4d} / {:4d}  ({:5.1f}%)".format(face, count, total, pct))
     print("=" * 50 + "\n")
 
 
