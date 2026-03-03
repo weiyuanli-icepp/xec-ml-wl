@@ -33,6 +33,34 @@ LOG_DIR = os.path.expandvars("$HOME/meghome/xec-ml-wl/log/cex_preprocess")
 # Add repo to path for imports
 sys.path.insert(0, REPO_DIR)
 
+# CEX23 run configurations: (srun, nfiles, patch)
+CEX23_CONFIGS = [
+    (557545, 100, 13),
+    (558304, 100, 12),
+    (558394, 100, 21),
+    (559081, 100, 20),
+    (559171, 100,  5),
+    (559862, 100,  4),
+    (558991, 100, 22),
+    (558214, 100, 14),
+    (559772, 100,  6),
+    (558900, 100, 19),
+    (558124, 100, 11),
+    (559682, 100,  3),
+    (559261, 100,  1),
+    (559498, 100,  2),
+    (559592, 100,  7),
+    (559408, 100,  8),
+    (557628, 100,  9),
+    (557809, 100, 10),
+    (558034, 100, 15),
+    (557718, 100, 16),
+    (558484, 100, 17),
+    (558717, 100, 18),
+    (558807, 100, 23),
+    (558575, 100, 24),
+]
+
 SLURM_TEMPLATE = """#!/bin/bash
 #SBATCH --job-name=cex_{srun}_{nfiles}
 #SBATCH --output={log_dir}/cex_{srun}_{nfiles}_%j.out
@@ -139,9 +167,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--srun", type=int, required=True, help="Starting run number")
-    parser.add_argument("--nfiles", type=int, required=True, help="Total number of runs")
-    parser.add_argument("--patch", type=int, required=True, help="CEX patch number")
+    parser.add_argument("--srun", type=int, default=None, help="Starting run number")
+    parser.add_argument("--nfiles", type=int, default=None, help="Total number of runs")
+    parser.add_argument("--patch", type=int, default=None, help="CEX patch number")
+    parser.add_argument("--all", action="store_true",
+                        help="Process all 24 CEX23 patch configurations")
     parser.add_argument("--output-dir", default=None,
                         help="Output directory (default: data/cex/)")
     parser.add_argument("--runs-per-job", type=int, default=10,
@@ -156,6 +186,14 @@ def main():
                         help="Show jobs without submitting")
     args = parser.parse_args()
 
+    # Validate arguments
+    if args.all:
+        configs = CEX23_CONFIGS
+    elif args.srun is not None and args.nfiles is not None and args.patch is not None:
+        configs = [(args.srun, args.nfiles, args.patch)]
+    else:
+        parser.error("Either --all or --srun/--nfiles/--patch are required")
+
     # Default output directory
     if args.output_dir is None:
         args.output_dir = os.path.join(REPO_DIR, "data", "cex")
@@ -163,69 +201,75 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
 
-    # --- Generate dead channel files ---
+    # --- Generate dead channel files for all runs across all configs ---
     if not args.no_dead:
         print(f"Generating dead channel files in {DEAD_DIR} ...")
-        generate_dead_channel_files(args.srun, args.nfiles)
+        for srun, nfiles, patch in configs:
+            print(f"  Patch {patch:2d}: runs {srun}-{srun + nfiles - 1}")
+            generate_dead_channel_files(srun, nfiles)
         dead_flag = f"--dead-dir {os.path.abspath(DEAD_DIR)}"
     else:
         dead_flag = ""
 
-    # Split into batches
-    batches = []
-    for start in range(args.srun, args.srun + args.nfiles, args.runs_per_job):
-        n = min(args.runs_per_job, args.srun + args.nfiles - start)
-        batches.append((start, n))
+    # --- Submit jobs for each config ---
+    total_submitted = 0
+    total_jobs = 0
 
-    print(f"\nCEX Preprocessing: runs {args.srun}-{args.srun + args.nfiles - 1}")
-    print(f"  Patch: {args.patch}")
-    print(f"  Output: {args.output_dir}")
-    print(f"  Dead dir: {DEAD_DIR if not args.no_dead else '(disabled)'}")
-    print(f"  Runs per job: {args.runs_per_job}")
-    print(f"  Total jobs: {len(batches)}")
-    print()
+    for srun, nfiles, patch in configs:
+        # Split into batches
+        batches = []
+        for start in range(srun, srun + nfiles, args.runs_per_job):
+            n = min(args.runs_per_job, srun + nfiles - start)
+            batches.append((start, n))
+        total_jobs += len(batches)
 
-    submitted = 0
-    for srun, nfiles in batches:
-        script_content = SLURM_TEMPLATE.format(
-            srun=srun,
-            nfiles=nfiles,
-            srun_end=srun + nfiles - 1,
-            patch=args.patch,
-            partition=args.partition,
-            time=args.time,
-            mem=args.mem,
-            log_dir=LOG_DIR,
-            env_name=args.env_name,
-            repo_dir=REPO_DIR,
-            script=PREPROCESS_SCRIPT,
-            output_dir=os.path.abspath(args.output_dir),
-            dead_flag=dead_flag,
-        )
+        print(f"\nPatch {patch:2d}: runs {srun}-{srun + nfiles - 1} "
+              f"({len(batches)} jobs)")
 
-        if args.dry_run:
-            print(f"  [DRY-RUN] srun={srun} nfiles={nfiles} "
-                  f"-> CEX23_patch{args.patch}_r{srun}_n{nfiles}.root")
-        else:
-            result = subprocess.run(
-                ["sbatch"], input=script_content, capture_output=True, text=True
+        for batch_srun, batch_nfiles in batches:
+            script_content = SLURM_TEMPLATE.format(
+                srun=batch_srun,
+                nfiles=batch_nfiles,
+                srun_end=batch_srun + batch_nfiles - 1,
+                patch=patch,
+                partition=args.partition,
+                time=args.time,
+                mem=args.mem,
+                log_dir=LOG_DIR,
+                env_name=args.env_name,
+                repo_dir=REPO_DIR,
+                script=PREPROCESS_SCRIPT,
+                output_dir=os.path.abspath(args.output_dir),
+                dead_flag=dead_flag,
             )
-            if result.returncode == 0:
-                job_id = result.stdout.strip().split()[-1]
-                print(f"  Submitted srun={srun} nfiles={nfiles} -> job {job_id}")
-                submitted += 1
+
+            if args.dry_run:
+                print(f"  [DRY-RUN] srun={batch_srun} nfiles={batch_nfiles} "
+                      f"-> CEX23_patch{patch}_r{batch_srun}_n{batch_nfiles}.root")
             else:
-                print(f"  FAILED srun={srun}: {result.stderr.strip()}")
+                result = subprocess.run(
+                    ["sbatch"], input=script_content, capture_output=True, text=True
+                )
+                if result.returncode == 0:
+                    job_id = result.stdout.strip().split()[-1]
+                    print(f"  Submitted srun={batch_srun} nfiles={batch_nfiles} "
+                          f"-> job {job_id}")
+                    total_submitted += 1
+                else:
+                    print(f"  FAILED srun={batch_srun}: {result.stderr.strip()}")
 
     if args.dry_run:
-        print(f"\n[DRY-RUN] {len(batches)} jobs would be submitted.")
+        print(f"\n[DRY-RUN] {total_jobs} jobs would be submitted "
+              f"({len(configs)} patches).")
     else:
-        print(f"\nSubmitted {submitted}/{len(batches)} jobs.")
+        print(f"\nSubmitted {total_submitted}/{total_jobs} jobs "
+              f"({len(configs)} patches).")
         print(f"Logs: {LOG_DIR}")
         print(f"Output: {args.output_dir}")
-        print(f"\nAfter completion, merge with:")
-        print(f"  hadd -f data/cex/CEX23_patch{args.patch}_all.root "
-              f"{args.output_dir}/CEX23_patch{args.patch}_r*.root")
+        print(f"\nAfter completion, merge per patch:")
+        for _, _, patch in configs:
+            print(f"  hadd -f data/cex/CEX23_patch{patch}_all.root "
+                  f"{args.output_dir}/CEX23_patch{patch}_r*.root")
 
 
 if __name__ == "__main__":
