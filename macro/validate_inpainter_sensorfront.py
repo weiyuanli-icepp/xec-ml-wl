@@ -195,6 +195,8 @@ def load_and_match_streaming(
     input_path: str,
     sensor_uvw: np.ndarray,
     npho_scheme: str,
+    npho_scale: float = DEFAULT_NPHO_SCALE,
+    npho_scale2: float = DEFAULT_NPHO_SCALE2,
     tree_name: str = "tree",
     max_events: Optional[int] = None,
     du: float = 0.5,
@@ -258,7 +260,8 @@ def load_and_match_streaming(
                 sa_arr = tree[sa_branch].array(library="np")[:n_file]
 
         # --- normalize (one file at a time) ---
-        x_norm = normalize_data(npho, time, npho_scheme=npho_scheme)
+        x_norm = normalize_data(npho, time, npho_scheme=npho_scheme,
+                               npho_scale=npho_scale, npho_scale2=npho_scale2)
         del npho, time  # free raw arrays
 
         # --- match events ---
@@ -369,7 +372,8 @@ def main():
     # ------------------------------------------------------------------
     # 1. Load model
     # ------------------------------------------------------------------
-    model, model_type, predict_channels, model_npho_scheme = load_model(
+    model, model_type, predict_channels, model_npho_scheme, \
+        model_npho_scale, model_npho_scale2 = load_model(
         checkpoint_path=args.checkpoint,
         torchscript_path=args.torchscript,
         device=args.device,
@@ -382,6 +386,9 @@ def main():
     else:
         npho_scheme = "log1p"
         print(f"[WARN] Npho scheme unknown, using default: {npho_scheme}")
+
+    npho_scale = model_npho_scale
+    npho_scale2 = model_npho_scale2
 
     # ------------------------------------------------------------------
     # 2. Build inner-sensor UVW lookup
@@ -397,6 +404,8 @@ def main():
         input_path=args.input,
         sensor_uvw=sensor_uvw,
         npho_scheme=npho_scheme,
+        npho_scale=npho_scale,
+        npho_scale2=npho_scale2,
         tree_name=args.tree_name,
         max_events=args.max_events,
         du=args.du, dv=args.dv, w_max=args.w_max,
@@ -446,7 +455,7 @@ def main():
     # Baselines run on unmasked npho (x_norm still has original values)
     x_npho_orig = x_norm[:, :, 0]
 
-    npho_xf = NphoTransform(scheme=npho_scheme)
+    npho_xf = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
 
     print("[INFO] Running NeighborAverageBaseline...")
     avg_baseline = NeighborAverageBaseline(k=1)
@@ -538,6 +547,7 @@ def main():
         lf_results = _load_local_fit_results(
             args.local_fit_results, matched_orig_idx, matched_sid,
             truth_at_mask, npho_scheme,
+            npho_scale=npho_scale, npho_scale2=npho_scale2,
         )
         if lf_results:
             baseline_results["localfit"] = lf_results
@@ -571,6 +581,7 @@ def main():
     # ------------------------------------------------------------------
     _print_sensorfront_summary(
         n_total, n_matched, ml_metrics, baseline_metrics_dict, npho_scheme,
+        npho_scale=npho_scale, npho_scale2=npho_scale2,
     )
 
     # ------------------------------------------------------------------
@@ -615,6 +626,8 @@ def _load_local_fit_results(
     matched_sid: np.ndarray,
     truth_at_mask: np.ndarray,
     npho_scheme: str,
+    npho_scale: float = DEFAULT_NPHO_SCALE,
+    npho_scale2: float = DEFAULT_NPHO_SCALE2,
 ) -> list:
     """Load pre-computed local-fit results from batch jobs.
 
@@ -631,7 +644,7 @@ def _load_local_fit_results(
 
     print(f"[INFO] Loading local-fit results from {len(result_files)} file(s)")
 
-    transform = NphoTransform(scheme=npho_scheme)
+    transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
 
     # Build lookup: (global_event_idx, sensor_id) -> normalized prediction
     lf_lookup = {}
@@ -738,6 +751,8 @@ def _print_sensorfront_summary(
     ml_metrics: dict,
     baseline_metrics: dict,
     npho_scheme: str,
+    npho_scale: float = DEFAULT_NPHO_SCALE,
+    npho_scale2: float = DEFAULT_NPHO_SCALE2,
 ):
     """Print formatted summary table."""
     print("\n" + "=" * 70)
@@ -754,7 +769,7 @@ def _print_sensorfront_summary(
         return
 
     # Denormalized MAE
-    transform = NphoTransform(scheme=npho_scheme)
+    transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
 
     # Approximate denormalized MAE: inverse(truth + mae) - inverse(truth)
     # For a rough table, use inverse(mae) as a scale indicator
