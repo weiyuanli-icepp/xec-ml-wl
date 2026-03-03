@@ -320,6 +320,8 @@ def main():
     parser.add_argument("--output-dir", default=".", help="Output directory")
     parser.add_argument("--dead-file", default=None,
                         help="Dead channel file (one index per line)")
+    parser.add_argument("--max-events", type=int, default=None,
+                        help="Stop after this many selected events (for testing)")
     args = parser.parse_args()
 
     # Load dead channels
@@ -353,15 +355,22 @@ def main():
         if n >= 0:
             runs_processed += 1
             total_events += n
+        if args.max_events and total_events >= args.max_events:
+            print(f"  Reached --max-events {args.max_events}, stopping.")
+            break
 
     if total_events == 0:
         print("\nNo events selected — not writing output.")
         return
 
-    # Concatenate
+    # Concatenate and truncate if --max-events
     final = {}
     for key, chunks in out_arrays.items():
         final[key] = np.concatenate(chunks)
+    if args.max_events and len(final["run"]) > args.max_events:
+        for key in final:
+            final[key] = final[key][:args.max_events]
+        total_events = args.max_events
 
     # Write output
     outpath = os.path.join(
