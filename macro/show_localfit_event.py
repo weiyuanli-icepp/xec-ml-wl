@@ -63,9 +63,55 @@ QE_SIPM = 0.12
 PM_INTERVAL_U = 1.5097727  # cm
 PM_INTERVAL_V = XE_PHI_RAD * REFF / N_ROWS  # cm
 
+# Stage 1 fixed parameters (in PM units)
+HALF_SIZE_U = SIPM_SIZE / (2.0 * PM_INTERVAL_U)
+HALF_PHI_V = np.arcsin(SIPM_SIZE / XERIN) / 2.0
+ATTEN_U = ATTEN / PM_INTERVAL_U
+ATTEN_V = ATTEN / PM_INTERVAL_V
+RADIUS_V = XERIN / PM_INTERVAL_V
+
 # Solid angle chip layout
 CHIP_DISTANCE = 0.05     # cm (0.5 mm gap)
 CHIP_SIZE = 0.59          # cm (5.9 mm chip)
+
+
+# =========================================================================
+#  Stage 1 fit functions (matching FitFunc1PointU/V in LocalFitBaseline.C)
+# =========================================================================
+
+def fit_func_1point_u(x, scale, u_pm, w_pm,
+                      half_size=HALF_SIZE_U, atten=ATTEN_U):
+    """Stage 1 U projection: scale * arctan_profile * exp_attenuation."""
+    w_pm = np.maximum(w_pm, 1e-4)
+    fitval = (np.arctan2((x - u_pm) - half_size, w_pm)
+              - np.arctan2((x - u_pm) + half_size, w_pm))
+    norm = np.arctan2(-half_size, w_pm) - np.arctan2(half_size, w_pm)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        fitval = np.where(norm != 0, fitval / norm, 0.0)
+    dist = np.sqrt((x - u_pm)**2 + w_pm**2)
+    return scale * fitval * np.exp(-dist / atten)
+
+
+def fit_func_1point_v(x, scale, v_pm, w_pm,
+                      half_phi=HALF_PHI_V, radius=RADIUS_V,
+                      atten=ATTEN_V):
+    """Stage 1 V projection: scale * arctan_profile * exp_attenuation."""
+    w_pm = np.maximum(w_pm, 1e-4)
+    half_phi = np.maximum(half_phi, 1e-4)
+    phi_plus = (x - v_pm) / radius + half_phi
+    phi_minus = (x - v_pm) / radius - half_phi
+    fitval = (np.arctan2(radius * np.sin(phi_plus),
+                         w_pm + radius - radius * np.cos(phi_plus))
+              - np.arctan2(radius * np.sin(phi_minus),
+                           w_pm + radius - radius * np.cos(phi_minus)))
+    norm = (np.arctan2(radius * np.sin(half_phi),
+                       w_pm + radius - radius * np.cos(half_phi))
+            - np.arctan2(radius * np.sin(-half_phi),
+                         w_pm + radius - radius * np.cos(-half_phi)))
+    with np.errstate(invalid='ignore', divide='ignore'):
+        fitval = np.where(norm != 0, fitval / norm, 0.0)
+    dist = np.sqrt((x - v_pm)**2 + w_pm**2)
+    return scale * fitval * np.exp(-dist / atten)
 
 
 # =========================================================================
@@ -369,10 +415,6 @@ def plot_event_page(fig, event_info, pm_pos, pm_dir, pm_u, pm_v):
     pred_all = compute_predicted_npho(fit_xyz, ei["fit_scale"], pm_pos, pm_dir)
     ei["_pred_inner"] = pred_all
 
-    # Pre-compute Stage 1 predicted npho (same scale, different position)
-    stage1_xyz = uvw_to_xyz(ei["uvw_stage1"])
-    pred_stage1 = compute_predicted_npho(stage1_xyz, ei["fit_scale"], pm_pos, pm_dir)
-    ei["_pred_stage1"] = pred_stage1
 
     # --- Panel (A): U Projection + Stage 2 prediction ---
     ax_u = fig.add_subplot(gs[1, 0])
@@ -407,25 +449,34 @@ def _uvw_to_grid(u_cm, v_cm):
 
 
 def _plot_u_projection(ax, ei):
-    """Panel A: U projection of data vs Stage 1 & 2 predicted npho."""
+    """Panel A: U projection of data + Stage 1 fit curve + Stage 2 projection."""
     x_bins = np.arange(N_COLS) - N_COLS / 2.0 + 0.5
     ax.bar(x_bins, ei["proj_u"], width=0.9, color="steelblue", alpha=0.7,
            label="Data")
 
-    # Stage 1 predicted projection
-    s1 = ei["_pred_stage1"].copy()
-    s1[~np.isfinite(s1) | (s1 < 0)] = 0.0
-    s1_grid = s1[:N_INNER].reshape(N_ROWS, N_COLS)
-    s1_proj_u = s1_grid.sum(axis=0)  # (44,)
-    ax.bar(x_bins, s1_proj_u, width=0.9, color="orange", alpha=0.4,
-           label="Stage1")
+    # Stage 1 analytical fit curve (arctan + attenuation)
+    u_pm = ei["uvw_stage1"][0] / PM_INTERVAL_U
+    w_pm = ei["uvw_stage1"][2] / PM_INTERVAL_U
+    # Estimate scale: match peak of fit function to data in a ±5 PM region
+    region = 5.0
+    mask = (x_bins >= u_pm - region) & (x_bins <= u_pm + region)
+    if mask.any():
+        shape_at_bins = fit_func_1point_u(x_bins[mask], 1.0, u_pm, w_pm)
+        peak_shape = shape_at_bins.max()
+        peak_data = ei["proj_u"][mask].max()
+        scale_est = peak_data / peak_shape if peak_shape > 0 else 0.0
+    else:
+        scale_est = 0.0
+    x_fine = np.linspace(x_bins[0] - 0.5, x_bins[-1] + 0.5, 300)
+    y_s1 = fit_func_1point_u(x_fine, scale_est, u_pm, w_pm)
+    ax.plot(x_fine, y_s1, "orange", linewidth=1.5, label="Stage1 fit")
 
-    # Stage 2 predicted projection
+    # Stage 2 predicted projection (solid-angle model)
     s2 = ei["_pred_inner"].copy()
     s2[~np.isfinite(s2) | (s2 < 0)] = 0.0
     s2_grid = s2[:N_INNER].reshape(N_ROWS, N_COLS)
     s2_proj_u = s2_grid.sum(axis=0)  # (44,)
-    ax.bar(x_bins, s2_proj_u, width=0.9, color="red", alpha=0.4,
+    ax.bar(x_bins, s2_proj_u, width=0.9, color="red", alpha=0.3,
            label="Stage2")
 
     ax.set_xlabel("U [PM units]", fontsize=8)
@@ -436,25 +487,34 @@ def _plot_u_projection(ax, ei):
 
 
 def _plot_v_projection(ax, ei):
-    """Panel B: V projection of data vs Stage 1 & 2 predicted npho."""
+    """Panel B: V projection of data + Stage 1 fit curve + Stage 2 projection."""
     x_bins = np.arange(N_ROWS) - N_ROWS / 2.0 + 0.5
     ax.bar(x_bins, ei["proj_v"], width=0.9, color="steelblue", alpha=0.7,
            label="Data")
 
-    # Stage 1 predicted projection
-    s1 = ei["_pred_stage1"].copy()
-    s1[~np.isfinite(s1) | (s1 < 0)] = 0.0
-    s1_grid = s1[:N_INNER].reshape(N_ROWS, N_COLS)
-    s1_proj_v = s1_grid.sum(axis=1)  # (93,)
-    ax.bar(x_bins, s1_proj_v, width=0.9, color="orange", alpha=0.4,
-           label="Stage1")
+    # Stage 1 analytical fit curve (arctan + attenuation)
+    v_pm = -ei["uvw_stage1"][1] / PM_INTERVAL_V  # negative sign convention
+    w_pm = ei["uvw_stage1"][2] / PM_INTERVAL_V
+    # Estimate scale: match peak of fit function to data in a ±5 PM region
+    region = 5.0
+    mask = (x_bins >= v_pm - region) & (x_bins <= v_pm + region)
+    if mask.any():
+        shape_at_bins = fit_func_1point_v(x_bins[mask], 1.0, v_pm, w_pm)
+        peak_shape = shape_at_bins.max()
+        peak_data = ei["proj_v"][mask].max()
+        scale_est = peak_data / peak_shape if peak_shape > 0 else 0.0
+    else:
+        scale_est = 0.0
+    x_fine = np.linspace(x_bins[0] - 0.5, x_bins[-1] + 0.5, 500)
+    y_s1 = fit_func_1point_v(x_fine, scale_est, v_pm, w_pm)
+    ax.plot(x_fine, y_s1, "orange", linewidth=1.5, label="Stage1 fit")
 
-    # Stage 2 predicted projection
+    # Stage 2 predicted projection (solid-angle model)
     s2 = ei["_pred_inner"].copy()
     s2[~np.isfinite(s2) | (s2 < 0)] = 0.0
     s2_grid = s2[:N_INNER].reshape(N_ROWS, N_COLS)
     s2_proj_v = s2_grid.sum(axis=1)  # (93,)
-    ax.bar(x_bins, s2_proj_v, width=0.9, color="red", alpha=0.4,
+    ax.bar(x_bins, s2_proj_v, width=0.9, color="red", alpha=0.3,
            label="Stage2")
 
     ax.set_xlabel("V [PM units]", fontsize=8)
