@@ -16,9 +16,9 @@ DRY_RUN="${DRY_RUN:-0}"
 VAL_PATH="${VAL_PATH:-data/E15to60_AngUni_PosSQ/val2/}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 
-# Steps to submit (default: s1, s3, s6)
+# Steps to submit (default: all)
 if [ $# -eq 0 ]; then
-    STEPS=(1 3 6)
+    STEPS=(1 2 3 4 5 6)
 else
     STEPS=("$@")
 fi
