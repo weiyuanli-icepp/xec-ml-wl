@@ -3,30 +3,35 @@
 Submit CEXPreprocess.py jobs to SLURM for parallel processing.
 
 Splits the run range into batches and submits one SLURM job per batch.
+Auto-generates per-run dead channel files from the MEG2 database.
 
 Usage:
     # Process runs 557545-557644 (100 runs), 10 runs per job → 10 jobs
-    python others/submit_cex.py --srun 557545 --nfiles 100 --patch 13 \
-        --dead-file data/dead_channels_run430000.txt
+    python others/submit_cex.py --srun 557545 --nfiles 100 --patch 13
 
     # Dry run (show jobs without submitting)
     python others/submit_cex.py --srun 557545 --nfiles 100 --patch 13 --dry-run
 
-    # Custom batch size
-    python others/submit_cex.py --srun 557545 --nfiles 100 --patch 13 --runs-per-job 5
-
     # Single run per job (maximum parallelism)
     python others/submit_cex.py --srun 557545 --nfiles 100 --patch 13 --runs-per-job 1
+
+    # Skip dead channel generation (already done or not needed)
+    python others/submit_cex.py --srun 557545 --nfiles 100 --patch 13 --no-dead
 """
 import os
+import sys
 import argparse
 import subprocess
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
 PREPROCESS_SCRIPT = os.path.join(SCRIPT_DIR, "CEXPreprocess.py")
+DEAD_DIR = os.path.join(REPO_DIR, "data", "dead_channels")
 
 LOG_DIR = os.path.expandvars("$HOME/meghome/xec-ml-wl/log/cex_preprocess")
+
+# Add repo to path for imports
+sys.path.insert(0, REPO_DIR)
 
 SLURM_TEMPLATE = """#!/bin/bash
 #SBATCH --job-name=cex_{srun}_{nfiles}
@@ -72,6 +77,62 @@ echo "Job finished with exit code: $?"
 """
 
 
+def generate_dead_channel_files(srun, nfiles):
+    """Query DB and generate per-run dead channel files.
+
+    Caches by XECPMStatus_id — runs sharing the same PM status
+    get the same dead channel list without redundant queries.
+
+    Returns the number of unique dead channel configurations found.
+    """
+    from lib.db_utils import get_xec_pm_status_id, get_dead_channels, save_dead_channel_list
+
+    os.makedirs(DEAD_DIR, exist_ok=True)
+
+    # Cache: pm_status_id → dead channel array (avoid redundant queries)
+    status_cache = {}
+    generated = 0
+    skipped = 0
+    failed = 0
+
+    for iRun in range(srun, srun + nfiles):
+        outpath = os.path.join(DEAD_DIR, f"dead_run{iRun}.txt")
+
+        # Skip if already exists
+        if os.path.exists(outpath):
+            skipped += 1
+            continue
+
+        try:
+            pm_status_id = get_xec_pm_status_id(iRun)
+            if pm_status_id is None:
+                failed += 1
+                continue
+
+            if pm_status_id not in status_cache:
+                status_cache[pm_status_id] = get_dead_channels(iRun)
+
+            dead = status_cache[pm_status_id]
+
+            with open(outpath, 'w') as f:
+                f.write(f"# Dead channels for run {iRun} "
+                        f"(XECPMStatus_id={pm_status_id}, n={len(dead)})\n")
+                for ch in dead:
+                    f.write(f"{ch}\n")
+
+            generated += 1
+
+        except Exception as e:
+            print(f"  WARNING: Failed to query run {iRun}: {e}")
+            failed += 1
+
+    print(f"  Dead channel files: {generated} generated, {skipped} cached, "
+          f"{failed} failed")
+    print(f"  Unique PM status configs: {len(status_cache)}")
+
+    return len(status_cache)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Submit CEXPreprocess.py jobs to SLURM",
@@ -81,7 +142,6 @@ def main():
     parser.add_argument("--srun", type=int, required=True, help="Starting run number")
     parser.add_argument("--nfiles", type=int, required=True, help="Total number of runs")
     parser.add_argument("--patch", type=int, required=True, help="CEX patch number")
-    parser.add_argument("--dead-file", default=None, help="Dead channel file")
     parser.add_argument("--output-dir", default=None,
                         help="Output directory (default: data/cex/)")
     parser.add_argument("--runs-per-job", type=int, default=10,
@@ -90,7 +150,10 @@ def main():
     parser.add_argument("--time", default="04:00:00", help="Time limit per job")
     parser.add_argument("--mem", default="8G", help="Memory per job")
     parser.add_argument("--env-name", default="xec-ml-wl", help="Conda environment")
-    parser.add_argument("--dry-run", action="store_true", help="Show jobs without submitting")
+    parser.add_argument("--no-dead", action="store_true",
+                        help="Skip dead channel generation (no --dead-dir passed)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Show jobs without submitting")
     args = parser.parse_args()
 
     # Default output directory
@@ -100,7 +163,13 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
 
-    dead_flag = f"--dead-file {os.path.abspath(args.dead_file)}" if args.dead_file else ""
+    # --- Generate dead channel files ---
+    if not args.no_dead:
+        print(f"Generating dead channel files in {DEAD_DIR} ...")
+        generate_dead_channel_files(args.srun, args.nfiles)
+        dead_flag = f"--dead-dir {os.path.abspath(DEAD_DIR)}"
+    else:
+        dead_flag = ""
 
     # Split into batches
     batches = []
@@ -108,10 +177,10 @@ def main():
         n = min(args.runs_per_job, args.srun + args.nfiles - start)
         batches.append((start, n))
 
-    print(f"CEX Preprocessing: runs {args.srun}-{args.srun + args.nfiles - 1}")
+    print(f"\nCEX Preprocessing: runs {args.srun}-{args.srun + args.nfiles - 1}")
     print(f"  Patch: {args.patch}")
     print(f"  Output: {args.output_dir}")
-    print(f"  Dead file: {args.dead_file or '(none)'}")
+    print(f"  Dead dir: {DEAD_DIR if not args.no_dead else '(disabled)'}")
     print(f"  Runs per job: {args.runs_per_job}")
     print(f"  Total jobs: {len(batches)}")
     print()
