@@ -596,6 +596,8 @@ def main():
         pred_list, pred_file,
         predict_channels=predict_channels,
         npho_scheme=npho_scheme,
+        npho_scale=npho_scale,
+        npho_scale2=npho_scale2,
         baseline_results=baseline_results,
     )
 
