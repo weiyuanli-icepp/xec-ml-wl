@@ -111,11 +111,16 @@ def process_run(iRun, dead_mask, out_arrays):
 
     arrays = rec.arrays(read_keys, library="ak")
 
+    def get_field(key):
+        """Get field from awkward record, or None if not read."""
+        if key in read_keys:
+            return arrays[key]
+        return None
+
     def ak_to_flat(arr, dtype=np.float32):
         """Convert awkward array to flat 1-D numpy, taking index 0 for nested dims."""
         if arr is None:
             return None
-        # Peel nested dimensions until 1-D
         while arr.ndim > 1:
             arr = arr[:, 0]
         return ak.to_numpy(arr).astype(dtype)
@@ -124,24 +129,23 @@ def process_run(iRun, dead_mask, out_arrays):
         """Convert awkward array to (N, 4760) numpy, taking index 0 of innermost dim."""
         if arr is None:
             return np.full(fallback_shape, 1e10, dtype=dtype) if fallback_shape else None
-        # xeccl members are (N, 4760, nFit) — take fit result 0
         while arr.ndim > 2:
             arr = arr[:, :, 0]
         return ak.to_numpy(arr).astype(dtype)
 
-    mask_vals = ak_to_flat(arrays.get(key_mask), dtype=np.int32)
-    egamma_vals = ak_to_flat(arrays.get(key_egamma))
-    openangle_vals = ak_to_flat(arrays.get(key_openangle))
-    bgoenergy_vals = ak_to_flat(arrays.get(key_bgoenergy))
+    mask_vals = ak_to_flat(get_field(key_mask), dtype=np.int32)
+    egamma_vals = ak_to_flat(get_field(key_egamma))
+    openangle_vals = ak_to_flat(get_field(key_openangle))
+    bgoenergy_vals = ak_to_flat(get_field(key_bgoenergy))
 
-    evstat_vals = ak_to_flat(arrays.get(key_evstat), dtype=np.int32)
-    ugamma_vals = ak_to_flat(arrays.get(key_ugamma))
-    vgamma_vals = ak_to_flat(arrays.get(key_vgamma))
-    wgamma_vals = ak_to_flat(arrays.get(key_wgamma))
+    evstat_vals = ak_to_flat(get_field(key_evstat), dtype=np.int32)
+    ugamma_vals = ak_to_flat(get_field(key_ugamma))
+    vgamma_vals = ak_to_flat(get_field(key_vgamma))
+    wgamma_vals = ak_to_flat(get_field(key_wgamma))
 
-    npho_vals = ak_to_2d(arrays.get(key_npho))
-    tpm_vals = ak_to_2d(arrays.get(key_tpm))
-    nphe_vals = ak_to_2d(arrays.get(key_nphe), fallback_shape=npho_vals.shape)
+    npho_vals = ak_to_2d(get_field(key_npho))
+    tpm_vals = ak_to_2d(get_field(key_tpm))
+    nphe_vals = ak_to_2d(get_field(key_nphe), fallback_shape=npho_vals.shape)
 
     # --- Event selection (vectorized) ---
     # 1. Physics triggers only (50, 51)
