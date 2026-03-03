@@ -18,7 +18,7 @@ BATCH_SIZE="${BATCH_SIZE:-64}"
 
 # Steps to submit (default: all)
 if [ $# -eq 0 ]; then
-    STEPS=(1 2 3 4 5 6)
+    STEPS=(1 2 3 4 5 6 7 8)
 else
     STEPS=("$@")
 fi
@@ -30,6 +30,8 @@ STEP_LABELS=(
     [4]="s4_flat_nphowt"
     [5]="s5_sqrt"
     [6]="s6_mask015"
+    [7]="s7_sqrt_nphowt_mask015"
+    [8]="s8_mask020"
 )
 
 echo "============================================"

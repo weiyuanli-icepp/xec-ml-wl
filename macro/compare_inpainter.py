@@ -31,12 +31,14 @@ from lib.normalization import NphoTransform
 # Configuration — edit these lists to add/remove runs
 # ---------------------------------------------------------------------------
 _SCAN_STEPS = [
-    {"label": "S1: baseline",    "color": "blue",   "dir": "inp_scan_s1_baseline"},
-    {"label": "S2: +flat mask",  "color": "orange", "dir": "inp_scan_s2_flatmask"},
-    {"label": "S3: +npho wt",   "color": "green",  "dir": "inp_scan_s3_nphowt"},
-    {"label": "S4: flat+npho wt","color": "red",    "dir": "inp_scan_s4_flat_nphowt"},
-    {"label": "S5: sqrt",       "color": "purple", "dir": "inp_scan_s5_sqrt"},
-    {"label": "S6: mask 0.15",  "color": "brown",  "dir": "inp_scan_s6_mask015"},
+    {"label": "S1: baseline",    "color": "blue",      "dir": "inp_scan_s1_baseline"},
+    {"label": "S2: +flat mask",  "color": "orange",    "dir": "inp_scan_s2_flatmask"},
+    {"label": "S3: +npho wt",   "color": "green",     "dir": "inp_scan_s3_nphowt"},
+    {"label": "S4: flat+npho wt","color": "red",       "dir": "inp_scan_s4_flat_nphowt"},
+    {"label": "S5: sqrt",       "color": "purple",    "dir": "inp_scan_s5_sqrt"},
+    {"label": "S6: mask 0.15",  "color": "brown",     "dir": "inp_scan_s6_mask015"},
+    {"label": "S7: sqrt+wt+m15","color": "deeppink",  "dir": "inp_scan_s7_sqrt_nphowt_mask015"},
+    {"label": "S8: mask 0.20",  "color": "teal",      "dir": "inp_scan_s8_mask020"},
 ]
 
 ENTRIES_MC = [

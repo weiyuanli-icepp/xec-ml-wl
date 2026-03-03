@@ -14,6 +14,8 @@
 #   4   - +flat masking + npho_loss_weight (combination)
 #   5   - sqrt normalization (no flat, no npho_wt — isolate scheme)
 #   6   - +mask_ratio=0.15 (harder task, longer-range correlations)
+#   7   - sqrt + npho_wt + mask 0.15 (combine best features)
+#   8   - +mask_ratio=0.20 (even harder masking)
 #
 # All steps use train_middle (~40 runs), 1 GPU, 50 epochs.
 # Compare val loss in MLflow experiment: inpainting_scan
@@ -37,6 +39,8 @@ STEP_CONFIG[3]="step3_nphowt.yaml"
 STEP_CONFIG[4]="step4_flat_nphowt.yaml"
 STEP_CONFIG[5]="step5_sqrt.yaml"
 STEP_CONFIG[6]="step6_mask015.yaml"
+STEP_CONFIG[7]="step7_sqrt_nphowt_mask015.yaml"
+STEP_CONFIG[8]="step8_mask020.yaml"
 
 STEP_NAME[1]="inp_scan_s1_baseline"
 STEP_NAME[2]="inp_scan_s2_flatmask"
@@ -44,6 +48,8 @@ STEP_NAME[3]="inp_scan_s3_nphowt"
 STEP_NAME[4]="inp_scan_s4_flat_nphowt"
 STEP_NAME[5]="inp_scan_s5_sqrt"
 STEP_NAME[6]="inp_scan_s6_mask015"
+STEP_NAME[7]="inp_scan_s7_sqrt_nphowt_mask015"
+STEP_NAME[8]="inp_scan_s8_mask020"
 
 # Default: submit all steps (independent, can run in parallel)
 if [ $# -eq 0 ]; then
@@ -71,7 +77,7 @@ for STEP in "${STEPS[@]}"; do
 
     if [ -z "$CONFIG" ]; then
         echo "[ERROR] Unknown step: $STEP"
-        echo "  Valid steps: 1, 2, 3, 4, 5, 6"
+        echo "  Valid steps: 1, 2, 3, 4, 5, 6, 7, 8"
         continue
     fi
 
