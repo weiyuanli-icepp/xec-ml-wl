@@ -341,7 +341,7 @@ def load_model(checkpoint_path: Optional[str] = None,
             predict_channels = ['npho', 'time']
         print(f"[INFO] Detected output channels: {out_channels} → predict_channels={predict_channels}")
         # TorchScript has no metadata — npho_scheme must come from CLI
-        return model, 'torchscript', predict_channels, None
+        return model, 'torchscript', predict_channels, None, DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2
 
     if checkpoint_path:
         print(f"[INFO] Loading checkpoint from {checkpoint_path}")
@@ -353,8 +353,11 @@ def load_model(checkpoint_path: Optional[str] = None,
         # Get predict_channels from checkpoint config (default to both for legacy)
         predict_channels = config.get('predict_channels', ['npho', 'time'])
         npho_scheme = config.get('npho_scheme', 'log1p')
+        npho_scale = config.get('npho_scale', DEFAULT_NPHO_SCALE)
+        npho_scale2 = config.get('npho_scale2', DEFAULT_NPHO_SCALE2)
         print(f"[INFO] Predict channels: {predict_channels}")
-        print(f"[INFO] Npho scheme: {npho_scheme}")
+        print(f"[INFO] Npho scheme: {npho_scheme} "
+              f"(scale={npho_scale}, scale2={npho_scale2})")
 
         encoder = XECEncoder(
             outer_mode=config.get('outer_mode', 'finegrid'),
@@ -396,7 +399,7 @@ def load_model(checkpoint_path: Optional[str] = None,
         model.load_state_dict(state_dict, strict=False)
         model.to(device)
         model.eval()
-        return model, 'checkpoint', predict_channels, npho_scheme
+        return model, 'checkpoint', predict_channels, npho_scheme, npho_scale, npho_scale2
 
     raise ValueError("Either --checkpoint or --torchscript must be specified")
 
@@ -1132,7 +1135,8 @@ def main():
     os.makedirs(args.output, exist_ok=True)
 
     # Load model first to get npho_scheme before normalizing
-    model, model_type, predict_channels, model_npho_scheme = load_model(
+    model, model_type, predict_channels, model_npho_scheme, \
+        model_npho_scale, model_npho_scale2 = load_model(
         checkpoint_path=args.checkpoint,
         torchscript_path=args.torchscript,
         device=args.device
@@ -1155,13 +1159,18 @@ def main():
         print(f"[WARN] Npho scheme unknown (TorchScript has no metadata), using default: {npho_scheme}")
         print(f"[WARN] Use --npho-scheme to specify if your model was trained with a different scheme")
 
+    npho_scale = model_npho_scale
+    npho_scale2 = model_npho_scale2
+
     # Load data
     data = load_data(args.input, tree_name=args.tree_name, max_events=args.max_events)
     n_events = len(data['npho'])
 
     # Normalize
-    print(f"[INFO] Normalizing data (npho_scheme={npho_scheme})...")
-    x_input = normalize_data(data['npho'], data['time'], npho_scheme=npho_scheme)
+    print(f"[INFO] Normalizing data (npho_scheme={npho_scheme}, "
+          f"scale={npho_scale}, scale2={npho_scale2})...")
+    x_input = normalize_data(data['npho'], data['time'], npho_scheme=npho_scheme,
+                             npho_scale=npho_scale, npho_scale2=npho_scale2)
     x_original = x_input.copy()
 
     # Free raw arrays (no longer needed after normalization)
@@ -1225,7 +1234,8 @@ def main():
                 tree_name=args.tree_name, max_events=args.max_events
             )
 
-        npho_xf = NphoTransform(scheme=npho_scheme)
+        npho_xf = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale,
+                                npho_scale2=npho_scale2)
         baseline_results = run_baselines(
             x_original, combined_mask, artificial_mask, dead_mask,
             baseline_k=args.baseline_k,
@@ -1282,6 +1292,8 @@ def main():
     save_predictions(pred_list, pred_file, run_number=args.run,
                      predict_channels=predict_channels,
                      npho_scheme=npho_scheme,
+                     npho_scale=npho_scale,
+                     npho_scale2=npho_scale2,
                      baseline_results=baseline_results)
 
     # Metrics CSV (include baseline metrics if available)
