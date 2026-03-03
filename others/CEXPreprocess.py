@@ -133,21 +133,38 @@ def process_run(iRun, dead_mask, out_arrays):
         return arr
 
     def to_float(arr):
-        """Convert object arrays (from TClonesArray) to float32."""
+        """Convert to flat float32 array, handling jagged TClonesArray members."""
         if arr is None:
             return None
-        arr = get_col0(arr)
         if arr.dtype == object:
-            arr = np.array(arr, dtype=np.float32)
-        return arr.astype(np.float32)
+            # Jagged array — extract first element per event
+            vals = []
+            for x in arr:
+                if hasattr(x, '__len__'):
+                    vals.append(float(x[0]) if len(x) > 0 else np.nan)
+                else:
+                    vals.append(float(x))
+            return np.array(vals, dtype=np.float32)
+        arr = arr.astype(np.float32)
+        if arr.ndim > 1:
+            arr = arr[:, 0]
+        return arr
 
     def to_int(arr):
         if arr is None:
             return None
-        arr = get_col0(arr)
         if arr.dtype == object:
-            arr = np.array(arr, dtype=np.int32)
-        return arr.astype(np.int32)
+            vals = []
+            for x in arr:
+                if hasattr(x, '__len__'):
+                    vals.append(int(x[0]) if len(x) > 0 else 0)
+                else:
+                    vals.append(int(x))
+            return np.array(vals, dtype=np.int32)
+        arr = arr.astype(np.int32)
+        if arr.ndim > 1:
+            arr = arr[:, 0]
+        return arr
 
     mask_vals = to_int(mask_arr)
     egamma_vals = to_float(egamma_arr)
