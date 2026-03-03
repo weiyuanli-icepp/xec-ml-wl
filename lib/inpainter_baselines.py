@@ -448,11 +448,15 @@ class SolidAngleWeightedBaseline:
                 omega_n = solid_angles[i][nbrs]                 # (n_masked, max_nbrs)
 
                 # Per-neighbor estimate: v_n * (omega_m / omega_n)
-                safe_omega_n = np.where(omega_n > 0, omega_n, 1.0)
-                ratio = omega_m[:, None] / safe_omega_n         # (n_masked, max_nbrs)
-                corrected = np.where(valid, nbr_vals * ratio, 0.0)
+                # Exclude neighbors with omega_n == 0 (facing away from
+                # source) — their ratio is undefined.
+                sa_valid = valid & (omega_n > 0)
 
-                n_valid = valid.sum(axis=1).astype(np.float64)  # (n_masked,)
+                safe_omega_n = np.where(sa_valid, omega_n, 1.0)
+                ratio = omega_m[:, None] / safe_omega_n         # (n_masked, max_nbrs)
+                corrected = np.where(sa_valid, nbr_vals * ratio, 0.0)
+
+                n_valid = sa_valid.sum(axis=1).astype(np.float64)  # (n_masked,)
                 safe_n = np.maximum(n_valid, 1.0)
                 avg = np.where(n_valid > 0, corrected.sum(axis=1) / safe_n, 0.0)
             else:
