@@ -234,14 +234,14 @@ def main():
         lf_entry = {'label': 'Local Fit', 'color': 'darkred', 'path': args.localfit}
         loaded.append((lf_entry, _load_localfit(args.localfit)))
 
-    # Shared bin edges (log-spaced in raw photons)
-    pct95_vals = []
+    # Shared bin edges (log-spaced in raw photons, full range)
+    max_vals = []
     for _, d in loaded:
         tr = d['truth_raw']
         above = tr[tr >= TRUTH_RAW_MIN]
         if len(above) > 0:
-            pct95_vals.append(np.percentile(above, 95))
-    global_max = max(pct95_vals) if pct95_vals else 1e5
+            max_vals.append(np.max(above))
+    global_max = max(max_vals) if max_vals else 1e5
     bin_edges = np.logspace(np.log10(TRUTH_RAW_MIN), np.log10(global_max), N_BINS + 1)
 
     # Decide which entry supplies baselines (first one that has any)
@@ -281,7 +281,46 @@ def main():
                     continue
                 metrics_cache[(bname, face_int)] = _compute_slice_metrics(tr, er, bin_edges)
 
-    # --- Multi-page PDF: relative MAE, relative RMS, relative bias ---
+    # --- Collect all methods for summary & stdout ---
+    # (label, color, truth_raw, error_raw, face, is_baseline)
+    methods = []
+    for entry, d in loaded:
+        cut = d['truth_raw'] >= TRUTH_RAW_MIN
+        methods.append((entry['label'], entry['color'],
+                         d['truth_raw'][cut], d['error_raw'][cut],
+                         d['face'][cut], False))
+    if baseline_entry_idx is not None:
+        bl_dict = loaded[baseline_entry_idx][1]['baselines']
+        for bname, bdef in BASELINE_DEFS.items():
+            if bname not in bl_dict:
+                continue
+            bl = bl_dict[bname]
+            cut = bl['truth_raw'] >= TRUTH_RAW_MIN
+            methods.append((bdef['label'], bdef['color'],
+                             bl['truth_raw'][cut], bl['error_raw'][cut],
+                             bl['face'][cut], True))
+
+    # Precompute global & per-face metrics for each method
+    method_metrics = []
+    for label, color, tr, er, fc, is_bl in methods:
+        global_rel_mae = np.mean(np.abs(er) / tr)
+        global_mae = np.mean(np.abs(er))
+        global_rms = np.sqrt(np.mean(er ** 2))
+        global_bias = np.mean(er)
+        global_rel_rms = np.sqrt(np.mean((er / tr) ** 2))
+        face_rel_mae = {}
+        for fi, fn in FACE_INT_TO_NAME.items():
+            m = fc == fi
+            if m.sum() >= MIN_BIN_COUNT:
+                face_rel_mae[fn] = np.mean(np.abs(er[m]) / tr[m])
+        method_metrics.append({
+            'label': label, 'color': color, 'is_bl': is_bl, 'n': len(tr),
+            'rel_mae': global_rel_mae, 'mae': global_mae,
+            'rms': global_rms, 'bias': global_bias, 'rel_rms': global_rel_rms,
+            'face_rel_mae': face_rel_mae,
+        })
+
+    # --- Multi-page PDF ---
     page_defs = [
         ('mae',  'Relative MAE vs Truth Npho (per face)',  'Relative MAE'),
         ('rms',  'Relative RMS vs Truth Npho (per face)',  'Relative RMS'),
@@ -289,6 +328,63 @@ def main():
     ]
 
     with PdfPages(args.output) as pdf:
+        # ===== Page 1: Summary =====
+        fig, (ax_bar, ax_face) = plt.subplots(1, 2, figsize=(18, 8),
+                                               gridspec_kw={'width_ratios': [1, 1.5]})
+
+        # -- Left panel: global relative MAE horizontal bar chart (sorted) --
+        sorted_mm = sorted(method_metrics, key=lambda m: m['rel_mae'])
+        labels_bar = [m['label'] for m in sorted_mm]
+        vals_bar = [m['rel_mae'] for m in sorted_mm]
+        colors_bar = [m['color'] for m in sorted_mm]
+        hatches_bar = ['//' if m['is_bl'] else '' for m in sorted_mm]
+        y_pos = np.arange(len(labels_bar))
+
+        bars = ax_bar.barh(y_pos, vals_bar, color=colors_bar, edgecolor='black',
+                           linewidth=0.5)
+        for bar, hatch in zip(bars, hatches_bar):
+            bar.set_hatch(hatch)
+        for i, v in enumerate(vals_bar):
+            ax_bar.text(v + 0.002, i, f'{v:.3f}', va='center', fontsize=9)
+        ax_bar.set_yticks(y_pos)
+        ax_bar.set_yticklabels(labels_bar, fontsize=9)
+        ax_bar.set_xlabel('Global Relative MAE')
+        ax_bar.set_title('Global Relative MAE  (truth >= 100 photons)')
+        ax_bar.invert_yaxis()
+        ax_bar.set_xlim(0, max(vals_bar) * 1.25)
+
+        # -- Right panel: per-face relative MAE grouped bar chart --
+        face_names = list(FACE_INT_TO_NAME.values())
+        n_methods = len(method_metrics)
+        n_faces = len(face_names)
+        bar_width = 0.8 / n_methods
+        x_faces = np.arange(n_faces)
+
+        for mi, mm in enumerate(method_metrics):
+            face_vals = [mm['face_rel_mae'].get(fn, 0.0) for fn in face_names]
+            face_mask = [fn in mm['face_rel_mae'] for fn in face_names]
+            x_offset = (mi - n_methods / 2 + 0.5) * bar_width
+            bar_objs = ax_face.bar(x_faces + x_offset, face_vals, bar_width,
+                                   color=mm['color'], edgecolor='black',
+                                   linewidth=0.3, label=mm['label'],
+                                   hatch='//' if mm['is_bl'] else '')
+            # Gray out missing faces
+            for bi, present in enumerate(face_mask):
+                if not present:
+                    bar_objs[bi].set_alpha(0.0)
+
+        ax_face.set_xticks(x_faces)
+        ax_face.set_xticklabels(face_names, fontsize=10)
+        ax_face.set_ylabel('Relative MAE')
+        ax_face.set_title('Per-Face Relative MAE  (truth >= 100 photons)')
+        ax_face.legend(fontsize=7, loc='upper right', ncol=2)
+
+        fig.suptitle(f'Inpainter Comparison Summary — {args.mode}', fontsize=14)
+        plt.tight_layout()
+        pdf.savefig(fig)
+        plt.close(fig)
+
+        # ===== Pages 2–4: per-face binned metrics =====
         for metric_key, suptitle, ylabel in page_defs:
             fig, axes = plt.subplots(2, 3, figsize=(18, 10))
             axes_flat = axes.flatten()
@@ -338,25 +434,9 @@ def main():
             pdf.savefig(fig)
             plt.close(fig)
 
-    print(f"[INFO] Saved {args.output} (3 pages: relative MAE, RMS, bias)")
+    print(f"[INFO] Saved {args.output} (4 pages: summary + relative MAE, RMS, bias)")
 
     # --- Stdout summary ---
-
-    # Collect all methods: (label, truth_raw, error_raw, is_baseline)
-    methods = []
-    for entry, d in loaded:
-        cut = d['truth_raw'] >= TRUTH_RAW_MIN
-        methods.append((entry['label'], d['truth_raw'][cut], d['error_raw'][cut],
-                         d['face'][cut], False))
-    if baseline_entry_idx is not None:
-        bl_dict = loaded[baseline_entry_idx][1]['baselines']
-        for bname, bdef in BASELINE_DEFS.items():
-            if bname not in bl_dict:
-                continue
-            bl = bl_dict[bname]
-            cut = bl['truth_raw'] >= TRUTH_RAW_MIN
-            methods.append((bdef['label'], bl['truth_raw'][cut], bl['error_raw'][cut],
-                             bl['face'][cut], True))
 
     # --- Per-entry config ---
     print()
@@ -380,26 +460,21 @@ def main():
     hdr = f"{'Method':<28s} {'MAE':>10s} {'RMS':>10s} {'Bias':>10s} {'Rel MAE':>10s} {'Rel RMS':>10s} {'N':>10s}"
     print(hdr)
     print("-" * len(hdr))
-    for label, tr, er, fc, is_bl in methods:
-        mae_val = np.mean(np.abs(er))
-        rms_val = np.sqrt(np.mean(er ** 2))
-        bias_val = np.mean(er)
-        rel_mae = np.mean(np.abs(er) / tr)
-        rel_rms = np.sqrt(np.mean((er / tr) ** 2))
-        tag = " *" if is_bl else ""
-        print(f"{label:<28s} {mae_val:>10.1f} {rms_val:>10.1f} {bias_val:>+10.1f} "
-              f"{rel_mae:>10.3f} {rel_rms:>10.3f} {len(tr):>10,}{tag}")
+    for mm in method_metrics:
+        tag = " *" if mm['is_bl'] else ""
+        print(f"{mm['label']:<28s} {mm['mae']:>10.1f} {mm['rms']:>10.1f} {mm['bias']:>+10.1f} "
+              f"{mm['rel_mae']:>10.3f} {mm['rel_rms']:>10.3f} {mm['n']:>10,}{tag}")
 
     # --- Per-face breakdown ---
     print()
+    face_names = list(FACE_INT_TO_NAME.values())
     print("=" * 70)
     print("PER-FACE MAE  (truth >= 100 photons)")
     print("=" * 70)
-    face_names = list(FACE_INT_TO_NAME.values())
-    hdr = f"{'Method':<28s} " + " ".join(f"{fn:>10s}" for fn in face_names)
-    print(hdr)
-    print("-" * len(hdr))
-    for label, tr, er, fc, is_bl in methods:
+    hdr_face = f"{'Method':<28s} " + " ".join(f"{fn:>10s}" for fn in face_names)
+    print(hdr_face)
+    print("-" * len(hdr_face))
+    for label, color, tr, er, fc, is_bl in methods:
         vals = []
         for fi in FACE_INT_TO_NAME:
             m = fc == fi
@@ -415,9 +490,9 @@ def main():
     print("=" * 70)
     print("PER-FACE RELATIVE MAE  (truth >= 100 photons)")
     print("=" * 70)
-    print(hdr)
-    print("-" * len(hdr))
-    for label, tr, er, fc, is_bl in methods:
+    print(hdr_face)
+    print("-" * len(hdr_face))
+    for label, color, tr, er, fc, is_bl in methods:
         vals = []
         for fi in FACE_INT_TO_NAME:
             m = fc == fi
