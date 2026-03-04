@@ -927,7 +927,9 @@ def save_predictions_to_root(predictions: List[Dict], output_path: str,
         branches['error_time'] = np.array([p.get('error_time', -999.0) for p in predictions], dtype=np.float32)
 
     # Metadata tree
+    # npho_scheme='raw' indicates values are already in raw photons (no denorm needed)
     metadata = {
+        'npho_scheme': np.array(['raw'], dtype='U32'),
         'predict_channels': np.array([','.join(predict_channels)], dtype='U32'),
         'npho_scale': np.array([npho_scale], dtype=np.float64),
         'npho_scale2': np.array([npho_scale2], dtype=np.float64),

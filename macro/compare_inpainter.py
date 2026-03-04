@@ -9,6 +9,7 @@ types.
 Usage:
     python macro/compare_inpainter.py --mode mc            # MC validation (default)
     python macro/compare_inpainter.py --mode sensorfront   # sensor-front validation
+    python macro/compare_inpainter.py --mode data          # real data validation
     python macro/compare_inpainter.py --localfit path/to/localfit.root  # overlay local fit
     python macro/compare_inpainter.py -o out.pdf           # custom output path
 """
@@ -52,9 +53,15 @@ ENTRIES_SENSORFRONT = [
     for s in _SCAN_STEPS
 ]
 
+ENTRIES_DATA = [
+    {**s, "path": f"artifacts/{s['dir']}/validation_data/real_data_predictions.root"}
+    for s in _SCAN_STEPS
+]
+
 ENTRIES_BY_MODE = {
     "mc": ENTRIES_MC,
     "sensorfront": ENTRIES_SENSORFRONT,
+    "data": ENTRIES_DATA,
 }
 
 FACE_INT_TO_NAME = {0: 'inner', 1: 'us', 2: 'ds', 3: 'outer', 4: 'top', 5: 'bot'}
@@ -82,10 +89,12 @@ def _load_entry(entry):
     with uproot.open(path) as f:
         # --- metadata ---
         meta = {'npho_scheme': 'log1p', 'npho_scale': 1000.0, 'npho_scale2': 4.08}
+        has_npho_scheme = False
         if 'metadata' in f:
             mt = f['metadata']
             mk = mt.keys()
             if 'npho_scheme' in mk:
+                has_npho_scheme = True
                 v = mt['npho_scheme'].array(library='np')[0]
                 meta['npho_scheme'] = v.decode() if isinstance(v, bytes) else v
             for k in ('npho_scale', 'npho_scale2'):
@@ -93,6 +102,9 @@ def _load_entry(entry):
                     v = mt[k].array(library='np')[0]
                     if not np.isnan(v):
                         meta[k] = float(v)
+        # Real data validation stores raw photons with no npho_scheme in metadata
+        if not has_npho_scheme and 'metadata' in f:
+            meta['npho_scheme'] = 'raw'
 
         # --- predictions tree ---
         for tname in ('predictions', 'tree', 'Tree'):
@@ -118,14 +130,19 @@ def _load_entry(entry):
     if has_mask_type:
         valid = valid & (data['mask_type'] == 0)
 
-    # Denormalize
-    xf = NphoTransform(
-        scheme=meta['npho_scheme'],
-        npho_scale=meta['npho_scale'],
-        npho_scale2=meta['npho_scale2'],
-    )
-    truth_raw = xf.inverse(data['truth_npho'])
-    pred_raw = xf.inverse(data['pred_npho'])
+    # Denormalize (or skip if values are already raw photons)
+    is_raw = (meta['npho_scheme'] == 'raw')
+    if is_raw:
+        truth_raw = data['truth_npho']
+        pred_raw = data['pred_npho']
+    else:
+        xf = NphoTransform(
+            scheme=meta['npho_scheme'],
+            npho_scale=meta['npho_scale'],
+            npho_scale2=meta['npho_scale2'],
+        )
+        truth_raw = xf.inverse(data['truth_npho'])
+        pred_raw = xf.inverse(data['pred_npho'])
     error_raw = pred_raw - truth_raw
 
     # Baselines (denormalized)
@@ -135,7 +152,10 @@ def _load_entry(entry):
         pred_key = f'baseline_{bname}_npho'
         if err_key not in data:
             continue
-        bl_pred_raw = xf.inverse(data[pred_key])
+        if is_raw:
+            bl_pred_raw = data[pred_key]
+        else:
+            bl_pred_raw = xf.inverse(data[pred_key])
         bl_error_raw = bl_pred_raw - truth_raw
         # Validity: finite and not sentinel
         bl_valid = valid & ~np.isnan(data[err_key]) & (data[err_key] > -999)
@@ -227,15 +247,22 @@ def main():
     entries = ENTRIES_BY_MODE[args.mode]
     print(f"[INFO] Mode: {args.mode} ({len(entries)} entries)")
 
-    # Load all entries
+    # Load all entries (skip missing files)
     loaded = []
     for entry in entries:
+        if not Path(entry['path']).exists():
+            print(f"[WARN] Skipping {entry['label']}: {entry['path']} not found")
+            continue
         loaded.append((entry, _load_entry(entry)))
 
     # Optionally add standalone LocalFitBaseline result
     if args.localfit:
         lf_entry = {'label': 'Local Fit', 'color': 'darkred', 'path': args.localfit}
         loaded.append((lf_entry, _load_localfit(args.localfit)))
+
+    if not loaded:
+        print("[ERROR] No entries loaded. Check that prediction files exist.")
+        sys.exit(1)
 
     # Shared bin edges (log-spaced in raw photons, full range)
     max_vals = []
