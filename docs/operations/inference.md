@@ -1,8 +1,48 @@
-# Real Data Inference
+# Inference & Validation
 
-Run trained models on real detector data for validation and physics analysis.
+Run trained models on simulation or real detector data.
 
-## 1. Export checkpoint to ONNX
+## Standalone Validation
+
+Validate a checkpoint or ONNX model against simulation data without training. Generates the same resolution plots and prediction CSVs as training-time validation.
+
+### PyTorch Checkpoint
+
+```bash
+# Auto-detect tasks and config from checkpoint
+python macro/validate_regressor.py artifacts/<RUN>/checkpoint_best.pth \
+    --val_path data/val/
+
+# Specify tasks and output directory
+python macro/validate_regressor.py artifacts/<RUN>/checkpoint_best.pth \
+    --val_path data/val/ \
+    --tasks energy angle \
+    --output_dir results/
+```
+
+When the checkpoint embeds a config dict (all recent checkpoints do), model architecture and normalization parameters are restored automatically. Use `--config` to override.
+
+### ONNX Model
+
+```bash
+# ONNX validation (requires --config for normalization params)
+python macro/validate_regressor.py model.onnx \
+    --val_path data/cex/ \
+    --config config/reg/scan/step3b_model_large.yaml \
+    --tasks energy
+```
+
+The script auto-detects `.onnx` vs `.pth` by file extension. ONNX inference uses `onnxruntime` and runs on CPU.
+
+**Note:** Models trained with `gaussian_nll` produce 2-column energy output `[mu, log_var]`; the validation script extracts column 0 as the prediction automatically.
+
+---
+
+## Real Data Inference
+
+Run trained models on real detector data for physics analysis.
+
+### 1. Export checkpoint to ONNX
 
 ```bash
 # Auto-detect tasks from checkpoint
@@ -104,3 +144,22 @@ The inference script outputs a ROOT file with `val_tree` containing:
 | `pred_timing`, `true_timing` | Timing (if timing task) |
 | `pred_u/v/w`, `true_u/v/w` | Position (if uvwFI task) |
 | `x_vtx`, `y_vtx`, `z_vtx` | Vertex position |
+
+---
+
+## Inpainter Export (TorchScript)
+
+The inpainter model uses fused CUDA kernels that are not compatible with ONNX export. Use TorchScript instead:
+
+```bash
+python macro/export_onnx_inpainter.py \
+    artifacts/<RUN>/inpainter_checkpoint_best.pth \
+    --output inpainter_model.pt
+```
+
+The exported TorchScript model bakes normalization constants inside, so it accepts **raw** sensor values + binary mask as input and outputs raw npho with inpainted values at masked positions.
+
+| Format | Regressor | Inpainter |
+|--------|-----------|-----------|
+| ONNX | `macro/export_onnx.py` | Not supported |
+| TorchScript | Not needed | `macro/export_onnx_inpainter.py` |

@@ -84,6 +84,19 @@ To start a Jupyter session on a GPU node:
 3. Tunnel ports locally: `ssh -N -L 8888:localhost:8888 -J <user>@login001 <user>@gpuXXX`
 4. Paste the URL with token in the browser
 
+## Task-Specific Configs
+
+Pre-made configs for single-task training are available in `config/reg/`:
+
+| Config | Task | Notes |
+|--------|------|-------|
+| `config/reg/angle.yaml` | Angle | Baseline angle regression |
+| `config/reg/timing.yaml` | Timing | Timing regression |
+| `config/reg/position.yaml` | Position (uvwFI) | Position regression |
+| `config/reg/scan/step*.yaml` | Energy | Hyperparameter scan steps (see memory notes) |
+
+Each config sets task-specific `loss_fn`, `loss_beta`, and `weight`. See [Multi-Task Learning](multi-task.md) for loss function options including `gaussian_nll` for uncertainty estimation.
+
 ## Configuration Parameters
 
 Training is now **config-based** using `config/reg/train_config.yaml`. CLI arguments can override config values.

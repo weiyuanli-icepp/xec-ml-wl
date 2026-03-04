@@ -15,6 +15,8 @@ Output directory: `artifacts/<RUN_NAME>/`
 | `checkpoint_best.pth` | Best model (lowest validation loss) | epoch, model_state_dict, ema_state_dict, best_ema_state, optimizer_state_dict, scheduler_state_dict, scaler_state_dict, best_val, mlflow_run_id, config |
 | `checkpoint_last.pth` | Latest checkpoint (after each epoch) | Same as above |
 
+The embedded `config` dict includes: outer_mode, normalization params, encoder_dim, dim_feedforward, num_fusion_layers, hidden_dim, active_tasks, **nll_tasks** (list of tasks using `gaussian_nll`), npho_branch, time_branch. This enables `export_onnx.py` and `validate_regressor.py` to reconstruct the model without a separate config file.
+
 ### Task-Specific CSV Predictions
 
 Generated at best epoch and final evaluation. Only created for enabled tasks.
@@ -299,14 +301,23 @@ python macro/regenerate_resolution_plots.py artifacts/<RUN_NAME>/ --suffix _v2
 
 ### Standalone Validation
 
-To run validation on a checkpoint without training (generates plots and predictions):
+Run validation on a checkpoint or ONNX model without training (generates plots and predictions):
 
 ```bash
+# PyTorch checkpoint
 python macro/validate_regressor.py artifacts/<RUN>/checkpoint_best.pth \
     --val_path data/val/ \
     --tasks energy angle \
     --output_dir artifacts/<RUN>/
+
+# ONNX model (requires --config for normalization)
+python macro/validate_regressor.py model.onnx \
+    --val_path data/cex/ \
+    --config config/reg/scan/step3b_model_large.yaml \
+    --tasks energy
 ```
+
+See [Inference & Validation](inference.md) for details.
 
 ---
 
@@ -331,7 +342,9 @@ Fit parameters are displayed in the plot title as percentages (e.g., `a=2.50%/�
 
 ### 1. Physics Performance Metrics (Regressor)
 
-These metrics evaluate the quality of the photon direction reconstruction. Calculated during validation using `eval_stats` and `eval_resolution`.
+These metrics evaluate the quality of physics reconstruction. Calculated during validation.
+
+**Angle task:**
 
 | Metric | Definition | Formula |
 | ------ | ---------- | ------- |
@@ -339,6 +352,17 @@ These metrics evaluate the quality of the photon direction reconstruction. Calcu
 | Theta RMS (`theta_rms`) | The standard deviation of the residuals. | $\sigma = \text{Std}(\theta_{\mathrm{pred}} - \theta_{\mathrm{true}})$ |
 | Theta Skewness (`theta_skew`) | A measure of the asymmetry of the error distribution. | $$\text{Skew} = \frac{\frac{1}{N} \sum_{i=1}^{N} (\Delta \theta_i - \mu)^3}{\left( \frac{1}{N} \sum_{i=1}^{N} (\Delta \theta_i - \mu)^2 \right)^{3/2}}$$ |
 | Opening Angle Resolution (`val_resolution_deg`) | The 68th percentile of the 3D opening angle $\psi$ between the predicted and true vectors. | $\psi = \arccos(v_{\mathrm{pred}} \cdot v_{\mathrm{true}})$ |
+
+**Energy task:**
+
+| Metric | MLflow Key | Description |
+| ------ | ---------- | ----------- |
+| Bias | `energy_bias` | Mean residual (pred - true) |
+| Resolution 68% | `energy_res_68pct` | 68th percentile of |pred - true| |
+| Pred Std Mean | `energy_pred_std_mean` | Mean predicted σ (only with `gaussian_nll`) |
+| Calibration Ratio | `energy_calibration_ratio` | Mean predicted σ / actual residual std (only with `gaussian_nll`) |
+
+**MLflow parameters (per-task):** `task/{name}_loss_fn`, `task/{name}_loss_beta`, `task/{name}_weight` are logged at run start for experiment filtering.
 
 ### 2. MAE/Inpainter Metrics
 

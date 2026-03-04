@@ -15,7 +15,8 @@ tasks:
     weight: 1.0
   energy:
     enabled: false
-    loss_fn: "relative_l1"  # Scale-invariant for energy
+    loss_fn: "smooth_l1"    # or gaussian_nll for uncertainty estimation
+    loss_beta: 0.002
     weight: 1.0
     log_transform: false    # Train on log(energy) if true
   timing:
@@ -39,6 +40,34 @@ tasks:
 | `relative_l1` | \|pred - target\| / \|target\| | Scale-invariant, good for energy |
 | `relative_smooth_l1` | smooth_l1 / \|target\| | Robust scale-invariant loss |
 | `relative_mse` | (pred - target)² / target² | Relative MSE |
+| `gaussian_nll` | β-NLL (see below) | Uncertainty estimation |
+
+### Gaussian NLL Loss (β-NLL)
+
+Enables per-event uncertainty estimation. The model predicts both mean (μ) and log-variance (log σ²), and the loss penalizes both prediction accuracy and uncertainty calibration:
+
+$$\mathcal{L} = [\sigma^2]^{\beta} \cdot \frac{1}{2}\left(\log\sigma^2 + \frac{(y - \mu)^2}{\sigma^2}\right)$$
+
+Where `[·]` denotes stop-gradient (detached). The `loss_beta` parameter controls β:
+
+| β | Behavior | Use case |
+|---|----------|----------|
+| 0.0 | Standard NLL — variance can dominate early training | Mathematically pure but can be unstable |
+| **0.5** | **Balanced (recommended)** — equal gradient contribution from μ and σ² | Best default |
+| 1.0 | μ-gradients match MSE — variance learning is slow but stable | When accuracy matters most |
+
+```yaml
+tasks:
+  energy:
+    enabled: true
+    loss_fn: "gaussian_nll"
+    loss_beta: 0.5          # β parameter (0=NLL, 0.5=balanced, 1=MSE-like)
+    weight: 1.0
+```
+
+When `gaussian_nll` is configured, the task head output dimension increases by 1 (e.g., energy: 1 → 2 for `[mu, log_var]`). During validation, log_var is stripped so downstream handlers and plots see the standard prediction shape.
+
+See [ML Techniques](../notes/ml-techniques.md#heteroscedastic-regression-faithful-loss) for background on heteroscedastic regression.
 
 ### Relative Loss Functions
 
@@ -58,8 +87,8 @@ When `log_transform: true` is set, the model learns to predict log(value) instea
 | Task | Output | Description |
 |------|--------|-------------|
 | `angle` | 2 | (θ, φ) emission angles |
-| `energy` | 1 | Energy |
-| `timing` | 1 | Timing |
+| `energy` | 1 (or 2 with `gaussian_nll`) | Energy (+ log_var for uncertainty) |
+| `timing` | 1 (or 2 with `gaussian_nll`) | Timing (+ log_var for uncertainty) |
 | `uvwFI` | 3 | (u, v, w) position coordinates |
 
 ## Experimental Heads
@@ -113,7 +142,7 @@ The histogram range is automatically determined from your training data - you on
 
 # Validation Metrics
 
-Task-specific metrics are logged to MLflow during validation.
+Task-specific metrics are logged to MLflow during validation. Per-task loss configuration is also logged as MLflow parameters (`task/{name}_loss_fn`, `task/{name}_loss_beta`, `task/{name}_weight`) for experiment tracking.
 
 ## Angle Task Metrics
 
@@ -130,9 +159,18 @@ Task-specific metrics are logged to MLflow during validation.
 | Distance 68% | `uvw_dist_68pct` | 68th percentile of Euclidean distance between pred/true positions. |
 | U/V/W Resolution | `uvw_{u,v,w}_res_68pct` | 68th percentile of absolute residual for each axis. |
 
-## Energy/Timing Task Metrics
+## Energy Task Metrics
 
-Energy and timing tasks use residual-based metrics tracked in resolution plots rather than dedicated MLflow metrics.
+| Metric | MLflow Key | Description |
+|--------|------------|-------------|
+| Bias | `energy_bias` | Mean residual (pred - true) |
+| Resolution 68% | `energy_res_68pct` | 68th percentile of absolute residuals |
+| Pred Std Mean | `energy_pred_std_mean` | Mean predicted σ (only with `gaussian_nll`) |
+| Calibration Ratio | `energy_calibration_ratio` | Mean predicted σ / actual residual std (only with `gaussian_nll`; ideal = 1.0) |
+
+## Timing Task Metrics
+
+Timing uses residual-based metrics tracked in resolution plots.
 
 ## Regenerating Plots
 
