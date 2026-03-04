@@ -328,17 +328,18 @@ def run_epoch_stream(
                     if not isinstance(preds, dict):
                         preds = {"angle": preds}
 
+                    # Strip log_var from gaussian_nll tasks so downstream sees (B, 1)
+                    # Must happen BEFORE log_transform exp() to avoid exp(log_var)
+                    if task_weights:
+                        for task, cfg in task_weights.items():
+                            if isinstance(cfg, dict) and cfg.get("loss_fn") == "gaussian_nll" and task in preds:
+                                preds[task] = preds[task][:, :1]
+
                     # Convert predictions from log space to linear space for tasks with log_transform
                     if task_weights:
                         for task, cfg in task_weights.items():
                             if isinstance(cfg, dict) and cfg.get("log_transform", False) and task in preds:
                                 preds[task] = torch.exp(preds[task])
-
-                    # Strip log_var from gaussian_nll tasks so downstream sees (B, 1)
-                    if task_weights:
-                        for task, cfg in task_weights.items():
-                            if isinstance(cfg, dict) and cfg.get("loss_fn") == "gaussian_nll" and task in preds:
-                                preds[task] = preds[task][:, :1]
                 profiler.stop()
 
                 profiler.start("loss_compute")
