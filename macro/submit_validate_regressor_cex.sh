@@ -10,9 +10,9 @@
 #
 # Environment variables:
 #   CHECKPOINT  — path to model (.pth or .onnx, default: ene_50epoch_sqrt_DSmax ONNX)
-#   CONFIG      — config YAML for normalization params (default: step3b_model_large)
+#   CONFIG      — config YAML for normalization params (default: ene_50epoch_sqrt_DSmax)
 #   CEX_DIR     — directory with CEX ROOT files (default: data/cex)
-#   OUTPUT_BASE — output base directory (default: artifacts/energy_cex_validation)
+#   OUTPUT_BASE — output base directory (default: val_data/cex)
 #   PARTITION   — SLURM partition (default: mu3e)
 #   DRY_RUN     — set to 1 to preview without submitting
 #
@@ -22,9 +22,9 @@ cd "$(dirname "$0")/.."
 
 DRY_RUN="${DRY_RUN:-0}"
 CHECKPOINT="${CHECKPOINT:-~/meghome/xec-ml-wl/artifacts/ene_50epoch_sqrt_DSmax/meg2ene.onnx}"
-CONFIG="${CONFIG:-config/reg/scan/step3b_model_large.yaml}"
+CONFIG="${CONFIG:-config/reg/ene_50epoch_sqrt_DSmax.yaml}"
 CEX_DIR="${CEX_DIR:-data/cex}"
-OUTPUT_BASE="${OUTPUT_BASE:-artifacts/energy_cex_validation}"
+OUTPUT_BASE="${OUTPUT_BASE:-val_data/cex}"
 PARTITION="${PARTITION:-mu3e}"
 TIME="${TIME:-02:00:00}"
 MEM="${MEM:-16G}"
@@ -50,6 +50,23 @@ echo "Patches:  ${PATCHES[*]}"
 echo "Dry run:  ${DRY_RUN}"
 echo "============================================"
 echo ""
+
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# PRE-FLIGHT CHECKLIST — verify before submitting:
+#   1. CONFIG file exists and has correct npho_scheme / normalization
+#      (ene_50epoch_sqrt_DSmax uses sqrt, scale=20000)
+#   2. CEX_DIR points to correct location (CEX data may be stored in
+#      different places depending on the server / shared storage)
+#   3. ONNX model path is accessible from compute nodes
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+if [ "$DRY_RUN" != "1" ]; then
+    echo ">>> PRE-FLIGHT: Please verify the following paths are correct <<<"
+    echo "    Config:   ${CONFIG}"
+    echo "    CEX data: ${CEX_DIR}"
+    echo "    Model:    ${CHECKPOINT}"
+    echo "    (CEX data may be in different locations — check before running!)"
+    echo ""
+fi
 
 # Verify model and config exist
 CHECKPOINT_EXPANDED="${CHECKPOINT/#\~/$HOME}"
