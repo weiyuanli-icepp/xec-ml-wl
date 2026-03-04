@@ -141,12 +141,14 @@ def _load_entry(entry):
         bl_valid = valid & ~np.isnan(data[err_key]) & (data[err_key] > -999)
         baselines[bname] = {
             'truth_raw': truth_raw[bl_valid],
+            'pred_raw': bl_pred_raw[bl_valid],
             'error_raw': bl_error_raw[bl_valid],
             'face': data['face'][bl_valid],
         }
 
     return {
         'truth_raw': truth_raw[valid],
+        'pred_raw': pred_raw[valid],
         'error_raw': error_raw[valid],
         'face': data['face'][valid],
         'baselines': baselines,
@@ -173,6 +175,7 @@ def _load_localfit(path):
 
     return {
         'truth_raw': data['truth_npho'][valid],
+        'pred_raw': data['pred_npho'][valid],
         'error_raw': data['error_npho'][valid],
         'face': data['face'][valid],
         'baselines': {},
@@ -281,6 +284,49 @@ def main():
                     continue
                 metrics_cache[(bname, face_int)] = _compute_slice_metrics(tr, er, bin_edges)
 
+    # --- Pred-based bin edges (same range logic, using pred_raw) ---
+    pred_max_vals = []
+    for _, d in loaded:
+        pr = d['pred_raw']
+        above = pr[pr >= TRUTH_RAW_MIN]
+        if len(above) > 0:
+            pred_max_vals.append(np.max(above))
+    pred_global_max = max(pred_max_vals) if pred_max_vals else 1e5
+    pred_bin_edges = np.logspace(np.log10(TRUTH_RAW_MIN),
+                                 np.log10(pred_global_max), N_BINS + 1)
+
+    # --- Precompute pred-based per-face metrics ---
+    # pred_metrics_cache[(entry_idx_or_bname, face_int)] = (centers, mae, bias, rms)
+    pred_metrics_cache = {}
+    for ei, (entry, d) in enumerate(loaded):
+        for face_int in FACE_INT_TO_NAME:
+            fm = d['face'] == face_int
+            pr = d['pred_raw'][fm]
+            er = d['error_raw'][fm]
+            cut = pr >= TRUTH_RAW_MIN
+            pr, er = pr[cut], er[cut]
+            if len(pr) < MIN_BIN_COUNT:
+                continue
+            pred_metrics_cache[(ei, face_int)] = _compute_slice_metrics(
+                pr, er, pred_bin_edges)
+
+    if baseline_entry_idx is not None:
+        bl_dict_pred = loaded[baseline_entry_idx][1]['baselines']
+        for bname in BASELINE_DEFS:
+            if bname not in bl_dict_pred:
+                continue
+            bl = bl_dict_pred[bname]
+            for face_int in FACE_INT_TO_NAME:
+                fm = bl['face'] == face_int
+                pr = bl['pred_raw'][fm]
+                er = bl['error_raw'][fm]
+                cut = pr >= TRUTH_RAW_MIN
+                pr, er = pr[cut], er[cut]
+                if len(pr) < MIN_BIN_COUNT:
+                    continue
+                pred_metrics_cache[(bname, face_int)] = _compute_slice_metrics(
+                    pr, er, pred_bin_edges)
+
     # --- Collect all methods for summary & stdout ---
     # (label, color, truth_raw, error_raw, face, is_baseline)
     methods = []
@@ -321,10 +367,15 @@ def main():
         })
 
     # --- Multi-page PDF ---
-    page_defs = [
+    page_defs_truth = [
         ('mae',  'Relative MAE vs Truth Npho (per face)',  'Relative MAE'),
         ('rms',  'Relative RMS vs Truth Npho (per face)',  'Relative RMS'),
         ('bias', 'Relative Bias vs Truth Npho (per face)', 'Relative Bias'),
+    ]
+    page_defs_pred = [
+        ('mae',  'Relative MAE vs Pred Npho (per face)',  'Relative MAE'),
+        ('rms',  'Relative RMS vs Pred Npho (per face)',  'Relative RMS'),
+        ('bias', 'Relative Bias vs Pred Npho (per face)', 'Relative Bias'),
     ]
 
     with PdfPages(args.output) as pdf:
@@ -384,15 +435,14 @@ def main():
         pdf.savefig(fig)
         plt.close(fig)
 
-        # ===== Pages 2–4: per-face binned metrics =====
-        for metric_key, suptitle, ylabel in page_defs:
+        # ===== Pages 2–4: per-face binned metrics vs Truth Npho =====
+        for metric_key, suptitle, ylabel in page_defs_truth:
             fig, axes = plt.subplots(2, 3, figsize=(18, 10))
             axes_flat = axes.flatten()
 
             for idx, (face_int, face_name) in enumerate(FACE_INT_TO_NAME.items()):
                 ax = axes_flat[idx]
 
-                # ML entries
                 for ei, (entry, _) in enumerate(loaded):
                     key = (ei, face_int)
                     if key not in metrics_cache:
@@ -407,7 +457,6 @@ def main():
                     ax.plot(centers, vals, 'o-', color=entry['color'],
                             markersize=3, label=entry['label'])
 
-                # Baselines
                 if baseline_entry_idx is not None:
                     for bname, bdef in BASELINE_DEFS.items():
                         key = (bname, face_int)
@@ -434,7 +483,55 @@ def main():
             pdf.savefig(fig)
             plt.close(fig)
 
-    print(f"[INFO] Saved {args.output} (4 pages: summary + relative MAE, RMS, bias)")
+        # ===== Pages 5–7: per-face binned metrics vs Pred Npho =====
+        for metric_key, suptitle, ylabel in page_defs_pred:
+            fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+            axes_flat = axes.flatten()
+
+            for idx, (face_int, face_name) in enumerate(FACE_INT_TO_NAME.items()):
+                ax = axes_flat[idx]
+
+                for ei, (entry, _) in enumerate(loaded):
+                    key = (ei, face_int)
+                    if key not in pred_metrics_cache:
+                        continue
+                    centers, mae, bias, rms = pred_metrics_cache[key]
+                    if metric_key == 'mae':
+                        vals = mae / centers
+                    elif metric_key == 'rms':
+                        vals = rms / centers
+                    else:
+                        vals = bias / centers
+                    ax.plot(centers, vals, 'o-', color=entry['color'],
+                            markersize=3, label=entry['label'])
+
+                if baseline_entry_idx is not None:
+                    for bname, bdef in BASELINE_DEFS.items():
+                        key = (bname, face_int)
+                        if key not in pred_metrics_cache:
+                            continue
+                        centers, mae, bias, rms = pred_metrics_cache[key]
+                        if metric_key == 'mae':
+                            vals = mae / centers
+                        elif metric_key == 'rms':
+                            vals = rms / centers
+                        else:
+                            vals = bias / centers
+                        ax.plot(centers, vals, 's--', color=bdef['color'],
+                                markersize=3, alpha=0.8, label=bdef['label'])
+
+                ax.set_xscale('log')
+                ax.set_xlabel('Pred Npho [photons]')
+                ax.set_ylabel(ylabel)
+                ax.set_title(face_name)
+                ax.legend(fontsize=7)
+
+            fig.suptitle(suptitle, fontsize=14)
+            plt.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    print(f"[INFO] Saved {args.output} (7 pages: summary, 3x truth, 3x pred)")
 
     # --- Stdout summary ---
 
