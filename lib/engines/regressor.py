@@ -95,7 +95,7 @@ def run_epoch_stream(
         "true_theta": [],    "true_phi": [],
         "opening_angle": [],
         # Energy task
-        "pred_energy": [],   "true_energy": [],   "energy_log_var": [],
+        "pred_energy": [],   "true_energy": [],
         # Timing task
         "pred_timing": [],   "true_timing": [],
         # Position task (uvwFI)
@@ -106,6 +106,12 @@ def run_epoch_stream(
         "x_truth": [], "y_truth": [], "z_truth": [],
         "x_vtx": [],   "y_vtx": [],   "z_vtx": []
     }
+
+    # Initialize log_var collection for any gaussian_nll tasks
+    if task_weights:
+        for task, cfg in task_weights.items():
+            if isinstance(cfg, dict) and cfg.get("loss_fn") == "gaussian_nll":
+                val_root_data[f"{task}_log_var"] = []
 
     # Use heapq for efficient worst-case tracking (min-heap, so we store negative loss)
     worst_events_heap = []  # (negative_loss, event_dict)
