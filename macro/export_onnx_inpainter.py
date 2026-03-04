@@ -11,12 +11,12 @@ Usage:
     python macro/export_onnx_inpainter.py checkpoint.pth --output inpainter.pt
 
 The exported model takes:
-    - input: (B, 4760, 2) - sensor values (npho, time) with dead channels as sentinel
-    - mask: (B, 4760) - binary mask (1 = dead/masked, 0 = valid)
+    - x_raw: (B, 4760, 2) - RAW sensor values [npho_raw, time_raw]
+    - mask:  (B, 4760)    - binary mask (1 = dead/masked, 0 = valid)
 
 Returns:
-    - output: (B, 4760, 2) - reconstructed values (predictions at masked positions,
-              original values at unmasked positions)
+    - npho_out: (B, 4760) - raw npho with inpainted values at masked positions,
+                original values preserved at unmasked positions
 
 For C++ inference with libtorch:
     auto model = torch::jit::load("inpainter.pt");
@@ -39,40 +39,55 @@ class InpainterScriptableWrapper(nn.Module):
     """
     TorchScript-compatible wrapper for XEC_Inpainter.
 
-    Uses the forward_full_output() method which returns fixed-size tensor,
-    enabling clean TorchScript export without dynamic tensor size issues.
+    Bakes normalization/denormalization inside the model so the C++ side
+    can pass RAW npho and time values and get RAW npho back.
 
-    Output shape depends on predict_channels:
-    - ["npho"]:          (B, 4760, 1) — npho only
-    - ["npho", "time"]:  (B, 4760, 2) — npho + time
+    Input:  x_raw (B, 4760, 2) with [npho_raw, time_raw]
+            mask  (B, 4760)    binary (1=dead, 0=valid)
+    Output: npho_out (B, 4760) raw npho with inpainted values at masked positions
     """
 
-    def __init__(self, inpainter: XEC_Inpainter):
+    def __init__(self, inpainter: XEC_Inpainter, config: dict):
         super().__init__()
         self.inpainter = inpainter
         self.out_channels = inpainter.out_channels
+        # Bake normalization constants from config
+        self.npho_scale: float = config.get("npho_scale", 1000.0)
+        self.npho_scale2: float = config.get("npho_scale2", 4.08)
+        self.time_scale: float = config.get("time_scale", 1.14e-7)
+        self.time_shift: float = config.get("time_shift", -0.46)
+        self.sentinel_npho: float = config.get("sentinel_npho", -1.0)
+        self.sentinel_time: float = config.get("sentinel_time", -1.0)
 
-    def forward(self, x_input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, x_raw: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x_input: (B, 4760, 2) - sensor values with dead channels as sentinel
-            mask: (B, 4760) - binary mask (1 = masked/dead, 0 = valid)
-
+            x_raw: (B, 4760, 2) - RAW sensor values [npho_raw, time_raw]
+            mask:  (B, 4760)    - binary mask (1=dead, 0=valid)
         Returns:
-            output: (B, 4760, C) - tensor with inpainted values at masked positions,
-                    original values preserved at unmasked positions.
-                    C = out_channels (1 for npho-only, 2 for npho+time).
+            npho_out: (B, 4760) - raw npho with inpainted values at masked positions
         """
-        # Use fixed-size output method for clean TorchScript export
-        pred_all = self.inpainter.forward_full_output(x_input, mask)  # (B, 4760, C)
+        # Normalize npho: log1p(raw / scale) / scale2
+        npho_norm = torch.log1p(x_raw[:, :, 0] / self.npho_scale) / self.npho_scale2
+        time_norm = x_raw[:, :, 1] / self.time_scale + self.time_shift
 
-        # Combine: use predictions at masked positions, original at unmasked
-        # Slice x_input to match out_channels (e.g., only npho channel for npho-only)
-        x_ref = x_input[:, :, :self.out_channels]
-        mask_expanded = mask.bool().unsqueeze(-1).expand_as(x_ref)
-        output = torch.where(mask_expanded, pred_all, x_ref)
+        # Apply sentinels at masked positions
+        mask_bool = mask.bool()
+        npho_norm = npho_norm.masked_fill(mask_bool, self.sentinel_npho)
+        time_norm = time_norm.masked_fill(mask_bool, self.sentinel_time)
 
-        return output
+        x_norm = torch.stack([npho_norm, time_norm], dim=-1)  # (B, 4760, 2)
+
+        # Run model
+        pred_all = self.inpainter.forward_full_output(x_norm, mask)  # (B, 4760, C)
+
+        # Denormalize npho output: scale * (exp(norm * scale2) - 1)
+        npho_pred_norm = pred_all[:, :, 0]
+        npho_pred_raw = self.npho_scale * (torch.exp(npho_pred_norm * self.npho_scale2) - 1.0)
+
+        # Combine: predictions at masked, original at unmasked
+        npho_out = torch.where(mask_bool, npho_pred_raw, x_raw[:, :, 0])
+        return npho_out  # (B, 4760)
 
 
 # Keep old class name as alias for backward compatibility
@@ -206,8 +221,8 @@ NOTE: ONNX export is NOT supported due to nn.TransformerEncoder's fused kernel.
     inpainter, config = load_inpainter_checkpoint(args.checkpoint, prefer_ema=not args.no_ema)
     inpainter.eval()
 
-    # Create wrapper
-    wrapper = InpainterONNXWrapper(inpainter)
+    # Create wrapper (with config for baked normalization constants)
+    wrapper = InpainterONNXWrapper(inpainter, config)
     wrapper.eval()
 
     # Dummy inputs for tracing
