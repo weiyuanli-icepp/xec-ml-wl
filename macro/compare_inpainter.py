@@ -9,6 +9,7 @@ types.
 Usage:
     python macro/compare_inpainter.py --mode mc            # MC validation (default)
     python macro/compare_inpainter.py --mode sensorfront   # sensor-front validation
+    python macro/compare_inpainter.py --localfit path/to/localfit.root  # overlay local fit
     python macro/compare_inpainter.py -o out.pdf           # custom output path
 """
 
@@ -153,6 +154,32 @@ def _load_entry(entry):
     }
 
 
+def _load_localfit(path):
+    """Load standalone LocalFitBaseline output (raw photon values, no denorm)."""
+    print(f"[INFO] Loading localfit: {path}")
+    with uproot.open(path) as f:
+        for tname in ('predictions', 'tree', 'Tree'):
+            if tname in f:
+                tree = f[tname]
+                break
+        else:
+            tree = f[f.keys()[0]]
+
+        data = {k: tree[k].array(library='np') for k in tree.keys()}
+
+    valid = data['error_npho'] > -999
+    if 'mask_type' in data:
+        valid = valid & (data['mask_type'] == 0)
+
+    return {
+        'truth_raw': data['truth_npho'][valid],
+        'error_raw': data['error_npho'][valid],
+        'face': data['face'][valid],
+        'baselines': {},
+        'meta': {'npho_scheme': 'raw', 'npho_scale': 1.0, 'npho_scale2': 1.0},
+    }
+
+
 def _compute_slice_metrics(truth, error, bin_edges):
     """Binned MAE, bias, RMS of error.  Returns bin_centers and all three."""
     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
@@ -187,6 +214,8 @@ def main():
     parser.add_argument('--mode', type=str, default='mc',
                         choices=list(ENTRIES_BY_MODE.keys()),
                         help='Validation type to compare (default: mc)')
+    parser.add_argument('--localfit', type=str, default=None,
+                        help='Path to LocalFitBaseline output ROOT file (raw photons)')
     args = parser.parse_args()
 
     if args.output is None:
@@ -199,6 +228,11 @@ def main():
     loaded = []
     for entry in entries:
         loaded.append((entry, _load_entry(entry)))
+
+    # Optionally add standalone LocalFitBaseline result
+    if args.localfit:
+        lf_entry = {'label': 'Local Fit', 'color': 'darkred', 'path': args.localfit}
+        loaded.append((lf_entry, _load_localfit(args.localfit)))
 
     # Shared bin edges (log-spaced in raw photons)
     pct95_vals = []
