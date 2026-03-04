@@ -238,6 +238,17 @@ def get_pointwise_loss_fn(loss_name: str, epsilon: float = 1e-3, beta: float = 1
             return sq_error / scale
         return relative_mse_loss
 
+    # Gaussian NLL loss (β-NLL): pred is (B, 2) with [mu, log_var]
+    if name == "gaussian_nll":
+        def gaussian_nll_loss(pred, target):
+            mu = pred[:, :1]
+            log_var = pred[:, 1:]
+            var = torch.exp(log_var)
+            nll = 0.5 * (log_var + ((target - mu) ** 2) / var)
+            weight = var.detach() ** beta   # β-NLL weighting
+            return weight * nll             # (B, 1)
+        return gaussian_nll_loss
+
     # Default to smooth_l1
     return lambda pred, target: torch.nn.functional.smooth_l1_loss(pred, target, reduction="none", beta=beta)
 

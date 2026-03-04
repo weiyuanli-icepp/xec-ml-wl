@@ -314,25 +314,22 @@ class XECEncoder(nn.Module):
 
 
 class XECMultiHeadModel(nn.Module):
-    def __init__(self, backbone : XECEncoder, hidden_dim=256, active_tasks=["angle", "energy", "xyz"]):
+    _BASE_DIMS = {"angle": 2, "energy": 1, "timing": 1, "uvwFI": 3, "angleVec": 3, "n_gamma": 5}
+
+    def __init__(self, backbone : XECEncoder, hidden_dim=256, active_tasks=["angle", "energy", "xyz"], nll_tasks=None):
         super().__init__()
-        
+
         self.backbone     = backbone
         self.active_tasks = active_tasks
+        self.nll_tasks    = set(nll_tasks or [])
         self.embed_dim    = self.backbone.face_embed_dim
         self.total_tokens = self.backbone.pos_embed.shape[1]
         self.in_features  = self.embed_dim * self.total_tokens
-        
-        self.heads = nn.ModuleDict({
-            "angle":    self._make_head(self.in_features, hidden_dim, 2), # Theta, Phi
-            "energy":   self._make_head(self.in_features, hidden_dim, 1), # E_gamma
-            "timing":   self._make_head(self.in_features, hidden_dim, 1), # T_gamma
-            "uvwFI":    self._make_head(self.in_features, hidden_dim, 3), # gamma first interaction position (u,v,w)
-            "angleVec": self._make_head(self.in_features, hidden_dim, 3), # Emission vector (x,y,z)
-            "n_gamma":  self._make_head(self.in_features, hidden_dim, 5), # Number of gammas (0-4)
-        })
-        
-        self.active_tasks = active_tasks
+
+        self.heads = nn.ModuleDict()
+        for task, base_dim in self._BASE_DIMS.items():
+            out_dim = base_dim + (1 if task in self.nll_tasks else 0)
+            self.heads[task] = self._make_head(self.in_features, hidden_dim, out_dim)
     
     def _make_head(self, in_dim, hidden_dim, out_dim):
         return nn.Sequential(

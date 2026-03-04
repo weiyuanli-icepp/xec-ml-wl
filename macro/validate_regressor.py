@@ -190,7 +190,8 @@ def _run_onnx(args, cfg, active_tasks, norm_params):
         if "energy" in active_tasks:
             out_key = "output_energy"
             if out_key in output_map:
-                pred = output_map[out_key].flatten()
+                raw = output_map[out_key]
+                pred = raw[:, 0] if raw.ndim == 2 and raw.shape[1] > 1 else raw.flatten()
                 root_data["pred_energy"].append(pred)
             true_e = target_dict.get("energy")
             if true_e is not None:

@@ -307,6 +307,8 @@ def train_with_config(config_path: str, profile: bool = None):
 
     # --- Model ---
     outer_fine_pool = tuple(cfg.model.outer_fine_pool) if cfg.model.outer_fine_pool else None
+    nll_tasks = [t for t, c in task_weights.items()
+                 if isinstance(c, dict) and c.get("loss_fn") == "gaussian_nll"]
     base_regressor = XECEncoder(
         outer_mode=cfg.model.outer_mode,
         outer_fine_pool=outer_fine_pool,
@@ -319,7 +321,8 @@ def train_with_config(config_path: str, profile: bool = None):
     model = XECMultiHeadModel(
         base_regressor,
         active_tasks=active_tasks,
-        hidden_dim=cfg.model.hidden_dim
+        hidden_dim=cfg.model.hidden_dim,
+        nll_tasks=nll_tasks,
     ).to(device)
     total_params, trainable_params = count_model_params(model)
     if is_main_process():

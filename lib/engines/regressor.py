@@ -127,7 +127,8 @@ def run_epoch_stream(
     # Pre-cache loss functions and settings for each task (avoid repeated lookups in loop)
     task_loss_cache = {}
     valid_loss_names = {"smooth_l1", "huber", "l1", "mse", "l2",
-                        "relative_l1", "relative_smooth_l1", "relative_mse", "relative_l2"}
+                        "relative_l1", "relative_smooth_l1", "relative_mse", "relative_l2",
+                        "gaussian_nll"}
     if task_weights:
         for task, cfg in task_weights.items():
             if isinstance(cfg, dict):
@@ -332,6 +333,12 @@ def run_epoch_stream(
                         for task, cfg in task_weights.items():
                             if isinstance(cfg, dict) and cfg.get("log_transform", False) and task in preds:
                                 preds[task] = torch.exp(preds[task])
+
+                    # Strip log_var from gaussian_nll tasks so downstream sees (B, 1)
+                    if task_weights:
+                        for task, cfg in task_weights.items():
+                            if isinstance(cfg, dict) and cfg.get("loss_fn") == "gaussian_nll" and task in preds:
+                                preds[task] = preds[task][:, :1]
                 profiler.stop()
 
                 profiler.start("loss_compute")
