@@ -74,4 +74,13 @@ class EnergyTaskHandler(TaskHandler):
         metrics["energy_bias"] = float(np.mean(residual))
         metrics["energy_res_68pct"] = float(np.percentile(np.abs(residual), 68))
 
+        # Uncertainty metrics from gaussian_nll (log_var predictions)
+        log_var = val_root_data.get("energy_log_var", np.array([]))
+        if log_var.size > 0:
+            pred_std = np.sqrt(np.exp(log_var))
+            metrics["energy_pred_std_mean"] = float(np.mean(pred_std))
+            actual_std = float(np.std(residual))
+            if actual_std > 0:
+                metrics["energy_calibration_ratio"] = float(np.mean(pred_std)) / actual_std
+
         return metrics

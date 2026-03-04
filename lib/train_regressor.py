@@ -779,6 +779,13 @@ def train_with_config(config_path: str, profile: bool = None):
                     "fiducial_w_min": cfg.data.fiducial.w_min,
                     "fiducial_w_max": cfg.data.fiducial.w_max,
                 })
+            # Log per-task loss config (loss_fn, loss_beta, weight)
+            if task_weights:
+                for task, tcfg in task_weights.items():
+                    if isinstance(tcfg, dict):
+                        log_params[f"task/{task}_loss_fn"] = tcfg.get("loss_fn", "smooth_l1")
+                        log_params[f"task/{task}_loss_beta"] = tcfg.get("loss_beta", 1.0)
+                        log_params[f"task/{task}_weight"] = tcfg.get("weight", 1.0)
             mlflow.log_params(log_params)
 
         best_state = None

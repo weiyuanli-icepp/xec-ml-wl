@@ -95,7 +95,7 @@ def run_epoch_stream(
         "true_theta": [],    "true_phi": [],
         "opening_angle": [],
         # Energy task
-        "pred_energy": [],   "true_energy": [],
+        "pred_energy": [],   "true_energy": [],   "energy_log_var": [],
         # Timing task
         "pred_timing": [],   "true_timing": [],
         # Position task (uvwFI)
@@ -333,6 +333,9 @@ def run_epoch_stream(
                     if task_weights:
                         for task, cfg in task_weights.items():
                             if isinstance(cfg, dict) and cfg.get("loss_fn") == "gaussian_nll" and task in preds:
+                                val_root_data[f"{task}_log_var"].append(
+                                    preds[task][:, 1].cpu().numpy()
+                                )
                                 preds[task] = preds[task][:, :1]
 
                     # Convert predictions from log space to linear space for tasks with log_transform
