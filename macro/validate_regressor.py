@@ -70,7 +70,18 @@ def _run_pytorch(args, cfg, active_tasks, norm_params):
         num_fusion_layers=num_fusion_layers,
         sentinel_time=norm_params["sentinel_time"],
     )
-    model = XECMultiHeadModel(base_regressor, active_tasks=active_tasks)
+    # Determine nll_tasks for correct head dimensions
+    nll_tasks = []
+    config_meta = checkpoint.get("config", {})
+    if isinstance(config_meta, dict):
+        nll_tasks = config_meta.get("nll_tasks", [])
+    if not nll_tasks and cfg and hasattr(cfg, 'tasks'):
+        from lib.config import get_task_weights
+        tw = get_task_weights(cfg)
+        nll_tasks = [t for t, c in tw.items()
+                     if isinstance(c, dict) and c.get("loss_fn") == "gaussian_nll"]
+
+    model = XECMultiHeadModel(base_regressor, active_tasks=active_tasks, nll_tasks=nll_tasks)
     model.to(device)
 
     # Load weights

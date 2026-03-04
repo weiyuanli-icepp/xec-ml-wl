@@ -129,9 +129,11 @@ def main():
         sentinel_time=config_meta.get('sentinel_time', -1.0),
     )
 
+    nll_tasks = config_meta.get("nll_tasks", [])
     model = XECMultiHeadModel(
         backbone=backbone,
-        active_tasks=active_tasks
+        active_tasks=active_tasks,
+        nll_tasks=nll_tasks,
     )
     model.eval()
 

@@ -32,7 +32,7 @@ class TimeConfig:
 class TaskConfig:
     """Configuration for a single task."""
     enabled: bool = False
-    loss_fn: str = "smooth_l1"  # smooth_l1, l1, mse, relative_l1, relative_smooth_l1, relative_mse
+    loss_fn: str = "smooth_l1"  # smooth_l1, l1, mse, relative_l1, relative_smooth_l1, relative_mse, gaussian_nll
     loss_beta: float = 1.0      # For smooth_l1/huber
     weight: float = 1.0         # Manual loss weight
     log_transform: bool = False  # Train on log(value) for energy/timing tasks
