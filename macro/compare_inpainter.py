@@ -102,9 +102,12 @@ def _load_entry(entry):
                     v = mt[k].array(library='np')[0]
                     if not np.isnan(v):
                         meta[k] = float(v)
-        # Real data validation stores raw photons with no npho_scheme in metadata
+        # Real data validation stores raw photons with no npho_scheme in metadata.
+        # All MC/sensorfront validation scripts always write npho_scheme, so
+        # absence reliably indicates a real-data output file.
         if not has_npho_scheme and 'metadata' in f:
             meta['npho_scheme'] = 'raw'
+            print(f"[INFO]   No npho_scheme in metadata → treating as raw photons")
 
         # --- predictions tree ---
         for tname in ('predictions', 'tree', 'Tree'):
