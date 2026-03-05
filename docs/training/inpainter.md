@@ -150,16 +150,34 @@ python -m lib.train_inpainter --config config/inp/inpainter_config.yaml \
 # 3. Export to TorchScript
 python macro/export_onnx_inpainter.py checkpoint.pth --output inpainter.pt
 
-# 4a. MC Pseudo-Experiment (full metrics)
-python macro/validate_inpainter.py --torchscript inpainter.pt \
-    --input mc_data.root --run 430000 --output validation_mc/
+# 4a. MC Validation (single checkpoint)
+python macro/validate_inpainter.py \
+    --checkpoint checkpoint.pth --input mc_data.root \
+    --run 430000 --baselines --local-fit-baseline \
+    --output validation_mc/
 
-# 4b. Real Data Validation (--real-data flag)
-python macro/validate_inpainter.py --torchscript inpainter.pt \
-    --input real_data.root --run 430000 --real-data --output validation_real/
+# 4b. Sensorfront Validation (single checkpoint)
+python macro/validate_inpainter_sensorfront.py \
+    --checkpoint checkpoint.pth --input mc_data.root \
+    --solid-angle-branch solid_angle --output validation_sensorfront/
 
-# 5. Analyze Results
-python macro/analyze_inpainter.py validation_mc/predictions.root --output analysis/
+# 4c. Real Data Validation
+python val_data/validate_inpainter_real.py \
+    --torchscript inpainter.pt --input real_data.root \
+    --run 430000 --output validation_data/
+
+# 5. Batch Validation (scan steps, SLURM)
+bash macro/submit_validate_scan.sh 1 2 3 4 5 6          # MC validation
+bash macro/submit_validate_sensorfront_scan.sh 1 2 3 4 5 6  # Sensorfront
+bash macro/submit_localfit_sensorfront.sh manifest.npz   # Localfit (after sensorfront)
+
+# 6. Cross-Configuration Comparison
+python macro/compare_inpainter.py --mode mc              # MC comparison PDF
+python macro/compare_inpainter.py --mode sensorfront     # Sensorfront comparison
+python macro/compare_inpainter.py --mode data            # Real data comparison
+
+# 7. Single-Run Analysis
+python macro/analyze_inpainter.py predictions.root --output analysis/
 ```
 
 ---
@@ -1140,3 +1158,144 @@ This comparison helps understand:
 - Whether the model generalizes from MC training to real data
 - Whether performance on artificially masked sensors (real data) is representative of dead channel recovery
 - Face-specific performance differences between real and MC
+
+---
+
+## 12. Batch Validation & Cross-Configuration Comparison
+
+When scanning hyperparameters (e.g., mask ratio, normalization scheme, weighting), validate all scan steps in parallel on SLURM and compare results side-by-side.
+
+### 12.1 Scan Step Layout
+
+Each scan step stores its artifacts under `artifacts/inp_scan_<label>/`:
+
+```
+artifacts/
+  inp_scan_s1_baseline/
+    inpainter_checkpoint_best.pth
+    validation_mc/               # MC validation output
+    validation_sensorfront/      # Sensorfront validation output
+    validation_data/             # Real data validation output
+  inp_scan_s2_flatmask/
+    ...
+```
+
+### 12.2 MC Validation (All Scan Steps)
+
+Submit SLURM jobs for all scan steps at once. Each job runs `validate_inpainter.py` with baselines (neighbor avg, solid-angle weighted) and LocalFitBaseline.
+
+```bash
+# Submit all steps (default: s1-s8)
+bash macro/submit_validate_scan.sh
+
+# Submit specific steps
+bash macro/submit_validate_scan.sh 1 2 3 4 5 6
+
+# Preview without submitting
+DRY_RUN=1 bash macro/submit_validate_scan.sh
+```
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PARTITION` | `mu3e` | SLURM partition (`meg-long`, `meg-short`, `mu3e`, `hourly`, `daily`, `general`) |
+| `LOCAL_FIT` | `1` | Enable LocalFitBaseline via ROOT macro (`0` to disable) |
+| `RUN_NUMBER` | `430000` | Dead channel pattern run number |
+| `VAL_PATH` | `data/E15to60_AngUni_PosSQ/val2/` | Validation data path |
+| `MAX_EVENTS` | (all) | Limit number of events |
+| `DRY_RUN` | `0` | Preview without submitting |
+
+Partitions `meg-long`, `meg-short`, `mu3e` automatically add `--account=meg`. Other partitions (`hourly`, `daily`, `general`) omit it.
+
+### 12.3 Sensorfront Validation (All Scan Steps)
+
+Tests inpainter recovery when the peak-signal sensor is masked.
+
+```bash
+# Step 1: Run sensorfront validation (saves manifest for localfit)
+bash macro/submit_validate_sensorfront_scan.sh 1 2 3 4 5 6
+
+# Step 2: After step 1 completes, run LocalFitBaseline on each manifest
+bash macro/submit_localfit_sensorfront.sh \
+    artifacts/inp_scan_s1_baseline/validation_sensorfront/_sensorfront_manifest.npz
+# ... repeat for each step
+
+# Step 3: Merge split localfit output files
+hadd -f localfit_merged.root localfit_file000*.root
+```
+
+The sensorfront script accepts the same `PARTITION` and `DRY_RUN` variables.
+
+### 12.4 Real Data Validation (All Scan Steps)
+
+Uses `val_data/validate_inpainter_real.py` with artificially masked healthy sensors.
+Output is in raw photons (no normalization) with `mask_type` column.
+
+```bash
+# Per-step (no batch script yet — run manually or write a loop)
+python val_data/validate_inpainter_real.py \
+    --torchscript artifacts/inp_scan_s1_baseline/inpainter.pt \
+    --input real_data.root --run 430000 \
+    --output artifacts/inp_scan_s1_baseline/validation_data/
+```
+
+### 12.5 Cross-Configuration Comparison
+
+After validation jobs complete, generate comparison PDFs:
+
+```bash
+# MC validation comparison (7-page PDF)
+python macro/compare_inpainter.py --mode mc
+
+# Sensorfront comparison
+python macro/compare_inpainter.py --mode sensorfront
+
+# Real data comparison
+python macro/compare_inpainter.py --mode data
+
+# Overlay standalone LocalFitBaseline result
+python macro/compare_inpainter.py --mode mc --localfit path/to/localfit_merged.root
+
+# Custom output path
+python macro/compare_inpainter.py --mode mc -o my_comparison.pdf
+```
+
+**PDF contents (7 pages):**
+
+| Page | Content |
+|------|---------|
+| 1 | Summary: global relative MAE bar chart + per-face grouped bars |
+| 2-4 | Per-face relative MAE / RMS / Bias vs truth npho (log-scale bins) |
+| 5-7 | Per-face relative MAE / RMS / Bias vs pred npho (log-scale bins) |
+
+**Baselines** (from the first entry that has them):
+- Neighbor Avg — k-hop average of valid neighbors
+- Solid-Angle Weighted — solid-angle-based weighted average
+- Local Fit — physics-based position fit + solid-angle prediction (`LocalFitBaseline.C`)
+
+**Stdout output** includes global metrics table, per-face MAE, and per-face relative MAE for all methods.
+
+### 12.6 Typical End-to-End Workflow
+
+```bash
+# 1. Train scan steps (s1-s8 with different configs)
+#    ... (see training section)
+
+# 2. MC validation with baselines + localfit
+bash macro/submit_validate_scan.sh 1 2 3 4 5 6
+
+# 3. Sensorfront validation
+bash macro/submit_validate_sensorfront_scan.sh 1 2 3 4 5 6
+
+# 4. (After sensorfront completes) Localfit for sensorfront
+for step in 1 2 3 4 5 6; do
+    label=$(printf "s%d_*" $step)
+    manifest=$(ls artifacts/inp_scan_${label}/validation_sensorfront/_sensorfront_manifest.npz 2>/dev/null)
+    [ -n "$manifest" ] && bash macro/submit_localfit_sensorfront.sh "$manifest"
+done
+
+# 5. Generate comparison PDFs
+python macro/compare_inpainter.py --mode mc -o compare_mc.pdf
+python macro/compare_inpainter.py --mode sensorfront -o compare_sf.pdf
+```
