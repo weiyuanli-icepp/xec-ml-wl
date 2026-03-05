@@ -495,11 +495,10 @@ def load_baselines_raw(
 ) -> dict:
     """Load raw baseline predictions and normalize to the target scheme.
 
-    Returns dict mapping baseline name -> list-of-dicts (same format as
-    _collect_baseline_fast).
+    Returns dict mapping baseline name -> (n_matched, 4760) prediction arrays.
     """
     data = np.load(baselines_path)
-    baseline_results = {}
+    baseline_preds = {}
     n_matched = len(matched_sid)
 
     for key, name in [("avg_pred_raw", "avg"), ("sa_pred_raw", "sa")]:
@@ -511,25 +510,14 @@ def load_baselines_raw(
             np.maximum(pred_raw, npho_xf.domain_min())
         ).astype(np.float32)
 
-        results = []
-        for i in range(n_matched):
-            sid = int(matched_sid[i])
-            p = float(pred_norm[i])
-            t = float(truth_at_mask[i, 0])
-            err = p - t if t != MODEL_SENTINEL_NPHO else -999.0
-            results.append({
-                "event_idx": i,
-                "sensor_id": sid,
-                "mask_type": 0,
-                "pred_npho": p,
-                "truth_npho": t,
-                "error_npho": err,
-            })
-        baseline_results[name] = results
+        # Expand per-sensor values to (n_matched, 4760) array
+        pred_full = np.zeros((n_matched, N_CHANNELS), dtype=np.float32)
+        pred_full[np.arange(n_matched), matched_sid] = pred_norm
+        baseline_preds[name] = pred_full
         print(f"[INFO] Loaded {name} baseline: {n_matched} predictions "
               f"(normalized to {npho_xf.scheme})")
 
-    return baseline_results
+    return baseline_preds
 
 
 # =========================================================
@@ -786,7 +774,7 @@ def main():
             args.baselines_from = None
 
     if not args.baselines_from:
-        # Compute baselines inline (current behavior)
+        # Compute baselines inline — keep (n_matched, 4760) arrays
         from lib.inpainter_baselines import (
             NeighborAverageBaseline, SolidAngleWeightedBaseline,
         )
@@ -795,25 +783,15 @@ def main():
 
         print("[INFO] Running NeighborAverageBaseline...")
         avg_baseline = NeighborAverageBaseline(k=1)
-        avg_preds = avg_baseline.predict(x_npho_orig, combined_mask,
-                                         npho_transform=npho_xf)
-        avg_results = _collect_baseline_fast(
-            avg_preds, truth_at_mask, matched_sid, n_matched,
-        )
-        del avg_preds
-        baseline_results["avg"] = avg_results
+        baseline_results["avg"] = avg_baseline.predict(
+            x_npho_orig, combined_mask, npho_transform=npho_xf)
 
         if solid_angles is not None:
             print("[INFO] Running SolidAngleWeightedBaseline...")
             sa_baseline = SolidAngleWeightedBaseline(k=1)
-            sa_preds = sa_baseline.predict(x_npho_orig, combined_mask,
-                                           solid_angles=solid_angles,
-                                           npho_transform=npho_xf)
-            sa_results = _collect_baseline_fast(
-                sa_preds, truth_at_mask, matched_sid, n_matched,
-            )
-            del sa_preds
-            baseline_results["sa"] = sa_results
+            baseline_results["sa"] = sa_baseline.predict(
+                x_npho_orig, combined_mask, solid_angles=solid_angles,
+                npho_transform=npho_xf)
         del x_npho_orig
     del solid_angles
     gc.collect()
@@ -881,26 +859,28 @@ def main():
     # 6. Load pre-computed local-fit results (if provided)
     # ------------------------------------------------------------------
     if args.local_fit_results:
-        lf_results = _load_local_fit_results(
+        lf_pred_array = _load_local_fit_results(
             args.local_fit_results, matched_orig_idx, matched_sid,
             truth_at_mask, npho_scheme,
             npho_scale=npho_scale, npho_scale2=npho_scale2,
         )
-        if lf_results:
-            baseline_results["localfit"] = lf_results
+        if lf_pred_array is not None:
+            baseline_results["localfit"] = lf_pred_array
 
     # ------------------------------------------------------------------
     # 7. Compute baseline metrics
     # ------------------------------------------------------------------
     baseline_metrics_dict = {}
-    for bname, bpreds in baseline_results.items():
-        baseline_metrics_dict[bname] = compute_baseline_metrics(bpreds)
+    for bname, bpred_full in baseline_results.items():
+        baseline_metrics_dict[bname] = compute_baseline_metrics(
+            bpred_full, x_original, combined_mask, artificial_mask=None
+        )
 
     # ------------------------------------------------------------------
     # 8. Collect ML predictions
     # ------------------------------------------------------------------
     print("[INFO] Collecting predictions...")
-    pred_list = collect_predictions(
+    pred_data = collect_predictions(
         predictions, x_original, combined_mask,
         artificial_mask, dead_mask,
         run_numbers=run_numbers,
@@ -908,10 +888,10 @@ def main():
         predict_channels=predict_channels,
     )
 
-    # Add w_fip to each prediction entry
-    _add_w_fip(pred_list, uvw_matched, matched_sid)
+    # Add w_fip as array to prediction data
+    pred_data['w_fip'] = uvw_matched[pred_data['event_idx'], 2].astype(np.float32)
 
-    ml_metrics = compute_metrics(pred_list, predict_channels=predict_channels)
+    ml_metrics = compute_metrics(pred_data, predict_channels=predict_channels)
 
     # ------------------------------------------------------------------
     # 9. Print summary
@@ -924,22 +904,18 @@ def main():
     # ------------------------------------------------------------------
     # 10. Save outputs
     # ------------------------------------------------------------------
-    # Add w_fip to baseline results too (for ROOT output)
-    for bname in baseline_results:
-        _add_w_fip(baseline_results[bname], uvw_matched, matched_sid)
-
     pred_file = os.path.join(args.output, "predictions_sensorfront.root")
     save_predictions(
-        pred_list, pred_file,
+        pred_data, pred_file,
         predict_channels=predict_channels,
         npho_scheme=npho_scheme,
         npho_scale=npho_scale,
         npho_scale2=npho_scale2,
-        baseline_results=baseline_results,
+        baseline_preds=baseline_results,
     )
 
     # Extra: save w_fip branch into the ROOT file
-    _append_w_fip_branch(pred_file, pred_list)
+    _append_w_fip_branch(pred_file, pred_data['w_fip'])
 
     metrics_file = os.path.join(args.output, "metrics_sensorfront.csv")
     with open(metrics_file, "w", newline="") as f:
@@ -967,19 +943,19 @@ def _load_local_fit_results(
     npho_scheme: str,
     npho_scale: float = DEFAULT_NPHO_SCALE,
     npho_scale2: float = DEFAULT_NPHO_SCALE2,
-) -> list:
+) -> Optional[np.ndarray]:
     """Load pre-computed local-fit results from batch jobs.
 
     Reads all localfit_file*.npz files from results_dir, matches them
     to the current manifest's (matched_orig_idx, matched_sid), and
-    returns a prediction list compatible with compute_baseline_metrics().
+    returns an (n_matched, 4760) prediction array (NaN = no prediction).
     """
     from glob import glob as _glob
 
     result_files = sorted(_glob(os.path.join(results_dir, "localfit_file*.npz")))
     if not result_files:
         print(f"[WARNING] No localfit_file*.npz found in {results_dir}")
-        return []
+        return None
 
     print(f"[INFO] Loading local-fit results from {len(result_files)} file(s)")
 
@@ -998,86 +974,33 @@ def _load_local_fit_results(
         for j in range(len(gev_arr)):
             lf_lookup[(int(gev_arr[j]), int(sid_arr[j]))] = float(pred_norm[j])
 
-    # Match to our per-event mask
-    results = []
+    # Build (n_matched, 4760) prediction array
+    n_matched = len(matched_orig_idx)
+    lf_pred_full = np.full((n_matched, N_CHANNELS), np.nan, dtype=np.float32)
+
     n_found = 0
-    for sub_i in range(len(matched_orig_idx)):
+    for sub_i in range(n_matched):
         ev_orig = int(matched_orig_idx[sub_i])
         sid = int(matched_sid[sub_i])
-        truth_npho = float(truth_at_mask[sub_i, 0])
-
         key = (ev_orig, sid)
         if key in lf_lookup:
-            pred_npho = lf_lookup[key]
+            lf_pred_full[sub_i, sid] = lf_lookup[key]
             n_found += 1
-        else:
-            pred_npho = -999.0
 
-        if truth_npho == MODEL_SENTINEL_NPHO or pred_npho == -999.0:
-            error_npho = -999.0
-        else:
-            error_npho = pred_npho - truth_npho
-
-        results.append({
-            "event_idx": sub_i,
-            "sensor_id": sid,
-            "mask_type": 0,
-            "pred_npho": pred_npho,
-            "truth_npho": truth_npho,
-            "error_npho": error_npho,
-        })
-
-    print(f"[INFO] LocalFitBaseline: {n_found}/{len(matched_orig_idx)} "
+    print(f"[INFO] LocalFitBaseline: {n_found}/{n_matched} "
           f"matched predictions")
-    return results
+    return lf_pred_full
 
 
-def _collect_baseline_fast(
-    full_preds: np.ndarray,
-    truth_at_mask: np.ndarray,
-    matched_sid: np.ndarray,
-    n_matched: int,
-) -> list:
-    """Collect per-sensor baseline results (1 masked sensor per event)."""
-    results = []
-    for i in range(n_matched):
-        sid = int(matched_sid[i])
-        pred_npho = float(full_preds[i, sid])
-        truth_npho = float(truth_at_mask[i, 0])
-        if truth_npho == MODEL_SENTINEL_NPHO:
-            error_npho = -999.0
-        else:
-            error_npho = pred_npho - truth_npho
-        results.append({
-            "event_idx": i,
-            "sensor_id": sid,
-            "mask_type": 0,
-            "pred_npho": pred_npho,
-            "truth_npho": truth_npho,
-            "error_npho": error_npho,
-        })
-    return results
-
-
-def _add_w_fip(pred_list: list, uvw_matched: np.ndarray,
-               matched_sid: np.ndarray):
-    """Attach w_fip depth to each prediction dict (in-place)."""
-    for entry in pred_list:
-        ev = entry["event_idx"]
-        entry["w_fip"] = float(uvw_matched[ev, 2])
-
-
-def _append_w_fip_branch(root_path: str, pred_list: list):
+def _append_w_fip_branch(root_path: str, w_fip: np.ndarray):
     """Re-open the ROOT file and add the w_fip branch to predictions."""
-    w_fip = np.array([p.get("w_fip", -999.0) for p in pred_list],
-                     dtype=np.float32)
     # Read existing, add branch, rewrite
     with uproot.open(root_path) as f:
         existing = {k: f["predictions"][k].array(library="np")
                     for k in f["predictions"].keys()}
         meta = {k: f["metadata"][k].array(library="np")
                 for k in f["metadata"].keys()}
-    existing["w_fip"] = w_fip
+    existing["w_fip"] = w_fip.astype(np.float32)
     with uproot.recreate(root_path) as f:
         f.mktree("predictions", existing)
         f.mktree("metadata", meta)

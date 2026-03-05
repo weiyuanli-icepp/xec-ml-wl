@@ -447,11 +447,9 @@ def run_baselines(x_original: np.ndarray, combined_mask: np.ndarray,
                   dead_mask: np.ndarray,
                   baseline_k: int = 1,
                   solid_angles: Optional[np.ndarray] = None,
-                  run_numbers: Optional[np.ndarray] = None,
-                  event_numbers: Optional[np.ndarray] = None,
                   npho_transform: Optional[NphoTransform] = None,
-                  ) -> Dict[str, List[Dict]]:
-    """Run baseline predictions and collect results per masked sensor.
+                  ) -> Dict[str, np.ndarray]:
+    """Run baseline predictions and return full prediction arrays.
 
     Args:
         x_original: (N, 4760, 2) normalized original data (before masking).
@@ -460,90 +458,29 @@ def run_baselines(x_original: np.ndarray, combined_mask: np.ndarray,
         dead_mask: (4760,) bool.
         baseline_k: k-hop parameter.
         solid_angles: (N, 4760) solid angles or None.
-        run_numbers: optional run number per event.
-        event_numbers: optional event number per event.
         npho_transform: NphoTransform for averaging in raw npho space.
 
     Returns:
-        Dictionary with keys 'avg' (and optionally 'sa') mapping to lists
-        of per-sensor prediction dicts with keys:
-        pred_npho, truth_npho, error_npho, event_idx, sensor_id
+        Dictionary mapping baseline name to (N, 4760) prediction arrays.
     """
     x_npho = x_original[:, :, 0]  # (N, 4760) normalized npho, unmasked
-    n_events = x_npho.shape[0]
 
-    # --- Neighbor Average Baseline ---
     print("[INFO] Running NeighborAverageBaseline...")
     avg_baseline = NeighborAverageBaseline(k=baseline_k)
-    avg_preds_full = avg_baseline.predict(x_npho, combined_mask,
-                                          npho_transform=npho_transform)  # (N, 4760)
+    baseline_preds = {
+        'avg': avg_baseline.predict(x_npho, combined_mask,
+                                    npho_transform=npho_transform),
+    }
 
-    baseline_results = {}
-
-    # Collect per-sensor results for avg baseline
-    avg_results = []
-    for i in range(n_events):
-        masked_sensors = np.where(combined_mask[i])[0]
-        for sensor_id in masked_sensors:
-            is_artificial = artificial_mask[i, sensor_id] if artificial_mask is not None else True
-            mask_type = 0 if is_artificial else 1
-
-            pred_npho = float(avg_preds_full[i, sensor_id])
-            truth_npho = float(x_original[i, sensor_id, 0])
-
-            if truth_npho == MODEL_SENTINEL_NPHO or mask_type == 1:
-                error_npho = -999.0
-                if mask_type == 1:
-                    truth_npho = -999.0
-            else:
-                error_npho = pred_npho - truth_npho
-
-            avg_results.append({
-                'event_idx': i,
-                'sensor_id': int(sensor_id),
-                'mask_type': mask_type,
-                'pred_npho': pred_npho,
-                'truth_npho': truth_npho,
-                'error_npho': error_npho,
-            })
-    baseline_results['avg'] = avg_results
-
-    # --- Solid Angle Weighted Baseline ---
     if solid_angles is not None:
         print("[INFO] Running SolidAngleWeightedBaseline...")
         sa_baseline = SolidAngleWeightedBaseline(k=baseline_k)
-        sa_preds_full = sa_baseline.predict(x_npho, combined_mask,
-                                            solid_angles=solid_angles,
-                                            npho_transform=npho_transform)
+        baseline_preds['sa'] = sa_baseline.predict(
+            x_npho, combined_mask, solid_angles=solid_angles,
+            npho_transform=npho_transform,
+        )
 
-        sa_results = []
-        for i in range(n_events):
-            masked_sensors = np.where(combined_mask[i])[0]
-            for sensor_id in masked_sensors:
-                is_artificial = artificial_mask[i, sensor_id] if artificial_mask is not None else True
-                mask_type = 0 if is_artificial else 1
-
-                pred_npho = float(sa_preds_full[i, sensor_id])
-                truth_npho = float(x_original[i, sensor_id, 0])
-
-                if truth_npho == MODEL_SENTINEL_NPHO or mask_type == 1:
-                    error_npho = -999.0
-                    if mask_type == 1:
-                        truth_npho = -999.0
-                else:
-                    error_npho = pred_npho - truth_npho
-
-                sa_results.append({
-                    'event_idx': i,
-                    'sensor_id': int(sensor_id),
-                    'mask_type': mask_type,
-                    'pred_npho': pred_npho,
-                    'truth_npho': truth_npho,
-                    'error_npho': error_npho,
-                })
-        baseline_results['sa'] = sa_results
-
-    return baseline_results
+    return baseline_preds
 
 
 def run_local_fit_baseline(
@@ -624,7 +561,7 @@ def run_local_fit_baseline(
                       f"(likely ROOT cleanup crash), but output file is valid — continuing.")
             except Exception:
                 print(f"[ERROR] LocalFitBaseline macro failed (exit code {result.returncode})")
-                return []
+                return None
 
         # Load results from output ROOT file
         with uproot.open(out_tmp.name) as f:
@@ -636,17 +573,13 @@ def run_local_fit_baseline(
 
         print(f"[INFO] LocalFitBaseline: loaded {len(lf_event_idx)} predictions from macro")
 
-        # Normalize raw predictions and truth using NphoTransform
+        # Normalize raw predictions using NphoTransform
         transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale,
                                   npho_scale2=npho_scale2)
 
-        # Clamp raw values to domain minimum before transforming
         domain_min = transform.domain_min()
         lf_pred_safe = np.maximum(lf_pred_raw, domain_min)
-        lf_truth_safe = np.maximum(lf_truth_raw, domain_min)
-
         lf_pred_norm = transform.forward(lf_pred_safe).astype(np.float32)
-        lf_truth_norm = transform.forward(lf_truth_safe).astype(np.float32)
 
         # Apply max_events filter (macro processes all events in the file)
         if max_events is not None:
@@ -654,55 +587,17 @@ def run_local_fit_baseline(
             lf_event_idx = lf_event_idx[keep]
             lf_sensor_id = lf_sensor_id[keep]
             lf_pred_norm = lf_pred_norm[keep]
-            lf_truth_norm = lf_truth_norm[keep]
 
-        # Build a lookup: (event_idx, sensor_id) -> normalized prediction
-        lf_lookup = {}
-        for j in range(len(lf_event_idx)):
-            key = (int(lf_event_idx[j]), int(lf_sensor_id[j]))
-            lf_lookup[key] = float(lf_pred_norm[j])
+        # Build (N, 4760) prediction array (NaN = no prediction)
+        n_events_total = x_original.shape[0]
+        lf_pred_full = np.full((n_events_total, N_CHANNELS), np.nan,
+                               dtype=np.float32)
 
-        # Build results list aligned with combined_mask (same structure as other baselines)
-        n_events = x_original.shape[0]
-        results = []
-        n_found = 0
-        for i in range(n_events):
-            masked_sensors = np.where(combined_mask[i])[0]
-            for sensor_id in masked_sensors:
-                is_artificial = artificial_mask[i, sensor_id] if artificial_mask is not None else True
-                mask_type = 0 if is_artificial else 1
-
-                # Use normalized truth from x_original (consistent with other baselines)
-                truth_npho = float(x_original[i, sensor_id, 0])
-
-                # Look up LocalFit prediction
-                key = (i, int(sensor_id))
-                if key in lf_lookup:
-                    pred_npho = lf_lookup[key]
-                    n_found += 1
-                else:
-                    # Macro didn't predict this sensor (non-inner or skipped event)
-                    pred_npho = -999.0
-
-                if truth_npho == MODEL_SENTINEL_NPHO or mask_type == 1:
-                    error_npho = -999.0
-                    if mask_type == 1:
-                        truth_npho = -999.0
-                elif pred_npho == -999.0:
-                    error_npho = -999.0
-                else:
-                    error_npho = pred_npho - truth_npho
-
-                results.append({
-                    'event_idx': i,
-                    'sensor_id': int(sensor_id),
-                    'mask_type': mask_type,
-                    'pred_npho': pred_npho,
-                    'truth_npho': truth_npho,
-                    'error_npho': error_npho,
-                })
-
-        print(f"[INFO] LocalFitBaseline: matched {n_found} predictions to masked sensors")
+        valid = lf_event_idx.astype(int) < n_events_total
+        lf_pred_full[lf_event_idx[valid].astype(int),
+                     lf_sensor_id[valid].astype(int)] = lf_pred_norm[valid]
+        n_filled = int(valid.sum())
+        print(f"[INFO] LocalFitBaseline: filled {n_filled} predictions into array")
 
     finally:
         # Clean up temp files
@@ -711,7 +606,7 @@ def run_local_fit_baseline(
         if os.path.exists(out_tmp.name):
             os.unlink(out_tmp.name)
 
-    return results
+    return lf_pred_full
 
 
 def collect_predictions(predictions: np.ndarray, x_original: np.ndarray,
@@ -719,168 +614,195 @@ def collect_predictions(predictions: np.ndarray, x_original: np.ndarray,
                         dead_mask: np.ndarray,
                         run_numbers: Optional[np.ndarray] = None,
                         event_numbers: Optional[np.ndarray] = None,
-                        predict_channels: List[str] = None) -> List[Dict]:
-    """Collect predictions into a flat list.
+                        predict_channels: List[str] = None) -> Dict[str, np.ndarray]:
+    """Collect ML predictions at masked positions into arrays.
 
-    Args:
-        predict_channels: List of channels being predicted (['npho'] or ['npho', 'time'])
+    Returns:
+        Dictionary of arrays, each with shape (n_masked_total,).
     """
     if predict_channels is None:
         predict_channels = ['npho', 'time']
     predict_time = 'time' in predict_channels
     pred_npho_idx = predict_channels.index('npho') if 'npho' in predict_channels else 0
-    pred_time_idx = predict_channels.index('time') if 'time' in predict_channels else None
+    pred_time_idx = predict_channels.index('time') if predict_time else None
 
-    results = []
-    n_events = predictions.shape[0]
+    # Pre-compute sensor -> face mapping
+    sensor_face = np.full(N_CHANNELS, -1, dtype=np.int32)
+    for fname, idx_map in FACE_INDEX_MAPS.items():
+        face_int = FACE_NAME_TO_INT[fname]
+        if fname in ['top', 'bot']:
+            sensor_face[idx_map] = face_int
+        else:
+            flat = idx_map.flatten()
+            sensor_face[flat[flat >= 0]] = face_int
 
-    for i in range(n_events):
-        masked_sensors = np.where(mask[i])[0]
+    # Get all masked positions
+    event_idxs, sensor_ids = np.where(mask)
+    n_entries = len(event_idxs)
 
-        for sensor_id in masked_sensors:
-            # Determine mask type: 0=artificial (has truth), 1=dead (no truth)
-            is_artificial = artificial_mask[i, sensor_id] if artificial_mask is not None else True
-            mask_type = 0 if is_artificial else 1
+    # Vectorized extraction
+    pred_npho = predictions[event_idxs, sensor_ids, pred_npho_idx].astype(np.float32)
+    truth_npho = x_original[event_idxs, sensor_ids, 0].astype(np.float32)
+    truth_time = x_original[event_idxs, sensor_ids, 1].astype(np.float32)
+    face = sensor_face[sensor_ids]
 
-            # Get face name
-            face_name = None
-            for fname, idx_map in FACE_INDEX_MAPS.items():
-                if fname in ['top', 'bot']:
-                    if sensor_id in idx_map:
-                        face_name = fname
-                        break
-                else:
-                    if sensor_id in idx_map.flatten():
-                        face_name = fname
-                        break
-            if face_name is None:
-                face_name = 'unknown'
+    if predict_time and pred_time_idx is not None:
+        pred_time = predictions[event_idxs, sensor_ids, pred_time_idx].astype(np.float32)
+    else:
+        pred_time = np.full(n_entries, -999.0, dtype=np.float32)
 
-            # Get prediction
-            pred_npho = float(predictions[i, sensor_id, pred_npho_idx])
-            pred_time = float(predictions[i, sensor_id, pred_time_idx]) if predict_time else -999.0
+    # Mask type: 0=artificial (has truth), 1=dead (no truth)
+    if artificial_mask is not None:
+        is_artificial = artificial_mask[event_idxs, sensor_ids]
+        mask_type = np.where(is_artificial, 0, 1).astype(np.int32)
+    else:
+        mask_type = np.zeros(n_entries, dtype=np.int32)
 
-            # Get truth (only valid for artificial masks or MC)
-            truth_npho = float(x_original[i, sensor_id, 0])
-            truth_time = float(x_original[i, sensor_id, 1])
+    # Error computation
+    has_truth = (mask_type == 0) & (truth_npho != MODEL_SENTINEL_NPHO)
+    error_npho = np.where(has_truth, pred_npho - truth_npho, -999.0).astype(np.float32)
+    has_time_truth = has_truth & predict_time
+    error_time = np.where(has_time_truth, pred_time - truth_time, -999.0).astype(np.float32)
 
-            # Check if truth is valid
-            if truth_npho == MODEL_SENTINEL_NPHO or mask_type == 1:
-                error_npho = -999.0
-                error_time = -999.0
-                if mask_type == 1:
-                    truth_npho = -999.0
-                    truth_time = -999.0
-            else:
-                error_npho = pred_npho - truth_npho
-                error_time = (pred_time - truth_time) if predict_time else -999.0
+    # Set truth to -999 for dead channels
+    is_dead = mask_type == 1
+    truth_npho = np.where(is_dead, -999.0, truth_npho).astype(np.float32)
+    truth_time = np.where(is_dead, -999.0, truth_time).astype(np.float32)
 
-            results.append({
-                'event_idx': i,
-                'run_number': int(run_numbers[i]) if run_numbers is not None else -1,
-                'event_number': int(event_numbers[i]) if event_numbers is not None else -1,
-                'sensor_id': int(sensor_id),
-                'face': face_name,
-                'mask_type': mask_type,
-                'truth_npho': truth_npho,
-                'truth_time': truth_time,
-                'pred_npho': pred_npho,
-                'pred_time': pred_time,
-                'error_npho': error_npho,
-                'error_time': error_time,
-            })
+    # Run/event numbers
+    if run_numbers is not None:
+        run_nums = run_numbers[event_idxs].astype(np.int64)
+    else:
+        run_nums = np.full(n_entries, -1, dtype=np.int64)
+    if event_numbers is not None:
+        event_nums = event_numbers[event_idxs].astype(np.int64)
+    else:
+        event_nums = np.full(n_entries, -1, dtype=np.int64)
 
-    return results
+    return {
+        'event_idx': event_idxs.astype(np.int32),
+        'sensor_id': sensor_ids.astype(np.int32),
+        'run_number': run_nums,
+        'event_number': event_nums,
+        'face': face,
+        'mask_type': mask_type,
+        'truth_npho': truth_npho,
+        'truth_time': truth_time,
+        'pred_npho': pred_npho,
+        'pred_time': pred_time,
+        'error_npho': error_npho,
+        'error_time': error_time,
+    }
 
 
-def compute_metrics(predictions: List[Dict], predict_channels: List[str] = None) -> Dict:
-    """Compute metrics from predictions.
+def compute_metrics(pred_data: Dict[str, np.ndarray],
+                    predict_channels: List[str] = None) -> Dict:
+    """Compute metrics from prediction arrays.
 
     Args:
-        predict_channels: List of channels being predicted (['npho'] or ['npho', 'time'])
+        pred_data: Dictionary of arrays from collect_predictions().
+        predict_channels: List of channels being predicted.
     """
     if predict_channels is None:
         predict_channels = ['npho', 'time']
     predict_time = 'time' in predict_channels
 
-    # Split by mask type
-    artificial = [p for p in predictions if p['mask_type'] == 0 and p['error_npho'] > -999]
-    dead = [p for p in predictions if p['mask_type'] == 1]
+    mask_type = pred_data['mask_type']
+    error_npho = pred_data['error_npho']
+
+    artificial_with_truth = (mask_type == 0) & (error_npho > -999)
 
     metrics = {
-        'n_total': len(predictions),
-        'n_artificial': len([p for p in predictions if p['mask_type'] == 0]),
-        'n_dead': len(dead),
-        'n_with_truth': len(artificial),
+        'n_total': len(mask_type),
+        'n_artificial': int((mask_type == 0).sum()),
+        'n_dead': int((mask_type == 1).sum()),
+        'n_with_truth': int(artificial_with_truth.sum()),
     }
 
-    if artificial:
-        err_npho = np.array([p['error_npho'] for p in artificial])
+    if artificial_with_truth.any():
+        err = error_npho[artificial_with_truth]
 
         metrics.update({
-            'npho_mae': np.mean(np.abs(err_npho)),
-            'npho_rmse': np.sqrt(np.mean(err_npho ** 2)),
-            'npho_bias': np.mean(err_npho),
-            'npho_68pct': np.percentile(np.abs(err_npho), 68),
+            'npho_mae': float(np.mean(np.abs(err))),
+            'npho_rmse': float(np.sqrt(np.mean(err ** 2))),
+            'npho_bias': float(np.mean(err)),
+            'npho_68pct': float(np.percentile(np.abs(err), 68)),
         })
 
-        # Time metrics only if predicting time
         if predict_time:
-            err_time = np.array([p['error_time'] for p in artificial])
-            # Filter out -999 placeholder values
+            err_time = pred_data['error_time'][artificial_with_truth]
             valid_time = err_time > -900
             if valid_time.any():
-                err_time_valid = err_time[valid_time]
+                et = err_time[valid_time]
                 metrics.update({
-                    'time_mae': np.mean(np.abs(err_time_valid)),
-                    'time_rmse': np.sqrt(np.mean(err_time_valid ** 2)),
-                    'time_bias': np.mean(err_time_valid),
-                    'time_68pct': np.percentile(np.abs(err_time_valid), 68),
+                    'time_mae': float(np.mean(np.abs(et))),
+                    'time_rmse': float(np.sqrt(np.mean(et ** 2))),
+                    'time_bias': float(np.mean(et)),
+                    'time_68pct': float(np.percentile(np.abs(et), 68)),
                 })
 
         # Per-face metrics
-        for face_name in ['inner', 'us', 'ds', 'outer', 'top', 'bot']:
-            face_preds = [p for p in artificial if p['face'] == face_name]
-            if face_preds:
-                face_err_npho = np.array([p['error_npho'] for p in face_preds])
-                metrics[f'{face_name}_n'] = len(face_preds)
-                metrics[f'{face_name}_npho_mae'] = np.mean(np.abs(face_err_npho))
+        face = pred_data['face']
+        for face_name, face_int in FACE_NAME_TO_INT.items():
+            face_mask = artificial_with_truth & (face == face_int)
+            if face_mask.any():
+                face_err = error_npho[face_mask]
+                metrics[f'{face_name}_n'] = int(face_mask.sum())
+                metrics[f'{face_name}_npho_mae'] = float(np.mean(np.abs(face_err)))
                 if predict_time:
-                    face_err_time = np.array([p['error_time'] for p in face_preds])
-                    valid_time = face_err_time > -900
-                    if valid_time.any():
-                        metrics[f'{face_name}_time_mae'] = np.mean(np.abs(face_err_time[valid_time]))
+                    face_err_time = pred_data['error_time'][face_mask]
+                    valid_t = face_err_time > -900
+                    if valid_t.any():
+                        metrics[f'{face_name}_time_mae'] = float(np.mean(np.abs(face_err_time[valid_t])))
 
     return metrics
 
 
-def compute_baseline_metrics(baseline_predictions: List[Dict]) -> Dict:
-    """Compute metrics for a single baseline from its prediction list.
+def compute_baseline_metrics(pred_full: np.ndarray, x_original: np.ndarray,
+                              combined_mask: np.ndarray,
+                              artificial_mask: Optional[np.ndarray] = None) -> Dict:
+    """Compute metrics for a baseline from its (N, 4760) prediction array.
 
     Args:
-        baseline_predictions: List of dicts with keys error_npho, mask_type.
+        pred_full: (N, 4760) baseline predictions (NaN = no prediction).
+        x_original: (N, 4760, 2) normalized original data.
+        combined_mask: (N, 4760) bool mask.
+        artificial_mask: (N, 4760) bool or None (None = MC mode, all have truth).
 
     Returns:
-        Dictionary of metrics (npho_mae, npho_rmse, npho_bias).
+        Dictionary of metrics.
     """
-    with_truth = [p for p in baseline_predictions
-                  if p['mask_type'] == 0 and p['error_npho'] > -999]
+    truth = x_original[:, :, 0]
 
-    metrics = {'n_with_truth': len(with_truth)}
+    # In MC mode, all masked positions have truth
+    if artificial_mask is None:
+        eval_mask = combined_mask
+    else:
+        eval_mask = artificial_mask
 
-    if with_truth:
-        err = np.array([p['error_npho'] for p in with_truth])
+    # Valid = has truth + baseline has prediction
+    has_truth = eval_mask & (truth != MODEL_SENTINEL_NPHO)
+    has_pred = np.isfinite(pred_full) & (pred_full > -900)
+    valid = has_truth & has_pred
+
+    pred_vals = pred_full[valid]
+    truth_vals = truth[valid]
+    error = pred_vals - truth_vals
+
+    metrics = {'n_with_truth': int(valid.sum())}
+
+    if len(error) > 0:
         metrics.update({
-            'npho_mae': np.mean(np.abs(err)),
-            'npho_rmse': np.sqrt(np.mean(err ** 2)),
-            'npho_bias': np.mean(err),
-            'npho_68pct': np.percentile(np.abs(err), 68),
+            'npho_mae': float(np.mean(np.abs(error))),
+            'npho_rmse': float(np.sqrt(np.mean(error ** 2))),
+            'npho_bias': float(np.mean(error)),
+            'npho_68pct': float(np.percentile(np.abs(error), 68)),
         })
 
     return metrics
 
 
-def save_predictions(predictions: List[Dict], output_path: str,
+def save_predictions(pred_data: Dict[str, np.ndarray], output_path: str,
                      run_number: Optional[int] = None,
                      predict_channels: List[str] = None,
                      npho_scheme: str = 'log1p',
@@ -888,20 +810,21 @@ def save_predictions(predictions: List[Dict], output_path: str,
                      npho_scale2: float = DEFAULT_NPHO_SCALE2,
                      time_scale: float = DEFAULT_TIME_SCALE,
                      time_shift: float = DEFAULT_TIME_SHIFT,
-                     baseline_results: Optional[Dict[str, List[Dict]]] = None):
+                     baseline_preds: Optional[Dict[str, np.ndarray]] = None):
     """
     Save predictions to ROOT file with metadata.
 
     Args:
-        predictions: List of prediction dictionaries
+        pred_data: Dictionary of arrays from collect_predictions().
         output_path: Output ROOT file path
         run_number: Run number for dead channel pattern
         predict_channels: List of predicted channels (['npho'] or ['npho', 'time'])
         npho_scheme: Npho normalization scheme
         npho_scale, npho_scale2, time_scale, time_shift: Normalization parameters
-        baseline_results: Optional dict from run_baselines() with keys 'avg' and/or 'sa'
+        baseline_preds: Optional dict mapping baseline name to (N, 4760) arrays
     """
-    if not predictions:
+    n_entries = len(pred_data['event_idx'])
+    if n_entries == 0:
         print("[WARNING] No predictions to save")
         return
 
@@ -909,46 +832,44 @@ def save_predictions(predictions: List[Dict], output_path: str,
         predict_channels = ['npho', 'time']
 
     branches = {
-        'event_idx': np.array([p['event_idx'] for p in predictions], dtype=np.int32),
-        'run_number': np.array([p['run_number'] for p in predictions], dtype=np.int64),
-        'event_number': np.array([p['event_number'] for p in predictions], dtype=np.int64),
-        'sensor_id': np.array([p['sensor_id'] for p in predictions], dtype=np.int32),
-        'face': np.array([FACE_NAME_TO_INT.get(p['face'], -1) for p in predictions], dtype=np.int32),
-        'mask_type': np.array([p['mask_type'] for p in predictions], dtype=np.int32),
-        'truth_npho': np.array([p['truth_npho'] for p in predictions], dtype=np.float32),
-        'truth_time': np.array([p['truth_time'] for p in predictions], dtype=np.float32),
-        'pred_npho': np.array([p['pred_npho'] for p in predictions], dtype=np.float32),
-        'error_npho': np.array([p['error_npho'] for p in predictions], dtype=np.float32),
+        'event_idx': pred_data['event_idx'],
+        'run_number': pred_data['run_number'],
+        'event_number': pred_data['event_number'],
+        'sensor_id': pred_data['sensor_id'],
+        'face': pred_data['face'],
+        'mask_type': pred_data['mask_type'],
+        'truth_npho': pred_data['truth_npho'],
+        'truth_time': pred_data['truth_time'],
+        'pred_npho': pred_data['pred_npho'],
+        'error_npho': pred_data['error_npho'],
     }
 
-    # Only include time predictions if time was predicted
     if 'time' in predict_channels:
-        branches['pred_time'] = np.array([p['pred_time'] for p in predictions], dtype=np.float32)
-        branches['error_time'] = np.array([p['error_time'] for p in predictions], dtype=np.float32)
+        branches['pred_time'] = pred_data['pred_time']
+        branches['error_time'] = pred_data['error_time']
 
     if run_number is not None:
-        branches['dead_pattern_run'] = np.full(len(predictions), run_number, dtype=np.int32)
+        branches['dead_pattern_run'] = np.full(n_entries, run_number, dtype=np.int32)
 
-    # Add baseline branches (same length as ML predictions, one entry per masked sensor)
-    if baseline_results is not None:
-        if 'avg' in baseline_results:
-            avg_list = baseline_results['avg']
-            branches['baseline_avg_npho'] = np.array(
-                [p['pred_npho'] for p in avg_list], dtype=np.float32)
-            branches['baseline_avg_error_npho'] = np.array(
-                [p['error_npho'] for p in avg_list], dtype=np.float32)
-        if 'sa' in baseline_results:
-            sa_list = baseline_results['sa']
-            branches['baseline_sa_npho'] = np.array(
-                [p['pred_npho'] for p in sa_list], dtype=np.float32)
-            branches['baseline_sa_error_npho'] = np.array(
-                [p['error_npho'] for p in sa_list], dtype=np.float32)
-        if 'localfit' in baseline_results:
-            lf_list = baseline_results['localfit']
-            branches['baseline_localfit_npho'] = np.array(
-                [p['pred_npho'] for p in lf_list], dtype=np.float32)
-            branches['baseline_localfit_error_npho'] = np.array(
-                [p['error_npho'] for p in lf_list], dtype=np.float32)
+    # Add baseline branches by indexing into (N, 4760) arrays
+    if baseline_preds:
+        event_idxs = pred_data['event_idx']
+        sensor_ids = pred_data['sensor_id']
+        truth = pred_data['truth_npho']
+        mask_type = pred_data['mask_type']
+
+        for bname, bpred_full in baseline_preds.items():
+            bpred = bpred_full[event_idxs, sensor_ids].astype(np.float32)
+            # Compute error (valid when has truth and baseline has prediction)
+            has_truth = (mask_type == 0) & (truth != MODEL_SENTINEL_NPHO)
+            has_bpred = np.isfinite(bpred) & (bpred > -900)
+            berror = np.where(
+                has_truth & has_bpred, bpred - truth, -999.0
+            ).astype(np.float32)
+            # Replace NaN with -999 for ROOT compatibility
+            bpred = np.where(np.isfinite(bpred), bpred, -999.0).astype(np.float32)
+            branches[f'baseline_{bname}_npho'] = bpred
+            branches[f'baseline_{bname}_error_npho'] = berror
 
     # Metadata for downstream analysis scripts
     metadata = {
@@ -964,7 +885,7 @@ def save_predictions(predictions: List[Dict], output_path: str,
         f.mktree('predictions', branches)
         f.mktree('metadata', metadata)
 
-    print(f"[INFO] Saved {len(predictions):,} predictions to {output_path}")
+    print(f"[INFO] Saved {n_entries:,} predictions to {output_path}")
     print(f"[INFO] Metadata: predict_channels={predict_channels}")
 
 
@@ -1223,7 +1144,7 @@ def main():
     gc.collect()
 
     # --- Run baselines (if requested) ---
-    baseline_results = None
+    baseline_preds = None  # Dict[str, np.ndarray] of (N, 4760) arrays
     baseline_metrics_dict = None
     if args.baselines:
         # Load solid angles if branch is provided
@@ -1236,20 +1157,22 @@ def main():
 
         npho_xf = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale,
                                 npho_scale2=npho_scale2)
-        baseline_results = run_baselines(
+        baseline_preds = run_baselines(
             x_original, combined_mask, artificial_mask, dead_mask,
             baseline_k=args.baseline_k,
             solid_angles=solid_angles,
-            run_numbers=data.get('run'),
-            event_numbers=data.get('event'),
             npho_transform=npho_xf,
         )
 
+        # Free solid angles (no longer needed)
+        del solid_angles
+        gc.collect()
+
     # --- LocalFitBaseline (if requested) ---
     if args.local_fit_baseline:
-        if baseline_results is None:
-            baseline_results = {}
-        lf_results = run_local_fit_baseline(
+        if baseline_preds is None:
+            baseline_preds = {}
+        lf_pred_array = run_local_fit_baseline(
             input_path=args.input,
             dead_channels=dead_channels,
             x_original=x_original,
@@ -1258,26 +1181,34 @@ def main():
             npho_scheme=npho_scheme,
             max_events=args.max_events,
         )
-        if lf_results:
-            baseline_results['localfit'] = lf_results
+        if lf_pred_array is not None:
+            baseline_preds['localfit'] = lf_pred_array
 
-    if baseline_results:
-        # Compute baseline metrics
+    if baseline_preds:
+        # Compute baseline metrics from (N, 4760) arrays
         baseline_metrics_dict = {}
-        for bname, bpreds in baseline_results.items():
-            baseline_metrics_dict[bname] = compute_baseline_metrics(bpreds)
+        for bname, bpred_full in baseline_preds.items():
+            baseline_metrics_dict[bname] = compute_baseline_metrics(
+                bpred_full, x_original, combined_mask, artificial_mask
+            )
 
     # Collect ML results
     print("[INFO] Collecting predictions...")
-    pred_list = collect_predictions(
+    pred_data = collect_predictions(
         predictions, x_original, combined_mask, artificial_mask, dead_mask,
         run_numbers=data.get('run'),
         event_numbers=data.get('event'),
         predict_channels=predict_channels
     )
 
+    # Free large arrays no longer needed
+    del predictions, x_original, combined_mask, data
+    if artificial_mask is not None:
+        del artificial_mask
+    gc.collect()
+
     # Compute ML metrics
-    metrics = compute_metrics(pred_list, predict_channels=predict_channels)
+    metrics = compute_metrics(pred_data, predict_channels=predict_channels)
 
     # Print summary (with optional baseline comparison)
     print_summary(metrics, args.real_data, args.run,
@@ -1289,12 +1220,18 @@ def main():
 
     # Predictions ROOT file (with optional baseline branches)
     pred_file = os.path.join(args.output, f"predictions_{mode_str}_run{run_str}.root")
-    save_predictions(pred_list, pred_file, run_number=args.run,
+    save_predictions(pred_data, pred_file, run_number=args.run,
                      predict_channels=predict_channels,
                      npho_scheme=npho_scheme,
                      npho_scale=npho_scale,
                      npho_scale2=npho_scale2,
-                     baseline_results=baseline_results)
+                     baseline_preds=baseline_preds)
+
+    # Free remaining large data
+    del pred_data
+    if baseline_preds is not None:
+        del baseline_preds
+    gc.collect()
 
     # Metrics CSV (include baseline metrics if available)
     metrics_file = os.path.join(args.output, f"metrics_{mode_str}_run{run_str}.csv")
