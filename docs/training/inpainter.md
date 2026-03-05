@@ -168,8 +168,13 @@ python val_data/validate_inpainter_real.py \
 
 # 5. Batch Validation (scan steps, SLURM)
 bash macro/submit_validate_scan.sh 1 2 3 4 5 6          # MC validation
-bash macro/submit_validate_sensorfront_scan.sh 1 2 3 4 5 6  # Sensorfront
-bash macro/submit_localfit_sensorfront.sh manifest.npz   # Localfit (after sensorfront)
+
+# 5b. Sensorfront: prepare shared data, then parallel localfit + inference
+bash macro/submit_sensorfront_prepare_scan.sh            # Manifest + baselines (once)
+bash macro/submit_localfit_sensorfront.sh \
+    artifacts/sensorfront_shared/_sensorfront_manifest.npz  # LocalFit (parallel)
+SHARED_DIR=artifacts/sensorfront_shared \
+    bash macro/submit_validate_sensorfront_scan.sh       # ML inference (parallel)
 
 # 6. Cross-Configuration Comparison
 python macro/compare_inpainter.py --mode mc              # MC comparison PDF
@@ -1171,11 +1176,18 @@ Each scan step stores its artifacts under `artifacts/inp_scan_<label>/`:
 
 ```
 artifacts/
+  sensorfront_shared/              # Shared data (created once by --manifest-only)
+    _sensorfront_manifest.npz      #   Event matching info (for LocalFit)
+    _sensorfront_data.npz          #   Raw matched data (for ML inference reload)
+    _baselines_raw.npz             #   Raw baseline predictions (scheme-independent)
+    localfit_results/              #   LocalFit batch job outputs
+      localfit_file0000.npz
+      ...
   inp_scan_s1_baseline/
     inpainter_checkpoint_best.pth
-    validation_mc/               # MC validation output
-    validation_sensorfront/      # Sensorfront validation output
-    validation_data/             # Real data validation output
+    validation_mc/                 # MC validation output
+    validation_sensorfront/        # Sensorfront validation output (ML only)
+    validation_data/               # Real data validation output
   inp_scan_s2_flatmask/
     ...
 ```
@@ -1212,20 +1224,44 @@ Partitions `meg-long`, `meg-short`, `mu3e` automatically add `--account=meg`. Ot
 
 Tests inpainter recovery when the peak-signal sensor is masked.
 
+The sensorfront workflow separates model-independent work (event matching, baselines, LocalFit) from ML inference so they can run in parallel. Since geometric matching and baselines are checkpoint-independent, they run **once** in a shared directory and are reused by all scan steps.
+
+**Parallel workflow (recommended):**
+
 ```bash
-# Step 1: Run sensorfront validation (saves manifest for localfit)
-bash macro/submit_validate_sensorfront_scan.sh 1 2 3 4 5 6
+# Step 1: Prepare shared manifest + baselines (no model needed, fast)
+bash macro/submit_sensorfront_prepare_scan.sh
+# → creates artifacts/sensorfront_shared/ with manifest, raw data, baselines
 
-# Step 2: After step 1 completes, run LocalFitBaseline on each manifest
+# Step 2a: Submit LocalFit batch jobs (uses manifest, one task per ROOT file)
 bash macro/submit_localfit_sensorfront.sh \
-    artifacts/inp_scan_s1_baseline/validation_sensorfront/_sensorfront_manifest.npz
-# ... repeat for each step
+    artifacts/sensorfront_shared/_sensorfront_manifest.npz
 
-# Step 3: Merge split localfit output files
-hadd -f localfit_merged.root localfit_file000*.root
+# Step 2b: Submit ML inference per scan step (parallel with 2a)
+SHARED_DIR=artifacts/sensorfront_shared \
+    bash macro/submit_validate_sensorfront_scan.sh
+# → each step loads prepared data, normalizes per its scheme, runs ML inference
+# → baselines loaded from raw + renormalized (no recomputation)
+# → LocalFit results loaded if available in SHARED_DIR/localfit_results/
 ```
 
-The sensorfront script accepts the same `PARTITION` and `DRY_RUN` variables.
+**Standalone workflow (no preparation step):**
+
+```bash
+# Without SHARED_DIR, each step loads ROOT files and computes baselines itself
+bash macro/submit_validate_sensorfront_scan.sh 1 2 3 4 5 6
+```
+
+**How raw baselines work:** The neighbor-avg and solid-angle baselines denormalize to raw npho space for averaging, making the raw predictions scheme-independent. The `--manifest-only` step saves these raw predictions; each inference job re-normalizes them to its model's scheme.
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SHARED_DIR` | (empty) | Path to prepared data; enables fast mode |
+| `PARTITION` | `mu3e` | SLURM partition |
+| `VAL_PATH` | `data/E15to60_AngUni_PosSQ/val2/` | Validation data (standalone mode only) |
+| `DRY_RUN` | `0` | Preview without submitting |
 
 ### 12.4 Real Data Validation (All Scan Steps)
 
@@ -1285,15 +1321,16 @@ python macro/compare_inpainter.py --mode mc -o my_comparison.pdf
 # 2. MC validation with baselines + localfit
 bash macro/submit_validate_scan.sh 1 2 3 4 5 6
 
-# 3. Sensorfront validation
-bash macro/submit_validate_sensorfront_scan.sh 1 2 3 4 5 6
+# 3. Sensorfront: prepare shared data (manifest + baselines)
+bash macro/submit_sensorfront_prepare_scan.sh
 
-# 4. (After sensorfront completes) Localfit for sensorfront
-for step in 1 2 3 4 5 6; do
-    label=$(printf "s%d_*" $step)
-    manifest=$(ls artifacts/inp_scan_${label}/validation_sensorfront/_sensorfront_manifest.npz 2>/dev/null)
-    [ -n "$manifest" ] && bash macro/submit_localfit_sensorfront.sh "$manifest"
-done
+# 4. After step 3 completes, run LocalFit and ML inference in parallel:
+#    4a. LocalFit batch jobs (one array job, shared across all steps)
+bash macro/submit_localfit_sensorfront.sh \
+    artifacts/sensorfront_shared/_sensorfront_manifest.npz
+#    4b. ML inference per scan step (loads prepared data, fast)
+SHARED_DIR=artifacts/sensorfront_shared \
+    bash macro/submit_validate_sensorfront_scan.sh
 
 # 5. Generate comparison PDFs
 python macro/compare_inpainter.py --mode mc -o compare_mc.pdf
