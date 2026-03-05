@@ -126,8 +126,7 @@ python macro/validate_inpainter_sensorfront.py \\
     --output ${OUTDIR} \\
     --solid-angle-branch solid_angle \\
     --device cpu \\
-    --batch-size ${BATCH_SIZE} \\
-    --no-manifest
+    --batch-size ${BATCH_SIZE}
 
 echo ""
 echo "=== Done: \$(date) ==="
