@@ -20,8 +20,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PARTITION="${PARTITION:-a100-daily}"
-TIME="${TIME:-12:00:00}"
+PARTITION="${PARTITION:-gh-daily}"
+TIME="${TIME:-1-00:00:00}"
 DRY_RUN="${DRY_RUN:-0}"
 
 SCAN_CONFIG_DIR="config/reg/tim_scan"
