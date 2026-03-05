@@ -29,6 +29,9 @@ mpi0 = 0.13497   # π⁰ mass (GeV/c²)
 E_MIN = 0.054
 E_MAX = 0.057
 
+# Tolerance for EGamma + bgoEnergy ≈ Epi0 cut (GeV)
+ETOTAL_TOL = 0.02
+
 REC_DIR = "/data/project/meg/offline/run"
 
 
@@ -164,12 +167,19 @@ def process_run(iRun, dead_mask, out_arrays):
     # 2. Energy window
     energy_ok = (egamma_vals >= E_MIN) & (egamma_vals <= E_MAX)
 
-    # 3. Opening angle → Etrue, must be physical (sqrtarg >= 0)
+    # 3. EGamma + bgoEnergy ≈ Epi0 (wide tolerance)
+    if bgoenergy_vals is not None:
+        etotal = egamma_vals + bgoenergy_vals
+        etotal_ok = np.abs(etotal - Epi0) <= ETOTAL_TOL
+    else:
+        etotal_ok = np.ones(len(egamma_vals), dtype=bool)
+
+    # 4. Opening angle → Etrue, must be physical (sqrtarg >= 0)
     cos_oa = np.cos(np.deg2rad(openangle_vals))
     sqrtarg = 0.25 * Epi0**2 - mpi0**2 / (2.0 * (1.0 - cos_oa))
     phys_ok = sqrtarg >= 0
 
-    sel = trig_ok & energy_ok & phys_ok
+    sel = trig_ok & energy_ok & etotal_ok & phys_ok
 
     # 4. Require valid npho_max and time_min
     npho_sel = npho_vals[sel]

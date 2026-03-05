@@ -22,10 +22,10 @@ cd "$(dirname "$0")/.."
 
 DRY_RUN="${DRY_RUN:-0}"
 CHECKPOINT="${CHECKPOINT:-~/meghome/xec-ml-wl/artifacts/ene_50epoch_sqrt_DSmax/meg2ene.onnx}"
-CONFIG="${CONFIG:-config/reg/ene_50epoch_sqrt_DSmax.yaml}"
+CONFIG="${CONFIG:-config/reg/ene_reg_50epoch_sqrt_DSmax.yaml}"
 CEX_DIR="${CEX_DIR:-data/cex}"
 OUTPUT_BASE="${OUTPUT_BASE:-val_data/cex}"
-PARTITION="${PARTITION:-mu3e}"
+PARTITION="${PARTITION:-meg-long}"
 
 case "$PARTITION" in
     meg-long|meg-short|mu3e) ACCOUNT_LINE="#SBATCH --account=meg" ;;
