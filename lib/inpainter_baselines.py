@@ -454,6 +454,7 @@ class SolidAngleWeightedBaseline:
 
                 safe_omega_n = np.where(sa_valid, omega_n, 1.0)
                 ratio = omega_m[:, None] / safe_omega_n         # (n_masked, max_nbrs)
+                ratio = np.clip(ratio, 0.0, 5.0)               # prevent blowup
                 corrected = np.where(sa_valid, nbr_vals * ratio, 0.0)
 
                 n_valid = sa_valid.sum(axis=1).astype(np.float64)  # (n_masked,)

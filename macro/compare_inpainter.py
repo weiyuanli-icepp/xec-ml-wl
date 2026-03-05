@@ -396,6 +396,15 @@ def main():
             'face_rel_mae': face_rel_mae,
         })
 
+    # --- Determine which faces have data (for compact plots) ---
+    active_faces = []
+    for face_int, face_name in FACE_INT_TO_NAME.items():
+        has_data = any(
+            (ei, face_int) in metrics_cache for ei in range(len(loaded))
+        )
+        if has_data:
+            active_faces.append((face_int, face_name))
+
     # --- Multi-page PDF ---
     page_defs_truth = [
         ('mae',  'Relative MAE vs Truth Npho (per face)',  'Relative MAE'),
@@ -435,7 +444,7 @@ def main():
         ax_bar.set_xlim(0, max(vals_bar) * 1.25)
 
         # -- Right panel: per-face relative MAE grouped bar chart --
-        face_names = list(FACE_INT_TO_NAME.values())
+        face_names = [fn for _, fn in active_faces]
         n_methods = len(method_metrics)
         n_faces = len(face_names)
         bar_width = 0.8 / n_methods
@@ -466,11 +475,16 @@ def main():
         plt.close(fig)
 
         # ===== Pages 2–4: per-face binned metrics vs Truth Npho =====
+        n_active = len(active_faces)
+        ncols = min(n_active, 3)
+        nrows = (n_active + ncols - 1) // ncols
         for metric_key, suptitle, ylabel in page_defs_truth:
-            fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+            fig, axes = plt.subplots(nrows, ncols,
+                                     figsize=(6 * ncols, 5 * nrows),
+                                     squeeze=False)
             axes_flat = axes.flatten()
 
-            for idx, (face_int, face_name) in enumerate(FACE_INT_TO_NAME.items()):
+            for idx, (face_int, face_name) in enumerate(active_faces):
                 ax = axes_flat[idx]
 
                 for ei, (entry, _) in enumerate(loaded):
@@ -508,6 +522,10 @@ def main():
                 ax.set_title(face_name)
                 ax.legend(fontsize=7)
 
+            # Hide unused axes
+            for idx in range(n_active, len(axes_flat)):
+                axes_flat[idx].set_visible(False)
+
             fig.suptitle(suptitle, fontsize=14)
             plt.tight_layout()
             pdf.savefig(fig)
@@ -515,10 +533,12 @@ def main():
 
         # ===== Pages 5–7: per-face binned metrics vs Pred Npho =====
         for metric_key, suptitle, ylabel in page_defs_pred:
-            fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+            fig, axes = plt.subplots(nrows, ncols,
+                                     figsize=(6 * ncols, 5 * nrows),
+                                     squeeze=False)
             axes_flat = axes.flatten()
 
-            for idx, (face_int, face_name) in enumerate(FACE_INT_TO_NAME.items()):
+            for idx, (face_int, face_name) in enumerate(active_faces):
                 ax = axes_flat[idx]
 
                 for ei, (entry, _) in enumerate(loaded):
@@ -556,12 +576,16 @@ def main():
                 ax.set_title(face_name)
                 ax.legend(fontsize=7)
 
+            for idx in range(n_active, len(axes_flat)):
+                axes_flat[idx].set_visible(False)
+
             fig.suptitle(suptitle, fontsize=14)
             plt.tight_layout()
             pdf.savefig(fig)
             plt.close(fig)
 
-    print(f"[INFO] Saved {args.output} (7 pages: summary, 3x truth, 3x pred)")
+    n_pages = 1 + 3 + 3  # summary + truth pages + pred pages
+    print(f"[INFO] Saved {args.output} ({n_pages} pages, {n_active} active face(s))")
 
     # --- Stdout summary ---
 
