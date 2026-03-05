@@ -26,6 +26,7 @@
 #   5br - Resume step 5b (cosine warm restart, +50 epochs)
 #   6   - +energy reweighting                (baseline=3b)
 #   7   - Full-data from scratch (train_max, 4 GPUs, 100ep, baseline=4a)
+#   8   - gaussian_nll (β-NLL) loss              (baseline=4a)
 #
 # NOTE: Steps 2r/3ar/3br require resume_from to be set to the checkpoint path.
 #       Steps 4ar/5r/5br require resume_from to be set to the checkpoint path.
@@ -61,6 +62,7 @@ STEP_CONFIG[5br]="step5b_resume.yaml"
 STEP_CONFIG[4af]="step4a_fulldata.yaml"
 STEP_CONFIG[6]="step6_reweight.yaml"
 STEP_CONFIG[7]="step7_fulldata.yaml"
+STEP_CONFIG[8]="step8_gnll.yaml"
 
 STEP_NAME[1]="scan_s1_baseline"
 STEP_NAME[2]="scan_s2_ema"
@@ -79,6 +81,7 @@ STEP_NAME[5br]="scan_s5b_gradclip1_resume"
 STEP_NAME[4af]="scan_s4a_fulldata"
 STEP_NAME[6]="scan_s6_reweight"
 STEP_NAME[7]="scan_s7_fulldata"
+STEP_NAME[8]="scan_s8_gnll"
 
 # Default: submit steps 1, 2, 3a, 3b (independent, can run in parallel)
 if [ $# -eq 0 ]; then
@@ -110,7 +113,7 @@ for STEP in "${STEPS[@]}"; do
 
     if [ -z "$CONFIG" ]; then
         echo "[ERROR] Unknown step: $STEP"
-        echo "  Valid steps: 1, 2, 3a, 3b, 2r, 3ar, 3br, 4a, 4b, 4ar, 4af, 5, 5b, 5r, 5br, 6, 7"
+        echo "  Valid steps: 1, 2, 3a, 3b, 2r, 3ar, 3br, 4a, 4b, 4ar, 4af, 5, 5b, 5r, 5br, 6, 7, 8"
         continue
     fi
 
