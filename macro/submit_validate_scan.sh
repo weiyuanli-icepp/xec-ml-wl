@@ -17,7 +17,7 @@ RUN_NUMBER="${RUN_NUMBER:-430000}"
 VAL_PATH="${VAL_PATH:-data/E15to60_AngUni_PosSQ/val2/}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 MAX_EVENTS="${MAX_EVENTS:-}"  # empty = all events
-LOCAL_FIT="${LOCAL_FIT:-0}"   # set LOCAL_FIT=1 to enable LocalFitBaseline
+LOCAL_FIT="${LOCAL_FIT:-1}"   # set LOCAL_FIT=0 to disable LocalFitBaseline
 
 # Steps to submit
 if [ $# -eq 0 ]; then
