@@ -130,6 +130,84 @@ Generates plots for each detected task:
 - **Timing**: pred vs truth comparison, residual histogram
 - **Position (uvwFI)**: per-coordinate comparisons
 
+## CEX Real Data Validation (Batch)
+
+Validate the energy regressor on CEX23 charge exchange data (24 detector patches).
+
+### 1. Preprocess CEX data
+
+Convert raw rec files into ML-ready ROOT files with event selection cuts:
+
+```bash
+python others/CEXPreprocess.py --srun 557545 --nfiles 100 --patch 13 \
+    --output-dir data/cex --dead-dir data/dead_channels/
+```
+
+**Event selection cuts:**
+- Physics triggers only (mask == 50 or 51)
+- Energy window: 54–57 MeV (`EGamma`)
+- `|EGamma + bgoEnergy - Epi0| < 20 MeV` (energy conservation)
+- Physical opening angle (sqrtarg ≥ 0)
+- Valid npho and time channels
+
+Output: `data/cex/CEX23_patch{PATCH}_r{SRUN}_n{NFILES}.root` (5 files per patch, 24 patches total)
+
+### 2. Run batch inference
+
+Submit 24 parallel SLURM jobs (one per patch), each running ONNX inference on CPU:
+
+```bash
+# Preview first
+DRY_RUN=1 bash macro/submit_validate_regressor_cex.sh
+
+# Submit all patches
+bash macro/submit_validate_regressor_cex.sh
+
+# Submit specific patches
+bash macro/submit_validate_regressor_cex.sh 13 12 21
+```
+
+**Defaults** (override via env vars):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CHECKPOINT` | `~/meghome/xec-ml-wl/artifacts/ene_50epoch_sqrt_DSmax/meg2ene.onnx` | ONNX model |
+| `CONFIG` | `config/reg/ene_reg_50epoch_sqrt_DSmax.yaml` | Normalization config |
+| `CEX_DIR` | `data/cex` | Input CEX ROOT files |
+| `OUTPUT_BASE` | `val_data/cex` | Output directory |
+| `PARTITION` | `meg-long` | SLURM partition |
+| `TIME` | `06:00:00` | Time limit (6 hours) |
+
+**Important:** Inference is **not resumable**. If a job is killed by the time limit, the entire patch must be re-run. Increase `TIME` if needed.
+
+Output: `val_data/cex/patch{1..24}/predictions_energy_*.csv`
+
+### 3. Combine results and plot
+
+Merge all patches and produce resolution plots with Gaussian fits:
+
+```bash
+python macro/combine_cex_results.py
+```
+
+**Output files:**
+- `val_data/cex/CEX23_combined.root` — all events with `patch` column
+- `val_data/cex/CEX23_resolution.pdf` — multi-page PDF:
+  - Page 1: Resolution (σ) and bias (μ) vs patch with Gaussian-fit error bars
+  - Page 2: Combined residual histogram with Gaussian fit overlay
+  - Pages 3+: Per-patch residual histograms with individual Gaussian fits
+
+Options:
+```bash
+# Specific patches only
+python macro/combine_cex_results.py --patches 13 12 21
+
+# Data only, skip plots
+python macro/combine_cex_results.py --no-plots
+```
+
+---
+
 ## Output branches
 
 The inference script outputs a ROOT file with `val_tree` containing:
