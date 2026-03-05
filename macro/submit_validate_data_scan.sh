@@ -21,7 +21,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DRY_RUN="${DRY_RUN:-0}"
-REAL_DATA="${REAL_DATA:-val_data/data/DataGammaAngle_430026-430035.root}"
+REAL_DATA="${REAL_DATA:-val_data/data/DataGammaAngle_430026-430126.root}"
 DEAD_FILE="${DEAD_FILE:-data/dead_channels_run430000.txt}"
 N_ARTIFICIAL="${N_ARTIFICIAL:-50}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
@@ -142,7 +142,6 @@ python macro/validate_inpainter.py \\
     --real-data \\
     --n-artificial ${N_ARTIFICIAL} \\
     --baselines \\
-    --solid-angle-branch solid_angle \\
     --device cpu \\
     --batch-size ${BATCH_SIZE} \\
     ${MAX_EVENTS:+--max-events ${MAX_EVENTS}}
