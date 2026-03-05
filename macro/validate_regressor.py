@@ -174,7 +174,12 @@ def _run_onnx(args, cfg, active_tasks, norm_params):
     import onnxruntime as ort
 
     print(f"[INFO] Loading ONNX model: {args.checkpoint}")
-    sess = ort.InferenceSession(args.checkpoint)
+    sess_opts = ort.SessionOptions()
+    n_threads = int(os.environ.get("SLURM_CPUS_ON_NODE", os.cpu_count() or 4))
+    sess_opts.inter_op_num_threads = n_threads
+    sess_opts.intra_op_num_threads = n_threads
+    print(f"[INFO] ONNX threads: {n_threads}")
+    sess = ort.InferenceSession(args.checkpoint, sess_options=sess_opts)
 
     # Inspect model I/O
     input_info = sess.get_inputs()
