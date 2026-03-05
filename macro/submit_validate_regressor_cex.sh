@@ -26,6 +26,12 @@ CONFIG="${CONFIG:-config/reg/ene_50epoch_sqrt_DSmax.yaml}"
 CEX_DIR="${CEX_DIR:-data/cex}"
 OUTPUT_BASE="${OUTPUT_BASE:-val_data/cex}"
 PARTITION="${PARTITION:-mu3e}"
+
+case "$PARTITION" in
+    meg-long|meg-short|mu3e) ACCOUNT_LINE="#SBATCH --account=meg" ;;
+    *)                       ACCOUNT_LINE="" ;;
+esac
+
 TIME="${TIME:-02:00:00}"
 MEM="${MEM:-16G}"
 BATCH_SIZE="${BATCH_SIZE:-1024}"
@@ -46,8 +52,9 @@ echo "Model:    ${CHECKPOINT}"
 echo "Config:   ${CONFIG}"
 echo "CEX data: ${CEX_DIR}"
 echo "Output:   ${OUTPUT_BASE}"
-echo "Patches:  ${PATCHES[*]}"
-echo "Dry run:  ${DRY_RUN}"
+echo "Patches:    ${PATCHES[*]}"
+echo "Partition:  ${PARTITION}"
+echo "Dry run:    ${DRY_RUN}"
 echo "============================================"
 echo ""
 
@@ -125,7 +132,7 @@ for PATCH in "${PATCHES[@]}"; do
 
     cat > "${BATCH_SCRIPT}" << SLURM_EOF
 #!/bin/bash
-#SBATCH --account=meg
+${ACCOUNT_LINE}
 #SBATCH --partition=${PARTITION}
 #SBATCH --time=${TIME}
 #SBATCH --hint=nomultithread

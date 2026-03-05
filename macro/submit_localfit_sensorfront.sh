@@ -24,6 +24,12 @@ fi
 MANIFEST="$(realpath "$1")"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUN_SCRIPT="${SCRIPT_DIR}/run_localfit_sensorfront.py"
+PARTITION="${PARTITION:-mu3e}"
+
+case "$PARTITION" in
+    meg-long|meg-short|mu3e) ACCOUNT_LINE="#SBATCH --account=meg" ;;
+    *)                       ACCOUNT_LINE="" ;;
+esac
 
 # Read number of files from the manifest
 N_FILES=$(python3 -c "
@@ -40,6 +46,7 @@ fi
 MAX_IDX=$((N_FILES - 1))
 echo "[INFO] Manifest: ${MANIFEST}"
 echo "[INFO] Files: ${N_FILES} (indices 0..${MAX_IDX})"
+echo "[INFO] Partition: ${PARTITION}"
 
 # Output directory
 if [ $# -ge 2 ]; then
@@ -54,8 +61,8 @@ BATCH_SCRIPT=$(mktemp /tmp/localfit_sensorfront_XXXXXX.sh)
 
 cat > "${BATCH_SCRIPT}" << SLURM_EOF
 #!/bin/bash
-#SBATCH --account=meg
-#SBATCH --partition=mu3e
+${ACCOUNT_LINE}
+#SBATCH --partition=${PARTITION}
 #SBATCH --time=5:00:00
 #SBATCH --hint=nomultithread
 #SBATCH --ntasks=1

@@ -18,6 +18,13 @@ VAL_PATH="${VAL_PATH:-data/E15to60_AngUni_PosSQ/val2/}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 MAX_EVENTS="${MAX_EVENTS:-}"  # empty = all events
 LOCAL_FIT="${LOCAL_FIT:-1}"   # set LOCAL_FIT=0 to disable LocalFitBaseline
+PARTITION="${PARTITION:-mu3e}" # meg-long, meg-short, mu3e need --account=meg; hourly, daily, general do not
+
+# Determine --account flag based on partition
+case "$PARTITION" in
+    meg-long|meg-short|mu3e) ACCOUNT_LINE="#SBATCH --account=meg" ;;
+    *)                       ACCOUNT_LINE="" ;;
+esac
 
 # Steps to submit
 if [ $# -eq 0 ]; then
@@ -44,6 +51,7 @@ echo "Steps:      ${STEPS[*]}"
 echo "Run number: ${RUN_NUMBER}"
 echo "Val data:   ${VAL_PATH}"
 echo "Local fit:  ${LOCAL_FIT}"
+echo "Partition:  ${PARTITION}"
 echo "Dry run:    ${DRY_RUN}"
 echo "============================================"
 echo ""
@@ -76,8 +84,8 @@ for STEP in "${STEPS[@]}"; do
 
     cat > "${BATCH_SCRIPT}" << SLURM_EOF
 #!/bin/bash
-#SBATCH --account=meg
-#SBATCH --partition=mu3e
+${ACCOUNT_LINE}
+#SBATCH --partition=${PARTITION}
 #SBATCH --time=5:00:00
 #SBATCH --hint=nomultithread
 #SBATCH --ntasks=1

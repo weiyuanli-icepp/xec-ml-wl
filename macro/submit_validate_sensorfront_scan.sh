@@ -15,6 +15,12 @@ cd "$(dirname "$0")/.."
 DRY_RUN="${DRY_RUN:-0}"
 VAL_PATH="${VAL_PATH:-data/E15to60_AngUni_PosSQ/val2/}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
+PARTITION="${PARTITION:-mu3e}"
+
+case "$PARTITION" in
+    meg-long|meg-short|mu3e) ACCOUNT_LINE="#SBATCH --account=meg" ;;
+    *)                       ACCOUNT_LINE="" ;;
+esac
 
 # Steps to submit (default: all)
 if [ $# -eq 0 ]; then
@@ -38,8 +44,9 @@ echo "============================================"
 echo "Sensorfront Validation (CPU)"
 echo "============================================"
 echo "Steps:    ${STEPS[*]}"
-echo "Val data: ${VAL_PATH}"
-echo "Dry run:  ${DRY_RUN}"
+echo "Val data:   ${VAL_PATH}"
+echo "Partition:  ${PARTITION}"
+echo "Dry run:    ${DRY_RUN}"
 echo "============================================"
 echo ""
 
@@ -71,8 +78,8 @@ for STEP in "${STEPS[@]}"; do
 
     cat > "${BATCH_SCRIPT}" << SLURM_EOF
 #!/bin/bash
-#SBATCH --account=meg
-#SBATCH --partition=mu3e
+${ACCOUNT_LINE}
+#SBATCH --partition=${PARTITION}
 #SBATCH --time=5:00:00
 #SBATCH --hint=nomultithread
 #SBATCH --ntasks=1
