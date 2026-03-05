@@ -8,26 +8,33 @@ Motivation: neighbor-average baselines underestimate npho when the FIP is
 directly in front of the masked sensor, because the peak is lost. This
 script tests whether the ML inpainter can recover it.
 
-Usage:
-    # Step 1: Run inference + easy baselines (fast)
+Usage (parallel workflow for scan):
+    # Step 1: Prepare manifest + baselines (no model needed, fast)
+    python macro/validate_inpainter_sensorfront.py \\
+        --manifest-only \\
+        --input data/E15to60_AngUni_PosSQ/val2/ \\
+        --output artifacts/sensorfront_shared/ \\
+        --solid-angle-branch solid_angle
+
+    # Step 2a: Submit LocalFit batch jobs (uses manifest)
+    bash macro/submit_localfit_sensorfront.sh \\
+        artifacts/sensorfront_shared/_sensorfront_manifest.npz
+
+    # Step 2b: Run ML inference per scan step (parallel with 2a)
+    python macro/validate_inpainter_sensorfront.py \\
+        --checkpoint artifacts/inp_scan_s1_baseline/inpainter_checkpoint_best.pth \\
+        --load-manifest artifacts/sensorfront_shared/ \\
+        --baselines-from artifacts/sensorfront_shared/ \\
+        --local-fit-results artifacts/sensorfront_shared/localfit_results/ \\
+        --output artifacts/inp_scan_s1_baseline/validation_sensorfront/
+
+Usage (standalone, all-in-one):
     python macro/validate_inpainter_sensorfront.py \\
         --checkpoint artifacts/.../checkpoint_best.pth \\
         --input data/E15to60_AngUni_PosSQ/val2/MCGamma_0.root \\
         --output artifacts/sensorfront_validation/ \\
         [--solid-angle-branch solid_angle] \\
         [--max-events N] [--batch-size 64] [--device cpu|cuda]
-
-    # Step 2 (optional): Run local-fit as batch jobs (slow, parallelizable)
-    python macro/run_localfit_sensorfront.py \\
-        --manifest artifacts/sensorfront_validation/_sensorfront_manifest.npz \\
-        --file-index 0   # one job per file
-
-    # Step 3: Re-run main script with --local-fit-results to merge
-    python macro/validate_inpainter_sensorfront.py \\
-        --checkpoint artifacts/.../checkpoint_best.pth \\
-        --input data/E15to60_AngUni_PosSQ/val2/MCGamma_0.root \\
-        --output artifacts/sensorfront_validation/ \\
-        --local-fit-results artifacts/sensorfront_validation/localfit_results/
 """
 
 from __future__ import annotations
@@ -203,15 +210,17 @@ def load_and_match_streaming(
     dv: float = 0.5,
     w_max: float = 1.0,
     sa_branch: Optional[str] = None,
+    save_raw: bool = False,
 ) -> dict:
     """Load ROOT files one at a time, match events, keep only matched.
 
     This avoids loading all files into memory simultaneously.  Peak memory
     is proportional to the largest single file, not the total.
 
-    Returns dict with keys: x_input, x_original, uvw_matched, matched_sid,
+    Returns dict with keys: x_norm, uvw_matched, matched_sid,
     run_numbers, event_numbers, solid_angles (or None), n_total,
     matched_orig_idx (global indices into concatenated files, for local-fit).
+    If save_raw=True, also includes npho_raw and time_raw (pre-normalization).
     """
     file_list = expand_path(input_path)
     print(f"[INFO] Loading data from {len(file_list)} file(s) (streaming)")
@@ -226,6 +235,9 @@ def load_and_match_streaming(
         "sa": [], "matched_orig_idx": [],
         "truth_at_mask": [],  # (M, 2) — truth values at the masked sensor
     }
+    if save_raw:
+        accum["npho_raw"] = []
+        accum["time_raw"] = []
     global_offset = 0  # running event counter across files
     n_total = 0
 
@@ -259,22 +271,27 @@ def load_and_match_streaming(
             if sa_branch and sa_branch in tree.keys():
                 sa_arr = tree[sa_branch].array(library="np")[:n_file]
 
-        # --- normalize (one file at a time) ---
-        x_norm = normalize_data(npho, time, npho_scheme=npho_scheme,
-                               npho_scale=npho_scale, npho_scale2=npho_scale2)
-        del npho, time  # free raw arrays
-
-        # --- match events ---
+        # --- match events (before normalization — uses uvw only) ---
         m_idx, m_sid = match_events_to_sensors(
             uvw, sensor_uvw, du=du, dv=dv, w_max=w_max,
         )
 
         if len(m_idx) > 0:
-            matched_x = x_norm[m_idx]
+            npho_m = npho[m_idx]
+            time_m = time[m_idx]
+
+            # Save raw matched data if requested (before normalization)
+            if save_raw:
+                accum["npho_raw"].append(npho_m.copy())
+                accum["time_raw"].append(time_m.copy())
+
+            # Normalize only matched events (element-wise, same result)
+            x_norm_m = normalize_data(npho_m, time_m, npho_scheme=npho_scheme,
+                                      npho_scale=npho_scale, npho_scale2=npho_scale2)
             # Save truth at the masked sensor BEFORE sentinel is applied
-            truth = matched_x[np.arange(len(m_idx)), m_sid, :].copy()  # (M, 2)
+            truth = x_norm_m[np.arange(len(m_idx)), m_sid, :].copy()  # (M, 2)
             accum["truth_at_mask"].append(truth)
-            accum["x_norm"].append(matched_x)
+            accum["x_norm"].append(x_norm_m)
             accum["uvw_matched"].append(uvw[m_idx])
             accum["matched_sid"].append(m_sid)
             accum["matched_orig_idx"].append(m_idx + global_offset)
@@ -287,7 +304,7 @@ def load_and_match_streaming(
 
         n_total += n_file
         global_offset += n_file
-        del x_norm, uvw, sa_arr, run_arr, event_arr
+        del npho, time, uvw, sa_arr, run_arr, event_arr
         gc.collect()
 
     print(f"[INFO] Loaded {n_total:,} events total (streaming)")
@@ -310,7 +327,209 @@ def load_and_match_streaming(
     result["solid_angles"] = (np.concatenate(accum["sa"])
                               if accum["sa"] else None)
     result["n_matched"] = len(result["x_norm"])
+    if save_raw:
+        result["npho_raw"] = np.concatenate(accum["npho_raw"])
+        result["time_raw"] = np.concatenate(accum["time_raw"])
     return result
+
+
+# =========================================================
+#  Manifest & prepared-data helpers
+# =========================================================
+
+def save_prepared_data(
+    output_dir: str,
+    loaded: dict,
+    input_path: str,
+    max_events: Optional[int],
+    npho_scheme: str,
+    npho_scale: float,
+    npho_scale2: float,
+    baseline_raw: Optional[dict] = None,
+):
+    """Save manifest, raw matched data, and raw baselines to *output_dir*.
+
+    Files created:
+      _sensorfront_manifest.npz — matching info + file list (for LocalFit)
+      _sensorfront_data.npz     — raw matched data (for ML inference reload)
+      _baselines_raw.npz        — raw baseline predictions (scheme-independent)
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    file_list = expand_path(input_path)
+
+    # --- manifest (small, for LocalFit batch jobs) ---
+    manifest_path = os.path.join(output_dir, "_sensorfront_manifest.npz")
+    np.savez_compressed(
+        manifest_path,
+        matched_orig_idx=loaded["matched_orig_idx"],
+        matched_sid=loaded["matched_sid"],
+        truth_at_mask=loaded["truth_at_mask"],
+        npho_scheme=np.array([npho_scheme]),
+        file_list=np.array(file_list),
+        max_events=np.array([max_events if max_events else -1]),
+    )
+    print(f"[INFO] Saved manifest to {manifest_path}")
+
+    # --- raw matched data (for ML inference without re-reading ROOT) ---
+    data_path = os.path.join(output_dir, "_sensorfront_data.npz")
+    data_dict = {
+        "npho_raw": loaded["npho_raw"],
+        "time_raw": loaded["time_raw"],
+        "matched_sid": loaded["matched_sid"],
+        "matched_orig_idx": loaded["matched_orig_idx"],
+        "uvw_matched": loaded["uvw_matched"],
+        "n_total": np.array([loaded["n_total"]]),
+    }
+    if loaded.get("run_numbers") is not None:
+        data_dict["run_numbers"] = loaded["run_numbers"]
+    if loaded.get("event_numbers") is not None:
+        data_dict["event_numbers"] = loaded["event_numbers"]
+    if loaded.get("solid_angles") is not None:
+        data_dict["solid_angles"] = loaded["solid_angles"]
+    np.savez_compressed(data_path, **data_dict)
+    print(f"[INFO] Saved raw matched data to {data_path}")
+
+    # --- raw baseline predictions (scheme-independent) ---
+    if baseline_raw is not None:
+        bl_path = os.path.join(output_dir, "_baselines_raw.npz")
+        np.savez_compressed(bl_path, **baseline_raw)
+        print(f"[INFO] Saved raw baselines to {bl_path}")
+
+    print(f"       Use run_localfit_sensorfront.py --manifest {manifest_path} "
+          f"--file-index <0..{len(file_list)-1}> for LocalFit batch jobs")
+
+
+def load_prepared_data(
+    prepared_dir: str,
+    npho_scheme: str,
+    npho_scale: float = DEFAULT_NPHO_SCALE,
+    npho_scale2: float = DEFAULT_NPHO_SCALE2,
+) -> dict:
+    """Load raw matched data from a prepared directory and normalize.
+
+    Returns a dict with the same keys as load_and_match_streaming().
+    """
+    data_path = os.path.join(prepared_dir, "_sensorfront_data.npz")
+    print(f"[INFO] Loading prepared data from {data_path}")
+    data = np.load(data_path, allow_pickle=True)
+
+    npho_raw = data["npho_raw"]
+    time_raw = data["time_raw"]
+    matched_sid = data["matched_sid"]
+
+    # Normalize with the target scheme
+    x_norm = normalize_data(npho_raw, time_raw, npho_scheme=npho_scheme,
+                            npho_scale=npho_scale, npho_scale2=npho_scale2)
+    n_matched = len(x_norm)
+    ev_range = np.arange(n_matched)
+    truth_at_mask = x_norm[ev_range, matched_sid, :].copy()
+
+    result = {
+        "x_norm": x_norm,
+        "truth_at_mask": truth_at_mask,
+        "uvw_matched": data["uvw_matched"],
+        "matched_sid": matched_sid,
+        "matched_orig_idx": data["matched_orig_idx"],
+        "n_total": int(data["n_total"][0]),
+        "n_matched": n_matched,
+    }
+    result["run_numbers"] = (data["run_numbers"]
+                             if "run_numbers" in data else None)
+    result["event_numbers"] = (data["event_numbers"]
+                               if "event_numbers" in data else None)
+    result["solid_angles"] = (data["solid_angles"]
+                              if "solid_angles" in data else None)
+    print(f"[INFO] Loaded {n_matched:,} matched events, normalized with {npho_scheme}")
+    return result
+
+
+def run_baselines_raw(
+    x_npho_norm: np.ndarray,
+    combined_mask: np.ndarray,
+    npho_xf: 'NphoTransform',
+    solid_angles: Optional[np.ndarray],
+    matched_sid: np.ndarray,
+) -> dict:
+    """Run neighbor-avg and solid-angle baselines, return raw predictions.
+
+    The baselines internally denormalize to raw space for averaging,
+    so the raw predictions are scheme-independent.
+
+    Returns dict with keys: avg_pred_raw, and optionally sa_pred_raw.
+    Values are (M,) float32 arrays of raw npho predictions at the masked sensor.
+    """
+    from lib.inpainter_baselines import (
+        NeighborAverageBaseline, SolidAngleWeightedBaseline,
+    )
+    n_matched = len(x_npho_norm)
+    ev_range = np.arange(n_matched)
+    result = {}
+
+    print("[INFO] Running NeighborAverageBaseline...")
+    avg_baseline = NeighborAverageBaseline(k=1)
+    avg_preds = avg_baseline.predict(x_npho_norm, combined_mask,
+                                     npho_transform=npho_xf)
+    # Extract prediction at masked sensor, convert to raw
+    avg_at_mask = avg_preds[ev_range, matched_sid]
+    result["avg_pred_raw"] = npho_xf.inverse(avg_at_mask).astype(np.float32)
+    del avg_preds
+
+    if solid_angles is not None:
+        print("[INFO] Running SolidAngleWeightedBaseline...")
+        sa_baseline = SolidAngleWeightedBaseline(k=1)
+        sa_preds = sa_baseline.predict(x_npho_norm, combined_mask,
+                                       solid_angles=solid_angles,
+                                       npho_transform=npho_xf)
+        sa_at_mask = sa_preds[ev_range, matched_sid]
+        result["sa_pred_raw"] = npho_xf.inverse(sa_at_mask).astype(np.float32)
+        del sa_preds
+
+    return result
+
+
+def load_baselines_raw(
+    baselines_path: str,
+    truth_at_mask: np.ndarray,
+    matched_sid: np.ndarray,
+    npho_xf: 'NphoTransform',
+) -> dict:
+    """Load raw baseline predictions and normalize to the target scheme.
+
+    Returns dict mapping baseline name -> list-of-dicts (same format as
+    _collect_baseline_fast).
+    """
+    data = np.load(baselines_path)
+    baseline_results = {}
+    n_matched = len(matched_sid)
+
+    for key, name in [("avg_pred_raw", "avg"), ("sa_pred_raw", "sa")]:
+        if key not in data:
+            continue
+        pred_raw = data[key]
+        # Normalize raw predictions to the target scheme
+        pred_norm = npho_xf.forward(
+            np.maximum(pred_raw, npho_xf.domain_min())
+        ).astype(np.float32)
+
+        results = []
+        for i in range(n_matched):
+            sid = int(matched_sid[i])
+            p = float(pred_norm[i])
+            t = float(truth_at_mask[i, 0])
+            err = p - t if t != MODEL_SENTINEL_NPHO else -999.0
+            results.append({
+                "event_idx": i,
+                "sensor_id": sid,
+                "mask_type": 0,
+                "pred_npho": p,
+                "truth_npho": t,
+                "error_npho": err,
+            })
+        baseline_results[name] = results
+        print(f"[INFO] Loaded {name} baseline: {n_matched} predictions "
+              f"(normalized to {npho_xf.scheme})")
+
+    return baseline_results
 
 
 # =========================================================
@@ -325,18 +544,30 @@ def main():
         epilog=__doc__,
     )
 
-    # Model
-    model_group = parser.add_mutually_exclusive_group(required=True)
+    # Model (not required for --manifest-only)
+    model_group = parser.add_mutually_exclusive_group(required=False)
     model_group.add_argument("--checkpoint", "-c", type=str,
                              help="Path to inpainter checkpoint (.pth)")
     model_group.add_argument("--torchscript", "-t", type=str,
                              help="Path to TorchScript model (.pt)")
 
     # Data
-    parser.add_argument("--input", "-i", required=True,
+    parser.add_argument("--input", "-i", type=str, default=None,
                         help="Path to input ROOT file (MC with uvwTruth)")
     parser.add_argument("--output", "-o", required=True,
                         help="Output directory")
+
+    # Preparation modes
+    parser.add_argument("--manifest-only", action="store_true",
+                        help="Create manifest + raw baselines only (no model "
+                             "needed). Use --input and --output. Subsequent "
+                             "inference jobs use --load-manifest.")
+    parser.add_argument("--load-manifest", type=str, default=None,
+                        help="Load prepared data from this directory instead "
+                             "of reading ROOT files (created by --manifest-only)")
+    parser.add_argument("--baselines-from", type=str, default=None,
+                        help="Load pre-computed raw baselines from this "
+                             "directory (created by --manifest-only)")
 
     # Options
     parser.add_argument("--batch-size", type=int, default=64)
@@ -367,7 +598,97 @@ def main():
 
     args = parser.parse_args()
 
+    # Validate argument combinations
+    if args.manifest_only:
+        if not args.input:
+            parser.error("--manifest-only requires --input")
+        if args.checkpoint or args.torchscript:
+            parser.error("--manifest-only does not use --checkpoint/--torchscript")
+    elif args.load_manifest:
+        if not (args.checkpoint or args.torchscript):
+            parser.error("--load-manifest requires --checkpoint or --torchscript")
+    else:
+        if not args.input:
+            parser.error("--input is required (or use --load-manifest)")
+        if not (args.checkpoint or args.torchscript):
+            parser.error("--checkpoint or --torchscript is required "
+                         "(or use --manifest-only)")
+
     os.makedirs(args.output, exist_ok=True)
+
+    # ==================================================================
+    #  MODE A: --manifest-only  (no model, prepare data + baselines)
+    # ==================================================================
+    if args.manifest_only:
+        npho_scheme = args.npho_scheme or "log1p"
+        npho_scale = DEFAULT_NPHO_SCALE
+        npho_scale2 = DEFAULT_NPHO_SCALE2
+
+        sensor_uvw = build_inner_sensor_uvw()
+
+        loaded = load_and_match_streaming(
+            input_path=args.input,
+            sensor_uvw=sensor_uvw,
+            npho_scheme=npho_scheme,
+            npho_scale=npho_scale, npho_scale2=npho_scale2,
+            tree_name=args.tree_name,
+            max_events=args.max_events,
+            du=args.du, dv=args.dv, w_max=args.w_max,
+            sa_branch=args.solid_angle_branch,
+            save_raw=True,
+        )
+
+        n_total = loaded["n_total"]
+        n_matched = loaded.get("n_matched", 0)
+        print(f"\n[INFO] Events total:   {n_total:>8,}")
+        print(f"[INFO] Events matched: {n_matched:>8,} "
+              f"({n_matched / n_total * 100:.1f}%)")
+
+        if n_matched == 0:
+            print("[ERROR] No events matched any sensor front region. Exiting.")
+            sys.exit(1)
+
+        # --- Run baselines and extract raw predictions ---
+        x_norm = loaded["x_norm"]
+        matched_sid = loaded["matched_sid"]
+        n_matched = len(x_norm)
+        ev_range = np.arange(n_matched)
+        combined_mask = np.zeros((n_matched, N_CHANNELS), dtype=bool)
+        combined_mask[ev_range, matched_sid] = True
+
+        npho_xf = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale,
+                                npho_scale2=npho_scale2)
+        baseline_raw = run_baselines_raw(
+            x_norm[:, :, 0], combined_mask, npho_xf,
+            loaded.get("solid_angles"), matched_sid,
+        )
+        del x_norm
+        gc.collect()
+
+        # --- Save everything ---
+        save_prepared_data(
+            output_dir=args.output,
+            loaded=loaded,
+            input_path=args.input,
+            max_events=args.max_events,
+            npho_scheme=npho_scheme,
+            npho_scale=npho_scale,
+            npho_scale2=npho_scale2,
+            baseline_raw=baseline_raw,
+        )
+
+        print(f"\n[INFO] Manifest-only mode complete. Output in {args.output}")
+        print(f"[INFO] Next steps:")
+        print(f"  1. Submit LocalFit:  bash macro/submit_localfit_sensorfront.sh "
+              f"{os.path.join(args.output, '_sensorfront_manifest.npz')}")
+        print(f"  2. Run ML inference: python macro/validate_inpainter_sensorfront.py "
+              f"--checkpoint <ckpt> --load-manifest {args.output} "
+              f"--baselines-from {args.output} --output <out_dir>")
+        return
+
+    # ==================================================================
+    #  MODE B & C: Inference mode (with --load-manifest or --input)
+    # ==================================================================
 
     # ------------------------------------------------------------------
     # 1. Load model
@@ -391,26 +712,28 @@ def main():
     npho_scale2 = model_npho_scale2
 
     # ------------------------------------------------------------------
-    # 2. Build inner-sensor UVW lookup
+    # 2. Load data: from prepared manifest or from ROOT files
     # ------------------------------------------------------------------
-    sensor_uvw = build_inner_sensor_uvw()  # (4092, 3)
-
-    # ------------------------------------------------------------------
-    # 3. Stream-load files: normalize, match, keep only matched events
-    #    Peak memory ≈ one file (~13K events × 4760 × 2 × 4 bytes ≈ 470 MB)
-    #    instead of all files (~4.7 GB + copies).
-    # ------------------------------------------------------------------
-    loaded = load_and_match_streaming(
-        input_path=args.input,
-        sensor_uvw=sensor_uvw,
-        npho_scheme=npho_scheme,
-        npho_scale=npho_scale,
-        npho_scale2=npho_scale2,
-        tree_name=args.tree_name,
-        max_events=args.max_events,
-        du=args.du, dv=args.dv, w_max=args.w_max,
-        sa_branch=args.solid_angle_branch,
-    )
+    if args.load_manifest:
+        loaded = load_prepared_data(
+            prepared_dir=args.load_manifest,
+            npho_scheme=npho_scheme,
+            npho_scale=npho_scale,
+            npho_scale2=npho_scale2,
+        )
+    else:
+        sensor_uvw = build_inner_sensor_uvw()
+        loaded = load_and_match_streaming(
+            input_path=args.input,
+            sensor_uvw=sensor_uvw,
+            npho_scheme=npho_scheme,
+            npho_scale=npho_scale,
+            npho_scale2=npho_scale2,
+            tree_name=args.tree_name,
+            max_events=args.max_events,
+            du=args.du, dv=args.dv, w_max=args.w_max,
+            sa_branch=args.solid_angle_branch,
+        )
 
     n_total = loaded["n_total"]
     n_matched = loaded.get("n_matched", 0)
@@ -434,8 +757,7 @@ def main():
     gc.collect()
 
     # ------------------------------------------------------------------
-    # 4. Build per-event mask & run baselines BEFORE applying sentinels
-    #    (baselines need the unmasked data)
+    # 3. Build per-event mask & run baselines BEFORE applying sentinels
     # ------------------------------------------------------------------
     ev_range = np.arange(n_matched)
     combined_mask = np.zeros((n_matched, N_CHANNELS), dtype=bool)
@@ -446,43 +768,58 @@ def main():
     dead_mask = np.zeros(N_CHANNELS, dtype=bool)
     artificial_mask = combined_mask
 
+    npho_xf = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale,
+                            npho_scale2=npho_scale2)
+
     baseline_results = {}
 
-    from lib.inpainter_baselines import (
-        NeighborAverageBaseline, SolidAngleWeightedBaseline,
-    )
+    if args.baselines_from:
+        # Load pre-computed raw baselines (scheme-independent)
+        bl_path = os.path.join(args.baselines_from, "_baselines_raw.npz")
+        if os.path.isfile(bl_path):
+            baseline_results = load_baselines_raw(
+                bl_path, truth_at_mask, matched_sid, npho_xf,
+            )
+        else:
+            print(f"[WARN] Baselines file not found: {bl_path}, "
+                  f"computing inline")
+            args.baselines_from = None
 
-    # Baselines run on unmasked npho (x_norm still has original values)
-    x_npho_orig = x_norm[:, :, 0]
-
-    npho_xf = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
-
-    print("[INFO] Running NeighborAverageBaseline...")
-    avg_baseline = NeighborAverageBaseline(k=1)
-    avg_preds = avg_baseline.predict(x_npho_orig, combined_mask,
-                                     npho_transform=npho_xf)
-    avg_results = _collect_baseline_fast(
-        avg_preds, truth_at_mask, matched_sid, n_matched,
-    )
-    del avg_preds
-    baseline_results["avg"] = avg_results
-
-    if solid_angles is not None:
-        print("[INFO] Running SolidAngleWeightedBaseline...")
-        sa_baseline = SolidAngleWeightedBaseline(k=1)
-        sa_preds = sa_baseline.predict(x_npho_orig, combined_mask,
-                                       solid_angles=solid_angles,
-                                       npho_transform=npho_xf)
-        sa_results = _collect_baseline_fast(
-            sa_preds, truth_at_mask, matched_sid, n_matched,
+    if not args.baselines_from:
+        # Compute baselines inline (current behavior)
+        from lib.inpainter_baselines import (
+            NeighborAverageBaseline, SolidAngleWeightedBaseline,
         )
-        del sa_preds, solid_angles
-        baseline_results["sa"] = sa_results
-    del x_npho_orig
+
+        x_npho_orig = x_norm[:, :, 0]
+
+        print("[INFO] Running NeighborAverageBaseline...")
+        avg_baseline = NeighborAverageBaseline(k=1)
+        avg_preds = avg_baseline.predict(x_npho_orig, combined_mask,
+                                         npho_transform=npho_xf)
+        avg_results = _collect_baseline_fast(
+            avg_preds, truth_at_mask, matched_sid, n_matched,
+        )
+        del avg_preds
+        baseline_results["avg"] = avg_results
+
+        if solid_angles is not None:
+            print("[INFO] Running SolidAngleWeightedBaseline...")
+            sa_baseline = SolidAngleWeightedBaseline(k=1)
+            sa_preds = sa_baseline.predict(x_npho_orig, combined_mask,
+                                           solid_angles=solid_angles,
+                                           npho_transform=npho_xf)
+            sa_results = _collect_baseline_fast(
+                sa_preds, truth_at_mask, matched_sid, n_matched,
+            )
+            del sa_preds
+            baseline_results["sa"] = sa_results
+        del x_npho_orig
+    del solid_angles
     gc.collect()
 
     # ------------------------------------------------------------------
-    # 5. Apply sentinels & run inference (with cache)
+    # 4. Apply sentinels & run inference (with cache)
     # ------------------------------------------------------------------
     cache_file = os.path.join(args.output, "_inference_cache.npz")
     predictions = None
@@ -522,9 +859,9 @@ def main():
     gc.collect()
 
     # ------------------------------------------------------------------
-    # 6. Save manifest for local-fit batch jobs
+    # 5. Save manifest for local-fit batch jobs (legacy path)
     # ------------------------------------------------------------------
-    if not args.no_manifest:
+    if not args.no_manifest and not args.load_manifest and args.input:
         file_list = expand_path(args.input)
         manifest_path = os.path.join(args.output, "_sensorfront_manifest.npz")
         np.savez_compressed(
@@ -541,7 +878,7 @@ def main():
               f"--file-index <0..{len(file_list)-1}> for batch jobs")
 
     # ------------------------------------------------------------------
-    # 6b. Load pre-computed local-fit results (if provided)
+    # 6. Load pre-computed local-fit results (if provided)
     # ------------------------------------------------------------------
     if args.local_fit_results:
         lf_results = _load_local_fit_results(
@@ -553,14 +890,14 @@ def main():
             baseline_results["localfit"] = lf_results
 
     # ------------------------------------------------------------------
-    # 9. Compute baseline metrics
+    # 7. Compute baseline metrics
     # ------------------------------------------------------------------
     baseline_metrics_dict = {}
     for bname, bpreds in baseline_results.items():
         baseline_metrics_dict[bname] = compute_baseline_metrics(bpreds)
 
     # ------------------------------------------------------------------
-    # 10. Collect ML predictions
+    # 8. Collect ML predictions
     # ------------------------------------------------------------------
     print("[INFO] Collecting predictions...")
     pred_list = collect_predictions(
@@ -577,7 +914,7 @@ def main():
     ml_metrics = compute_metrics(pred_list, predict_channels=predict_channels)
 
     # ------------------------------------------------------------------
-    # 11. Print summary
+    # 9. Print summary
     # ------------------------------------------------------------------
     _print_sensorfront_summary(
         n_total, n_matched, ml_metrics, baseline_metrics_dict, npho_scheme,
@@ -585,7 +922,7 @@ def main():
     )
 
     # ------------------------------------------------------------------
-    # 12. Save outputs
+    # 10. Save outputs
     # ------------------------------------------------------------------
     # Add w_fip to baseline results too (for ROOT output)
     for bname in baseline_results:

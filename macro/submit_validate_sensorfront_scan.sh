@@ -3,8 +3,17 @@
 # Submit SLURM jobs for sensorfront validation of scan checkpoints.
 # Tests inpainter recovery when the peak-signal sensor is masked.
 #
+# Two modes:
+#   1. With SHARED_DIR: uses pre-computed manifest + baselines + localfit
+#      (fast, skips ROOT re-reading and baseline computation)
+#   2. Without SHARED_DIR: standalone per-step (original behavior)
+#
 # Usage:
-#   bash macro/submit_validate_sensorfront_scan.sh          # Submit s1, s3, s6
+#   # Fast mode (after submit_sensorfront_prepare_scan.sh + localfit):
+#   SHARED_DIR=artifacts/sensorfront_shared bash macro/submit_validate_sensorfront_scan.sh
+#
+#   # Standalone mode (original):
+#   bash macro/submit_validate_sensorfront_scan.sh          # Submit all steps
 #   bash macro/submit_validate_sensorfront_scan.sh 1 6      # Submit only s1, s6
 #   DRY_RUN=1 bash macro/submit_validate_sensorfront_scan.sh
 #
@@ -16,6 +25,7 @@ DRY_RUN="${DRY_RUN:-0}"
 VAL_PATH="${VAL_PATH:-data/E15to60_AngUni_PosSQ/val2/}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 PARTITION="${PARTITION:-mu3e}"
+SHARED_DIR="${SHARED_DIR:-}"  # set to enable fast mode
 
 case "$PARTITION" in
     meg-long|meg-short|mu3e) ACCOUNT_LINE="#SBATCH --account=meg" ;;
@@ -43,12 +53,31 @@ STEP_LABELS=(
 echo "============================================"
 echo "Sensorfront Validation (CPU)"
 echo "============================================"
-echo "Steps:    ${STEPS[*]}"
-echo "Val data:   ${VAL_PATH}"
+echo "Steps:      ${STEPS[*]}"
+if [ -n "$SHARED_DIR" ]; then
+    echo "Mode:       fast (prepared data from ${SHARED_DIR})"
+else
+    echo "Mode:       standalone (per-step ROOT loading)"
+    echo "Val data:   ${VAL_PATH}"
+fi
 echo "Partition:  ${PARTITION}"
 echo "Dry run:    ${DRY_RUN}"
 echo "============================================"
 echo ""
+
+# Build extra args for fast mode
+EXTRA_ARGS=""
+if [ -n "$SHARED_DIR" ]; then
+    EXTRA_ARGS="--load-manifest ${SHARED_DIR} --baselines-from ${SHARED_DIR} --no-manifest"
+    LF_DIR="${SHARED_DIR}/localfit_results"
+    if [ -d "$LF_DIR" ]; then
+        EXTRA_ARGS="${EXTRA_ARGS} --local-fit-results ${LF_DIR}"
+        echo "[INFO] LocalFit results found at ${LF_DIR}"
+    else
+        echo "[WARN] No localfit_results/ in ${SHARED_DIR} — LocalFit baseline will be skipped"
+    fi
+    echo ""
+fi
 
 mkdir -p log
 
@@ -56,7 +85,7 @@ SUBMITTED=0
 for STEP in "${STEPS[@]}"; do
     LABEL="${STEP_LABELS[$STEP]:-}"
     if [ -z "$LABEL" ]; then
-        echo "[ERROR] Unknown step: $STEP (valid: 1-6)"
+        echo "[ERROR] Unknown step: $STEP (valid: 1-8)"
         continue
     fi
 
@@ -75,6 +104,13 @@ for STEP in "${STEPS[@]}"; do
     fi
 
     BATCH_SCRIPT=$(mktemp /tmp/sf_scan_s${STEP}_XXXXXX.sh)
+
+    # In fast mode, no need for --input/--solid-angle-branch (data loaded from manifest)
+    if [ -n "$SHARED_DIR" ]; then
+        DATA_ARGS="${EXTRA_ARGS}"
+    else
+        DATA_ARGS="--input ${VAL_PATH} --solid-angle-branch solid_angle"
+    fi
 
     cat > "${BATCH_SCRIPT}" << SLURM_EOF
 #!/bin/bash
@@ -122,9 +158,8 @@ echo "[JOB] Directory: \$(pwd)"
 
 python macro/validate_inpainter_sensorfront.py \\
     --checkpoint ${CKPT} \\
-    --input ${VAL_PATH} \\
+    ${DATA_ARGS} \\
     --output ${OUTDIR} \\
-    --solid-angle-branch solid_angle \\
     --device cpu \\
     --batch-size ${BATCH_SIZE}
 

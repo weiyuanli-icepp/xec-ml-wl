@@ -1,16 +1,18 @@
 #!/bin/bash
 #
 # Submit SLURM job array for local-fit sensor-front validation.
+# Each array task processes one ROOT file through the LocalFitBaseline macro.
 #
 # Usage:
 #   bash macro/submit_localfit_sensorfront.sh <manifest.npz> [output_dir]
 #
 # Example:
 #   bash macro/submit_localfit_sensorfront.sh \
-#       artifacts/sensorfront_validation/_sensorfront_manifest.npz
+#       artifacts/sensorfront_shared/_sensorfront_manifest.npz
 #
 
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
 if [ $# -lt 1 ]; then
     echo "Usage: $0 <manifest.npz> [output_dir]"
@@ -22,8 +24,6 @@ if [ $# -lt 1 ]; then
 fi
 
 MANIFEST="$(realpath "$1")"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RUN_SCRIPT="${SCRIPT_DIR}/run_localfit_sensorfront.py"
 PARTITION="${PARTITION:-mu3e}"
 
 case "$PARTITION" in
@@ -56,6 +56,8 @@ else
     OUTPUT_ARG=""
 fi
 
+mkdir -p log
+
 # Create a temporary SLURM batch script
 BATCH_SCRIPT=$(mktemp /tmp/localfit_sensorfront_XXXXXX.sh)
 
@@ -69,14 +71,42 @@ ${ACCOUNT_LINE}
 #SBATCH --mem-per-cpu=3700
 #SBATCH --job-name=localfit_sf
 #SBATCH --array=0-${MAX_IDX}
-#SBATCH --output=localfit_sf_%A_%a.log
+#SBATCH --output=$HOME/meghome/xec-ml-wl/log/localfit_sf_%A_%a.log
 
 echo "=== LocalFit sensor-front: file \${SLURM_ARRAY_TASK_ID} / ${MAX_IDX} ==="
 echo "Host: \$(hostname)"
 echo "Date: \$(date)"
 echo ""
 
-python3 ${RUN_SCRIPT} \\
+# Conda setup
+[[ -f /etc/profile.d/modules.sh ]] && source /etc/profile.d/modules.sh || true
+
+ARM_CONDA="\$HOME/miniforge-arm/bin/conda"
+X86_CONDA="/opt/psi/Programming/anaconda/2024.08/conda/bin/conda"
+
+module load anaconda/2024.08 2>/dev/null || true
+
+if [ -f "\$ARM_CONDA" ] && [ "\$(uname -m)" == "aarch64" ]; then
+    eval "\$(\$ARM_CONDA shell.bash hook)"
+elif command -v conda &> /dev/null; then
+    eval "\$(conda shell.bash hook)"
+elif [ -f "\$X86_CONDA" ]; then
+    eval "\$(\$X86_CONDA shell.bash hook)"
+else
+    echo "CRITICAL ERROR: Could not find conda"
+    exit 1
+fi
+
+conda activate xec-ml-wl
+
+if [ -n "\$CONDA_PREFIX" ]; then
+    export LD_LIBRARY_PATH="\$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH"
+fi
+
+cd \$HOME/meghome/xec-ml-wl
+echo "[JOB] Directory: \$(pwd)"
+
+python macro/run_localfit_sensorfront.py \\
     --manifest ${MANIFEST} \\
     --file-index \${SLURM_ARRAY_TASK_ID} \\
     ${OUTPUT_ARG}
@@ -86,8 +116,6 @@ echo "=== Done: \$(date) ==="
 SLURM_EOF
 
 echo "[INFO] Batch script: ${BATCH_SCRIPT}"
-echo ""
-cat "${BATCH_SCRIPT}"
 echo ""
 
 # Submit
