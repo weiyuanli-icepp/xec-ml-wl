@@ -26,6 +26,7 @@ DEAD_FILE="${DEAD_FILE:-data/dead_channels_run430000.txt}"
 N_ARTIFICIAL="${N_ARTIFICIAL:-50}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 MAX_EVENTS="${MAX_EVENTS:-}"
+LOCAL_FIT="${LOCAL_FIT:-1}"   # set LOCAL_FIT=0 to disable LocalFitBaseline
 PARTITION="${PARTITION:-mu3e}"
 
 # Determine --account flag based on partition
@@ -59,6 +60,7 @@ echo "Steps:        ${STEPS[*]}"
 echo "Real data:    ${REAL_DATA}"
 echo "Dead file:    ${DEAD_FILE}"
 echo "N artificial: ${N_ARTIFICIAL}"
+echo "Local fit:    ${LOCAL_FIT}"
 echo "Partition:    ${PARTITION}"
 echo "Dry run:      ${DRY_RUN}"
 echo "============================================"
@@ -144,7 +146,8 @@ python macro/validate_inpainter.py \\
     --baselines \\
     --device cpu \\
     --batch-size ${BATCH_SIZE} \\
-    ${MAX_EVENTS:+--max-events ${MAX_EVENTS}}
+    ${MAX_EVENTS:+--max-events ${MAX_EVENTS}} \\
+    \$([ "${LOCAL_FIT}" = "1" ] && echo "--local-fit-baseline" || true)
 
 echo ""
 echo "=== Done: \$(date) ==="
