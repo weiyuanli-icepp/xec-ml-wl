@@ -17,6 +17,7 @@ RUN_NUMBER="${RUN_NUMBER:-430000}"
 VAL_PATH="${VAL_PATH:-data/E15to60_AngUni_PosSQ/val2/}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 MAX_EVENTS="${MAX_EVENTS:-}"  # empty = all events
+LOCAL_FIT="${LOCAL_FIT:-0}"   # set LOCAL_FIT=1 to enable LocalFitBaseline
 
 # Steps to submit
 if [ $# -eq 0 ]; then
@@ -42,6 +43,7 @@ echo "============================================"
 echo "Steps:      ${STEPS[*]}"
 echo "Run number: ${RUN_NUMBER}"
 echo "Val data:   ${VAL_PATH}"
+echo "Local fit:  ${LOCAL_FIT}"
 echo "Dry run:    ${DRY_RUN}"
 echo "============================================"
 echo ""
@@ -125,7 +127,8 @@ python macro/validate_inpainter.py \\
     --solid-angle-branch solid_angle \\
     --device cpu \\
     --batch-size ${BATCH_SIZE} \\
-    ${MAX_EVENTS:+--max-events ${MAX_EVENTS}}
+    ${MAX_EVENTS:+--max-events ${MAX_EVENTS}} \\
+    \$([ "${LOCAL_FIT}" = "1" ] && echo "--local-fit-baseline" || true)
 
 echo ""
 echo "=== Done: \$(date) ==="
