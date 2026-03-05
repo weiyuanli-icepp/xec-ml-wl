@@ -32,7 +32,7 @@ case "$PARTITION" in
     *)                       ACCOUNT_LINE="" ;;
 esac
 
-TIME="${TIME:-02:00:00}"
+TIME="${TIME:-06:00:00}"
 MEM="${MEM:-16G}"
 BATCH_SIZE="${BATCH_SIZE:-1024}"
 
