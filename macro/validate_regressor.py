@@ -35,6 +35,38 @@ from lib.geom_defs import (
 )
 
 
+def _print_timing(elapsed, n_events, backend, batch_times=None):
+    """Print inference timing summary.
+
+    Args:
+        elapsed: Total wall-clock time in seconds.
+        n_events: Total number of events processed.
+        backend: Label string ("PyTorch" or "ONNX").
+        batch_times: Optional list of (dt_seconds, batch_size) per batch
+                     for detailed per-event statistics.
+    """
+    if n_events == 0:
+        print(f"[INFO] {backend} inference completed in {elapsed:.1f}s (0 events)")
+        return
+
+    avg_us = elapsed / n_events * 1e6
+    throughput = n_events / elapsed
+    print(f"\n=== {backend} Inference Timing ===")
+    print(f"  Total:      {elapsed:.1f}s  ({n_events} events)")
+    print(f"  Throughput: {throughput:.0f} events/s")
+    print(f"  Avg/event:  {avg_us:.1f} µs")
+
+    if batch_times:
+        per_event = np.concatenate([
+            np.full(bs, dt / bs) for dt, bs in batch_times
+        ]) * 1e6  # µs
+        p50, p90, p99 = np.percentile(per_event, [50, 90, 99])
+        print(f"  Median:     {p50:.1f} µs")
+        print(f"  p90:        {p90:.1f} µs")
+        print(f"  p99:        {p99:.1f} µs")
+    print()
+
+
 def _run_pytorch(args, cfg, active_tasks, norm_params):
     """Run validation with a PyTorch checkpoint."""
     from lib.models import XECEncoder, XECMultiHeadModel
@@ -116,7 +148,15 @@ def _run_pytorch(args, cfg, active_tasks, norm_params):
         grad_clip=0.0,
     )
     elapsed = time.time() - t0
-    print(f"[INFO] Validation completed in {elapsed:.1f}s")
+    # Count events from collected root_data
+    root_data_tmp = extra_info.get("root_data", {}) if extra_info else {}
+    for v in root_data_tmp.values():
+        if hasattr(v, '__len__') and len(v) > 0:
+            n_total = len(v)
+            break
+    else:
+        n_total = 0
+    _print_timing(elapsed, n_total, "PyTorch")
 
     # Print metrics
     print("\n=== Validation Metrics ===")
@@ -175,11 +215,14 @@ def _run_onnx(args, cfg, active_tasks, norm_params):
     t0 = time.time()
     n_events = 0
     n_batches = 0
+    batch_times = []
 
     for input_tensor, target_dict in val_loader:
         # input_tensor: (batch, 4760, 2)
         x_np = input_tensor.numpy().astype(np.float32)
+        t_batch = time.perf_counter()
         outputs = sess.run(output_names, {input_name: x_np})
+        dt_batch = time.perf_counter() - t_batch
 
         # Map outputs to tasks
         output_map = dict(zip(output_names, outputs))
@@ -187,6 +230,7 @@ def _run_onnx(args, cfg, active_tasks, norm_params):
         batch_size = x_np.shape[0]
         n_events += batch_size
         n_batches += 1
+        batch_times.append((dt_batch, batch_size))
 
         if n_batches % 50 == 1:
             print(f"  Batch {n_batches}: {n_events} events processed")
@@ -247,8 +291,7 @@ def _run_onnx(args, cfg, active_tasks, norm_params):
                 root_data["true_w"].append(u[:, 2])
 
     elapsed = time.time() - t0
-    print(f"[INFO] ONNX inference completed: {n_events} events in {elapsed:.1f}s "
-          f"({n_events/elapsed:.0f} events/s)")
+    _print_timing(elapsed, n_events, "ONNX", batch_times=batch_times)
 
     # Concatenate all arrays
     for k, v_list in root_data.items():
