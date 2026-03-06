@@ -328,7 +328,7 @@ class XECMultiHeadModel(nn.Module):
 
         self.heads = nn.ModuleDict()
         for task, base_dim in self._BASE_DIMS.items():
-            out_dim = base_dim + (1 if task in self.nll_tasks else 0)
+            out_dim = base_dim * 2 if task in self.nll_tasks else base_dim
             self.heads[task] = self._make_head(self.in_features, hidden_dim, out_dim)
     
     def _make_head(self, in_dim, hidden_dim, out_dim):

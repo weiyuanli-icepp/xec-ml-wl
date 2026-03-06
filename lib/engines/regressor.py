@@ -334,15 +334,16 @@ def run_epoch_stream(
                     if not isinstance(preds, dict):
                         preds = {"angle": preds}
 
-                    # Strip log_var from gaussian_nll tasks so downstream sees (B, 1)
+                    # Strip log_var from gaussian_nll tasks so downstream sees (B, D)
                     # Must happen BEFORE log_transform exp() to avoid exp(log_var)
                     if task_weights:
                         for task, cfg in task_weights.items():
                             if isinstance(cfg, dict) and cfg.get("loss_fn") == "gaussian_nll" and task in preds:
+                                d = preds[task].shape[-1] // 2
                                 val_root_data[f"{task}_log_var"].append(
-                                    preds[task][:, 1].cpu().numpy()
+                                    preds[task][:, d:].cpu().numpy()
                                 )
-                                preds[task] = preds[task][:, :1]
+                                preds[task] = preds[task][:, :d]
 
                     # Convert predictions from log space to linear space for tasks with log_transform
                     if task_weights:
