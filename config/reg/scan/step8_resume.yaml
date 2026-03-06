@@ -84,7 +84,7 @@ checkpoint:
   save_dir: "artifacts"
   save_interval: 10
   save_artifacts: true
-  new_mlflow_run: false
+  new_mlflow_run: true
   reset_epoch: false
   refresh_lr: true
 
