@@ -80,7 +80,7 @@ reweighting:
     nbins: 30
 
 checkpoint:
-  resume_from: "latest"
+  resume_from: "artifacts/scan_s7_fulldata/checkpoint_last.pth"
   save_dir: "artifacts"
   save_interval: 10
   save_artifacts: true
