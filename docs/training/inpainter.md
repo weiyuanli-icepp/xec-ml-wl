@@ -1216,9 +1216,12 @@ DRY_RUN=1 bash macro/submit_validate_scan.sh
 | `RUN_NUMBER` | `430000` | Dead channel pattern run number |
 | `VAL_PATH` | `data/E15to60_AngUni_PosSQ/val2/` | Validation data path |
 | `MAX_EVENTS` | (all) | Limit number of events |
+| `BATCH_SIZE` | `64` | Batch size for inference |
 | `DRY_RUN` | `0` | Preview without submitting |
 
 Partitions `meg-long`, `meg-short`, `mu3e` automatically add `--account=meg`. Other partitions (`hourly`, `daily`, `general`) omit it.
+
+**Memory usage:** Each job requests 30 GB. For 130K events with all baselines + LocalFit, peak memory is ~17 GB. All intermediate results use numpy arrays — baseline predictions are stored as `(N, 4760)` arrays rather than per-sensor dicts. Solid angles are freed after baseline computation. See [Troubleshooting §2b](../operations/troubleshooting.md#2b-validation-script-oom-validate_inpainterpy) if OOM occurs.
 
 ### 12.3 Sensorfront Validation (All Scan Steps)
 
@@ -1314,25 +1317,64 @@ python macro/compare_inpainter.py --mode mc -o my_comparison.pdf
 
 ### 12.6 Typical End-to-End Workflow
 
+Steps 2 and 3 can run in parallel. Step 4 requires step 3 to complete first, but 4a and 4b can run in parallel with each other (and with step 2).
+
+```
+                    ┌──────────────────────────────┐
+                    │ 1. Train scan steps (s1-s8)  │
+                    └──────────────┬───────────────┘
+                                   │
+                    ┌──────────────┴───────────────┐
+                    │                              │
+          ┌─────────▼──────────┐      ┌────────────▼────────────┐
+          │ 2. MC validation   │      │ 3. Sensorfront prepare  │
+          │    (all steps,     │      │    (manifest+baselines, │
+          │    baselines+LF)   │      │     run once)           │
+          └─────────┬──────────┘      └────────────┬────────────┘
+                    │                   ┌──────────┴──────────┐
+                    │          ┌────────▼────────┐  ┌─────────▼─────────┐
+                    │          │ 4a. LocalFit    │  │ 4b. ML inference  │
+                    │          │  (batch array)  │  │  (per scan step)  │
+                    │          └────────┬────────┘  └─────────┬─────────┘
+                    │                   └──────────┬──────────┘
+                    │                              │
+          ┌─────────▼──────────────────────────────▼─────────┐
+          │           5. Generate comparison PDFs             │
+          └──────────────────────────────────────────────────┘
+```
+
 ```bash
 # 1. Train scan steps (s1-s8 with different configs)
 #    ... (see training section)
 
-# 2. MC validation with baselines + localfit
-bash macro/submit_validate_scan.sh 1 2 3 4 5 6
+# 2. MC validation with baselines + LocalFit (runs in parallel with 3-4)
+bash macro/submit_validate_scan.sh         # default: all s1-s8
 
-# 3. Sensorfront: prepare shared data (manifest + baselines)
+# 3. Sensorfront: prepare shared data (manifest + baselines, no model needed)
 bash macro/submit_sensorfront_prepare_scan.sh
+#    → creates artifacts/sensorfront_shared/
 
 # 4. After step 3 completes, run LocalFit and ML inference in parallel:
 #    4a. LocalFit batch jobs (one array job, shared across all steps)
 bash macro/submit_localfit_sensorfront.sh \
     artifacts/sensorfront_shared/_sensorfront_manifest.npz
-#    4b. ML inference per scan step (loads prepared data, fast)
+#    4b. ML inference per scan step (loads prepared data + baselines, fast)
 SHARED_DIR=artifacts/sensorfront_shared \
     bash macro/submit_validate_sensorfront_scan.sh
 
-# 5. Generate comparison PDFs
+# 5. After ALL jobs complete, generate comparison PDFs
 python macro/compare_inpainter.py --mode mc -o compare_mc.pdf
 python macro/compare_inpainter.py --mode sensorfront -o compare_sf.pdf
+```
+
+**Checking completion:**
+```bash
+# Check which MC validations finished
+ls artifacts/inp_scan_*/validation_mc/predictions_mc_run430000.root
+
+# Check which sensorfront validations finished
+ls artifacts/inp_scan_*/validation_sensorfront/predictions_sensorfront.root
+
+# Check SLURM job status
+squeue -u $USER --format="%.10i %.10P %.25j %.8T %.10M"
 ```

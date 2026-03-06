@@ -58,6 +58,35 @@ data:
 
 **Best Practice:** For large-scale training, disable `save_predictions` during initial experiments. Enable only for final evaluation runs with smaller validation sets.
 
+### 2b. Validation Script OOM (validate_inpainter.py)
+
+**Symptom:** `oom_kill` event in SLURM log when running `validate_inpainter.py` with `--baselines --local-fit-baseline` on large validation sets (>100K events).
+
+**Memory budget** (for 130K events × 4760 sensors × 88 dead channels):
+
+| Allocation | Size |
+|---|---|
+| `x_original` (130K × 4760 × 2 × float32) | ~4.6 GB |
+| `predictions` (130K × 4760 × 1 × float32) | ~2.3 GB |
+| `solid_angles` (130K × 4760 × float64) | ~4.6 GB |
+| Baseline prediction arrays (N × 4760 × float32 each) | ~2.3 GB each |
+| LocalFitBaseline ROOT macro | ~2-3 GB |
+| **Typical peak** | **~17 GB** |
+
+The validation scripts store all intermediate results as numpy arrays. Solid angles are freed immediately after baseline computation, and all large arrays are freed via `gc.collect()` after use.
+
+**If OOM still occurs** (e.g., with even larger datasets):
+```bash
+# Limit events to reduce memory
+MAX_EVENTS=50000 bash macro/submit_validate_scan.sh
+
+# Disable LocalFitBaseline (saves ~2-3 GB from ROOT overhead)
+LOCAL_FIT=0 bash macro/submit_validate_scan.sh
+
+# Request more memory in SLURM (edit submit script, default: 30 GB)
+# Change: #SBATCH --mem-per-cpu=40000
+```
+
 ### 3. MLflow Database Locked
 
 **Symptom:** `sqlite3.OperationalError: database is locked`
