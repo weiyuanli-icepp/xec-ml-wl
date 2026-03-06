@@ -277,21 +277,46 @@ def make_plots(patch_data, combined_residual, output_dir,
                 dg_pcov = item[6] if len(item) > 6 else None
 
                 ax = axes[i]
-                counts, edges, _ = ax.hist(res, bins='auto', alpha=0.7,
-                                           color='tab:blue')
-                x_fit = np.linspace(edges[0], edges[-1], 200)
-                if dg_popt is not None:
-                    ax.plot(x_fit, _double_gaussian(x_fit, *dg_popt),
+                counts, edges, _ = ax.hist(res, bins='auto', range=plot_range,
+                                           alpha=0.7, color='tab:blue')
+                # Refit on plotted histogram bins
+                centers_p = (edges[:-1] + edges[1:]) / 2
+                dg_refit_p = None
+                try:
+                    mu0_p = np.median(res)
+                    sig0_p = np.std(res)
+                    dx_p = edges[1] - edges[0]
+                    A0_p = len(res) * dx_p / (sig0_p * np.sqrt(2 * np.pi))
+                    p0_p = [0.7*A0_p, mu0_p, 0.6*sig0_p,
+                            0.3*A0_p, mu0_p, 2.0*sig0_p]
+                    from scipy.optimize import curve_fit as cf
+                    dg_refit_p, dg_pcov_p = cf(
+                        _double_gaussian, centers_p, counts.astype(float),
+                        p0=p0_p,
+                        bounds=([0,-np.inf,1e-8,0,-np.inf,1e-8],
+                                [np.inf,np.inf,np.inf,np.inf,np.inf,np.inf]),
+                        maxfev=10000)
+                    if abs(dg_refit_p[5]) < abs(dg_refit_p[2]):
+                        dg_refit_p = np.array([dg_refit_p[3], dg_refit_p[4],
+                                               dg_refit_p[5], dg_refit_p[0],
+                                               dg_refit_p[1], dg_refit_p[2]])
+                        idx = [3, 4, 5, 0, 1, 2]
+                        dg_pcov_p = dg_pcov_p[np.ix_(idx, idx)]
+                except Exception:
+                    pass
+                x_fit = np.linspace(plot_range[0], plot_range[1], 200)
+                if dg_refit_p is not None:
+                    ax.plot(x_fit, _double_gaussian(x_fit, *dg_refit_p),
                             'r-', lw=1.5)
-                    ax.plot(x_fit, _gaussian(x_fit, *dg_popt[:3]),
+                    ax.plot(x_fit, _gaussian(x_fit, *dg_refit_p[:3]),
                             'r--', lw=1, alpha=0.5)
-                    ax.plot(x_fit, _gaussian(x_fit, *dg_popt[3:]),
+                    ax.plot(x_fit, _gaussian(x_fit, *dg_refit_p[3:]),
                             'r:', lw=1, alpha=0.5)
-                    core_sig_err = np.sqrt(dg_pcov[2, 2])
+                    core_sig_err = np.sqrt(dg_pcov_p[2, 2])
                     ax.set_title(
                         f"Patch {pid} (N={n_ev})\n"
-                        f"core: μ={dg_popt[1]:.2f}, "
-                        f"σ={abs(dg_popt[2]):.2f}±{core_sig_err:.2f} MeV",
+                        f"core: μ={dg_refit_p[1]:.2f}, "
+                        f"σ={abs(dg_refit_p[2]):.2f}±{core_sig_err:.2f} MeV",
                         fontsize=10)
                 else:
                     ax.set_title(f"Patch {pid} (N={n_ev})\n"
