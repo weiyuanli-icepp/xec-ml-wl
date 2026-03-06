@@ -211,21 +211,44 @@ def make_plots(patch_data, combined_residual, output_dir,
         # Page 2: Combined residual histogram with double Gaussian fit
         # ============================================================
         fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-        counts, edges, _ = ax.hist(combined_residual, bins=100, alpha=0.7,
+        plot_range = (-40, 40)
+        nbins = 100
+        counts, edges, _ = ax.hist(combined_residual, bins=nbins,
+                                   range=plot_range, alpha=0.7,
                                    color='tab:blue',
                                    label=f"N = {len(combined_residual)}")
-        x_fit = np.linspace(edges[0], edges[-1], 300)
-        if comb_dg_popt is not None:
-            ax.plot(x_fit, _double_gaussian(x_fit, *comb_dg_popt), 'r-', lw=2,
+        # Refit on the plotted histogram so amplitudes match
+        centers = (edges[:-1] + edges[1:]) / 2
+        dg_refit, _ = None, None
+        try:
+            from scipy.optimize import curve_fit
+            mu0 = np.median(combined_residual)
+            sig0 = np.std(combined_residual)
+            dx = edges[1] - edges[0]
+            A0 = len(combined_residual) * dx / (sig0 * np.sqrt(2 * np.pi))
+            p0 = [0.7 * A0, mu0, 0.6 * sig0, 0.3 * A0, mu0, 2.0 * sig0]
+            bounds_lo = [0, -np.inf, 1e-8, 0, -np.inf, 1e-8]
+            bounds_hi = [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf]
+            dg_refit, _ = curve_fit(
+                _double_gaussian, centers, counts.astype(float),
+                p0=p0, bounds=(bounds_lo, bounds_hi), maxfev=10000)
+            # Ensure component 1 is core (narrower)
+            if abs(dg_refit[5]) < abs(dg_refit[2]):
+                dg_refit = np.array([dg_refit[3], dg_refit[4], dg_refit[5],
+                                     dg_refit[0], dg_refit[1], dg_refit[2]])
+        except Exception:
+            pass
+        x_fit = np.linspace(plot_range[0], plot_range[1], 300)
+        if dg_refit is not None:
+            ax.plot(x_fit, _double_gaussian(x_fit, *dg_refit), 'r-', lw=2,
                     label=(f"Double Gaussian\n"
-                           f"  core: μ={comb_dg_popt[1]:.2f}, "
-                           f"σ={abs(comb_dg_popt[2]):.2f} MeV\n"
-                           f"  tail: μ={comb_dg_popt[4]:.2f}, "
-                           f"σ={abs(comb_dg_popt[5]):.2f} MeV"))
-            # Show individual components
-            ax.plot(x_fit, _gaussian(x_fit, *comb_dg_popt[:3]),
+                           f"  core: μ={dg_refit[1]:.2f}, "
+                           f"σ={abs(dg_refit[2]):.2f} MeV\n"
+                           f"  tail: μ={dg_refit[4]:.2f}, "
+                           f"σ={abs(dg_refit[5]):.2f} MeV"))
+            ax.plot(x_fit, _gaussian(x_fit, *dg_refit[:3]),
                     'r--', lw=1, alpha=0.6, label="Core")
-            ax.plot(x_fit, _gaussian(x_fit, *comb_dg_popt[3:]),
+            ax.plot(x_fit, _gaussian(x_fit, *dg_refit[3:]),
                     'r:', lw=1, alpha=0.6, label="Tail")
         ax.set_xlabel("Pred − True Energy [MeV]")
         ax.set_ylabel("Events")
