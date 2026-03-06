@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -162,14 +163,19 @@ def _load_entry(entry):
         bl_error_raw = bl_pred_raw - truth_raw
         # Validity: finite and not sentinel
         bl_valid = valid & ~np.isnan(data[err_key]) & (data[err_key] > -999)
-        baselines[bname] = {
+        bl_result = {
             'truth_raw': truth_raw[bl_valid],
             'pred_raw': bl_pred_raw[bl_valid],
             'error_raw': bl_error_raw[bl_valid],
             'face': data['face'][bl_valid],
         }
+        if 'run_number' in data:
+            bl_result['run_number'] = data['run_number'][bl_valid]
+        if 'event_number' in data:
+            bl_result['event_number'] = data['event_number'][bl_valid]
+        baselines[bname] = bl_result
 
-    return {
+    result = {
         'truth_raw': truth_raw[valid],
         'pred_raw': pred_raw[valid],
         'error_raw': error_raw[valid],
@@ -177,6 +183,12 @@ def _load_entry(entry):
         'baselines': baselines,
         'meta': meta,
     }
+    # Carry run/event numbers for energy matching
+    if 'run_number' in data:
+        result['run_number'] = data['run_number'][valid]
+    if 'event_number' in data:
+        result['event_number'] = data['event_number'][valid]
+    return result
 
 
 def _load_localfit(path):
@@ -227,6 +239,70 @@ def _compute_slice_metrics(truth, error, bin_edges):
     return bin_centers, mae, bias, rms
 
 
+def _load_mc_energy(mc_path, tree_name='tree'):
+    """Load (run, event) → energyTruth [MeV] mapping from MC ROOT file(s).
+
+    Args:
+        mc_path: Path to MC ROOT file, directory, or glob pattern.
+        tree_name: Tree name in the ROOT files.
+
+    Returns:
+        dict mapping (run, event) → energy in MeV.
+    """
+    from pathlib import Path as _P
+
+    mc_path = str(mc_path)
+    if os.path.isdir(mc_path):
+        files = sorted(str(p) for p in _P(mc_path).glob('*.root'))
+    elif '*' in mc_path or '?' in mc_path:
+        import glob
+        files = sorted(glob.glob(mc_path))
+    else:
+        files = [mc_path]
+
+    if not files:
+        print(f"[WARN] No MC files found at {mc_path}")
+        return {}
+
+    energy_map = {}
+    for fpath in files:
+        with uproot.open(fpath) as f:
+            tree = f[tree_name]
+            keys = tree.keys()
+            if 'energyTruth' not in keys:
+                print(f"[WARN] No energyTruth branch in {fpath}, skipping")
+                continue
+            run = tree['run'].array(library='np') if 'run' in keys else None
+            event = tree['event'].array(library='np') if 'event' in keys else None
+            energy = tree['energyTruth'].array(library='np')
+            if run is None or event is None:
+                continue
+            for r, e, en in zip(run, event, energy):
+                energy_map[(int(r), int(e))] = float(en) * 1e3  # GeV → MeV
+
+    print(f"[INFO] Loaded MC energy for {len(energy_map)} events "
+          f"from {len(files)} file(s)")
+    return energy_map
+
+
+def _attach_energy(d, energy_map):
+    """Attach per-sensor energy array to a loaded entry dict using run/event matching.
+
+    Returns energy array (same length as d['truth_raw']), NaN where no match.
+    """
+    run = d.get('run_number')
+    evt = d.get('event_number')
+    if run is None or evt is None:
+        return None
+    energy = np.full(len(run), np.nan, dtype=np.float64)
+    for i in range(len(run)):
+        key = (int(run[i]), int(evt[i]))
+        if key in energy_map:
+            energy[i] = energy_map[key]
+    n_matched = np.isfinite(energy).sum()
+    return energy if n_matched > 0 else None
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -242,6 +318,13 @@ def main():
                         help='Validation type to compare (default: mc)')
     parser.add_argument('--localfit', type=str, default=None,
                         help='Path to LocalFitBaseline output ROOT file (raw photons)')
+    parser.add_argument('--mc-data', type=str, default=None,
+                        help='Path to MC ROOT file(s) for energy matching '
+                             '(default: auto-detect from mode)')
+    parser.add_argument('--energy-range', type=float, nargs=2, default=None,
+                        metavar=('E_MIN', 'E_MAX'),
+                        help='Energy range in MeV for additional filtered pages '
+                             '(e.g. --energy-range 45 50)')
     args = parser.parse_args()
 
     if args.output is None:
@@ -266,6 +349,24 @@ def main():
     if not loaded:
         print("[ERROR] No entries loaded. Check that prediction files exist.")
         sys.exit(1)
+
+    # --- Load MC energy for energy-filtered pages ---
+    energy_map = {}
+    if args.energy_range is not None:
+        mc_path = args.mc_data
+        if mc_path is None and args.mode == 'mc':
+            mc_path = 'data/E15to60_AngUni_PosSQ/val2/'
+        if mc_path is not None:
+            energy_map = _load_mc_energy(mc_path)
+        else:
+            print("[WARN] --energy-range requires --mc-data or mc mode")
+
+    # Attach energy to each loaded entry and baselines
+    if energy_map:
+        for _, d in loaded:
+            d['energy'] = _attach_energy(d, energy_map)
+            for bname, bl in d['baselines'].items():
+                bl['energy'] = _attach_energy(bl, energy_map)
 
     # Shared bin edges (log-spaced in raw photons, full range)
     max_vals = []
@@ -592,7 +693,134 @@ def main():
             pdf.savefig(fig)
             plt.close(fig)
 
-    n_pages = 1 + 3 + 3  # summary + truth pages + pred pages
+        # ===== Energy-filtered pages (if --energy-range given) =====
+        n_energy_pages = 0
+        if args.energy_range and energy_map:
+            e_lo, e_hi = args.energy_range
+            e_tag = f"E ∈ [{e_lo:.0f}, {e_hi:.0f}] MeV"
+
+            # Build energy-filtered metrics cache
+            ecut_metrics = {}
+            for ei, (entry, d) in enumerate(loaded):
+                en = d.get('energy')
+                if en is None:
+                    continue
+                for face_int in FACE_INT_TO_NAME:
+                    fm = d['face'] == face_int
+                    em = np.isfinite(en) & (en >= e_lo) & (en <= e_hi)
+                    sel = fm & em
+                    tr = d['truth_raw'][sel]
+                    er = d['error_raw'][sel]
+                    cut = tr >= TRUTH_RAW_MIN
+                    tr, er = tr[cut], er[cut]
+                    if len(tr) < MIN_BIN_COUNT:
+                        continue
+                    ecut_metrics[(ei, face_int)] = _compute_slice_metrics(
+                        tr, er, bin_edges)
+
+            if baseline_entry_idx is not None:
+                bl_dict = loaded[baseline_entry_idx][1]['baselines']
+                for bname in BASELINE_DEFS:
+                    if bname not in bl_dict:
+                        continue
+                    bl = bl_dict[bname]
+                    bl_en = bl.get('energy')
+                    if bl_en is None:
+                        continue
+                    for face_int in FACE_INT_TO_NAME:
+                        fm = bl['face'] == face_int
+                        em = np.isfinite(bl_en) & (bl_en >= e_lo) & (bl_en <= e_hi)
+                        sel = fm & em
+                        tr = bl['truth_raw'][sel]
+                        er = bl['error_raw'][sel]
+                        cut = tr >= TRUTH_RAW_MIN
+                        tr, er = tr[cut], er[cut]
+                        if len(tr) < MIN_BIN_COUNT:
+                            continue
+                        ecut_metrics[(bname, face_int)] = _compute_slice_metrics(
+                            tr, er, bin_edges)
+
+            # Determine active faces for energy-filtered data
+            ecut_active = []
+            for face_int, face_name in FACE_INT_TO_NAME.items():
+                if any((ei, face_int) in ecut_metrics
+                       for ei in range(len(loaded))):
+                    ecut_active.append((face_int, face_name))
+
+            if ecut_active:
+                ecut_n_active = len(ecut_active)
+                ecut_ncols = min(ecut_n_active, 3)
+                ecut_nrows = (ecut_n_active + ecut_ncols - 1) // ecut_ncols
+
+                ecut_page_defs = [
+                    ('mae',  f'Relative MAE vs Truth Npho — {e_tag}',
+                     'Relative MAE'),
+                    ('rms',  f'Relative RMS vs Truth Npho — {e_tag}',
+                     'Relative RMS'),
+                    ('bias', f'Relative Bias vs Truth Npho — {e_tag}',
+                     'Relative Bias'),
+                ]
+
+                for metric_key, suptitle, ylabel in ecut_page_defs:
+                    fig, axes = plt.subplots(
+                        ecut_nrows, ecut_ncols,
+                        figsize=(6 * ecut_ncols, 5 * ecut_nrows),
+                        squeeze=False)
+                    axes_flat = axes.flatten()
+
+                    for idx, (face_int, face_name) in enumerate(ecut_active):
+                        ax = axes_flat[idx]
+                        for ei, (entry, _) in enumerate(loaded):
+                            key = (ei, face_int)
+                            if key not in ecut_metrics:
+                                continue
+                            centers, mae, bias, rms = ecut_metrics[key]
+                            if metric_key == 'mae':
+                                vals = mae / centers
+                            elif metric_key == 'rms':
+                                vals = rms / centers
+                            else:
+                                vals = bias / centers
+                            ax.plot(centers, vals, 'o-', color=entry['color'],
+                                    markersize=3, label=entry['label'])
+
+                        if baseline_entry_idx is not None:
+                            for bname, bdef in BASELINE_DEFS.items():
+                                key = (bname, face_int)
+                                if key not in ecut_metrics:
+                                    continue
+                                centers, mae, bias, rms = ecut_metrics[key]
+                                if metric_key == 'mae':
+                                    vals = mae / centers
+                                elif metric_key == 'rms':
+                                    vals = rms / centers
+                                else:
+                                    vals = bias / centers
+                                ax.plot(centers, vals, 's--',
+                                        color=bdef['color'],
+                                        markersize=3, alpha=0.8,
+                                        label=bdef['label'])
+
+                        ax.set_xscale('log')
+                        ax.set_xlabel('Truth Npho [photons]')
+                        ax.set_ylabel(ylabel)
+                        ax.set_title(face_name)
+                        if metric_key in ('mae', 'rms'):
+                            ax.set_ylim(0, 1)
+                        else:
+                            ax.set_ylim(-1, 1)
+                        ax.legend(fontsize=7)
+
+                    for idx in range(ecut_n_active, len(axes_flat)):
+                        axes_flat[idx].set_visible(False)
+
+                    fig.suptitle(suptitle, fontsize=14)
+                    plt.tight_layout()
+                    pdf.savefig(fig)
+                    plt.close(fig)
+                    n_energy_pages += 1
+
+    n_pages = 1 + 3 + 3 + n_energy_pages
     print(f"[INFO] Saved {args.output} ({n_pages} pages, {n_active} active face(s))")
 
     # --- Stdout summary ---
