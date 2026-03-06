@@ -55,8 +55,8 @@ echo "[INFO] Partition: ${PARTITION}"
 
 mkdir -p log "$OUTPUT_DIR"
 
-# Meganalyzer path
-MEGANALYZER="${MEGANALYZER:-$HOME/meghome/meganalyzer/meganalyzer}"
+# Meganalyzer path (must cd to analyzer dir before running)
+ANALYZER_DIR="${ANALYZER_DIR:-$HOME/meghome/offline/analyzer}"
 MACRO_PATH="$HOME/meghome/xec-ml-wl/macro/PrepareRealData.C"
 
 BATCH_SCRIPT=$(mktemp /tmp/prepare_realdata_XXXXXX.sh)
@@ -78,9 +78,9 @@ echo "Host: \$(hostname)"
 echo "Date: \$(date)"
 echo ""
 
-cd \$HOME/meghome/meganalyzer
+cd ${ANALYZER_DIR}
 
-${MEGANALYZER} -b -q '${MACRO_PATH}+("${RUNLIST}", \${SLURM_ARRAY_TASK_ID}, "${OUTPUT_DIR}")'
+./meganalyzer -b -q '${MACRO_PATH}+("${RUNLIST}", \${SLURM_ARRAY_TASK_ID}, "${OUTPUT_DIR}")'
 
 echo ""
 echo "=== Done: \$(date) ==="
