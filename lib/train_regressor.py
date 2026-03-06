@@ -576,6 +576,9 @@ def train_with_config(config_path: str, profile: bool = None):
                 if refresh_lr:
                     # Recreate scheduler for remaining epochs
                     remaining_epochs = cfg.training.epochs - start_epoch + 1
+                    # Reset optimizer LR to configured value (checkpoint may have decayed LR)
+                    for pg in optimizer.param_groups:
+                        pg['lr'] = cfg.training.lr
                     if is_main_process():
                         print(f"[INFO] refresh_lr=True: Creating fresh scheduler with lr={cfg.training.lr}, "
                               f"T_max={remaining_epochs} (epochs {start_epoch}-{cfg.training.epochs})")

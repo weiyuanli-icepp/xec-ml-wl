@@ -695,6 +695,9 @@ Examples:
             if scheduler is not None and "scheduler_state_dict" in checkpoint:
                 if refresh_lr:
                     remaining_epochs = epochs - start_epoch
+                    # Reset optimizer LR to configured value (checkpoint may have decayed LR)
+                    for pg in optimizer.param_groups:
+                        pg['lr'] = lr
                     if is_main_process():
                         print(f"[INFO] refresh_lr=True: Creating fresh scheduler with lr={lr}, "
                               f"T_max={remaining_epochs} (epochs {start_epoch}-{epochs - 1})")
