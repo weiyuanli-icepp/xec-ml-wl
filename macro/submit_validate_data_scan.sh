@@ -23,7 +23,7 @@ cd "$(dirname "$0")/.."
 DRY_RUN="${DRY_RUN:-0}"
 REAL_DATA="${REAL_DATA:-val_data/data/DataGammaAngle_430026-430126.root}"
 DEAD_FILE="${DEAD_FILE:-data/dead_channels_run430000.txt}"
-N_ARTIFICIAL="${N_ARTIFICIAL:-50}"
+N_ARTIFICIAL="${N_ARTIFICIAL:-inner:10,us:1,ds:1,outer:1,top:1,bot:1}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 MAX_EVENTS="${MAX_EVENTS:-}"
 LOCAL_FIT="${LOCAL_FIT:-1}"   # set LOCAL_FIT=0 to disable LocalFitBaseline
@@ -142,7 +142,7 @@ python macro/validate_inpainter.py \\
     --output ${OUTDIR} \\
     --dead-channel-file ${DEAD_FILE} \\
     --real-data \\
-    --n-artificial ${N_ARTIFICIAL} \\
+    --n-artificial "${N_ARTIFICIAL}" \\
     --baselines \\
     --device cpu \\
     --batch-size ${BATCH_SIZE} \\

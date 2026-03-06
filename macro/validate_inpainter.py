@@ -281,11 +281,18 @@ def get_dead_channels(run_number: Optional[int] = None,
         return np.array([], dtype=np.int64)
 
 
-def create_artificial_mask(x: np.ndarray, n_artificial: int,
+def create_artificial_mask(x: np.ndarray, n_artificial,
                            dead_mask: np.ndarray,
                            seed: int = 42) -> Tuple[np.ndarray, np.ndarray]:
     """
     Create artificial mask on healthy sensors for evaluation.
+
+    Args:
+        x: (N, 4760, 2) normalized sensor data.
+        n_artificial: Total number of masks per event (int), or dict mapping
+                      face name to count (e.g. {"inner": 10, "us": 1, ...}).
+        dead_mask: (4760,) bool mask of dead channels.
+        seed: Random seed.
 
     Returns:
         artificial_mask: (N, 4760) bool - artificially masked positions
@@ -293,18 +300,31 @@ def create_artificial_mask(x: np.ndarray, n_artificial: int,
     """
     rng = np.random.default_rng(seed)
     n_events = x.shape[0]
-
-    # Find valid sensors (not dead, not already sentinel)
     artificial_mask = np.zeros((n_events, N_CHANNELS), dtype=bool)
 
-    for i in range(n_events):
-        # Valid = not dead AND has valid data (npho != npho sentinel)
-        valid = ~dead_mask & (x[i, :, 0] != MODEL_SENTINEL_NPHO)
-        valid_indices = np.where(valid)[0]
-
-        if len(valid_indices) > n_artificial:
-            chosen = rng.choice(valid_indices, size=n_artificial, replace=False)
-            artificial_mask[i, chosen] = True
+    if isinstance(n_artificial, dict):
+        # Per-face stratified masking
+        face_sensor_ids = {
+            fname: get_face_sensor_ids(fname) for fname in n_artificial
+        }
+        for i in range(n_events):
+            for fname, n_per_face in n_artificial.items():
+                if n_per_face <= 0:
+                    continue
+                sids = face_sensor_ids[fname]
+                valid = ~dead_mask[sids] & (x[i, sids, 0] != MODEL_SENTINEL_NPHO)
+                valid_sids = sids[valid]
+                if len(valid_sids) >= n_per_face:
+                    chosen = rng.choice(valid_sids, size=n_per_face, replace=False)
+                    artificial_mask[i, chosen] = True
+    else:
+        # Uniform random masking (legacy behavior)
+        for i in range(n_events):
+            valid = ~dead_mask & (x[i, :, 0] != MODEL_SENTINEL_NPHO)
+            valid_indices = np.where(valid)[0]
+            if len(valid_indices) > n_artificial:
+                chosen = rng.choice(valid_indices, size=n_artificial, replace=False)
+                artificial_mask[i, chosen] = True
 
     # Combined mask
     combined_mask = np.zeros((n_events, N_CHANNELS), dtype=bool)
@@ -1004,8 +1024,10 @@ def main():
     # Mode
     parser.add_argument("--real-data", action="store_true",
                         help="Real data mode: dead channels exist in data, add artificial masking")
-    parser.add_argument("--n-artificial", type=int, default=50,
-                        help="Number of artificial masks per event (real data mode, default: 50)")
+    parser.add_argument("--n-artificial", type=str, default="inner:10,us:1,ds:1,outer:1,top:1,bot:1",
+                        help="Artificial masks per event. Either a single int (uniform random) "
+                             "or face:count pairs (e.g. 'inner:10,us:1,ds:1,outer:1,top:1,bot:1'). "
+                             "Default: stratified 15 total (10 inner + 1 each other face)")
 
     # Options
     parser.add_argument("--batch-size", type=int, default=64,
@@ -1111,10 +1133,24 @@ def main():
 
     # Create masks
     if args.real_data:
-        # Real data: dead channels already in data + artificial masking
-        print(f"[INFO] Real data mode: adding {args.n_artificial} artificial masks per event")
+        # Parse n_artificial: int or face:count pairs
+        try:
+            n_art = int(args.n_artificial)
+        except ValueError:
+            n_art = {}
+            for part in args.n_artificial.split(','):
+                fname, count = part.strip().split(':')
+                n_art[fname.strip()] = int(count.strip())
+
+        if isinstance(n_art, dict):
+            total = sum(n_art.values())
+            print(f"[INFO] Real data mode: stratified masking ({total} per event: "
+                  + ", ".join(f"{f}={n}" for f, n in n_art.items()) + ")")
+        else:
+            print(f"[INFO] Real data mode: adding {n_art} uniform random masks per event")
+
         artificial_mask, combined_mask = create_artificial_mask(
-            x_input, args.n_artificial, dead_mask, seed=args.seed
+            x_input, n_art, dead_mask, seed=args.seed
         )
         # Apply combined mask to input (per-channel sentinels)
         x_input[combined_mask, 0] = MODEL_SENTINEL_NPHO  # npho -> npho sentinel
