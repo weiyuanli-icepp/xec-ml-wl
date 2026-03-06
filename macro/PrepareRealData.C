@@ -20,6 +20,7 @@ $ ./meganalyzer -b -q -I /path/to/PrepareRealData.C+
 #include <TTreeReaderArray.h>
 #include <TSystem.h>
 #include <fstream>
+#include <sstream>
 #include <vector>
 #include <map>
 #include <iostream>
@@ -55,26 +56,85 @@ $ ./meganalyzer -b -q -I /path/to/PrepareRealData.C+
 using namespace MEG;
 
 std::map<Int_t, TString> PrepareRunList(TString dir, TString suffix, Int_t startRun, Int_t maxNRuns);
+void _PrepareRealData_impl(TChain *rec, TString outputFileName);
 
+// ---------------------------------------------------------------------------
+// Entry point for batch processing: read one line from a run-list file.
+//
+//   runListFile  Text file with two columns: <run_number> <file_path>
+//   jobIndex     0-based line index (maps to SLURM_ARRAY_TASK_ID)
+//   outputDir    Directory for the output ROOT file
+//
+// Usage (meganalyzer):
+//   ./meganalyzer -b -q 'macro/PrepareRealData.C+("runlist.txt", 0, "output/")'
+// ---------------------------------------------------------------------------
+void PrepareRealDataFromList(TString runListFile, Int_t jobIndex, TString outputDir = ".")
+{
+   std::ifstream ifs(runListFile.Data());
+   if (!ifs.is_open()) {
+      std::cout << "[Error] Cannot open run list: " << runListFile << std::endl;
+      return;
+   }
+
+   std::string line;
+   Int_t idx = 0;
+   Int_t runNumber = -1;
+   std::string filePath;
+   while (std::getline(ifs, line)) {
+      if (line.empty() || line[0] == '#') { continue; }
+      if (idx == jobIndex) {
+         std::istringstream iss(line);
+         iss >> runNumber >> filePath;
+         break;
+      }
+      idx++;
+   }
+   ifs.close();
+
+   if (runNumber < 0 || filePath.empty()) {
+      std::cout << "[Error] Job index " << jobIndex << " out of range or malformed line" << std::endl;
+      return;
+   }
+
+   if (gSystem->AccessPathName(filePath.c_str())) {
+      std::cout << "[Error] File not found: " << filePath << std::endl;
+      return;
+   }
+
+   // Geometry Init
+   XECTOOLS::InitXECGeometryParameters(XECTOOLS::UVWDefinition::Global,
+                                       64.84, 106.27, 67.03, 96., 125.52,
+                                       0, 0, 0);
+
+   TChain *rec = new TChain("rec");
+   rec->Add(filePath.c_str());
+   std::cout << "[INFO] Processing run " << runNumber << ": " << filePath << std::endl;
+
+   gSystem->mkdir(outputDir.Data(), kTRUE);
+   TString outFile = Form("%s/DataGammaAngle_%06d.root", outputDir.Data(), runNumber);
+   _PrepareRealData_impl(rec, outFile);
+}
+
+// ---------------------------------------------------------------------------
+// Original entry point: sequential scan from a start run.
+// ---------------------------------------------------------------------------
 void PrepareRealData(Int_t sRun = 430000, Int_t nfile = 2000, TString fileSuffix = "_open.root")
 {
    // =========================================================================
    // 1. CONFIGURATION
    // =========================================================================
-   // Input Directory
-   TString inputrecdir = "/data/project/meg/offline/run/"; 
-   TString runList = ""; 
+   TString inputrecdir = "/data/project/meg/offline/run/";
 
    // Geometry Init
    XECTOOLS::InitXECGeometryParameters(XECTOOLS::UVWDefinition::Global,
-                                       64.84, 106.27, 67.03, 96., 125.52, 
+                                       64.84, 106.27, 67.03, 96., 125.52,
                                        0, 0, 0);
 
    // =========================================================================
    // 2. FILE LOADING
    // =========================================================================
    std::map<Int_t, TString> files = PrepareRunList(inputrecdir, fileSuffix, sRun, nfile);
-   
+
    if (files.empty()) {
        std::cout << "[Error] No files found matching suffix '" << fileSuffix << "' starting from run " << sRun << std::endl;
        return;
@@ -89,10 +149,19 @@ void PrepareRealData(Int_t sRun = 430000, Int_t nfile = 2000, TString fileSuffix
       std::cout << "Added: " << file << std::endl;
    }
 
+   TString outFile = Form("DataGammaAngle_%d-%d.root", startRun, lastRun);
+   _PrepareRealData_impl(rec, outFile);
+}
+
+// ---------------------------------------------------------------------------
+// Shared implementation: process events from a TChain → output ROOT file.
+// ---------------------------------------------------------------------------
+void _PrepareRealData_impl(TChain *rec, TString outputFileName)
+{
    // =========================================================================
-   // 3. OUTPUT SETUP
+   // OUTPUT SETUP
    // =========================================================================
-   TFile outputFile(Form("DataGammaAngle_%d-%d.root", startRun, lastRun), "RECREATE", "Real Data ML Input");
+   TFile outputFile(outputFileName, "RECREATE", "Real Data ML Input");
    TTree *tree = new TTree("tree", "Real Data Inference Tree");
 
    static const int kXECNChan = 4760;
