@@ -149,8 +149,7 @@ def make_plots(patch_data, combined_residual, output_dir,
         # Page 1: Resolution vs patch (summary) — core σ from double Gaussian
         # ============================================================
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-        fig.suptitle("CEX23 Energy Resolution by Patch (Double Gaussian Core)",
-                     fontsize=14)
+        fig.suptitle("CEX23 Energy Resolution by Patch", fontsize=14)
 
         patch_ids = []
         core_sigmas = []
@@ -192,7 +191,7 @@ def make_plots(patch_data, combined_residual, output_dir,
             ax1.set_xticklabels(labels, fontsize=8)
             ax1.set_xlabel("Patch")
             ax1.set_ylabel("Core σ [MeV]")
-            ax1.set_title("Resolution (Double Gaussian Core σ)")
+            ax1.set_title("Resolution (Core σ)")
 
             # Bottom: bias (core mu) per patch
             ax2.errorbar(x, core_mus, yerr=core_mu_errs, fmt='s',
@@ -202,7 +201,7 @@ def make_plots(patch_data, combined_residual, output_dir,
             ax2.set_xticklabels(labels, fontsize=8)
             ax2.set_xlabel("Patch")
             ax2.set_ylabel("Core μ [MeV]")
-            ax2.set_title("Bias (Double Gaussian Core μ)")
+            ax2.set_title("Bias (Core μ)")
 
         fig.tight_layout(rect=[0, 0, 1, 0.95])
         pdf.savefig(fig)
