@@ -154,8 +154,12 @@ def make_plots(patch_data, combined_residual, output_dir,
         patch_ids = []
         core_sigmas = []
         core_sigma_errs = []
+        sg_sigmas = []
+        sg_sigma_errs = []
         core_mus = []
         core_mu_errs = []
+        sg_mus = []
+        sg_mu_errs = []
         n_events_list = []
 
         for item in patch_data:
@@ -164,44 +168,63 @@ def make_plots(patch_data, combined_residual, output_dir,
             dg_pcov = item[6] if len(item) > 6 else None
             sg_popt = item[3]
             sg_pcov = item[4]
-            # Prefer double Gaussian core, fall back to single Gaussian
+            if dg_popt is None and sg_popt is None:
+                continue
+            patch_ids.append(pid)
+            n_events_list.append(n_ev)
             if dg_popt is not None:
-                patch_ids.append(pid)
                 core_sigmas.append(abs(dg_popt[2]))
                 core_sigma_errs.append(np.sqrt(dg_pcov[2, 2]))
                 core_mus.append(dg_popt[1])
                 core_mu_errs.append(np.sqrt(dg_pcov[1, 1]))
-                n_events_list.append(n_ev)
-            elif sg_popt is not None:
-                patch_ids.append(pid)
-                core_sigmas.append(abs(sg_popt[2]))
-                core_sigma_errs.append(np.sqrt(sg_pcov[2, 2]))
-                core_mus.append(sg_popt[1])
-                core_mu_errs.append(np.sqrt(sg_pcov[1, 1]))
-                n_events_list.append(n_ev)
+            else:
+                core_sigmas.append(np.nan)
+                core_sigma_errs.append(0)
+                core_mus.append(np.nan)
+                core_mu_errs.append(0)
+            if sg_popt is not None:
+                sg_sigmas.append(abs(sg_popt[2]))
+                sg_sigma_errs.append(np.sqrt(sg_pcov[2, 2]))
+                sg_mus.append(sg_popt[1])
+                sg_mu_errs.append(np.sqrt(sg_pcov[1, 1]))
+            else:
+                sg_sigmas.append(np.nan)
+                sg_sigma_errs.append(0)
+                sg_mus.append(np.nan)
+                sg_mu_errs.append(0)
 
         if patch_ids:
             x = np.arange(len(patch_ids))
             labels = [str(p) for p in patch_ids]
 
-            # Top: core sigma (resolution) per patch
-            ax1.errorbar(x, core_sigmas, yerr=core_sigma_errs, fmt='o',
-                         color='tab:blue', capsize=4, markersize=6)
+            # Top: sigma (resolution) per patch — both core and single-G
+            ax1.errorbar(x - 0.1, core_sigmas, yerr=core_sigma_errs, fmt='o',
+                         color='tab:blue', capsize=4, markersize=6,
+                         label='Double-G core')
+            ax1.errorbar(x + 0.1, sg_sigmas, yerr=sg_sigma_errs, fmt='s',
+                         color='tab:red', capsize=4, markersize=5,
+                         label='Single-G')
             ax1.set_xticks(x)
             ax1.set_xticklabels(labels, fontsize=8)
             ax1.set_xlabel("Patch")
-            ax1.set_ylabel("Core σ [MeV]")
-            ax1.set_title("Resolution (Core σ)")
+            ax1.set_ylabel("σ [MeV]")
+            ax1.set_title("Resolution (σ)")
+            ax1.legend(fontsize=9)
 
-            # Bottom: bias (core mu) per patch
-            ax2.errorbar(x, core_mus, yerr=core_mu_errs, fmt='s',
-                         color='tab:orange', capsize=4, markersize=6)
+            # Bottom: bias (mu) per patch — both core and single-G
+            ax2.errorbar(x - 0.1, core_mus, yerr=core_mu_errs, fmt='o',
+                         color='tab:blue', capsize=4, markersize=6,
+                         label='Double-G core')
+            ax2.errorbar(x + 0.1, sg_mus, yerr=sg_mu_errs, fmt='s',
+                         color='tab:red', capsize=4, markersize=5,
+                         label='Single-G')
             ax2.axhline(0, color='black', ls='-', lw=0.5)
             ax2.set_xticks(x)
             ax2.set_xticklabels(labels, fontsize=8)
             ax2.set_xlabel("Patch")
-            ax2.set_ylabel("Core μ [MeV]")
-            ax2.set_title("Bias (Core μ)")
+            ax2.set_ylabel("μ [MeV]")
+            ax2.set_title("Bias (μ)")
+            ax2.legend(fontsize=9)
 
         fig.tight_layout(rect=[0, 0, 1, 0.95])
         pdf.savefig(fig)
@@ -219,26 +242,43 @@ def make_plots(patch_data, combined_residual, output_dir,
                                    label=f"N = {len(combined_residual)}")
         # Refit on the plotted histogram so amplitudes match
         centers = (edges[:-1] + edges[1:]) / 2
-        dg_refit, _ = None, None
+        from scipy.optimize import curve_fit
+        mu0 = np.median(combined_residual)
+        sig0 = np.std(combined_residual)
+        dx = edges[1] - edges[0]
+        A0 = len(combined_residual) * dx / (sig0 * np.sqrt(2 * np.pi))
+
+        # Single Gaussian refit
+        sg_refit = None
         try:
-            from scipy.optimize import curve_fit
-            mu0 = np.median(combined_residual)
-            sig0 = np.std(combined_residual)
-            dx = edges[1] - edges[0]
-            A0 = len(combined_residual) * dx / (sig0 * np.sqrt(2 * np.pi))
+            sg_refit, _ = curve_fit(
+                _gaussian, centers, counts.astype(float),
+                p0=[A0, mu0, sig0],
+                bounds=([0, -np.inf, 1e-8], [np.inf, np.inf, np.inf]))
+        except Exception:
+            pass
+
+        # Double Gaussian refit
+        dg_refit = None
+        try:
             p0 = [0.7 * A0, mu0, 0.6 * sig0, 0.3 * A0, mu0, 2.0 * sig0]
             bounds_lo = [0, -np.inf, 1e-8, 0, -np.inf, 1e-8]
             bounds_hi = [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf]
             dg_refit, _ = curve_fit(
                 _double_gaussian, centers, counts.astype(float),
                 p0=p0, bounds=(bounds_lo, bounds_hi), maxfev=10000)
-            # Ensure component 1 is core (narrower)
             if abs(dg_refit[5]) < abs(dg_refit[2]):
                 dg_refit = np.array([dg_refit[3], dg_refit[4], dg_refit[5],
                                      dg_refit[0], dg_refit[1], dg_refit[2]])
         except Exception:
             pass
+
         x_fit = np.linspace(plot_range[0], plot_range[1], 300)
+        if sg_refit is not None:
+            ax.plot(x_fit, _gaussian(x_fit, *sg_refit), 'g-', lw=2,
+                    label=(f"Single Gaussian\n"
+                           f"  μ={sg_refit[1]:.2f}, "
+                           f"σ={abs(sg_refit[2]):.2f} MeV"))
         if dg_refit is not None:
             ax.plot(x_fit, _double_gaussian(x_fit, *dg_refit), 'r-', lw=2,
                     label=(f"Double Gaussian\n"
@@ -281,16 +321,25 @@ def make_plots(patch_data, combined_residual, output_dir,
                                            alpha=0.7, color='tab:blue')
                 # Refit on plotted histogram bins
                 centers_p = (edges[:-1] + edges[1:]) / 2
+                mu0_p = np.median(res)
+                sig0_p = np.std(res)
+                dx_p = edges[1] - edges[0]
+                A0_p = len(res) * dx_p / (sig0_p * np.sqrt(2 * np.pi))
+
+                sg_refit_p = None
+                try:
+                    sg_refit_p, _ = curve_fit(
+                        _gaussian, centers_p, counts.astype(float),
+                        p0=[A0_p, mu0_p, sig0_p],
+                        bounds=([0, -np.inf, 1e-8], [np.inf, np.inf, np.inf]))
+                except Exception:
+                    pass
+
                 dg_refit_p = None
                 try:
-                    mu0_p = np.median(res)
-                    sig0_p = np.std(res)
-                    dx_p = edges[1] - edges[0]
-                    A0_p = len(res) * dx_p / (sig0_p * np.sqrt(2 * np.pi))
                     p0_p = [0.7*A0_p, mu0_p, 0.6*sig0_p,
                             0.3*A0_p, mu0_p, 2.0*sig0_p]
-                    from scipy.optimize import curve_fit as cf
-                    dg_refit_p, dg_pcov_p = cf(
+                    dg_refit_p, dg_pcov_p = curve_fit(
                         _double_gaussian, centers_p, counts.astype(float),
                         p0=p0_p,
                         bounds=([0,-np.inf,1e-8,0,-np.inf,1e-8],
@@ -304,7 +353,11 @@ def make_plots(patch_data, combined_residual, output_dir,
                         dg_pcov_p = dg_pcov_p[np.ix_(idx, idx)]
                 except Exception:
                     pass
+
                 x_fit = np.linspace(plot_range[0], plot_range[1], 200)
+                if sg_refit_p is not None:
+                    ax.plot(x_fit, _gaussian(x_fit, *sg_refit_p),
+                            'g-', lw=1.5, alpha=0.8)
                 if dg_refit_p is not None:
                     ax.plot(x_fit, _double_gaussian(x_fit, *dg_refit_p),
                             'r-', lw=1.5)
@@ -312,15 +365,19 @@ def make_plots(patch_data, combined_residual, output_dir,
                             'r--', lw=1, alpha=0.5)
                     ax.plot(x_fit, _gaussian(x_fit, *dg_refit_p[3:]),
                             'r:', lw=1, alpha=0.5)
+
+                # Build title with available fit info
+                title_parts = [f"Patch {pid} (N={n_ev})"]
+                if dg_refit_p is not None:
                     core_sig_err = np.sqrt(dg_pcov_p[2, 2])
-                    ax.set_title(
-                        f"Patch {pid} (N={n_ev})\n"
-                        f"core: μ={dg_refit_p[1]:.2f}, "
-                        f"σ={abs(dg_refit_p[2]):.2f}±{core_sig_err:.2f} MeV",
-                        fontsize=10)
+                    title_parts.append(
+                        f"core σ={abs(dg_refit_p[2]):.2f}±{core_sig_err:.2f}")
+                if sg_refit_p is not None:
+                    title_parts.append(
+                        f"σ={abs(sg_refit_p[2]):.2f} MeV")
                 else:
-                    ax.set_title(f"Patch {pid} (N={n_ev})\n"
-                                 f"Double-G fit failed", fontsize=10)
+                    title_parts[-1] += " MeV"
+                ax.set_title("\n".join(title_parts), fontsize=10)
                 ax.set_xlabel("Pred − True [MeV]", fontsize=9)
                 ax.set_ylabel("Events", fontsize=9)
 
@@ -391,26 +448,21 @@ def main():
                 patch_data.append((patch, n, residual, sg_popt, sg_pcov,
                                    dg_popt, dg_pcov))
 
+                parts = [f"  Patch {patch:>2d}: {n:>6d} events"]
                 if dg_popt is not None:
                     core_sig = abs(dg_popt[2])
                     core_sig_err = np.sqrt(dg_pcov[2, 2])
-                    core_mu = dg_popt[1]
-                    # Core fraction from amplitudes
                     f_core = abs(dg_popt[0] * dg_popt[2]) / (
                         abs(dg_popt[0] * dg_popt[2]) + abs(dg_popt[3] * dg_popt[5]))
-                    print(f"  Patch {patch:>2d}: {n:>6d} events | "
-                          f"core μ={core_mu:+.2f} MeV | "
-                          f"core σ={core_sig:.2f}±{core_sig_err:.2f} MeV | "
-                          f"f_core={f_core:.0%}")
-                elif sg_popt is not None:
-                    sig_err = np.sqrt(sg_pcov[2, 2])
-                    print(f"  Patch {patch:>2d}: {n:>6d} events | "
-                          f"μ={sg_popt[1]:+.2f} MeV | "
-                          f"σ={abs(sg_popt[2]):.2f}±{sig_err:.2f} MeV (single)")
-                else:
-                    print(f"  Patch {patch:>2d}: {n:>6d} events | "
-                          f"fit failed, "
-                          f"res68={np.percentile(np.abs(residual), 68):.2f} MeV")
+                    parts.append(f"core σ={core_sig:.2f}±{core_sig_err:.2f} MeV "
+                                 f"(f={f_core:.0%})")
+                if sg_popt is not None:
+                    sg_sig_err = np.sqrt(sg_pcov[2, 2])
+                    parts.append(f"σ={abs(sg_popt[2]):.2f}±{sg_sig_err:.2f} MeV")
+                if dg_popt is None and sg_popt is None:
+                    parts.append(f"fit failed, "
+                                 f"res68={np.percentile(np.abs(residual), 68):.2f} MeV")
+                print(" | ".join(parts))
             else:
                 pred_mev = df["pred_energy"].values * 1e3
                 patch_data.append((patch, n, pred_mev, None, None, None, None))
