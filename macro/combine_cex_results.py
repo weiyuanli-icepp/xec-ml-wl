@@ -188,11 +188,6 @@ def make_plots(patch_data, combined_residual, output_dir,
             # Top: core sigma (resolution) per patch
             ax1.errorbar(x, core_sigmas, yerr=core_sigma_errs, fmt='o',
                          color='tab:blue', capsize=4, markersize=6)
-            # Overall combined fit
-            if comb_dg_popt is not None:
-                ax1.axhline(abs(comb_dg_popt[2]), color='tab:red', ls='--', lw=1.5,
-                            label=f"Combined core σ = {abs(comb_dg_popt[2]):.2f} MeV")
-                ax1.legend()
             ax1.set_xticks(x)
             ax1.set_xticklabels(labels, fontsize=8)
             ax1.set_xlabel("Patch")
@@ -202,10 +197,6 @@ def make_plots(patch_data, combined_residual, output_dir,
             # Bottom: bias (core mu) per patch
             ax2.errorbar(x, core_mus, yerr=core_mu_errs, fmt='s',
                          color='tab:orange', capsize=4, markersize=6)
-            if comb_dg_popt is not None:
-                ax2.axhline(comb_dg_popt[1], color='tab:red', ls='--', lw=1.5,
-                            label=f"Combined core μ = {comb_dg_popt[1]:+.2f} MeV")
-                ax2.legend()
             ax2.axhline(0, color='black', ls='-', lw=0.5)
             ax2.set_xticks(x)
             ax2.set_xticklabels(labels, fontsize=8)
