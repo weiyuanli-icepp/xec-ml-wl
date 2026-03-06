@@ -3,14 +3,18 @@
 # Angle Regressor Hyperparameter Scan
 # =============================================================================
 # Usage:
-#   ./jobs/run_angle_scan.sh              # Submit all steps (2,3)
-#   ./jobs/run_angle_scan.sh 2            # Submit only step 2
+#   ./jobs/run_angle_scan.sh              # Submit all steps (2-7)
+#   ./jobs/run_angle_scan.sh 4 5          # Submit only steps 4 and 5
 #   DRY_RUN=1 ./jobs/run_angle_scan.sh    # Preview without submitting
 #
 # Steps:
 #   1   - (done) Baseline: 3b settings — grad_clip=0.1 cripples learning
-#   2   - 4a training settings (lr=3e-4, warmup=5, grad_clip=1.0)
-#   3   - s2 + loss_beta=0.1 (quadratic for fine residuals)
+#   2   - (done) 4a training settings (lr=3e-4, warmup=5, grad_clip=1.0)
+#   3   - (done) s2 + loss_beta=0.1 (quadratic for fine residuals)
+#   4   - s2 + batch_size=2048, grad_accum_steps=2 (effective BS 4096)
+#   5   - s4 + cosine similarity loss
+#   6   - s4 + drop_path_rate=0.2
+#   7   - s4 + gaussian_nll loss (beta=0.5)
 #
 # All steps use train_middle, 1 GPU, 50 epochs.
 # Compare in MLflow experiment: gamma_angle
@@ -30,12 +34,20 @@ declare -A STEP_NAME
 
 STEP_CONFIG[2]="step2_4a_settings.yaml"
 STEP_CONFIG[3]="step3_beta01.yaml"
+STEP_CONFIG[4]="step4_bs2048.yaml"
+STEP_CONFIG[5]="step5_cosine.yaml"
+STEP_CONFIG[6]="step6_droppath02.yaml"
+STEP_CONFIG[7]="step7_gnll.yaml"
 
 STEP_NAME[2]="ang_scan_s2_4a"
 STEP_NAME[3]="ang_scan_s3_beta01"
+STEP_NAME[4]="ang_scan_s4_bs2048"
+STEP_NAME[5]="ang_scan_s5_cosine"
+STEP_NAME[6]="ang_scan_s6_droppath02"
+STEP_NAME[7]="ang_scan_s7_gnll"
 
 if [ $# -eq 0 ]; then
-    STEPS=("2" "3")
+    STEPS=("4" "5" "6" "7")
     echo "[SCAN] No steps specified. Submitting all: ${STEPS[*]}"
     echo ""
 else
@@ -59,7 +71,7 @@ for STEP in "${STEPS[@]}"; do
 
     if [ -z "$CONFIG" ]; then
         echo "[ERROR] Unknown step: $STEP"
-        echo "  Valid steps: 2, 3"
+        echo "  Valid steps: 2, 3, 4, 5, 6, 7"
         continue
     fi
 

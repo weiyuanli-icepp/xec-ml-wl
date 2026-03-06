@@ -238,6 +238,16 @@ def get_pointwise_loss_fn(loss_name: str, epsilon: float = 1e-3, beta: float = 1
             return sq_error / scale
         return relative_mse_loss
 
+    # Cosine loss for angle regression: 1 - cos_sim(pred_vec, target_vec)
+    # pred and target are (B, 2) with [theta_deg, phi_deg]
+    if name == "cosine":
+        def cosine_angle_loss(pred, target):
+            v_pred = angles_deg_to_unit_vec(pred)
+            v_true = angles_deg_to_unit_vec(target)
+            cos_sim = (v_pred * v_true).sum(dim=1).clamp(-1.0, 1.0)
+            return (1.0 - cos_sim).unsqueeze(-1)  # (B, 1) for .mean(dim=-1)
+        return cosine_angle_loss
+
     # Gaussian NLL loss (β-NLL): pred is (B, 2*D) with [mu (D cols), log_var (D cols)]
     if name == "gaussian_nll":
         def gaussian_nll_loss(pred, target):
