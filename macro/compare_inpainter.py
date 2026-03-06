@@ -54,7 +54,7 @@ ENTRIES_SENSORFRONT = [
 ]
 
 ENTRIES_DATA = [
-    {**s, "path": f"artifacts/{s['dir']}/validation_data/real_data_predictions.root"}
+    {**s, "path": f"artifacts/{s['dir']}/validation_data/predictions_real_runcustom.root"}
     for s in _SCAN_STEPS
 ]
 
