@@ -2,20 +2,23 @@
 """
 Generate a run list for PrepareRealData by sampling one run per day from the MEG2 database.
 
-Queries RunCatalog for physics runs in a given run range, groups by date,
-picks one run per day, checks that the rec file exists on disk, and writes
-a runlist compatible with macro/submit_prepare_realdata.sh.
+Queries RunCatalog for physics runs (Physics=1, Junk=0, after 2021),
+groups by date, picks one run per day, checks that the rec file exists
+on disk, and writes a runlist compatible with macro/submit_prepare_realdata.sh.
+
+Two-pass file search:
+  1. For each sampled day, try up to 5 runs to find a rec file on disk.
+  2. If pass 1 finds nothing for a day, try all remaining runs for that day.
 
 Usage:
     # Sample one run per day from runs 430000-560000
     python macro/generate_realdata_runlist.py --min-run 430000 --max-run 560000
 
-    # Custom output and rec file suffix
-    python macro/generate_realdata_runlist.py --min-run 430000 --max-run 560000 \
-        --output data/real_data/runlist.txt --suffix "_open.root"
-
     # Dry run (print to stdout, don't write file)
     python macro/generate_realdata_runlist.py --min-run 430000 --max-run 560000 --dry-run
+
+    # Skip checking if rec files exist on disk
+    python macro/generate_realdata_runlist.py --min-run 430000 --max-run 560000 --no-file-check
 
     # Check database connection first
     python macro/generate_realdata_runlist.py --check
@@ -40,77 +43,127 @@ REC_DIR = "/data/project/meg/offline/run"
 
 def get_runs_with_dates(min_run, max_run):
     """
-    Query RunCatalog for runs in the given range, returning (run_number, date).
+    Query RunCatalog for physics runs (Junk=0, Physics=1, StartTime after 2021).
 
-    First discovers the table schema to find the date column, then queries.
+    Returns list of (run_number, date_string) tuples.
     """
-    # Discover RunCatalog columns to find the date/time column
-    schema_rows = _run_mysql_query("DESCRIBE RunCatalog", database=DEFAULT_DATABASE)
-    columns = [row[0].lower() for row in schema_rows]
-    print(f"[INFO] RunCatalog columns: {[row[0] for row in schema_rows]}")
-
-    # Find the best date column
-    date_col = None
-    for candidate in ["start_time", "starttime", "start", "date", "timestamp",
-                       "stop_time", "stoptime", "time"]:
-        if candidate in columns:
-            # Get the original-case name
-            date_col = schema_rows[columns.index(candidate)][0]
-            break
-
-    if date_col is None:
-        print("[ERROR] No date/time column found in RunCatalog.")
-        print(f"  Available columns: {[row[0] for row in schema_rows]}")
-        sys.exit(1)
-
-    print(f"[INFO] Using date column: {date_col}")
-
     query = (
-        f"SELECT id, DATE({date_col}) AS run_date "
+        f"SELECT id, DATE(StartTime) AS run_date "
         f"FROM RunCatalog "
         f"WHERE id >= {min_run} AND id <= {max_run} "
-        f"AND {date_col} IS NOT NULL "
+        f"AND Junk = 0 AND Physics = 1 "
+        f"AND StartTime >= '2021-01-01' "
         f"ORDER BY id"
     )
 
     rows = _run_mysql_query(query, database=DEFAULT_DATABASE)
-    print(f"[INFO] Found {len(rows)} runs in range [{min_run}, {max_run}]")
+    print(f"[INFO] Found {len(rows)} physics runs in range [{min_run}, {max_run}]")
     return rows
 
 
-def sample_one_per_day(rows):
-    """Group runs by date and pick one per day (middle of the day's runs)."""
+def group_by_date(rows):
+    """Group runs by date, returning {date: [run_numbers]} sorted by date."""
     by_date = defaultdict(list)
     for run_id, run_date in rows:
         if run_date and run_date not in ('NULL', ''):
             by_date[run_date].append(int(run_id))
-
-    sampled = []
-    for date in sorted(by_date.keys()):
-        runs = sorted(by_date[date])
-        # Pick the middle run of each day
-        mid = len(runs) // 2
-        sampled.append((runs[mid], date))
-
-    print(f"[INFO] Sampled {len(sampled)} runs (1 per day) from {len(by_date)} days")
-    return sampled
+    # Sort runs within each day
+    for date in by_date:
+        by_date[date].sort()
+    print(f"[INFO] {len(by_date)} unique days with physics runs")
+    return by_date
 
 
-def find_rec_file(run_number, suffix="_open.root"):
-    """Construct the expected rec file path and check if it exists."""
+def find_rec_file(run_number):
+    """
+    Check if a rec file exists for the given run number.
+
+    Tries rec{run}_open.root first, then rec{run}.root.
+    Returns the path if found, None otherwise.
+    """
     run_dir = f"{run_number // 1000}xxx"
-    filename = f"rec{run_number:06d}{suffix}"
-    path = os.path.join(REC_DIR, run_dir, filename)
+    base = os.path.join(REC_DIR, run_dir)
 
-    # Also try without _open suffix
-    if not os.path.exists(path) and suffix == "_open.root":
-        alt = os.path.join(REC_DIR, run_dir, f"rec{run_number:06d}.root")
-        if os.path.exists(alt):
-            return alt
-
-    if os.path.exists(path):
-        return path
+    for suffix in ("_open.root", ".root"):
+        path = os.path.join(base, f"rec{run_number:06d}{suffix}")
+        if os.path.exists(path):
+            return path
     return None
+
+
+def sample_runs_with_file_check(by_date):
+    """
+    For each day, find one run whose rec file exists on disk.
+
+    Pass 1: Try up to 5 evenly-spaced runs per day.
+    Pass 2: For days that failed pass 1, try all runs for that day.
+    """
+    results = []  # (run_number, path, date)
+    days_missing = []
+
+    for date in sorted(by_date.keys()):
+        runs = by_date[date]
+
+        # Pass 1: try up to 5 evenly-spaced runs
+        n_try = min(5, len(runs))
+        indices = [i * len(runs) // n_try + len(runs) // (2 * n_try) for i in range(n_try)]
+        candidates = [runs[i] for i in indices]
+
+        found = False
+        for run in candidates:
+            path = find_rec_file(run)
+            if path:
+                results.append((run, path, date))
+                found = True
+                break
+
+        if not found:
+            days_missing.append(date)
+
+    # Pass 2: for missing days, try all runs
+    n_pass2_found = 0
+    for date in days_missing:
+        runs = by_date[date]
+        # Skip the ones already tried in pass 1
+        n_try = min(5, len(runs))
+        indices_tried = set(i * len(runs) // n_try + len(runs) // (2 * n_try) for i in range(n_try))
+        remaining = [runs[i] for i in range(len(runs)) if i not in indices_tried]
+
+        found = False
+        for run in remaining:
+            path = find_rec_file(run)
+            if path:
+                results.append((run, path, date))
+                found = True
+                n_pass2_found += 1
+                break
+
+        if not found:
+            pass  # No rec file for any run on this day
+
+    # Sort by date
+    results.sort(key=lambda x: x[2])
+
+    n_total_days = len(by_date)
+    n_found = len(results)
+    n_missing = n_total_days - n_found
+    print(f"[INFO] File search: {n_found}/{n_total_days} days have rec files "
+          f"(pass1: {n_found - n_pass2_found}, pass2: {n_pass2_found}, missing: {n_missing})")
+    return results
+
+
+def sample_runs_no_file_check(by_date):
+    """Pick the middle run of each day without checking file existence."""
+    results = []
+    for date in sorted(by_date.keys()):
+        runs = by_date[date]
+        mid = len(runs) // 2
+        run = runs[mid]
+        run_dir = f"{run // 1000}xxx"
+        path = os.path.join(REC_DIR, run_dir, f"rec{run:06d}_open.root")
+        results.append((run, path, date))
+    print(f"[INFO] Sampled {len(results)} runs (1 per day, no file check)")
+    return results
 
 
 def main():
@@ -123,8 +176,6 @@ def main():
                         help="Maximum run number (default: 560000)")
     parser.add_argument("--output", "-o", type=str, default="data/real_data/runlist.txt",
                         help="Output runlist file path")
-    parser.add_argument("--suffix", type=str, default="_open.root",
-                        help="Rec file suffix (default: _open.root)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print runlist to stdout without writing file")
     parser.add_argument("--check", action="store_true",
@@ -143,45 +194,30 @@ def main():
         print("[ERROR] No runs found. Check run range and database connection.")
         sys.exit(1)
 
+    # Group by date
+    by_date = group_by_date(rows)
+
     # Sample one run per day
-    sampled = sample_one_per_day(rows)
-
-    # Find rec files on disk
-    lines = []
-    n_found = 0
-    n_missing = 0
-    for run_number, date in sampled:
-        if args.no_file_check:
-            # Construct path without checking existence
-            run_dir = f"{run_number // 1000}xxx"
-            path = os.path.join(REC_DIR, run_dir, f"rec{run_number:06d}{args.suffix}")
-            lines.append((run_number, path, date))
-            n_found += 1
-        else:
-            path = find_rec_file(run_number, args.suffix)
-            if path:
-                lines.append((run_number, path, date))
-                n_found += 1
-            else:
-                n_missing += 1
-
-    print(f"[INFO] Rec files found: {n_found}, missing: {n_missing}")
+    if args.no_file_check:
+        lines = sample_runs_no_file_check(by_date)
+    else:
+        lines = sample_runs_with_file_check(by_date)
 
     if not lines:
-        print("[ERROR] No valid runs with rec files found.")
+        print("[ERROR] No valid runs found.")
         sys.exit(1)
 
     # Format output
     output_lines = []
     output_lines.append(f"# Real data runlist: one run per day")
     output_lines.append(f"# Run range: {args.min_run} - {args.max_run}")
+    output_lines.append(f"# Filters: Physics=1, Junk=0, StartTime >= 2021")
     output_lines.append(f"# Total: {len(lines)} runs")
     output_lines.append(f"# Format: <run_number> <rec_file_path>")
     output_lines.append("")
 
     prev_date = None
     for run_number, path, date in lines:
-        # Add date comment when day changes
         if date != prev_date:
             output_lines.append(f"# {date}")
             prev_date = date
