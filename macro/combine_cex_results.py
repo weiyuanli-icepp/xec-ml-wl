@@ -443,7 +443,7 @@ def main():
                 arr = arr.astype(np.float32)
             branches[col] = arr
         with uproot.recreate(outpath) as f:
-            f["tree"] = branches
+            f.mktree("tree", branches)
         print(f"\nData:  {outpath} ({n_total} events)")
     else:
         combined.to_csv(outpath, index=False)
