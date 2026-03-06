@@ -9,9 +9,10 @@
 #
 # Steps:
 #   1   - (done) Baseline: 3b settings — OVERFITTING (val loss goes up)
-#   2   - 4a settings + weight_decay=1e-3 + channel_dropout=0.05
-#   3   - s2 + smaller model (enc=512, 1 layer, ffn=2048)
-#   4   - s3 + drop_path=0.2 (more stochastic depth)
+#   2   - (done) 4a settings + weight_decay=1e-3 + channel_dropout=0.05
+#   3   - (done) s2 + smaller model (enc=512, 1 layer, ffn=2048)
+#   4   - (done) s3 + drop_path=0.2 (more stochastic depth)
+#   5   - s4 + npho_threshold=10 + sentinel_time=-5.0 (more valid timing data)
 #
 # All steps use train_middle, 1 GPU, 50 epochs.
 # Compare in MLflow experiment: gamma_timing
@@ -32,13 +33,15 @@ declare -A STEP_NAME
 STEP_CONFIG[2]="step2_regularize.yaml"
 STEP_CONFIG[3]="step3_smallmodel.yaml"
 STEP_CONFIG[4]="step4_droppath.yaml"
+STEP_CONFIG[5]="step5_threshold.yaml"
 
 STEP_NAME[2]="tim_scan_s2_regularize"
 STEP_NAME[3]="tim_scan_s3_smallmodel"
 STEP_NAME[4]="tim_scan_s4_droppath"
+STEP_NAME[5]="tim_scan_s5_threshold"
 
 if [ $# -eq 0 ]; then
-    STEPS=("2" "3" "4")
+    STEPS=("5")
     echo "[SCAN] No steps specified. Submitting all: ${STEPS[*]}"
     echo ""
 else
@@ -62,7 +65,7 @@ for STEP in "${STEPS[@]}"; do
 
     if [ -z "$CONFIG" ]; then
         echo "[ERROR] Unknown step: $STEP"
-        echo "  Valid steps: 2, 3, 4"
+        echo "  Valid steps: 2, 3, 4, 5"
         continue
     fi
 

@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Any
 from .geom_defs import (
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
     DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT,
-    DEFAULT_SENTINEL_TIME
+    DEFAULT_SENTINEL_TIME, DEFAULT_NPHO_THRESHOLD
 )
 
 
@@ -76,6 +76,7 @@ class NormalizationConfig:
     sentinel_npho: float = -1.0  # Sentinel for dead/masked npho channel
     # Normalization scheme for npho: "log1p" (default), "anscombe", "sqrt", "linear"
     npho_scheme: str = "log1p"
+    npho_threshold: float = DEFAULT_NPHO_THRESHOLD  # Min npho for valid timing
 
 
 @dataclass

@@ -34,6 +34,7 @@ from .engines import run_epoch_stream
 from .dataset import get_dataloader, expand_path
 from .reweighting import create_reweighter_from_config
 from .config import load_config, get_active_tasks, get_task_weights
+from .geom_defs import DEFAULT_NPHO_THRESHOLD
 from .utils import (
     count_model_params,
     log_system_metrics_to_mlflow,
@@ -271,6 +272,7 @@ def train_with_config(config_path: str, profile: bool = None):
         "time_shift": cfg.normalization.time_shift,
         "sentinel_time": cfg.normalization.sentinel_time,
         "sentinel_npho": cfg.normalization.sentinel_npho,
+        "npho_threshold": getattr(cfg.normalization, "npho_threshold", DEFAULT_NPHO_THRESHOLD),
         "step_size": cfg.data.chunksize,
         "npho_branch": getattr(cfg.data, "npho_branch", "npho"),
         "time_branch": getattr(cfg.data, "time_branch", "relative_time"),
@@ -750,6 +752,7 @@ def train_with_config(config_path: str, profile: bool = None):
                 "time_shift": cfg.normalization.time_shift,
                 "sentinel_time": cfg.normalization.sentinel_time,
                 "sentinel_npho": cfg.normalization.sentinel_npho,
+                "npho_threshold": getattr(cfg.normalization, "npho_threshold", DEFAULT_NPHO_THRESHOLD),
                 "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
                 "lr": cfg.training.lr,
                 "lr_scheduler": cfg.training.lr_scheduler,
@@ -922,6 +925,7 @@ def train_with_config(config_path: str, profile: bool = None):
                             "time_shift": float(cfg.normalization.time_shift),
                             "sentinel_time": float(cfg.normalization.sentinel_time),
                             "sentinel_npho": float(cfg.normalization.sentinel_npho),
+                            "npho_threshold": float(getattr(cfg.normalization, "npho_threshold", DEFAULT_NPHO_THRESHOLD)),
                             "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
                             "encoder_dim": cfg.model.encoder_dim,
                             "dim_feedforward": cfg.model.dim_feedforward,
@@ -977,6 +981,7 @@ def train_with_config(config_path: str, profile: bool = None):
                         "time_shift": float(cfg.normalization.time_shift),
                         "sentinel_time": float(cfg.normalization.sentinel_time),
                         "sentinel_npho": float(cfg.normalization.sentinel_npho),
+                        "npho_threshold": float(getattr(cfg.normalization, "npho_threshold", DEFAULT_NPHO_THRESHOLD)),
                         "npho_scheme": getattr(cfg.normalization, "npho_scheme", "log1p"),
                         "encoder_dim": cfg.model.encoder_dim,
                         "dim_feedforward": cfg.model.dim_feedforward,
@@ -1115,6 +1120,8 @@ Examples:
     parser.add_argument("--time_scale", type=float, default=None)
     parser.add_argument("--time_shift", type=float, default=None)
     parser.add_argument("--sentinel_time", type=float, default=None)
+    parser.add_argument("--npho_threshold", type=float, default=None,
+                        help="Min npho for valid timing (sensors below get sentinel time)")
     parser.add_argument("--npho_scheme", type=str, default=None,
                         choices=["log1p", "anscombe", "sqrt", "linear"],
                         help="Normalization scheme for npho (default: from config)")
@@ -1200,6 +1207,8 @@ def apply_cli_overrides(cfg, args):
         cfg.normalization.time_shift = args.time_shift
     if args.sentinel_time is not None:
         cfg.normalization.sentinel_time = args.sentinel_time
+    if args.npho_threshold is not None:
+        cfg.normalization.npho_threshold = args.npho_threshold
     if args.npho_scheme is not None:
         cfg.normalization.npho_scheme = args.npho_scheme
 
