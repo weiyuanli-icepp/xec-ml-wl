@@ -1,0 +1,104 @@
+# ===================================================
+# Inpainter Fine-tuning: Real Data
+# ===================================================
+# Based on scan step 3 (npho_wt). Resumes from s3 checkpoint
+# and fine-tunes on real detector data with reduced LR.
+#
+# Usage:
+#   python -m lib.train_inpainter --config config/inp/finetune_realdata.yaml
+#
+# Before running:
+#   1. Prepare real data ROOT files with branches: npho (float, 4760), relative_time (float, 4760)
+#   2. Set train_path/val_path to the real data directories
+#   3. Set resume_from to the best s3 checkpoint path
+
+data:
+  train_path: "~/meghome/xec-ml-wl/data/real_data/train/"
+  val_path: "~/meghome/xec-ml-wl/data/real_data/val/"
+  tree_name: "tree"
+  batch_size: 1024
+  chunksize: 131072
+  num_workers: 2
+  prefetch_factor: 16
+  num_threads: 16
+  npho_branch: "npho"
+  time_branch: "relative_time"
+  log_invalid_npho: true
+
+normalization:
+  npho_scheme: log1p
+  npho_scale: 1000
+  npho_scale2: 4.08
+  time_scale: 1.14e-7
+  time_shift: -0.46
+  sentinel_time: -1.0
+  sentinel_npho: -1.0
+
+model:
+  outer_mode: "finegrid"
+  outer_fine_pool: [2, 2]
+  mask_ratio: 0.10
+  mask_npho_flat: false
+  freeze_encoder: false
+  use_local_context: true
+  predict_channels: [npho]
+  use_masked_attention: true
+  head_type: cross_attention
+  sensor_positions_file: "/data/user/ext-li_w1/meghome/xec-ml-wl/lib/sensor_positions.txt"
+  cross_attn_k: 16
+  cross_attn_hidden: 64
+  cross_attn_latent_dim: 128
+  cross_attn_pos_dim: 96
+  encoder_dim: 1024
+  dim_feedforward: 4096
+  num_fusion_layers: 2
+
+training:
+  mae_checkpoint: null
+  epochs: 30
+  lr: 2.0e-5                          # 5x lower than s3 (1e-4) for fine-tuning
+  lr_scheduler: "cosine"
+  lr_min: 1.0e-6
+  warmup_epochs: 2
+  weight_decay: 1.0e-4
+  loss_fn: "smooth_l1"
+  loss_beta: 0.1
+  npho_weight: 1.0
+  grad_clip: 1.0
+  amp: true
+  compile: none
+  compile_fullgraph: false
+  track_mae_rmse: false
+  grad_accum_steps: 1
+  track_metrics: true
+  ema_decay: null
+  profile: false
+  time:
+    weight: 1.0
+    mask_ratio_scale: 1.0
+    use_npho_weight: true
+    npho_threshold: 100
+  npho_loss_weight:
+    enabled: true
+    alpha: 0.5
+  intensity_reweighting:
+    enabled: false
+    nbins: 5
+    target: uniform
+
+checkpoint:
+  resume_from: "~/meghome/xec-ml-wl/artifacts/inp_scan_s3/best_model.pt"
+  save_dir: "artifacts/inp_finetune_realdata"
+  save_interval: 5
+  save_predictions: true
+  root_save_interval: 10
+  reset_epoch: true                    # Start from epoch 0 (fresh schedule)
+  refresh_lr: true                     # Use new LR schedule from the config
+  new_mlflow_run: true                 # New MLflow run for fine-tuning
+
+distributed:
+  num_gpus: 1
+
+mlflow:
+  experiment: "inpainting"
+  run_name: "inp_finetune_realdata"
