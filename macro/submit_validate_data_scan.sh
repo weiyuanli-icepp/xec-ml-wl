@@ -90,7 +90,8 @@ for STEP in "${STEPS[@]}"; do
         continue
     fi
 
-    BATCH_SCRIPT=$(mktemp /tmp/validate_data_s${STEP}_XXXXXX.sh)
+    mkdir -p "$HOME/.cache/xec-ml-wl"
+    BATCH_SCRIPT=$(mktemp "$HOME/.cache/xec-ml-wl/validate_data_s${STEP}_XXXXXX.sh")
 
     cat > "${BATCH_SCRIPT}" << SLURM_EOF
 #!/bin/bash

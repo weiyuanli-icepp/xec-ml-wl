@@ -128,7 +128,8 @@ for PATCH in "${PATCHES[@]}"; do
         VAL_PATH="${CEX_DIR}/CEX23_patch${PATCH}_r*.root"
     fi
 
-    BATCH_SCRIPT=$(mktemp /tmp/val_cex_patch${PATCH}_XXXXXX.sh)
+    mkdir -p "$HOME/.cache/xec-ml-wl"
+    BATCH_SCRIPT=$(mktemp "$HOME/.cache/xec-ml-wl/val_cex_patch${PATCH}_XXXXXX.sh")
 
     cat > "${BATCH_SCRIPT}" << SLURM_EOF
 #!/bin/bash

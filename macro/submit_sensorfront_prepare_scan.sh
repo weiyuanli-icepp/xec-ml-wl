@@ -50,7 +50,8 @@ if [ "$DRY_RUN" = "1" ]; then
     exit 0
 fi
 
-BATCH_SCRIPT=$(mktemp /tmp/sf_prepare_XXXXXX.sh)
+mkdir -p "$HOME/.cache/xec-ml-wl"
+BATCH_SCRIPT=$(mktemp "$HOME/.cache/xec-ml-wl/sf_prepare_XXXXXX.sh")
 
 cat > "${BATCH_SCRIPT}" << SLURM_EOF
 #!/bin/bash

@@ -59,7 +59,8 @@ fi
 mkdir -p log
 
 # Create a temporary SLURM batch script
-BATCH_SCRIPT=$(mktemp /tmp/localfit_sensorfront_XXXXXX.sh)
+mkdir -p "$HOME/.cache/xec-ml-wl"
+BATCH_SCRIPT=$(mktemp "$HOME/.cache/xec-ml-wl/localfit_sensorfront_XXXXXX.sh")
 
 cat > "${BATCH_SCRIPT}" << SLURM_EOF
 #!/bin/bash

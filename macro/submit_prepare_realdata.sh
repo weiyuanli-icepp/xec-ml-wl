@@ -59,7 +59,8 @@ mkdir -p log "$OUTPUT_DIR"
 ANALYZER_DIR="${ANALYZER_DIR:-$HOME/meghome/offline/analyzer}"
 MACRO_PATH="$HOME/meghome/xec-ml-wl/macro/PrepareRealDataSimple.C"
 
-BATCH_SCRIPT=$(mktemp /tmp/prepare_realdata_XXXXXX.sh)
+mkdir -p "$HOME/.cache/xec-ml-wl"
+BATCH_SCRIPT=$(mktemp "$HOME/.cache/xec-ml-wl/prepare_realdata_XXXXXX.sh")
 
 cat > "${BATCH_SCRIPT}" << SLURM_EOF
 #!/bin/bash

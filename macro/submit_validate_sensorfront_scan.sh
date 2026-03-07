@@ -103,7 +103,8 @@ for STEP in "${STEPS[@]}"; do
         continue
     fi
 
-    BATCH_SCRIPT=$(mktemp /tmp/sf_scan_s${STEP}_XXXXXX.sh)
+    mkdir -p "$HOME/.cache/xec-ml-wl"
+    BATCH_SCRIPT=$(mktemp "$HOME/.cache/xec-ml-wl/sf_scan_s${STEP}_XXXXXX.sh")
 
     # In fast mode, no need for --input/--solid-angle-branch (data loaded from manifest)
     if [ -n "$SHARED_DIR" ]; then
