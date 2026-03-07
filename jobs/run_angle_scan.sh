@@ -3,7 +3,7 @@
 # Angle Regressor Hyperparameter Scan
 # =============================================================================
 # Usage:
-#   ./jobs/run_angle_scan.sh              # Submit all new steps (8,9)
+#   ./jobs/run_angle_scan.sh              # Submit all new steps (8-13)
 #   ./jobs/run_angle_scan.sh 8 9          # Submit specific steps
 #   DRY_RUN=1 ./jobs/run_angle_scan.sh    # Preview without submitting
 #
@@ -17,6 +17,10 @@
 #   7   - s4 + gaussian_nll loss (beta=0.5)
 #   8   - Resume s4, lr=1.5e-4, 100 epochs total (refresh_lr)
 #   9   - s4 + grad_clip=5.0 (reduce gradient clipping)
+#  10   - s4 + weight_decay=1e-3 (stronger regularization)
+#  11   - s4 + weight_decay=1e-5 (weaker regularization)
+#  12   - s4 + OneCycle scheduler (max_lr=6e-4)
+#  13   - s4 + num_fusion_layers=4 (deeper fusion)
 #
 # All steps use train_middle, 1 GPU.
 # Compare in MLflow experiment: gamma_angle
@@ -42,6 +46,10 @@ STEP_CONFIG[6]="step6_droppath02.yaml"
 STEP_CONFIG[7]="step7_gnll.yaml"
 STEP_CONFIG[8]="step8_resume_s4.yaml"
 STEP_CONFIG[9]="step9_gradclip5.yaml"
+STEP_CONFIG[10]="step10_wd1e3.yaml"
+STEP_CONFIG[11]="step11_wd1e5.yaml"
+STEP_CONFIG[12]="step12_onecycle.yaml"
+STEP_CONFIG[13]="step13_fusion4.yaml"
 
 STEP_NAME[2]="ang_scan_s2_4a"
 STEP_NAME[3]="ang_scan_s3_beta01"
@@ -51,9 +59,13 @@ STEP_NAME[6]="ang_scan_s6_droppath02"
 STEP_NAME[7]="ang_scan_s7_gnll"
 STEP_NAME[8]="ang_scan_s8_resume_s4"
 STEP_NAME[9]="ang_scan_s9_gradclip5"
+STEP_NAME[10]="ang_scan_s10_wd1e3"
+STEP_NAME[11]="ang_scan_s11_wd1e5"
+STEP_NAME[12]="ang_scan_s12_onecycle"
+STEP_NAME[13]="ang_scan_s13_fusion4"
 
 if [ $# -eq 0 ]; then
-    STEPS=("8" "9")
+    STEPS=("8" "9" "10" "11" "12" "13")
     echo "[SCAN] No steps specified. Submitting all: ${STEPS[*]}"
     echo ""
 else
@@ -77,7 +89,7 @@ for STEP in "${STEPS[@]}"; do
 
     if [ -z "$CONFIG" ]; then
         echo "[ERROR] Unknown step: $STEP"
-        echo "  Valid steps: 2-9"
+        echo "  Valid steps: 2-13"
         continue
     fi
 
