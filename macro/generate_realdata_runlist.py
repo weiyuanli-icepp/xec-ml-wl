@@ -111,12 +111,19 @@ def build_default_path(run_number):
     return os.path.join(REC_DIR, run_dir, f"rec{run_number:06d}_open.root")
 
 
-def sample_train_val(by_date, no_file_check=False, max_train_per_day=200):
+def sample_train_val(by_date, no_file_check=False, max_train_per_day=200,
+                     skip_train=1):
     """
     Build train and val runlists from grouped runs.
 
     - val:   1st rec file of each day where day_index % 3 == 0
-    - train: runs 2 through max_train_per_day+1 (up to 200 runs per day)
+    - train: found rec files starting from position skip_train+1, up to
+             max_train_per_day files per day
+
+    Args:
+        skip_train: Number of initial found files to skip for training.
+                    1 = skip the 1st (reserved for val), start from 2nd.
+                    2 = skip 1st and 2nd, start from 3rd. Etc.
 
     Returns (train_list, val_list) where each is [(run, path, date), ...].
     """
@@ -129,8 +136,8 @@ def sample_train_val(by_date, no_file_check=False, max_train_per_day=200):
         runs = by_date[date]
         is_val_day = (day_idx % 3 == 0)
 
-        # Need: 1st for val (on val days), runs 2..201 for train
-        need = max_train_per_day + 1  # +1 because 1st is reserved for val
+        # Need: 1st for val (on val days), then up to max_train_per_day for train
+        need = skip_train + max_train_per_day
         if no_file_check:
             entries = [(runs[i], build_default_path(runs[i]))
                        for i in range(min(need, len(runs)))]
@@ -145,12 +152,12 @@ def sample_train_val(by_date, no_file_check=False, max_train_per_day=200):
             val.append((entries[0][0], entries[0][1], date))
             n_val_files += 1
 
-        # Train: 2nd file onward (skip the 1st)
-        for entry in entries[1:]:
+        # Train: skip first skip_train files
+        for entry in entries[skip_train:]:
             train.append((entry[0], entry[1], date))
             n_train_files += 1
 
-    print(f"[INFO] Train: {n_train_files} runs, Val: {n_val_files} runs")
+    print(f"[INFO] Train: {n_train_files} runs (skip_train={skip_train}), Val: {n_val_files} runs")
     return train, val
 
 
@@ -190,6 +197,9 @@ def main():
                         help="Check database connection and exit")
     parser.add_argument("--no-file-check", action="store_true",
                         help="Skip checking if rec files exist on disk")
+    parser.add_argument("--skip-train", type=int, default=1,
+                        help="Number of initial found files to skip for training "
+                             "(default: 1, i.e. start from 2nd file)")
     args = parser.parse_args()
 
     if args.check:
@@ -206,7 +216,8 @@ def main():
     by_date = group_by_date(rows)
 
     # Build train/val split
-    train, val = sample_train_val(by_date, no_file_check=args.no_file_check)
+    train, val = sample_train_val(by_date, no_file_check=args.no_file_check,
+                                   skip_train=args.skip_train)
 
     if not train and not val:
         print("[ERROR] No valid runs found.")
