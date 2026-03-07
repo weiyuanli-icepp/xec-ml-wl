@@ -21,8 +21,9 @@
 #  11   - Resume s5, lr=1.5e-4, 100 epochs, bs=2048
 #  12   - s5 + weight_decay=1e-4, bs=2048
 #  13   - s5 + bs=2048 only (control)
+#  14   - s5 + train_large dataset, bs=2048
 #
-# All steps use train_middle, 1 GPU.
+# All steps use train_middle (except 14), 1 GPU.
 # Compare in MLflow experiment: gamma_timing
 # =============================================================================
 
@@ -50,6 +51,7 @@ STEP_CONFIG[10]="step10_nodropout.yaml"
 STEP_CONFIG[11]="step11_resume_s5.yaml"
 STEP_CONFIG[12]="step12_wd1e4.yaml"
 STEP_CONFIG[13]="step13_bs2048.yaml"
+STEP_CONFIG[14]="step14_largedata.yaml"
 
 STEP_NAME[2]="tim_scan_s2_regularize"
 STEP_NAME[3]="tim_scan_s3_smallmodel"
@@ -63,9 +65,10 @@ STEP_NAME[10]="tim_scan_s10_nodropout"
 STEP_NAME[11]="tim_scan_s11_resume_s5"
 STEP_NAME[12]="tim_scan_s12_wd1e4"
 STEP_NAME[13]="tim_scan_s13_bs2048"
+STEP_NAME[14]="tim_scan_s14_largedata"
 
 if [ $# -eq 0 ]; then
-    STEPS=("8" "9" "10" "11" "12" "13")
+    STEPS=("8" "9" "10" "11" "12" "13" "14")
     echo "[SCAN] No steps specified. Submitting all: ${STEPS[*]}"
     echo ""
 else
@@ -89,7 +92,7 @@ for STEP in "${STEPS[@]}"; do
 
     if [ -z "$CONFIG" ]; then
         echo "[ERROR] Unknown step: $STEP"
-        echo "  Valid steps: 2-13"
+        echo "  Valid steps: 2-14"
         continue
     fi
 
