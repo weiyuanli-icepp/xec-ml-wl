@@ -103,9 +103,27 @@ SLURM_EOF
 
 echo "[INFO] Batch script: ${BATCH_SCRIPT}"
 echo ""
-cat "${BATCH_SCRIPT}"
-echo ""
 
-# Submit
-sbatch "${BATCH_SCRIPT}"
-echo "[INFO] Submitted job array with ${N_JOBS} tasks"
+# Submit in chunks of 1000 (SLURM max array size)
+MAX_ARRAY=1000
+N_CHUNKS=$(( (N_JOBS + MAX_ARRAY - 1) / MAX_ARRAY ))
+SUBMITTED=0
+
+for ((CHUNK=0; CHUNK<N_CHUNKS; CHUNK++)); do
+    START=$((CHUNK * MAX_ARRAY))
+    END=$(( (CHUNK + 1) * MAX_ARRAY - 1 ))
+    if [ $END -ge $N_JOBS ]; then
+        END=$((N_JOBS - 1))
+    fi
+
+    # Create a per-chunk batch script with the correct array range
+    CHUNK_SCRIPT=$(mktemp "$HOME/.cache/xec-ml-wl/prepare_realdata_chunk${CHUNK}_XXXXXX.sh")
+    sed "s/^#SBATCH --array=.*/#SBATCH --array=${START}-${END}/" "${BATCH_SCRIPT}" > "${CHUNK_SCRIPT}"
+
+    echo "[INFO] Submitting chunk $((CHUNK+1))/${N_CHUNKS}: array ${START}-${END}"
+    sbatch "${CHUNK_SCRIPT}"
+    SUBMITTED=$((SUBMITTED + END - START + 1))
+    sleep 1
+done
+
+echo "[INFO] Submitted ${SUBMITTED} tasks in ${N_CHUNKS} chunk(s)"
