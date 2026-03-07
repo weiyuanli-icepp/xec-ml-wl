@@ -95,11 +95,7 @@ for ((CHUNK=0; CHUNK<N_CHUNKS; CHUNK++)); do
     CHUNK_SIZE=$(( GLOBAL_END - GLOBAL_START + 1 ))
     ARRAY_END=$(( CHUNK_SIZE - 1 ))
 
-    # Time scales with RUNS_PER_JOB: ~1.5 min per run, plus margin
-    TIME_MINUTES=$(( RUNS_PER_JOB * 2 + 10 ))
-    TIME_HH=$(( TIME_MINUTES / 60 ))
-    TIME_MM=$(( TIME_MINUTES % 60 ))
-    TIME_STR=$(printf "%02d:%02d:00" $TIME_HH $TIME_MM)
+    TIME_STR="1:00:00"
 
     BATCH_SCRIPT=$(mktemp "$HOME/.cache/xec-ml-wl/prepare_realdata_chunk${CHUNK}_XXXXXX.sh")
 
