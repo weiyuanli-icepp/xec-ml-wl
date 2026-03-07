@@ -1,29 +1,16 @@
 #!/usr/bin/env python3
 """
-Generate a run list for PrepareRealData by sampling one run per day from the MEG2 database.
+Generate train/val run lists for PrepareRealData from the MEG2 database.
 
 Queries RunCatalog for physics runs (Physics=1, Junk=0, after 2021),
-groups by date, picks one run per day, checks that the rec file exists
-on disk, and writes a runlist compatible with macro/submit_prepare_realdata.sh.
-
-Two-pass file search:
-  1. For each sampled day, try up to 5 runs to find a rec file on disk.
-  2. If pass 1 finds nothing for a day, try all remaining runs for that day.
+groups by date, and produces two runlists:
+  - val:   1st found rec file on days divisible by 3 (day_index % 3 == 0)
+  - train: 2nd found rec file on every day
 
 Usage:
-    # Sample one run per day (all physics runs after 2021)
     python macro/generate_realdata_runlist.py
-
-    # Restrict to a run range
-    python macro/generate_realdata_runlist.py --min-run 430000 --max-run 560000
-
-    # Dry run (print to stdout, don't write file)
     python macro/generate_realdata_runlist.py --dry-run
-
-    # Skip checking if rec files exist on disk
     python macro/generate_realdata_runlist.py --no-file-check
-
-    # Check database connection first
     python macro/generate_realdata_runlist.py --check
 
 Requirements:
@@ -90,7 +77,7 @@ def find_rec_file(run_number):
     """
     Check if a rec file exists for the given run number.
 
-    Tries rec{run}_open.root first, then rec{run}.root.
+    Tries rec{run}_open.root, rec{run}_selected.root, then rec{run}.root.
     Returns the path if found, None otherwise.
     """
     run_dir = f"{run_number // 1000}xxx"
@@ -103,93 +90,107 @@ def find_rec_file(run_number):
     return None
 
 
-def sample_runs_with_file_check(by_date):
+def find_first_n_files(runs, n):
+    """Find the first n runs (in order) that have rec files on disk.
+
+    Returns list of (run_number, path) tuples, length <= n.
     """
-    For each day, find one run whose rec file exists on disk.
+    found = []
+    for run in runs:
+        path = find_rec_file(run)
+        if path:
+            found.append((run, path))
+            if len(found) >= n:
+                break
+    return found
 
-    Pass 1: Try up to 5 evenly-spaced runs per day.
-    Pass 2: For days that failed pass 1, try all runs for that day.
+
+def build_default_path(run_number):
+    """Construct the default rec file path without checking existence."""
+    run_dir = f"{run_number // 1000}xxx"
+    return os.path.join(REC_DIR, run_dir, f"rec{run_number:06d}_open.root")
+
+
+def sample_train_val(by_date, no_file_check=False):
     """
-    results = []  # (run_number, path, date)
-    days_missing = []
+    Build train and val runlists from grouped runs.
 
-    for date in sorted(by_date.keys()):
+    - val:   1st rec file of each day where day_index % 3 == 0
+    - train: 2nd rec file of every day
+
+    Returns (train_list, val_list) where each is [(run, path, date), ...].
+    """
+    train = []
+    val = []
+    n_need_2 = 0
+    n_got_2 = 0
+    n_got_1 = 0
+
+    for day_idx, date in enumerate(sorted(by_date.keys())):
         runs = by_date[date]
+        is_val_day = (day_idx % 3 == 0)
 
-        # Pass 1: try up to 5 evenly-spaced runs
-        n_try = min(5, len(runs))
-        indices = [i * len(runs) // n_try + len(runs) // (2 * n_try) for i in range(n_try)]
-        candidates = [runs[i] for i in indices]
+        # We need up to 2 files per day (1st for val, 2nd for train)
+        need = 2
+        n_need_2 += 1
 
-        found = False
-        for run in candidates:
-            path = find_rec_file(run)
-            if path:
-                results.append((run, path, date))
-                found = True
-                break
+        if no_file_check:
+            # Just pick first two runs
+            entries = [(runs[i], build_default_path(runs[i])) for i in range(min(need, len(runs)))]
+        else:
+            entries = find_first_n_files(runs, need)
 
-        if not found:
-            days_missing.append(date)
+        if len(entries) >= 2:
+            n_got_2 += 1
+            if is_val_day:
+                val.append((entries[0][0], entries[0][1], date))
+            train.append((entries[1][0], entries[1][1], date))
+        elif len(entries) == 1:
+            n_got_1 += 1
+            # Only one file found: use for train (unless it's a val day, then val)
+            if is_val_day:
+                val.append((entries[0][0], entries[0][1], date))
+            else:
+                train.append((entries[0][0], entries[0][1], date))
 
-    # Pass 2: for missing days, try all runs
-    n_pass2_found = 0
-    for date in days_missing:
-        runs = by_date[date]
-        # Skip the ones already tried in pass 1
-        n_try = min(5, len(runs))
-        indices_tried = set(i * len(runs) // n_try + len(runs) // (2 * n_try) for i in range(n_try))
-        remaining = [runs[i] for i in range(len(runs)) if i not in indices_tried]
-
-        found = False
-        for run in remaining:
-            path = find_rec_file(run)
-            if path:
-                results.append((run, path, date))
-                found = True
-                n_pass2_found += 1
-                break
-
-        if not found:
-            pass  # No rec file for any run on this day
-
-    # Sort by date
-    results.sort(key=lambda x: x[2])
-
-    n_total_days = len(by_date)
-    n_found = len(results)
-    n_missing = n_total_days - n_found
-    print(f"[INFO] File search: {n_found}/{n_total_days} days have rec files "
-          f"(pass1: {n_found - n_pass2_found}, pass2: {n_pass2_found}, missing: {n_missing})")
-    return results
+    print(f"[INFO] Days with 2+ rec files: {n_got_2}/{n_need_2}, "
+          f"1 file: {n_got_1}, 0 files: {n_need_2 - n_got_2 - n_got_1}")
+    print(f"[INFO] Train: {len(train)} runs, Val: {len(val)} runs")
+    return train, val
 
 
-def sample_runs_no_file_check(by_date):
-    """Pick the middle run of each day without checking file existence."""
-    results = []
-    for date in sorted(by_date.keys()):
-        runs = by_date[date]
-        mid = len(runs) // 2
-        run = runs[mid]
-        run_dir = f"{run // 1000}xxx"
-        path = os.path.join(REC_DIR, run_dir, f"rec{run:06d}_open.root")
-        results.append((run, path, date))
-    print(f"[INFO] Sampled {len(results)} runs (1 per day, no file check)")
-    return results
+def format_runlist(lines, label, min_run, max_run):
+    """Format a runlist as a string."""
+    output = []
+    output.append(f"# Real data runlist ({label}): one run per day")
+    output.append(f"# Run range: {min_run or 'start'} - {max_run or 'end'}")
+    output.append(f"# Filters: Physics=1, Junk=0, StartTime >= 2021")
+    output.append(f"# Total: {len(lines)} runs")
+    output.append(f"# Format: <run_number> <rec_file_path>")
+    output.append("")
+
+    prev_date = None
+    for run_number, path, date in lines:
+        if date != prev_date:
+            output.append(f"# {date}")
+            prev_date = date
+        output.append(f"{run_number} {path}")
+
+    return "\n".join(output) + "\n"
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate a real-data run list (one run per day) from MEG2 database"
+        description="Generate train/val real-data run lists from MEG2 database"
     )
     parser.add_argument("--min-run", type=int, default=None,
                         help="Minimum run number (default: no limit)")
     parser.add_argument("--max-run", type=int, default=None,
                         help="Maximum run number (default: no limit)")
-    parser.add_argument("--output", "-o", type=str, default="data/real_data/runlist.txt",
-                        help="Output runlist file path")
+    parser.add_argument("--output-dir", "-o", type=str, default="data/real_data",
+                        help="Output directory for runlist files (default: data/real_data)")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Print runlist to stdout without writing file")
+                        help="Print runlists to stdout without writing files")
     parser.add_argument("--check", action="store_true",
                         help="Check database connection and exit")
     parser.add_argument("--no-file-check", action="store_true",
@@ -209,41 +210,31 @@ def main():
     # Group by date
     by_date = group_by_date(rows)
 
-    # Sample one run per day
-    if args.no_file_check:
-        lines = sample_runs_no_file_check(by_date)
-    else:
-        lines = sample_runs_with_file_check(by_date)
+    # Build train/val split
+    train, val = sample_train_val(by_date, no_file_check=args.no_file_check)
 
-    if not lines:
+    if not train and not val:
         print("[ERROR] No valid runs found.")
         sys.exit(1)
 
-    # Format output
-    output_lines = []
-    output_lines.append(f"# Real data runlist: one run per day")
-    output_lines.append(f"# Run range: {args.min_run or 'start'} - {args.max_run or 'end'}")
-    output_lines.append(f"# Filters: Physics=1, Junk=0, StartTime >= 2021")
-    output_lines.append(f"# Total: {len(lines)} runs")
-    output_lines.append(f"# Format: <run_number> <rec_file_path>")
-    output_lines.append("")
-
-    prev_date = None
-    for run_number, path, date in lines:
-        if date != prev_date:
-            output_lines.append(f"# {date}")
-            prev_date = date
-        output_lines.append(f"{run_number} {path}")
-
-    content = "\n".join(output_lines) + "\n"
+    train_content = format_runlist(train, "train", args.min_run, args.max_run)
+    val_content = format_runlist(val, "val", args.min_run, args.max_run)
 
     if args.dry_run:
-        print("\n" + content)
+        print("\n=== TRAIN ===")
+        print(train_content)
+        print("=== VAL ===")
+        print(val_content)
     else:
-        os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
-        with open(args.output, 'w') as f:
-            f.write(content)
-        print(f"[INFO] Written runlist to: {args.output}")
+        os.makedirs(args.output_dir, exist_ok=True)
+        train_path = os.path.join(args.output_dir, "runlist_train.txt")
+        val_path = os.path.join(args.output_dir, "runlist_val.txt")
+        with open(train_path, 'w') as f:
+            f.write(train_content)
+        with open(val_path, 'w') as f:
+            f.write(val_content)
+        print(f"[INFO] Written train runlist to: {train_path}")
+        print(f"[INFO] Written val runlist to: {val_path}")
 
 
 if __name__ == "__main__":
