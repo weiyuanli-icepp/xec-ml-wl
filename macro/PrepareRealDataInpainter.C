@@ -1,5 +1,5 @@
 /*
-PrepareRealDataSimple.C
+PrepareRealDataInpainter.C
 - Simplified version of PrepareRealData.C for inpainter fine-tuning.
 - Reads Rec Trees (Real Data) with minimal selection (trigger mask only).
 - No physics selection, no pileup cut.
@@ -9,7 +9,7 @@ PrepareRealDataSimple.C
 Usage:
 $ cd ~/meghome/offline/analyzer
 $ ./meganalyzer -b -q -I 'loader.C()'
-  where loader.C calls PrepareRealDataSimpleFromList(...)
+  where loader.C calls PrepareRealDataInpainterFromList(...)
 */
 
 #include <TROOT.h>
@@ -45,7 +45,7 @@ $ ./meganalyzer -b -q -I 'loader.C()'
 
 using namespace MEG;
 
-void _PrepareRealDataSimple_impl(TChain *rec, TString outputFileName);
+void _PrepareRealDataInpainter_impl(TChain *rec, TString outputFileName);
 
 // ---------------------------------------------------------------------------
 // Entry point: read one line from a run-list file.
@@ -54,7 +54,7 @@ void _PrepareRealDataSimple_impl(TChain *rec, TString outputFileName);
 //   jobIndex     0-based line index (maps to SLURM_ARRAY_TASK_ID)
 //   outputDir    Directory for the output ROOT file
 // ---------------------------------------------------------------------------
-void PrepareRealDataSimpleFromList(TString runListFile, Int_t jobIndex, TString outputDir = ".")
+void PrepareRealDataInpainterFromList(TString runListFile, Int_t jobIndex, TString outputDir = ".")
 {
    std::ifstream ifs(runListFile.Data());
    if (!ifs.is_open()) {
@@ -93,22 +93,22 @@ void PrepareRealDataSimpleFromList(TString runListFile, Int_t jobIndex, TString 
 
    gSystem->mkdir(outputDir.Data(), kTRUE);
    TString outFile = Form("%s/DataGammaAngle_%06d.root", outputDir.Data(), runNumber);
-   _PrepareRealDataSimple_impl(rec, outFile);
+   _PrepareRealDataInpainter_impl(rec, outFile);
 }
 
 // ---------------------------------------------------------------------------
 // Default entry point (not typically used with runlist workflow)
 // ---------------------------------------------------------------------------
-void PrepareRealDataSimple(Int_t sRun = 430000, Int_t nfile = 100)
+void PrepareRealDataInpainter(Int_t sRun = 430000, Int_t nfile = 100)
 {
-   std::cout << "[INFO] Use PrepareRealDataSimpleFromList for runlist-based processing." << std::endl;
+   std::cout << "[INFO] Use PrepareRealDataInpainterFromList for runlist-based processing." << std::endl;
    std::cout << "[INFO] This entry point is a placeholder." << std::endl;
 }
 
 // ---------------------------------------------------------------------------
 // Implementation: minimal selection, extract npho/time arrays.
 // ---------------------------------------------------------------------------
-void _PrepareRealDataSimple_impl(TChain *rec, TString outputFileName)
+void _PrepareRealDataInpainter_impl(TChain *rec, TString outputFileName)
 {
    // =========================================================================
    // OUTPUT SETUP

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Generate train/val run lists for PrepareRealData from the MEG2 database.
+Generate train/val run lists for PrepareRealDataInpainter from the MEG2 database.
 
 Queries RunCatalog for physics runs (Physics=1, Junk=0, after 2021),
 groups by date, and produces two runlists:
   - val:   1st found rec file on days divisible by 3 (day_index % 3 == 0)
-  - train: 2nd found rec file on every day
+  - train: 2nd through 201st found rec files on every day (up to 200 per day)
 
 Usage:
     python macro/generate_realdata_runlist.py
@@ -111,51 +111,46 @@ def build_default_path(run_number):
     return os.path.join(REC_DIR, run_dir, f"rec{run_number:06d}_open.root")
 
 
-def sample_train_val(by_date, no_file_check=False):
+def sample_train_val(by_date, no_file_check=False, max_train_per_day=200):
     """
     Build train and val runlists from grouped runs.
 
     - val:   1st rec file of each day where day_index % 3 == 0
-    - train: 2nd rec file of every day
+    - train: runs 2 through max_train_per_day+1 (up to 200 runs per day)
 
     Returns (train_list, val_list) where each is [(run, path, date), ...].
     """
     train = []
     val = []
-    n_need_2 = 0
-    n_got_2 = 0
-    n_got_1 = 0
+    n_train_files = 0
+    n_val_files = 0
 
     for day_idx, date in enumerate(sorted(by_date.keys())):
         runs = by_date[date]
         is_val_day = (day_idx % 3 == 0)
 
-        # We need up to 2 files per day (1st for val, 2nd for train)
-        need = 2
-        n_need_2 += 1
-
+        # Need: 1st for val (on val days), runs 2..201 for train
+        need = max_train_per_day + 1  # +1 because 1st is reserved for val
         if no_file_check:
-            # Just pick first two runs
-            entries = [(runs[i], build_default_path(runs[i])) for i in range(min(need, len(runs)))]
+            entries = [(runs[i], build_default_path(runs[i]))
+                       for i in range(min(need, len(runs)))]
         else:
             entries = find_first_n_files(runs, need)
 
-        if len(entries) >= 2:
-            n_got_2 += 1
-            if is_val_day:
-                val.append((entries[0][0], entries[0][1], date))
-            train.append((entries[1][0], entries[1][1], date))
-        elif len(entries) == 1:
-            n_got_1 += 1
-            # Only one file found: use for train (unless it's a val day, then val)
-            if is_val_day:
-                val.append((entries[0][0], entries[0][1], date))
-            else:
-                train.append((entries[0][0], entries[0][1], date))
+        if not entries:
+            continue
 
-    print(f"[INFO] Days with 2+ rec files: {n_got_2}/{n_need_2}, "
-          f"1 file: {n_got_1}, 0 files: {n_need_2 - n_got_2 - n_got_1}")
-    print(f"[INFO] Train: {len(train)} runs, Val: {len(val)} runs")
+        # Val: 1st file on val days
+        if is_val_day:
+            val.append((entries[0][0], entries[0][1], date))
+            n_val_files += 1
+
+        # Train: 2nd file onward (skip the 1st)
+        for entry in entries[1:]:
+            train.append((entry[0], entry[1], date))
+            n_train_files += 1
+
+    print(f"[INFO] Train: {n_train_files} runs, Val: {n_val_files} runs")
     return train, val
 
 
