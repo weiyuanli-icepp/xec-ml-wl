@@ -3,8 +3,8 @@
 # Timing Regressor Hyperparameter Scan
 # =============================================================================
 # Usage:
-#   ./jobs/run_timing_scan.sh              # Submit all steps (2,3,4)
-#   ./jobs/run_timing_scan.sh 2 3          # Submit only step 2 and 3
+#   ./jobs/run_timing_scan.sh              # Submit all new steps (8-13)
+#   ./jobs/run_timing_scan.sh 8 9          # Submit specific steps
 #   DRY_RUN=1 ./jobs/run_timing_scan.sh    # Preview without submitting
 #
 # Steps:
@@ -12,11 +12,17 @@
 #   2   - (done) 4a settings + weight_decay=1e-3 + channel_dropout=0.05
 #   3   - (done) s2 + smaller model (enc=512, 1 layer, ffn=2048)
 #   4   - (done) s3 + drop_path=0.2 (more stochastic depth)
-#   5   - (done) s4 + npho_threshold=10 + sentinel_time=-5.0 (more valid timing data)
-#   6   - s5 + npho_threshold=3 + sentinel_time=-10.0 (even more valid timing + wider sentinel gap)
-#   7   - s6 + mse loss (quadratic penalty to reduce tail compression)
+#   5   - (done) s4 + npho_threshold=10 + sentinel_time=-5.0 (BEST)
+#   6   - (done) s5 + npho_threshold=3 + sentinel_time=-10.0
+#   7   - (done) s6 + mse loss
+#   8   - s5 data + big model (enc=1024, 2 fusion layers), bs=2048
+#   9   - s5 + lr=1e-4, bs=2048
+#  10   - s5 + no channel dropout, bs=2048
+#  11   - Resume s5, lr=1.5e-4, 100 epochs, bs=2048
+#  12   - s5 + weight_decay=1e-4, bs=2048
+#  13   - s5 + bs=2048 only (control)
 #
-# All steps use train_middle, 1 GPU, 50 epochs.
+# All steps use train_middle, 1 GPU.
 # Compare in MLflow experiment: gamma_timing
 # =============================================================================
 
@@ -38,6 +44,12 @@ STEP_CONFIG[4]="step4_droppath.yaml"
 STEP_CONFIG[5]="step5_threshold.yaml"
 STEP_CONFIG[6]="step6_lower_threshold.yaml"
 STEP_CONFIG[7]="step7_mse_loss.yaml"
+STEP_CONFIG[8]="step8_bigmodel.yaml"
+STEP_CONFIG[9]="step9_lr1e4.yaml"
+STEP_CONFIG[10]="step10_nodropout.yaml"
+STEP_CONFIG[11]="step11_resume_s5.yaml"
+STEP_CONFIG[12]="step12_wd1e4.yaml"
+STEP_CONFIG[13]="step13_bs2048.yaml"
 
 STEP_NAME[2]="tim_scan_s2_regularize"
 STEP_NAME[3]="tim_scan_s3_smallmodel"
@@ -45,9 +57,15 @@ STEP_NAME[4]="tim_scan_s4_droppath"
 STEP_NAME[5]="tim_scan_s5_threshold"
 STEP_NAME[6]="tim_scan_s6_lower_threshold"
 STEP_NAME[7]="tim_scan_s7_mse_loss"
+STEP_NAME[8]="tim_scan_s8_bigmodel"
+STEP_NAME[9]="tim_scan_s9_lr1e4"
+STEP_NAME[10]="tim_scan_s10_nodropout"
+STEP_NAME[11]="tim_scan_s11_resume_s5"
+STEP_NAME[12]="tim_scan_s12_wd1e4"
+STEP_NAME[13]="tim_scan_s13_bs2048"
 
 if [ $# -eq 0 ]; then
-    STEPS=("6" "7")
+    STEPS=("8" "9" "10" "11" "12" "13")
     echo "[SCAN] No steps specified. Submitting all: ${STEPS[*]}"
     echo ""
 else
@@ -71,7 +89,7 @@ for STEP in "${STEPS[@]}"; do
 
     if [ -z "$CONFIG" ]; then
         echo "[ERROR] Unknown step: $STEP"
-        echo "  Valid steps: 2, 3, 4, 5, 6, 7"
+        echo "  Valid steps: 2-13"
         continue
     fi
 
