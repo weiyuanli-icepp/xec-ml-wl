@@ -32,7 +32,7 @@ fi
 RUNLIST="$(realpath "$1")"
 OUTPUT_DIR="${2:-data/real_data/raw}"
 OUTPUT_DIR="$(realpath -m "$OUTPUT_DIR")"
-PARTITION="${PARTITION:-mu3e}"
+PARTITION="${PARTITION:-meg-short}"
 
 case "$PARTITION" in
     meg-long|meg-short|mu3e) ACCOUNT_LINE="#SBATCH --account=meg" ;;
@@ -65,7 +65,7 @@ cat > "${BATCH_SCRIPT}" << SLURM_EOF
 #!/bin/bash
 ${ACCOUNT_LINE}
 #SBATCH --partition=${PARTITION}
-#SBATCH --time=4:00:00
+#SBATCH --time=1:00:00
 #SBATCH --hint=nomultithread
 #SBATCH --ntasks=1
 #SBATCH --mem-per-cpu=3700
@@ -83,7 +83,8 @@ cd ${ANALYZER_DIR}
 # Create a loader macro that compiles and calls PrepareRealDataFromList
 # (meganalyzer -I only calls the function matching the filename, so we need
 #  a wrapper to call a differently-named function)
-LOADER="/tmp/prep_real_loader_\${SLURM_ARRAY_TASK_ID}.C"
+LOADER="\$HOME/.cache/xec-ml-wl/prep_real_loader_\${SLURM_ARRAY_TASK_ID}.C"
+mkdir -p "\$HOME/.cache/xec-ml-wl"
 cat > "\${LOADER}" << 'MACRO_EOF'
 void prep_real_loader_\${SLURM_ARRAY_TASK_ID}() {
     gROOT->ProcessLine(".L ${MACRO_PATH}+");
