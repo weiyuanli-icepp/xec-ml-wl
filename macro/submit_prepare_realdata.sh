@@ -80,7 +80,19 @@ echo ""
 
 cd ${ANALYZER_DIR}
 
-./meganalyzer -b -q '${MACRO_PATH}+("${RUNLIST}", \${SLURM_ARRAY_TASK_ID}, "${OUTPUT_DIR}")'
+# Create a loader macro that compiles and calls PrepareRealDataFromList
+# (meganalyzer -I only calls the function matching the filename, so we need
+#  a wrapper to call a differently-named function)
+LOADER="/tmp/prep_real_loader_\${SLURM_ARRAY_TASK_ID}.C"
+cat > "\${LOADER}" << 'MACRO_EOF'
+void prep_real_loader_\${SLURM_ARRAY_TASK_ID}() {
+    gROOT->ProcessLine(".L ${MACRO_PATH}+");
+    gROOT->ProcessLine("PrepareRealDataFromList(\"${RUNLIST}\", \${SLURM_ARRAY_TASK_ID}, \"${OUTPUT_DIR}\")");
+}
+MACRO_EOF
+
+./meganalyzer -b -q -I "\${LOADER}()"
+rm -f "\${LOADER}"
 
 echo ""
 echo "=== Done: \$(date) ==="
