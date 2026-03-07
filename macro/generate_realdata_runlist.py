@@ -96,7 +96,7 @@ def find_rec_file(run_number):
     run_dir = f"{run_number // 1000}xxx"
     base = os.path.join(REC_DIR, run_dir)
 
-    for suffix in ("_open.root", ".root"):
+    for suffix in ("_open.root", "_selected.root", ".root"):
         path = os.path.join(base, f"rec{run_number:06d}{suffix}")
         if os.path.exists(path):
             return path
