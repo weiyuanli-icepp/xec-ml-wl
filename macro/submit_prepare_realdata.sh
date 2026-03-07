@@ -57,7 +57,7 @@ mkdir -p log "$OUTPUT_DIR"
 
 # Meganalyzer path (must cd to analyzer dir before running)
 ANALYZER_DIR="${ANALYZER_DIR:-$HOME/meghome/offline/analyzer}"
-MACRO_PATH="$HOME/meghome/xec-ml-wl/macro/PrepareRealData.C"
+MACRO_PATH="$HOME/meghome/xec-ml-wl/macro/PrepareRealDataSimple.C"
 
 BATCH_SCRIPT=$(mktemp /tmp/prepare_realdata_XXXXXX.sh)
 
@@ -89,7 +89,7 @@ mkdir -p "\$HOME/.cache/xec-ml-wl"
 cat > "\${LOADER}" <<MACRO_EOF
 void \${FUNC_NAME}() {
     gROOT->ProcessLine(".L ${MACRO_PATH}+");
-    gROOT->ProcessLine("PrepareRealDataFromList(\"${RUNLIST}\", \${SLURM_ARRAY_TASK_ID}, \"${OUTPUT_DIR}\")");
+    gROOT->ProcessLine("PrepareRealDataSimpleFromList(\"${RUNLIST}\", \${SLURM_ARRAY_TASK_ID}, \"${OUTPUT_DIR}\")");
 }
 MACRO_EOF
 
