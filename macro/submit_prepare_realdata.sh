@@ -84,9 +84,10 @@ cd ${ANALYZER_DIR}
 # (meganalyzer -I only calls the function matching the filename, so we need
 #  a wrapper to call a differently-named function)
 LOADER="\$HOME/.cache/xec-ml-wl/prep_real_loader_\${SLURM_ARRAY_TASK_ID}.C"
+FUNC_NAME="prep_real_loader_\${SLURM_ARRAY_TASK_ID}"
 mkdir -p "\$HOME/.cache/xec-ml-wl"
-cat > "\${LOADER}" << 'MACRO_EOF'
-void prep_real_loader_\${SLURM_ARRAY_TASK_ID}() {
+cat > "\${LOADER}" <<MACRO_EOF
+void \${FUNC_NAME}() {
     gROOT->ProcessLine(".L ${MACRO_PATH}+");
     gROOT->ProcessLine("PrepareRealDataFromList(\"${RUNLIST}\", \${SLURM_ARRAY_TASK_ID}, \"${OUTPUT_DIR}\")");
 }
