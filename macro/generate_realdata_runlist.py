@@ -11,14 +11,17 @@ Two-pass file search:
   2. If pass 1 finds nothing for a day, try all remaining runs for that day.
 
 Usage:
-    # Sample one run per day from runs 430000-560000
+    # Sample one run per day (all physics runs after 2021)
+    python macro/generate_realdata_runlist.py
+
+    # Restrict to a run range
     python macro/generate_realdata_runlist.py --min-run 430000 --max-run 560000
 
     # Dry run (print to stdout, don't write file)
-    python macro/generate_realdata_runlist.py --min-run 430000 --max-run 560000 --dry-run
+    python macro/generate_realdata_runlist.py --dry-run
 
     # Skip checking if rec files exist on disk
-    python macro/generate_realdata_runlist.py --min-run 430000 --max-run 560000 --no-file-check
+    python macro/generate_realdata_runlist.py --no-file-check
 
     # Check database connection first
     python macro/generate_realdata_runlist.py --check
@@ -47,17 +50,26 @@ def get_runs_with_dates(min_run, max_run):
 
     Returns list of (run_number, date_string) tuples.
     """
+    conditions = [
+        "Junk = 0",
+        "Physics = 1",
+        "StartTime >= '2021-01-01'",
+    ]
+    if min_run is not None:
+        conditions.append(f"id >= {min_run}")
+    if max_run is not None:
+        conditions.append(f"id <= {max_run}")
+
     query = (
         f"SELECT id, DATE(StartTime) AS run_date "
         f"FROM RunCatalog "
-        f"WHERE id >= {min_run} AND id <= {max_run} "
-        f"AND Junk = 0 AND Physics = 1 "
-        f"AND StartTime >= '2021-01-01' "
+        f"WHERE {' AND '.join(conditions)} "
         f"ORDER BY id"
     )
 
     rows = _run_mysql_query(query, database=DEFAULT_DATABASE)
-    print(f"[INFO] Found {len(rows)} physics runs in range [{min_run}, {max_run}]")
+    range_str = f"[{min_run or 'start'}, {max_run or 'end'}]"
+    print(f"[INFO] Found {len(rows)} physics runs in range {range_str}")
     return rows
 
 
@@ -170,10 +182,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate a real-data run list (one run per day) from MEG2 database"
     )
-    parser.add_argument("--min-run", type=int, default=430000,
-                        help="Minimum run number (default: 430000)")
-    parser.add_argument("--max-run", type=int, default=560000,
-                        help="Maximum run number (default: 560000)")
+    parser.add_argument("--min-run", type=int, default=None,
+                        help="Minimum run number (default: no limit)")
+    parser.add_argument("--max-run", type=int, default=None,
+                        help="Maximum run number (default: no limit)")
     parser.add_argument("--output", "-o", type=str, default="data/real_data/runlist.txt",
                         help="Output runlist file path")
     parser.add_argument("--dry-run", action="store_true",
@@ -210,7 +222,7 @@ def main():
     # Format output
     output_lines = []
     output_lines.append(f"# Real data runlist: one run per day")
-    output_lines.append(f"# Run range: {args.min_run} - {args.max_run}")
+    output_lines.append(f"# Run range: {args.min_run or 'start'} - {args.max_run or 'end'}")
     output_lines.append(f"# Filters: Physics=1, Junk=0, StartTime >= 2021")
     output_lines.append(f"# Total: {len(lines)} runs")
     output_lines.append(f"# Format: <run_number> <rec_file_path>")
