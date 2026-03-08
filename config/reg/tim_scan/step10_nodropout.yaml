@@ -73,6 +73,8 @@ training:
   profile: false
   compile: none
   compile_fullgraph: false
+  lr_restart_period: 10
+  lr_restart_mult: 2
 
 loss_balance: "manual"
 
