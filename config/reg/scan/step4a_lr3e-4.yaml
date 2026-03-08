@@ -29,6 +29,7 @@ normalization:
   time_shift: -0.46
   sentinel_time: -1.0
   sentinel_npho: -1.0
+  npho_threshold: 100.0
 
 model:
   outer_mode: "finegrid"
