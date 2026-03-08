@@ -25,8 +25,9 @@
 #  15   - OneCycle + 100 epochs (max_lr=6e-4)
 #  16   - OneCycle + 100 epochs + max_lr=1e-3 (more aggressive)
 #  17   - Cosine warm restarts + 100 epochs (T_0=10, T_mult=2)
+#  18   - s14 settings + train_large dataset
 #
-# All steps use train_middle, 1 GPU.
+# All steps use train_middle (except 18), 1 GPU.
 # Compare in MLflow experiment: gamma_angle
 # =============================================================================
 
@@ -58,6 +59,7 @@ STEP_CONFIG[14]="step14_gradclip5_100ep.yaml"
 STEP_CONFIG[15]="step15_onecycle_100ep.yaml"
 STEP_CONFIG[16]="step16_onecycle_maxlr1e3.yaml"
 STEP_CONFIG[17]="step17_cosine_restarts.yaml"
+STEP_CONFIG[18]="step18_largedata.yaml"
 
 STEP_NAME[2]="ang_scan_s2_4a"
 STEP_NAME[3]="ang_scan_s3_beta01"
@@ -75,9 +77,10 @@ STEP_NAME[14]="ang_scan_s14_gradclip5_100ep"
 STEP_NAME[15]="ang_scan_s15_onecycle_100ep"
 STEP_NAME[16]="ang_scan_s16_onecycle_maxlr1e3"
 STEP_NAME[17]="ang_scan_s17_cosine_restarts"
+STEP_NAME[18]="ang_scan_s18_largedata"
 
 if [ $# -eq 0 ]; then
-    STEPS=("14" "15" "16" "17")
+    STEPS=("14" "15" "16" "17" "18")
     echo "[SCAN] No steps specified. Submitting all: ${STEPS[*]}"
     echo ""
 else
@@ -101,7 +104,7 @@ for STEP in "${STEPS[@]}"; do
 
     if [ -z "$CONFIG" ]; then
         echo "[ERROR] Unknown step: $STEP"
-        echo "  Valid steps: 2-17"
+        echo "  Valid steps: 2-18"
         continue
     fi
 
