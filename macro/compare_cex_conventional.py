@@ -117,23 +117,41 @@ def _gaussian(x, A, mu, sigma):
     return A * np.exp(-0.5 * ((x - mu) / sigma) ** 2)
 
 
-def fit_gaussian(values, nbins='auto'):
-    """Fit a Gaussian to a 1D array. Returns (popt, pcov) or (None, None)."""
+def _double_gaussian(x, A1, mu1, sigma1, A2, mu2, sigma2):
+    return (_gaussian(x, A1, mu1, sigma1)
+            + _gaussian(x, A2, mu2, sigma2))
+
+
+def fit_double_gaussian(values, nbins='auto'):
+    """Fit a double Gaussian. Returns (popt, pcov) or (None, None).
+
+    popt = [A_core, mu_core, sigma_core, A_tail, mu_tail, sigma_tail]
+    where core is the component with the smaller |sigma|.
+    """
     from scipy.optimize import curve_fit
-    if len(values) < 10:
+    if len(values) < 30:
         return None, None
     try:
         counts, edges = np.histogram(values, bins=nbins)
         centers = (edges[:-1] + edges[1:]) / 2
-        mu0 = np.mean(values)
+        mu0 = np.median(values)
         sig0 = np.std(values)
         dx = edges[1] - edges[0]
         A0 = len(values) * dx / (sig0 * np.sqrt(2 * np.pi))
+        p0 = [0.7 * A0, mu0, 0.6 * sig0,
+              0.3 * A0, mu0, 2.0 * sig0]
+        bounds_lo = [0, -np.inf, 1e-8, 0, -np.inf, 1e-8]
+        bounds_hi = [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf]
         popt, pcov = curve_fit(
-            _gaussian, centers, counts.astype(float),
-            p0=[A0, mu0, sig0],
-            bounds=([0, -np.inf, 1e-8], [np.inf, np.inf, np.inf]),
+            _double_gaussian, centers, counts.astype(float),
+            p0=p0, bounds=(bounds_lo, bounds_hi), maxfev=10000,
         )
+        # Ensure component 1 is core (narrower sigma)
+        if abs(popt[5]) < abs(popt[2]):
+            popt = np.array([popt[3], popt[4], popt[5],
+                             popt[0], popt[1], popt[2]])
+            idx = [3, 4, 5, 0, 1, 2]
+            pcov = pcov[np.ix_(idx, idx)]
         return popt, pcov
     except Exception:
         return None, None
@@ -162,7 +180,7 @@ def load_ml_results(input_base, patches):
         residual_mev = (df.loc[valid, "pred_energy"].values
                         - df.loc[valid, "true_energy"].values) * 1e3
 
-        popt, pcov = fit_gaussian(residual_mev)
+        dg_popt, dg_pcov = fit_double_gaussian(residual_mev)
         res68 = np.percentile(np.abs(residual_mev), 68)
 
         entry = {
@@ -170,11 +188,17 @@ def load_ml_results(input_base, patches):
             'n_events': int(valid.sum()),
             'res68_mev': res68,
         }
-        if popt is not None:
-            entry['sigma_mev'] = abs(popt[2])
-            entry['sigma_err_mev'] = np.sqrt(pcov[2, 2])
-            entry['mu_mev'] = popt[1]
-            entry['mu_err_mev'] = np.sqrt(pcov[1, 1])
+        # Use double Gaussian core sigma/mu
+        if dg_popt is not None:
+            entry['sigma_mev'] = abs(dg_popt[2])
+            entry['sigma_err_mev'] = np.sqrt(dg_pcov[2, 2])
+            entry['mu_mev'] = dg_popt[1]
+            entry['mu_err_mev'] = np.sqrt(dg_pcov[1, 1])
+            # Core fraction
+            f_core = abs(dg_popt[0] * dg_popt[2]) / (
+                abs(dg_popt[0] * dg_popt[2]) + abs(dg_popt[3] * dg_popt[5]))
+            entry['core_frac'] = f_core
+            entry['tail_sigma_mev'] = abs(dg_popt[5])
         results.append(entry)
 
     return results
@@ -260,7 +284,7 @@ def print_comparison(conv_by_patch, ml_by_patch, patches):
 
     # Note about conventional resolution interpretation
     print("\nNote: Conv σ = reso_pct/100 × peak_mev (reso = fitted core σ / fitted core mean, in %)")
-    print("      ML σ  = Gaussian fit σ of (pred - true) residual in MeV")
+    print("      ML σ  = Double-Gaussian core σ of (pred - true) residual in MeV")
     print(f"      ADC→MeV conversion factor: {ADC_TO_MEV}")
 
 
