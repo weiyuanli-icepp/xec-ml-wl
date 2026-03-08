@@ -6,7 +6,9 @@ Usage:
     python macro/scan_summary.py --experiment gamma_angle
     python macro/scan_summary.py --experiment gamma_angle --prefix ang_scan
     python macro/scan_summary.py --experiment gamma_timing --prefix tim_scan
+    python macro/scan_summary.py --experiment gamma_position --prefix pos_scan
     python macro/scan_summary.py --experiment gamma_angle --output scan_angle_summary.pdf
+    python macro/scan_summary.py --experiment my_exp --task position
 """
 
 import argparse
@@ -39,6 +41,15 @@ TIMING_METRICS = [
 ENERGY_METRICS = [
     "val/loss", "train/loss",
     "val/l1", "val/smooth_l1", "val/mse",
+    "train/grad_norm_max",
+    "system/lr",
+]
+
+POSITION_METRICS = [
+    "val/loss", "train/loss",
+    "val/l1", "val/smooth_l1", "val/mse", "val/cos_pos",
+    "uvw_u_res_68pct", "uvw_v_res_68pct", "uvw_w_res_68pct", "uvw_dist_68pct",
+    "uvw_u_bias", "uvw_v_bias", "uvw_w_bias", "uvw_dist_bias",
     "train/grad_norm_max",
     "system/lr",
 ]
@@ -97,6 +108,8 @@ def detect_task(experiment_name):
         return "angle"
     elif "timing" in name:
         return "timing"
+    elif "position" in name or "uvw" in name:
+        return "position"
     elif "energy" in name:
         return "energy"
     return "angle"  # default
@@ -137,6 +150,8 @@ def build_summary(experiment_name, prefix=None, tracking_uri=None):
         metric_keys = ANGLE_METRICS
     elif task == "timing":
         metric_keys = TIMING_METRICS
+    elif task == "position":
+        metric_keys = POSITION_METRICS
     else:
         metric_keys = ENERGY_METRICS
 
@@ -183,6 +198,12 @@ def build_summary(experiment_name, prefix=None, tracking_uri=None):
                         "theta_bias", "theta_rms", "theta_skew",
                         "phi_bias", "phi_rms", "phi_skew"]:
                 row[key.replace("/", "_")] = final.get(key)
+        elif task == "position":
+            for key in ["val/l1", "val/cos_pos",
+                        "uvw_u_res_68pct", "uvw_v_res_68pct", "uvw_w_res_68pct",
+                        "uvw_dist_68pct",
+                        "uvw_u_bias", "uvw_v_bias", "uvw_w_bias", "uvw_dist_bias"]:
+                row[key.replace("/", "_")] = final.get(key)
         else:
             for key in ["val/l1", "val/smooth_l1", "val/mse"]:
                 row[key.replace("/", "_")] = final.get(key)
@@ -222,11 +243,13 @@ def print_summary(df, task):
                  "train_loss", "val_loss", "overfit_gap"]
     if task == "angle":
         perf_cols += ["val_cos", "angle_resolution_68pct"]
+    elif task == "position":
+        perf_cols += ["uvw_dist_68pct"]
     available = [c for c in perf_cols if c in df.columns]
     perf_df = df[available].sort_values("best_val_loss")
     print(perf_df.to_string(index=False, float_format=lambda x: f"{x:.4e}" if abs(x) < 0.01 else f"{x:.4f}"))
 
-    # --- Bias & Skew (angle only) ---
+    # --- Bias & Resolution (angle / position) ---
     if task == "angle":
         print("\n--- Bias & Skew (sorted by best_val_loss) ---")
         bias_cols = ["run_name", "theta_bias", "theta_rms", "theta_skew",
@@ -235,6 +258,24 @@ def print_summary(df, task):
         bias_df = df[available].sort_values("run_name")
         # Merge sort order from performance
         order = perf_df["run_name"].tolist()
+        bias_df = bias_df.set_index("run_name").loc[order].reset_index()
+        print(bias_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
+
+    if task == "position":
+        print("\n--- Resolution 68th pct (sorted by best_val_loss) ---")
+        res_cols = ["run_name", "uvw_u_res_68pct", "uvw_v_res_68pct",
+                    "uvw_w_res_68pct", "uvw_dist_68pct"]
+        available = [c for c in res_cols if c in df.columns]
+        res_df = df[available].sort_values("run_name")
+        order = perf_df["run_name"].tolist()
+        res_df = res_df.set_index("run_name").loc[order].reset_index()
+        print(res_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
+
+        print("\n--- Bias (sorted by best_val_loss) ---")
+        bias_cols = ["run_name", "uvw_u_bias", "uvw_v_bias",
+                     "uvw_w_bias", "uvw_dist_bias"]
+        available = [c for c in bias_cols if c in df.columns]
+        bias_df = df[available].sort_values("run_name")
         bias_df = bias_df.set_index("run_name").loc[order].reset_index()
         print(bias_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
@@ -281,6 +322,12 @@ def make_plots(df, task, client, runs, output_path, prefix=None):
         if task == "angle":
             for key in ["val/cos", "angle_resolution_68pct",
                         "theta_bias", "theta_rms", "phi_bias", "phi_rms"]:
+                hist = get_metric_history_df(mc, run.info.run_id, key)
+                run_histories[name][key] = hist
+
+        if task == "position":
+            for key in ["uvw_dist_68pct", "uvw_u_res_68pct", "uvw_v_res_68pct",
+                        "uvw_w_res_68pct", "uvw_u_bias", "uvw_v_bias", "uvw_w_bias"]:
                 hist = get_metric_history_df(mc, run.info.run_id, key)
                 run_histories[name][key] = hist
 
@@ -403,6 +450,55 @@ def make_plots(df, task, client, runs, output_path, prefix=None):
             pdf.savefig(fig)
             plt.close(fig)
 
+        if task == "position":
+            # --- Position: Distance resolution ---
+            fig, ax = plt.subplots(figsize=(12, 7))
+            for name in sorted_names:
+                hist = run_histories[name].get("uvw_dist_68pct", [])
+                if hist:
+                    steps, vals = zip(*hist)
+                    ax.plot(steps, vals, label=name, linewidth=1.5)
+            ax.set_xlabel("Epoch")
+            ax.set_ylabel("3D Distance Resolution (68th pct) [cm]")
+            ax.set_title("Position Resolution vs Epoch")
+            ax.legend(fontsize=7, loc="upper right")
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+            # --- Position: Per-axis resolution ---
+            fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+            for i, coord in enumerate(["u", "v", "w"]):
+                for name in sorted_names:
+                    hist = run_histories[name].get(f"uvw_{coord}_res_68pct", [])
+                    if hist:
+                        steps, vals = zip(*hist)
+                        axes[i].plot(steps, vals, label=name, linewidth=1.5)
+                axes[i].set_xlabel("Epoch")
+                axes[i].set_ylabel(f"{coord.upper()} Resolution (68th pct) [cm]")
+                axes[i].set_title(f"{coord.upper()} Resolution vs Epoch")
+                axes[i].legend(fontsize=6, loc="best")
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+            # --- Position: Per-axis bias ---
+            fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+            for i, coord in enumerate(["u", "v", "w"]):
+                for name in sorted_names:
+                    hist = run_histories[name].get(f"uvw_{coord}_bias", [])
+                    if hist:
+                        steps, vals = zip(*hist)
+                        axes[i].plot(steps, vals, label=name, linewidth=1.5)
+                axes[i].axhline(0, color="gray", linestyle=":", linewidth=0.8)
+                axes[i].set_xlabel("Epoch")
+                axes[i].set_ylabel(f"{coord.upper()} Bias [cm]")
+                axes[i].set_title(f"{coord.upper()} Bias vs Epoch")
+                axes[i].legend(fontsize=6, loc="best")
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
         # --- Final page: Bar chart of best val loss ---
         fig, ax = plt.subplots(figsize=(12, 7))
         sorted_df = df.dropna(subset=["best_val_loss"]).sort_values("best_val_loss")
@@ -436,6 +532,9 @@ def main():
                         help="Output PDF path (default: scan_<experiment>_summary.pdf)")
     parser.add_argument("--no-plot", action="store_true",
                         help="Skip PDF generation, print table only")
+    parser.add_argument("--task", default=None,
+                        choices=["angle", "timing", "energy", "position"],
+                        help="Override task type (default: auto-detect from experiment name)")
     args = parser.parse_args()
 
     uri = args.tracking_uri or f"sqlite:///{os.path.join(os.getcwd(), 'mlruns.db')}"
@@ -444,6 +543,9 @@ def main():
     df, task, client, runs = build_summary(
         args.experiment, prefix=args.prefix, tracking_uri=uri
     )
+
+    if args.task:
+        task = args.task
 
     print_summary(df, task)
 
