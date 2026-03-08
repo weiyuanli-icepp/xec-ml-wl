@@ -24,7 +24,7 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="mlflow.trackin
 import torch
 import torch.optim as optim
 from torch.optim.lr_scheduler import (
-    CosineAnnealingLR, LinearLR, SequentialLR,
+    CosineAnnealingLR, CosineAnnealingWarmRestarts, LinearLR, SequentialLR,
     OneCycleLR, ReduceLROnPlateau
 )
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
@@ -491,6 +491,33 @@ def train_with_config(config_path: str, profile: bool = None):
             final_div_factor=1e4,  # final_lr = initial_lr / final_div_factor
         )
 
+    elif scheduler_type == 'cosine_restarts':
+        T_0 = getattr(cfg.training, 'lr_restart_period', 10)
+        T_mult = getattr(cfg.training, 'lr_restart_mult', 2)
+        eta_min = getattr(cfg.training, 'lr_min', 1e-6)
+        if is_main_process():
+            print(f"[INFO] Using CosineAnnealingWarmRestarts with T_0={T_0}, T_mult={T_mult}, eta_min={eta_min}")
+        main_scheduler = CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=T_0,
+            T_mult=T_mult,
+            eta_min=eta_min,
+        )
+        if warmup_epochs > 0:
+            warmup_scheduler = LinearLR(
+                optimizer,
+                start_factor=0.01,
+                end_factor=1.0,
+                total_iters=warmup_epochs
+            )
+            scheduler = SequentialLR(
+                optimizer,
+                schedulers=[warmup_scheduler, main_scheduler],
+                milestones=[warmup_epochs]
+            )
+        else:
+            scheduler = main_scheduler
+
     elif scheduler_type == 'plateau':
         patience = getattr(cfg.training, 'lr_patience', 5)
         factor = getattr(cfg.training, 'lr_factor', 0.5)
@@ -586,6 +613,15 @@ def train_with_config(config_path: str, profile: bool = None):
                         scheduler = CosineAnnealingLR(
                             optimizer,
                             T_max=remaining_epochs,
+                            eta_min=getattr(cfg.training, 'lr_min', 1e-6)
+                        )
+                    elif scheduler_type == 'cosine_restarts':
+                        T_0 = getattr(cfg.training, 'lr_restart_period', 10)
+                        T_mult = getattr(cfg.training, 'lr_restart_mult', 2)
+                        scheduler = CosineAnnealingWarmRestarts(
+                            optimizer,
+                            T_0=T_0,
+                            T_mult=T_mult,
                             eta_min=getattr(cfg.training, 'lr_min', 1e-6)
                         )
                     # Note: OneCycleLR and Plateau don't need recreation as they adapt

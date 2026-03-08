@@ -20,7 +20,11 @@
 #  10   - s4 + weight_decay=1e-3 (stronger regularization)
 #  11   - s4 + weight_decay=1e-5 (weaker regularization)
 #  12   - s4 + OneCycle scheduler (max_lr=6e-4)
-#  13   - s4 + num_fusion_layers=4 (deeper fusion)
+#  13   - (done) s4 + num_fusion_layers=4 (deeper fusion)
+#  14   - s4 + grad_clip=5.0 + 100 epochs (combine best findings)
+#  15   - OneCycle + 100 epochs (max_lr=6e-4)
+#  16   - OneCycle + 100 epochs + max_lr=1e-3 (more aggressive)
+#  17   - Cosine warm restarts + 100 epochs (T_0=10, T_mult=2)
 #
 # All steps use train_middle, 1 GPU.
 # Compare in MLflow experiment: gamma_angle
@@ -50,6 +54,10 @@ STEP_CONFIG[10]="step10_wd1e3.yaml"
 STEP_CONFIG[11]="step11_wd1e5.yaml"
 STEP_CONFIG[12]="step12_onecycle.yaml"
 STEP_CONFIG[13]="step13_fusion4.yaml"
+STEP_CONFIG[14]="step14_gradclip5_100ep.yaml"
+STEP_CONFIG[15]="step15_onecycle_100ep.yaml"
+STEP_CONFIG[16]="step16_onecycle_maxlr1e3.yaml"
+STEP_CONFIG[17]="step17_cosine_restarts.yaml"
 
 STEP_NAME[2]="ang_scan_s2_4a"
 STEP_NAME[3]="ang_scan_s3_beta01"
@@ -63,9 +71,13 @@ STEP_NAME[10]="ang_scan_s10_wd1e3"
 STEP_NAME[11]="ang_scan_s11_wd1e5"
 STEP_NAME[12]="ang_scan_s12_onecycle"
 STEP_NAME[13]="ang_scan_s13_fusion4"
+STEP_NAME[14]="ang_scan_s14_gradclip5_100ep"
+STEP_NAME[15]="ang_scan_s15_onecycle_100ep"
+STEP_NAME[16]="ang_scan_s16_onecycle_maxlr1e3"
+STEP_NAME[17]="ang_scan_s17_cosine_restarts"
 
 if [ $# -eq 0 ]; then
-    STEPS=("8" "9" "10" "11" "12" "13")
+    STEPS=("14" "15" "16" "17")
     echo "[SCAN] No steps specified. Submitting all: ${STEPS[*]}"
     echo ""
 else
@@ -89,7 +101,7 @@ for STEP in "${STEPS[@]}"; do
 
     if [ -z "$CONFIG" ]; then
         echo "[ERROR] Unknown step: $STEP"
-        echo "  Valid steps: 2-13"
+        echo "  Valid steps: 2-17"
         continue
     fi
 

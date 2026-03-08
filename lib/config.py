@@ -98,7 +98,7 @@ class TrainingConfig:
     lr: float = 3e-4
     weight_decay: float = 1e-4
     warmup_epochs: int = 2
-    lr_scheduler: Optional[str] = None  # "cosine", "onecycle", "plateau", or null to disable
+    lr_scheduler: Optional[str] = None  # "cosine", "onecycle", "plateau", "cosine_restarts", or null
     # OneCycleLR specific
     max_lr: Optional[float] = None  # Max LR for OneCycleLR (defaults to lr if not set)
     pct_start: float = 0.3  # Fraction of training for LR increase phase
@@ -106,6 +106,9 @@ class TrainingConfig:
     lr_patience: int = 5  # Epochs to wait before reducing LR
     lr_factor: float = 0.5  # Factor to reduce LR by
     lr_min: float = 1e-7  # Minimum LR
+    # CosineAnnealingWarmRestarts specific
+    lr_restart_period: int = 10  # T_0: epochs before first restart
+    lr_restart_mult: int = 2  # T_mult: multiplier for restart period after each restart
     # General
     amp: bool = True
     ema_decay: float = 0.999
