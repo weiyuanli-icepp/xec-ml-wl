@@ -63,8 +63,8 @@ CEX23_CONFIGS = [
 
 def run_to_patch(run_number):
     """Map a run number to its CEX patch."""
-    for srun, nfiles, patch in CEX23_CONFIGS:
-        if srun <= run_number < srun + nfiles:
+    for srun, _nfiles, patch in CEX23_CONFIGS:
+        if srun <= run_number < srun + 80:
             return patch
     return None
 
@@ -99,6 +99,7 @@ def parse_conventional(filepath):
                 current['peak_mev'] = float(parts[1]) * ADC_TO_MEV
                 current['peak_err_mev'] = float(parts[2]) * ADC_TO_MEV
             elif parts[0] == 'reso':
+                # reso = core_sigma / core_mean in percent
                 current['reso_pct'] = float(parts[1])
                 current['reso_err_pct'] = float(parts[2])
 
@@ -187,15 +188,20 @@ def print_comparison(conv_by_patch, ml_by_patch, patches):
 
     # Conventional: resolution is in %, peak is in MeV
     # ML: resolution is Gaussian sigma in MeV
-    # To compare: conv reso% × peak_mev / 100 = sigma_mev equivalent
 
-    print(f"\n{'Patch':>5s}  {'Conv σ [MeV]':>14s}  {'Conv μ [MeV]':>14s}  "
-          f"{'ML σ [MeV]':>14s}  {'ML μ [MeV]':>14s}  {'ML res68 [MeV]':>14s}")
+    print(f"\n{'Patch':>5s}  {'Conv σ [MeV]':>14s}  {'Conv [%]':>10s}  "
+          f"{'ML σ [MeV]':>14s}  {'ML [%]':>10s}  "
+          f"{'ML μ [MeV]':>14s}  {'ML/Conv':>8s}")
     print("-" * 90)
 
     conv_sigmas = []
+    conv_pcts = []
     ml_sigmas = []
-    ml_res68s = []
+    ml_pcts = []
+    ratios = []
+
+    # Approximate true energy for percentage calculation
+    E_TRUE_APPROX = 54.9  # MeV
 
     for patch in sorted(patches):
         conv = conv_by_patch.get(patch)
@@ -206,50 +212,54 @@ def print_comparison(conv_by_patch, ml_by_patch, patches):
             conv_sigma = conv['reso_pct'] / 100.0 * conv['peak_mev']
             conv_sigma_err = conv['reso_err_pct'] / 100.0 * conv['peak_mev']
             conv_str = f"{conv_sigma:.2f} ± {conv_sigma_err:.2f}"
-            conv_mu_str = f"{conv['peak_mev']:.2f} ± {conv['peak_err_mev']:.2f}"
+            conv_pct_str = f"{conv['reso_pct']:.2f}"
             conv_sigmas.append(conv_sigma)
+            conv_pcts.append(conv['reso_pct'])
         else:
             conv_str = "---"
-            conv_mu_str = "---"
+            conv_pct_str = "---"
+            conv_sigma = None
 
-        if ml is not None:
-            if 'sigma_mev' in ml:
-                ml_str = f"{ml['sigma_mev']:.2f} ± {ml['sigma_err_mev']:.2f}"
-                ml_sigmas.append(ml['sigma_mev'])
-            else:
-                ml_str = "fit failed"
-            ml_mu_str = (f"{ml['mu_mev']:.2f} ± {ml['mu_err_mev']:.2f}"
-                         if 'mu_mev' in ml else "---")
-            ml_res68_str = f"{ml['res68_mev']:.2f}"
-            ml_res68s.append(ml['res68_mev'])
+        if ml is not None and 'sigma_mev' in ml:
+            ml_str = f"{ml['sigma_mev']:.2f} ± {ml['sigma_err_mev']:.2f}"
+            ml_pct = ml['sigma_mev'] / E_TRUE_APPROX * 100.0
+            ml_pct_str = f"{ml_pct:.2f}"
+            ml_sigmas.append(ml['sigma_mev'])
+            ml_pcts.append(ml_pct)
+            ml_mu_str = f"{ml['mu_mev']:.2f} ± {ml['mu_err_mev']:.2f}"
         else:
             ml_str = "---"
+            ml_pct_str = "---"
             ml_mu_str = "---"
-            ml_res68_str = "---"
 
-        print(f"{patch:>5d}  {conv_str:>14s}  {conv_mu_str:>14s}  "
-              f"{ml_str:>14s}  {ml_mu_str:>14s}  {ml_res68_str:>14s}")
+        # Ratio
+        if conv_sigma is not None and ml is not None and 'sigma_mev' in ml:
+            ratio = ml['sigma_mev'] / conv_sigma
+            ratio_str = f"{ratio:.3f}"
+            ratios.append(ratio)
+        else:
+            ratio_str = "---"
+
+        print(f"{patch:>5d}  {conv_str:>14s}  {conv_pct_str:>10s}  "
+              f"{ml_str:>14s}  {ml_pct_str:>10s}  "
+              f"{ml_mu_str:>14s}  {ratio_str:>8s}")
 
     print("-" * 90)
 
     # Averages
+    parts = ["  Avg"]
     if conv_sigmas:
-        print(f"{'Avg':>5s}  {np.mean(conv_sigmas):>14.2f}  {'':>14s}  ", end="")
-    else:
-        print(f"{'Avg':>5s}  {'---':>14s}  {'':>14s}  ", end="")
+        parts.append(f"  Conv: {np.mean(conv_sigmas):.2f} MeV ({np.mean(conv_pcts):.2f}%)")
     if ml_sigmas:
-        print(f"{np.mean(ml_sigmas):>14.2f}  {'':>14s}  ", end="")
-    else:
-        print(f"{'---':>14s}  {'':>14s}  ", end="")
-    if ml_res68s:
-        print(f"{np.mean(ml_res68s):>14.2f}")
-    else:
-        print(f"{'---':>14s}")
+        parts.append(f"  ML: {np.mean(ml_sigmas):.2f} MeV ({np.mean(ml_pcts):.2f}%)")
+    if ratios:
+        parts.append(f"  Ratio: {np.mean(ratios):.3f}")
+    print("  ".join(parts))
 
     print("=" * 90)
 
     # Note about conventional resolution interpretation
-    print("\nNote: Conv σ = (reso% / 100) × peak_mev, i.e., Gaussian width of the 54.9 MeV peak")
+    print("\nNote: Conv σ = reso_pct/100 × peak_mev (reso = fitted core σ / fitted core mean, in %)")
     print("      ML σ  = Gaussian fit σ of (pred - true) residual in MeV")
     print(f"      ADC→MeV conversion factor: {ADC_TO_MEV}")
 
