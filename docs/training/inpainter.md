@@ -1378,3 +1378,160 @@ ls artifacts/inp_scan_*/validation_sensorfront/predictions_sensorfront.root
 # Check SLURM job status
 squeue -u $USER --format="%.10i %.10P %.25j %.8T %.10M"
 ```
+
+---
+
+## Real Data Fine-Tuning
+
+After training and validating the inpainter on MC data, the model can be fine-tuned on real detector data. This section describes the end-to-end procedure.
+
+### Overview
+
+```
+┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│  MEG2 Database   │────>│  Run List        │────>│  ROOT Processing │
+│  (RunCatalog)    │     │  (train/val)     │     │  (meganalyzer)   │
+└──────────────────┘     └──────────────────┘     └────────┬─────────┘
+                                                           │
+                                                           ▼
+┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│  Fine-tuned      │<────│  Inpainter       │<────│  DataGammaAngle  │
+│  Checkpoint      │     │  Training        │     │  ROOT files      │
+└──────────────────┘     └──────────────────┘     └──────────────────┘
+```
+
+### Step 1: Generate Run Lists
+
+Query the MEG2 database for physics runs and produce train/val run lists.
+
+```bash
+# On the cluster (needs access to meg.sql.psi.ch)
+python macro/generate_realdata_runlist.py --output-dir data/real_data
+
+# Options:
+#   --min-run / --max-run   Restrict run range
+#   --no-file-check         Skip checking if rec files exist on disk
+#   --skip-train N          Skip first N found files per day for training (default: 1)
+#   --dry-run               Print without writing files
+#   --check                 Test database connection and exit
+```
+
+**Selection criteria:**
+- `Physics=1`, `Junk=0`, `StartTime >= 2021-01-01`
+- Groups runs by date, finds rec files with suffix priority: `_open.root`, `_selected.root`, `.root`
+
+**Train/val split:**
+- **Val:** 1st found rec file on every 3rd day (`day_index % 3 == 0`)
+- **Train:** 2nd through 201st found rec files on every day (skips the 1st to avoid overlap with val)
+
+**Output:** `data/real_data/runlist_train.txt` and `data/real_data/runlist_val.txt`
+
+Format (two columns, `#` comments allowed):
+```
+# 2023-11-15
+430123 /data/project/meg/offline/run/430xxx/rec430123_open.root
+430124 /data/project/meg/offline/run/430xxx/rec430124_open.root
+```
+
+### Step 2: Process Rec Files with Meganalyzer
+
+Each run is processed through `PrepareRealDataInpainter.C`, which:
+- Reads rec trees with minimal selection (trigger mask only, no physics selection or pileup cut)
+- Extracts `npho`, `time` arrays from `xeccl` branch (4760 channels)
+- Computes `relative_npho` (normalized by max) and `relative_time` (shifted by min)
+- Outputs one ROOT file per run: `DataGammaAngle_RRRRRR.root`
+
+```bash
+# Submit SLURM job array (batches ~42 runs per task)
+bash macro/submit_prepare_realdata.sh data/real_data/runlist_train.txt data/real_data/raw
+
+# Environment variables:
+#   RUNS_PER_JOB=42      Runs processed per SLURM task (default: 42)
+#   START_FROM=0          Skip first N runlist entries (for resuming)
+#   PARTITION=meg-short   SLURM partition
+
+# Example: resume after first 2000 entries already processed
+START_FROM=2000 bash macro/submit_prepare_realdata.sh data/real_data/runlist_train.txt
+```
+
+**Notes:**
+- Each SLURM task processes `RUNS_PER_JOB` consecutive runlist entries in series
+- SLURM max array index is 1999, so batching keeps total tasks under 2000
+- The macro must be run from the meganalyzer directory (the script handles this)
+- Time limit is 1 hour per task on `meg-short`
+
+**For val data:** repeat with the val runlist:
+```bash
+bash macro/submit_prepare_realdata.sh data/real_data/runlist_val.txt data/real_data/val_raw
+```
+
+### Step 3: Organize into Train/Val Directories
+
+Move or symlink the processed files into `train/` and `val/` directories, then create size-based splits:
+
+```bash
+# Move processed files
+mkdir -p data/real_data/train data/real_data/val
+mv data/real_data/raw/DataGammaAngle_*.root data/real_data/train/
+mv data/real_data/val_raw/DataGammaAngle_*.root data/real_data/val/
+
+# Create symlink splits (train_tiny, train_small, train_middle, etc.)
+bash macro/symlink_realdata.sh
+```
+
+Split sizes (by sorted file order, filtering out empty files < 1KB):
+| Split | Files |
+|-------|-------|
+| `train_tiny` | 10 |
+| `train_small` | 50 |
+| `train_middle` | 150 |
+| `train_large` | 467 |
+| `train_max` | all |
+
+### Step 4: Fine-Tune the Inpainter
+
+Fine-tune from the best MC-trained checkpoint (e.g., scan step 3) using the real data config:
+
+```bash
+python -m lib.train_inpainter --config config/inp/finetune_realdata.yaml
+```
+
+**Key config settings** (`config/inp/finetune_realdata.yaml`):
+- `resume_from`: best MC checkpoint (e.g., `artifacts/inp_scan_s3/best_model.pt`)
+- `reset_epoch: true` — start epoch counter from 0
+- `refresh_lr: true` — use fresh LR schedule from config
+- `new_mlflow_run: true` — create separate MLflow run
+- `lr: 2e-5` — 5x lower than MC training for fine-tuning
+- `epochs: 30`
+
+**Output branches in processed ROOT files:**
+
+| Branch | Type | Description |
+|--------|------|-------------|
+| `run` | Int | Run number |
+| `event` | Int | Event number |
+| `npho` | Float[4760] | Raw photon counts |
+| `time` | Float[4760] | Raw timing |
+| `relative_npho` | Float[4760] | npho / max(npho) |
+| `relative_time` | Float[4760] | time - min(time) |
+| `ch_npho_max` | Short | Channel with max npho |
+| `ch_time_min` | Short | Channel with min time |
+| `npho_max_used` | Float | Max npho value used for normalization |
+| `time_min_used` | Float | Min time value used for normalization |
+
+### Step 5: Validate on Real Data
+
+After fine-tuning, validate using artificial masking on held-out real data:
+
+```bash
+bash macro/submit_validate_data_scan.sh
+```
+
+This runs `macro/validate_inpainter.py` with `--real-data` mode, applying artificial masks to real events and measuring reconstruction quality. See [Validation on Real Data](#validation-on-real-data-with-artificial-masking) for details.
+
+### Troubleshooting
+
+- **0 events selected from `_selected.root` files**: These files have pre-filtered events with empty branches. The `PrepareRealDataInpainter.C` macro uses trigger-only selection to handle both `_open.root` and `_selected.root` files.
+- **SLURM array index > 1999**: Increase `RUNS_PER_JOB` or use `START_FROM` to process in batches.
+- **meganalyzer function name mismatch**: The script uses a loader macro pattern with `gROOT->ProcessLine` because meganalyzer's `-I` flag calls the function matching the filename, not arbitrary functions.
+- **Database connection issues**: Run `python macro/generate_realdata_runlist.py --check` to test connectivity to `meg.sql.psi.ch`.
