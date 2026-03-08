@@ -34,6 +34,7 @@ ANGLE_METRICS = [
 TIMING_METRICS = [
     "val/loss", "train/loss",
     "val/l1", "val/smooth_l1", "val/mse",
+    "timing_res_68pct", "timing_bias",
     "train/grad_norm_max",
     "system/lr",
 ]
@@ -41,6 +42,7 @@ TIMING_METRICS = [
 ENERGY_METRICS = [
     "val/loss", "train/loss",
     "val/l1", "val/smooth_l1", "val/mse",
+    "energy_res_68pct", "energy_bias",
     "train/grad_norm_max",
     "system/lr",
 ]
@@ -90,6 +92,27 @@ def get_best_val_loss(client, run_id):
     except Exception:
         pass
     return None, None
+
+
+def get_best_resolution(client, run_id, metric_key):
+    """Get the minimum resolution metric across all epochs."""
+    try:
+        history = client.get_metric_history(run_id, metric_key)
+        if history:
+            best = min(history, key=lambda m: m.value)
+            return best.value, best.step
+    except Exception:
+        pass
+    return None, None
+
+
+# Primary ranking metric for each task (lower = better)
+RANKING_METRIC = {
+    "angle": "angle_resolution_68pct",
+    "energy": "energy_res_68pct",
+    "timing": "timing_res_68pct",
+    "position": "uvw_dist_68pct",
+}
 
 
 def get_metric_history_df(client, run_id, metric_key):
@@ -166,6 +189,10 @@ def build_summary(experiment_name, prefix=None, tracking_uri=None):
         # Best val/loss
         best_val, best_epoch = get_best_val_loss(client, run.info.run_id)
 
+        # Best resolution metric
+        res_metric_key = RANKING_METRIC[task]
+        best_res, best_res_epoch = get_best_resolution(client, run.info.run_id, res_metric_key)
+
         # Final epoch
         final_epoch = final.get("val/loss__step", None)
 
@@ -182,6 +209,8 @@ def build_summary(experiment_name, prefix=None, tracking_uri=None):
         row["final_epoch"] = int(final_epoch) if final_epoch else None
         row["best_val_loss"] = best_val
         row["best_epoch"] = int(best_epoch) if best_epoch else None
+        row["best_resolution"] = best_res
+        row["best_res_epoch"] = int(best_res_epoch) if best_res_epoch else None
 
         # Train/val gap
         tr_loss = final.get("train/loss")
@@ -204,8 +233,13 @@ def build_summary(experiment_name, prefix=None, tracking_uri=None):
                         "uvw_dist_68pct",
                         "uvw_u_bias", "uvw_v_bias", "uvw_w_bias", "uvw_dist_bias"]:
                 row[key.replace("/", "_")] = final.get(key)
-        else:
-            for key in ["val/l1", "val/smooth_l1", "val/mse"]:
+        elif task == "energy":
+            for key in ["val/l1", "val/smooth_l1", "val/mse",
+                        "energy_res_68pct", "energy_bias"]:
+                row[key.replace("/", "_")] = final.get(key)
+        else:  # timing
+            for key in ["val/l1", "val/smooth_l1", "val/mse",
+                        "timing_res_68pct", "timing_bias"]:
                 row[key.replace("/", "_")] = final.get(key)
 
         row["grad_norm_max"] = final.get("train/grad_norm_max")
@@ -238,20 +272,32 @@ def print_summary(df, task):
         print("  (all runs have the same configuration)")
 
     # --- Performance ---
-    print("\n--- Performance (sorted by best_val_loss) ---")
-    perf_cols = ["run_name", "final_epoch", "best_val_loss", "best_epoch",
-                 "train_loss", "val_loss", "overfit_gap"]
+    # Determine sort column: prefer physics resolution metric over val_loss
+    res_col = RANKING_METRIC[task]
+    has_resolution = "best_resolution" in df.columns and df["best_resolution"].notna().any()
+    sort_col = "best_resolution" if has_resolution else "best_val_loss"
+    sort_label = res_col if has_resolution else "best_val_loss"
+    print(f"\n--- Performance (sorted by {sort_label}) ---")
+    perf_cols = ["run_name", "final_epoch", "best_resolution", "best_res_epoch",
+                 "best_val_loss", "best_epoch", "train_loss", "val_loss", "overfit_gap"]
     if task == "angle":
         perf_cols += ["val_cos", "angle_resolution_68pct"]
     elif task == "position":
         perf_cols += ["uvw_dist_68pct"]
+    elif task == "energy":
+        perf_cols += ["energy_res_68pct", "energy_bias"]
+    elif task == "timing":
+        perf_cols += ["timing_res_68pct", "timing_bias"]
     available = [c for c in perf_cols if c in df.columns]
-    perf_df = df[available].sort_values("best_val_loss")
+    perf_df = df[available].sort_values(sort_col)
+    # Rename best_resolution to the actual metric name for clarity
+    rename = {"best_resolution": f"best_{res_col}", "best_res_epoch": "best_res_ep"}
+    perf_df = perf_df.rename(columns={k: v for k, v in rename.items() if k in perf_df.columns})
     print(perf_df.to_string(index=False, float_format=lambda x: f"{x:.4e}" if abs(x) < 0.01 else f"{x:.4f}"))
 
     # --- Bias & Resolution (angle / position) ---
     if task == "angle":
-        print("\n--- Bias & Skew (sorted by best_val_loss) ---")
+        print(f"\n--- Bias & Skew (sorted by {sort_label}) ---")
         bias_cols = ["run_name", "theta_bias", "theta_rms", "theta_skew",
                      "phi_bias", "phi_rms", "phi_skew"]
         available = [c for c in bias_cols if c in df.columns]
@@ -262,7 +308,7 @@ def print_summary(df, task):
         print(bias_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
     if task == "position":
-        print("\n--- Resolution 68th pct (sorted by best_val_loss) ---")
+        print(f"\n--- Resolution 68th pct (sorted by {sort_label}) ---")
         res_cols = ["run_name", "uvw_u_res_68pct", "uvw_v_res_68pct",
                     "uvw_w_res_68pct", "uvw_dist_68pct"]
         available = [c for c in res_cols if c in df.columns]
@@ -271,13 +317,31 @@ def print_summary(df, task):
         res_df = res_df.set_index("run_name").loc[order].reset_index()
         print(res_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
-        print("\n--- Bias (sorted by best_val_loss) ---")
+        print(f"\n--- Bias (sorted by {sort_label}) ---")
         bias_cols = ["run_name", "uvw_u_bias", "uvw_v_bias",
                      "uvw_w_bias", "uvw_dist_bias"]
         available = [c for c in bias_cols if c in df.columns]
         bias_df = df[available].sort_values("run_name")
         bias_df = bias_df.set_index("run_name").loc[order].reset_index()
         print(bias_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
+
+    if task == "energy":
+        print(f"\n--- Energy Resolution & Bias (sorted by {sort_label}) ---")
+        res_cols = ["run_name", "energy_res_68pct", "energy_bias"]
+        available = [c for c in res_cols if c in df.columns]
+        res_df = df[available].sort_values("run_name")
+        order = perf_df["run_name"].tolist()
+        res_df = res_df.set_index("run_name").loc[order].reset_index()
+        print(res_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
+
+    if task == "timing":
+        print(f"\n--- Timing Resolution & Bias (sorted by {sort_label}) ---")
+        res_cols = ["run_name", "timing_res_68pct", "timing_bias"]
+        available = [c for c in res_cols if c in df.columns]
+        res_df = df[available].sort_values("run_name")
+        order = perf_df["run_name"].tolist()
+        res_df = res_df.set_index("run_name").loc[order].reset_index()
+        print(res_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
     # --- Gradient norms ---
     print("\n--- Training Diagnostics ---")
@@ -287,12 +351,24 @@ def print_summary(df, task):
     print(diag_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
     # --- Ranking ---
-    print("\n--- Rankings ---")
-    if "best_val_loss" in df.columns:
-        ranked = df.sort_values("best_val_loss")[["run_name", "best_val_loss"]].reset_index(drop=True)
-        ranked.index += 1
-        ranked.index.name = "rank"
-        print(ranked.to_string(float_format=lambda x: f"{x:.4e}" if abs(x) < 0.01 else f"{x:.4f}"))
+    print(f"\n--- Rankings (by {sort_label}) ---")
+    rank_cols = ["run_name", sort_col]
+    if has_resolution:
+        rank_cols.append("best_val_loss")
+    ranked = df.dropna(subset=[sort_col]).sort_values(sort_col)[rank_cols].reset_index(drop=True)
+    ranked.index += 1
+    ranked.index.name = "rank"
+    if has_resolution:
+        ranked = ranked.rename(columns={"best_resolution": f"best_{res_col}"})
+    print(ranked.to_string(float_format=lambda x: f"{x:.4e}" if abs(x) < 0.01 else f"{x:.4f}"))
+
+    # If resolution ranking differs significantly from val_loss ranking, note it
+    if has_resolution and "best_val_loss" in df.columns:
+        res_order = df.dropna(subset=["best_resolution"]).sort_values("best_resolution")["run_name"].tolist()
+        loss_order = df.dropna(subset=["best_val_loss"]).sort_values("best_val_loss")["run_name"].tolist()
+        if res_order[:3] != loss_order[:3]:
+            print(f"\n  NOTE: Top 3 by val_loss: {', '.join(loss_order[:3])}")
+            print(f"        Top 3 by {res_col}: {', '.join(res_order[:3])}")
 
     print("\n" + "=" * 100)
 
@@ -328,6 +404,16 @@ def make_plots(df, task, client, runs, output_path, prefix=None):
         if task == "position":
             for key in ["uvw_dist_68pct", "uvw_u_res_68pct", "uvw_v_res_68pct",
                         "uvw_w_res_68pct", "uvw_u_bias", "uvw_v_bias", "uvw_w_bias"]:
+                hist = get_metric_history_df(mc, run.info.run_id, key)
+                run_histories[name][key] = hist
+
+        if task == "energy":
+            for key in ["energy_res_68pct", "energy_bias"]:
+                hist = get_metric_history_df(mc, run.info.run_id, key)
+                run_histories[name][key] = hist
+
+        if task == "timing":
+            for key in ["timing_res_68pct", "timing_bias"]:
                 hist = get_metric_history_df(mc, run.info.run_id, key)
                 run_histories[name][key] = hist
 
@@ -499,18 +585,80 @@ def make_plots(df, task, client, runs, output_path, prefix=None):
             pdf.savefig(fig)
             plt.close(fig)
 
-        # --- Final page: Bar chart of best val loss ---
+        if task == "energy":
+            # --- Energy: Resolution vs epoch ---
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+            for name in sorted_names:
+                hist = run_histories[name].get("energy_res_68pct", [])
+                if hist:
+                    steps, vals = zip(*hist)
+                    axes[0].plot(steps, vals, label=name, linewidth=1.5)
+            axes[0].set_xlabel("Epoch")
+            axes[0].set_ylabel("Energy Resolution (68th pct)")
+            axes[0].set_title("Energy Resolution vs Epoch")
+            axes[0].legend(fontsize=6, loc="best")
+
+            for name in sorted_names:
+                hist = run_histories[name].get("energy_bias", [])
+                if hist:
+                    steps, vals = zip(*hist)
+                    axes[1].plot(steps, vals, label=name, linewidth=1.5)
+            axes[1].axhline(0, color="gray", linestyle=":", linewidth=0.8)
+            axes[1].set_xlabel("Epoch")
+            axes[1].set_ylabel("Energy Bias")
+            axes[1].set_title("Energy Bias vs Epoch")
+            axes[1].legend(fontsize=6, loc="best")
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        if task == "timing":
+            # --- Timing: Resolution vs epoch ---
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+            for name in sorted_names:
+                hist = run_histories[name].get("timing_res_68pct", [])
+                if hist:
+                    steps, vals = zip(*hist)
+                    axes[0].plot(steps, vals, label=name, linewidth=1.5)
+            axes[0].set_xlabel("Epoch")
+            axes[0].set_ylabel("Timing Resolution (68th pct)")
+            axes[0].set_title("Timing Resolution vs Epoch")
+            axes[0].legend(fontsize=6, loc="best")
+
+            for name in sorted_names:
+                hist = run_histories[name].get("timing_bias", [])
+                if hist:
+                    steps, vals = zip(*hist)
+                    axes[1].plot(steps, vals, label=name, linewidth=1.5)
+            axes[1].axhline(0, color="gray", linestyle=":", linewidth=0.8)
+            axes[1].set_xlabel("Epoch")
+            axes[1].set_ylabel("Timing Bias")
+            axes[1].set_title("Timing Bias vs Epoch")
+            axes[1].legend(fontsize=6, loc="best")
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        # --- Final page: Bar chart of best resolution (or val loss as fallback) ---
+        res_col = RANKING_METRIC[task]
+        has_resolution = "best_resolution" in df.columns and df["best_resolution"].notna().any()
+        if has_resolution:
+            bar_col = "best_resolution"
+            bar_label = f"Best {res_col}"
+        else:
+            bar_col = "best_val_loss"
+            bar_label = "Best Validation Loss"
         fig, ax = plt.subplots(figsize=(12, 7))
-        sorted_df = df.dropna(subset=["best_val_loss"]).sort_values("best_val_loss")
+        sorted_df = df.dropna(subset=[bar_col]).sort_values(bar_col)
         colors = plt.cm.viridis(np.linspace(0.2, 0.8, len(sorted_df)))
-        bars = ax.barh(range(len(sorted_df)), sorted_df["best_val_loss"], color=colors)
+        bars = ax.barh(range(len(sorted_df)), sorted_df[bar_col], color=colors)
         ax.set_yticks(range(len(sorted_df)))
         ax.set_yticklabels(sorted_df["run_name"], fontsize=8)
-        ax.set_xlabel("Best Validation Loss")
-        ax.set_title("Run Ranking by Best Validation Loss")
+        ax.set_xlabel(bar_label)
+        ax.set_title(f"Run Ranking by {bar_label}")
         ax.invert_yaxis()
         # Add value labels
-        for bar, val in zip(bars, sorted_df["best_val_loss"]):
+        for bar, val in zip(bars, sorted_df[bar_col]):
             ax.text(bar.get_width(), bar.get_y() + bar.get_height() / 2,
                     f" {val:.4f}", va="center", fontsize=8)
         fig.tight_layout()
