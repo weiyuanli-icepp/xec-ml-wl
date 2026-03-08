@@ -63,8 +63,8 @@ CEX23_CONFIGS = [
 
 def run_to_patch(run_number):
     """Map a run number to its CEX patch."""
-    for srun, _nfiles, patch in CEX23_CONFIGS:
-        if srun <= run_number < srun + 80:
+    for srun, nfiles, patch in CEX23_CONFIGS:
+        if srun <= run_number < srun + nfiles:
             return patch
     return None
 
