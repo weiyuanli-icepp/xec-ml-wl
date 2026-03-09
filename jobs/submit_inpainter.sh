@@ -23,6 +23,7 @@ RUN_NAME="${RUN_NAME:-}"
 MAE_CHECKPOINT="${MAE_CHECKPOINT:-}"
 DRY_RUN="${DRY_RUN:-0}"
 NUM_GPUS="${NUM_GPUS:-}"  # Empty = read from config
+MEM="${MEM:-}"            # Empty = auto-scale with GPUs
 
 # Validate config file exists
 if [[ ! -f "$CONFIG_PATH" ]]; then
@@ -104,6 +105,11 @@ if [[ -z "$NUM_GPUS" ]]; then
     else
         NUM_GPUS="1"
     fi
+fi
+
+# Auto-scale memory with number of GPUs
+if [[ -z "$MEM" ]]; then
+    MEM="$(( 48 * NUM_GPUS ))G"
 fi
 
 # Use RUN_NAME from env, or from config, or generate timestamp
@@ -316,7 +322,7 @@ sbatch <<EOF
 #SBATCH --time=${TIME}
 #SBATCH --partition=${PARTITION}
 #SBATCH --gres=gpu:${NUM_GPUS}
-#SBATCH --mem=64G
+#SBATCH --mem=${MEM}
 #SBATCH --clusters=gmerlin7
 
 set -e
