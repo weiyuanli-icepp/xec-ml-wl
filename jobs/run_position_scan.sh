@@ -19,10 +19,14 @@
 #   9   - s3 + batch=2048 + 100 epochs (best resolution + more training)
 #  10   - s8 + train_large dataset
 #  11   - s8 + OneCycle scheduler (max_lr=6e-4)
-#  12   - Full-data from scratch (train_max, 4 GPUs, 100ep, beta=1.0)
-#  13   - Full-data from scratch (train_max, 4 GPUs, 100ep, beta=0.1)
+#  12   - train_large baseline (smooth_l1, beta=1.0, =s2/s4/s8/s10)
+#  13   - train_large + beta=0.1 (=s3/s9)
+#  14   - train_large + gaussian_nll (=s5)
+#  15   - train_large + L1 loss (=s6)
+#  16   - train_large + MSE loss (=s7)
+#  17   - train_large + OneCycle (=s11)
 #
-# All steps use train_middle (except 10,12,13), 1 GPU (except 12,13).
+# All steps use train_middle (except 10,12-17), 1 GPU.
 # Compare in MLflow experiment: gamma_position
 # =============================================================================
 
@@ -48,8 +52,12 @@ STEP_CONFIG[8]="step8_100ep.yaml"
 STEP_CONFIG[9]="step9_beta01_100ep.yaml"
 STEP_CONFIG[10]="step10_largedata.yaml"
 STEP_CONFIG[11]="step11_onecycle.yaml"
-STEP_CONFIG[12]="step12_fulldata.yaml"
-STEP_CONFIG[13]="step13_fulldata_beta01.yaml"
+STEP_CONFIG[12]="step12_large_base.yaml"
+STEP_CONFIG[13]="step13_large_beta01.yaml"
+STEP_CONFIG[14]="step14_large_gnll.yaml"
+STEP_CONFIG[15]="step15_large_l1.yaml"
+STEP_CONFIG[16]="step16_large_mse.yaml"
+STEP_CONFIG[17]="step17_large_onecycle.yaml"
 
 STEP_NAME[2]="pos_scan_s2_4a"
 STEP_NAME[3]="pos_scan_s3_beta01"
@@ -61,8 +69,12 @@ STEP_NAME[8]="pos_scan_s8_100ep"
 STEP_NAME[9]="pos_scan_s9_beta01_100ep"
 STEP_NAME[10]="pos_scan_s10_largedata"
 STEP_NAME[11]="pos_scan_s11_onecycle"
-STEP_NAME[12]="pos_scan_s12_fulldata"
-STEP_NAME[13]="pos_scan_s13_fulldata_beta01"
+STEP_NAME[12]="pos_scan_s12_large_base"
+STEP_NAME[13]="pos_scan_s13_large_beta01"
+STEP_NAME[14]="pos_scan_s14_large_gnll"
+STEP_NAME[15]="pos_scan_s15_large_l1"
+STEP_NAME[16]="pos_scan_s16_large_mse"
+STEP_NAME[17]="pos_scan_s17_large_onecycle"
 
 if [ $# -eq 0 ]; then
     STEPS=("8" "9" "10" "11")
@@ -89,7 +101,7 @@ for STEP in "${STEPS[@]}"; do
 
     if [ -z "$CONFIG" ]; then
         echo "[ERROR] Unknown step: $STEP"
-        echo "  Valid steps: 2-13"
+        echo "  Valid steps: 2-17"
         continue
     fi
 

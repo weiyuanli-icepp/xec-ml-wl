@@ -1,8 +1,8 @@
-# Position scan step 12: Full-data from scratch (train_max, 4 GPUs, 100 epochs)
-# Based on step8 settings (best val_loss config)
+# Position scan step 12: train_large baseline (smooth_l1, beta=1.0)
+# Corresponds to s2/s4/s8/s10 with train_large + 100ep + batch=2048
 
 data:
-  train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_max"
+  train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_large"
   val_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/val"
   tree_name: "tree"
   batch_size: 2048
@@ -67,7 +67,7 @@ training:
   ema_decay: 0.999
   channel_dropout_rate: 0
   grad_clip: 1.0
-  grad_accum_steps: 1                  # effective batch = 2048*1*4gpu = 8192
+  grad_accum_steps: 2
   profile: false
   compile: none
   compile_fullgraph: false
@@ -91,7 +91,7 @@ checkpoint:
   refresh_lr: false
 
 distributed:
-  num_gpus: 4
+  num_gpus: 1
 
 mlflow:
   experiment: "gamma_position"
