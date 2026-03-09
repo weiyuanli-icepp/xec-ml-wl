@@ -634,17 +634,32 @@ def _run_dead_channel_recovery(args, norm_params):
         print("[WARN] No 'dead' branch and no --dead-from-db/--dead-from-file. "
               "Will detect dead channels from sentinel values.")
 
-    # Accumulators
-    out_data = {b: [] for b in meta_branches if b in available}
     strategies = ["raw", "neighavg", "inpainted"]
-    strategy_accum = {s: [] for s in strategies}
 
     total_events = 0
     t0 = time.time()
     npho_threshold = norm_params.get("npho_threshold", DEFAULT_NPHO_THRESHOLD)
     sentinel_npho = norm_params.get("sentinel_npho", SENTINEL_NPHO)
+    int_branches = {"run", "event", "gstatus", "nDead"}
+    meta_available = [b for b in meta_branches if b in available]
+
+    # Determine output path
+    output_path = args.output_dir
+    if output_path is None:
+        base = os.path.splitext(os.path.basename(args.val_path))[0]
+        output_path = f"regressor_{base}.root"
+    elif not output_path.endswith(".root"):
+        os.makedirs(output_path, exist_ok=True)
+        base = os.path.splitext(os.path.basename(args.val_path))[0]
+        output_path = os.path.join(output_path, f"regressor_{base}.root")
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+    # Create output ROOT file before the loop — write chunks incrementally
+    f_out = uproot.recreate(output_path)
+    tree_created = False
 
     print(f"[INFO] Processing {args.val_path} (chunksize={args.chunksize})")
+    print(f"[INFO] Output: {output_path}")
 
     for arrays in uproot.iterate(
         f"{args.val_path}:{tree_name}",
@@ -672,14 +687,23 @@ def _run_dead_channel_recovery(args, norm_params):
             n_dead = int(dead_mask_1d.sum())
             print(f"[INFO] Dead channels detected: {n_dead}")
 
-        # --- Strategy 1: raw (no fill) ---
-        x_raw = x_norm
+        # --- Process strategies sequentially to reduce peak memory ---
 
-        # --- Strategy 2: neighbor average ---
+        # Strategy 1: raw (no fill)
+        res_raw = _run_regressor_onnx(reg_session, x_norm, task_map,
+                                      batch_size=args.batch_size)
+        flat_raw = _expand_task_results(res_raw)
+        del res_raw
+
+        # Strategy 2: neighbor average
         x_neighavg = _fill_dead_neighbor_avg(x_norm, dead_mask_1d, baseline,
                                              transform=transform)
+        res_neighavg = _run_regressor_onnx(reg_session, x_neighavg, task_map,
+                                           batch_size=args.batch_size)
+        flat_neighavg = _expand_task_results(res_neighavg)
+        del x_neighavg, res_neighavg
 
-        # --- Strategy 3: inpainted ---
+        # Strategy 3: inpainted
         if have_inpainter:
             x_inpainted = _fill_dead_inpainter(
                 x_norm, dead_mask_1d, inpainter_model,
@@ -687,30 +711,38 @@ def _run_dead_channel_recovery(args, norm_params):
                 is_torchscript=inpainter_is_torchscript,
                 sentinel_npho=sentinel_npho, batch_size=args.batch_size,
             )
-        else:
-            x_inpainted = None
-
-        # --- Run regressor on each strategy ---
-        res_raw = _run_regressor_onnx(reg_session, x_raw, task_map,
-                                      batch_size=args.chunksize)
-        res_neighavg = _run_regressor_onnx(reg_session, x_neighavg, task_map,
-                                           batch_size=args.chunksize)
-        if x_inpainted is not None:
             res_inpainted = _run_regressor_onnx(reg_session, x_inpainted, task_map,
-                                                batch_size=args.chunksize)
+                                                batch_size=args.batch_size)
+            flat_inpainted = _expand_task_results(res_inpainted)
+            del x_inpainted, res_inpainted
         else:
-            res_inpainted = {}
-            for task, arr in res_raw.items():
-                res_inpainted[task] = np.full_like(arr, 1e10)
+            flat_inpainted = {}
+            for bname, arr in flat_raw.items():
+                flat_inpainted[bname] = np.full_like(arr, 1e10)
 
-        # Expand multi-dim tasks into flat branches
-        strategy_accum["raw"].append(_expand_task_results(res_raw))
-        strategy_accum["neighavg"].append(_expand_task_results(res_neighavg))
-        strategy_accum["inpainted"].append(_expand_task_results(res_inpainted))
+        del x_norm, npho_raw, time_raw
 
-        # --- Accumulate metadata ---
-        for b in out_data:
-            out_data[b].append(arrays[b])
+        # --- Build chunk output and write immediately ---
+        chunk = {}
+        for b in meta_available:
+            arr = arrays[b]
+            chunk[b] = arr.astype(np.int32) if b in int_branches else arr.astype(np.float32)
+
+        flat_all = {"raw": flat_raw, "neighavg": flat_neighavg,
+                    "inpainted": flat_inpainted}
+        for strategy in strategies:
+            for bname, arr in flat_all[strategy].items():
+                chunk[f"{bname}_{strategy}"] = arr.astype(np.float32)
+
+        if not tree_created:
+            branch_types = {}
+            for k, v in chunk.items():
+                branch_types[k] = np.int32 if v.dtype == np.int32 else np.float32
+            f_out.mktree("tree", branch_types)
+            tree_created = True
+
+        f_out["tree"].extend(chunk)
+        del chunk, flat_raw, flat_neighavg, flat_inpainted, flat_all
 
         total_events += B
         elapsed = time.time() - t0
@@ -718,55 +750,12 @@ def _run_dead_channel_recovery(args, norm_params):
               f"{total_events / elapsed:.0f} evt/s)", end="\r")
 
     print()  # newline after \r
-
-    # --- Concatenate and write output ---
-    final = {}
-    for b, chunks in out_data.items():
-        arr = np.concatenate(chunks)
-        if b in ("run", "event", "gstatus", "nDead"):
-            final[b] = arr.astype(np.int32)
-        else:
-            final[b] = arr.astype(np.float32)
-
-    for strategy in strategies:
-        chunks = strategy_accum[strategy]
-        if not chunks:
-            continue
-        branch_names = list(chunks[0].keys())
-        for bname in branch_names:
-            key = f"{bname}_{strategy}"
-            final[key] = np.concatenate(
-                [c[bname] for c in chunks]
-            ).astype(np.float32)
-
-    # Determine output path
-    output_path = args.output_dir
-    if output_path is None:
-        base = os.path.splitext(os.path.basename(args.val_path))[0]
-        output_path = f"regressor_{base}.root"
-    elif not output_path.endswith(".root"):
-        # Treat as directory — auto-generate filename inside it
-        os.makedirs(output_path, exist_ok=True)
-        base = os.path.splitext(os.path.basename(args.val_path))[0]
-        output_path = os.path.join(output_path, f"regressor_{base}.root")
-
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-
-    print(f"[INFO] Writing {output_path} ({total_events} events, "
-          f"{len(final)} branches)")
-
-    with uproot.recreate(output_path) as f_out:
-        branch_types = {}
-        for k, v in final.items():
-            branch_types[k] = np.int32 if v.dtype == np.int32 else np.float32
-        f_out.mktree("tree", branch_types)
-        f_out["tree"].extend(final)
+    f_out.close()
 
     elapsed = time.time() - t0
     print(f"[DONE] {total_events} events in {elapsed:.1f}s "
           f"({total_events / elapsed:.0f} evt/s)")
     print(f"[INFO] Output: {output_path}")
-    print(f"[INFO] Branches: {sorted(final.keys())}")
 
 
 # ======================================================================
