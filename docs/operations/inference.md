@@ -206,6 +206,45 @@ python macro/combine_cex_results.py --patches 13 12 21
 python macro/combine_cex_results.py --no-plots
 ```
 
+### 4. Compare with conventional method
+
+Compare ML energy resolution with the conventional peak-fitting method:
+
+```bash
+python macro/compare_cex_conventional.py \
+    --conv /data/project/meg/shared/subprojects/xec/shared/peakpos_nsum2_2023CEX.txt \
+    --ml-base val_data/cex
+```
+
+The script:
+- Parses the conventional `peakpos` text file (run number, peak position, resolution in %)
+- Maps each run to its CEX23 patch using the run ranges from `others/submit_cex.py`
+- Aggregates conventional results per patch (weighted average across runs)
+- Loads ML predictions from per-patch CSVs and fits a double Gaussian to the residual
+- Compares core σ from both methods side by side
+
+**Output:**
+- Terminal table: per-patch resolution (σ in MeV and %), bias, ML/Conv ratio
+- PDF (`val_data/cex/CEX23_ml_vs_conventional.pdf`):
+  - Page 1: Resolution and bias vs patch for both methods
+  - Page 2: ML/Conv resolution ratio vs patch
+
+**Conventional resolution format** (`peakpos_nsum2_2023CEX.txt`):
+- `peak <value> <error>` — fitted core mean in ADC counts (× 0.0000015634 → MeV)
+- `reso <value> <error>` — fitted core σ / fitted core mean in percent
+
+Options:
+```bash
+# Table only
+python macro/compare_cex_conventional.py --no-plot
+
+# Specific patches
+python macro/compare_cex_conventional.py --patches 13 12 21
+
+# Custom output path
+python macro/compare_cex_conventional.py --output path/to/comparison.pdf
+```
+
 ---
 
 ## Output branches
