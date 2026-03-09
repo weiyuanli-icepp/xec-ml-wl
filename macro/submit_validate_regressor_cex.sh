@@ -33,7 +33,7 @@ CEX_DIR="${CEX_DIR:-data/cex}"
 OUTPUT_BASE="${OUTPUT_BASE:-val_data/cex}"
 PARTITION="${PARTITION:-meg-long}"
 DEAD_CHANNEL="${DEAD_CHANNEL:-0}"
-INPAINTER="${INPAINTER:-~/meghome/xec-ml-wl/artifacts/inp_scan_s3/inpainter.pt}"
+INPAINTER="${INPAINTER:-~/meghome/xec-ml-wl/artifacts/inp_scan_s3_nphowt/inpainter.pt}"
 NEIGHBOR_K="${NEIGHBOR_K:-1}"
 
 case "$PARTITION" in
