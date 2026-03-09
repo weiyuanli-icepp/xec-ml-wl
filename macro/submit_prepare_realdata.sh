@@ -131,12 +131,13 @@ echo "Day: \${DATE_LABEL}, runlist start_idx: \${START_IDX}, count: \${N_FILES}"
 echo ""
 
 cd ${ANALYZER_DIR}
-mkdir -p "\$HOME/.cache/xec-ml-wl"
+mkdir -p "\$HOME/.cache/xec-ml-wl/aclic"
 
 LOADER="\$HOME/.cache/xec-ml-wl/prep_real_loader_\${SLURM_ARRAY_JOB_ID}_\${SLURM_ARRAY_TASK_ID}.C"
 FUNC_NAME="prep_real_loader_\${SLURM_ARRAY_JOB_ID}_\${SLURM_ARRAY_TASK_ID}"
 cat > "\${LOADER}" <<MACRO_EOF
 void \${FUNC_NAME}() {
+    gSystem->SetBuildDir("\$HOME/.cache/xec-ml-wl/aclic");
     gROOT->ProcessLine(".L ${MACRO_PATH}+");
     gROOT->ProcessLine("PrepareRealDataInpainterFromListRange(\"${RUNLIST}\", \${START_IDX}, \${N_FILES}, \"${OUTPUT_DIR}\", \"\${DATE_LABEL}\")");
 }
