@@ -401,27 +401,43 @@ def _fill_dead_neighbor_avg(x_norm, dead_mask_1d, baseline):
     return x_filled
 
 
-def _fill_dead_inpainter(x_norm, dead_mask_1d, model, device, batch_size=512):
-    """Replace dead npho+time with inpainter predictions."""
+def _fill_dead_inpainter(x_norm, dead_mask_1d, model, device,
+                         npho_raw, time_raw, transform,
+                         sentinel_npho=SENTINEL_NPHO, batch_size=512):
+    """Replace dead npho with inpainter predictions.
+
+    The TorchScript inpainter takes raw (npho, time) and returns raw npho.
+    We re-normalize the inpainted raw npho with the regressor's transform
+    and place it into x_norm at dead channels.
+    """
     x_filled = x_norm.copy()
     N = x_filled.shape[0]
     mask_2d = np.broadcast_to(dead_mask_1d[None, :], (N, N_CHANNELS)).copy()
 
+    # Build raw input for inpainter: (B, 4760, 2)
+    x_raw_inp = np.stack([npho_raw, time_raw], axis=-1).astype(np.float32)
+
     for start in range(0, N, batch_size):
         end = min(start + batch_size, N)
-        x_batch = torch.from_numpy(x_filled[start:end]).to(device)
-        m_batch = torch.from_numpy(mask_2d[start:end]).to(device)
+        x_batch = torch.from_numpy(x_raw_inp[start:end]).to(device)
+        m_batch = torch.from_numpy(mask_2d[start:end].astype(np.float32)).to(device)
 
         with torch.no_grad():
             pred = model(x_batch, m_batch)
 
+        # pred shape: (batch, 4760) — raw npho with inpainted values
         pred_np = pred.cpu().numpy()
 
-        if pred_np.shape[-1] >= 2:
-            x_filled[start:end, dead_mask_1d, 0] = pred_np[:, dead_mask_1d, 0]
-            x_filled[start:end, dead_mask_1d, 1] = pred_np[:, dead_mask_1d, 1]
-        else:
-            x_filled[start:end, dead_mask_1d, 0] = pred_np[:, dead_mask_1d, 0]
+        # Re-normalize inpainted raw npho using the regressor's transform
+        inpainted_npho = pred_np[:, dead_mask_1d]
+        inpainted_npho_safe = np.where(
+            (inpainted_npho > 9e9) | np.isnan(inpainted_npho),
+            0.0, inpainted_npho)
+        domain_min = transform.domain_min()
+        inpainted_npho_safe = np.where(
+            inpainted_npho_safe < domain_min, 0.0, inpainted_npho_safe)
+        inpainted_norm = transform.forward(inpainted_npho_safe)
+        x_filled[start:end, dead_mask_1d, 0] = inpainted_norm
 
     return x_filled
 
@@ -630,7 +646,8 @@ def _run_dead_channel_recovery(args, norm_params):
         if have_inpainter:
             x_inpainted = _fill_dead_inpainter(
                 x_norm, dead_mask_1d, inpainter_model,
-                args.device, batch_size=args.batch_size,
+                args.device, npho_raw, time_raw, transform,
+                sentinel_npho=sentinel_npho, batch_size=args.batch_size,
             )
         else:
             x_inpainted = None
