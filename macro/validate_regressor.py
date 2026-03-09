@@ -677,10 +677,6 @@ def _run_dead_channel_recovery(args, norm_params):
     to avoid loading both PyTorch and ONNX runtime in the same process
     (which would exceed available memory).
     """
-    import uproot
-    import onnxruntime as ort
-    from lib.inpainter_baselines import NeighborAverageBaseline
-
     npho_scheme = norm_params.get("npho_scheme", "log1p")
     transform = NphoTransform(
         scheme=npho_scheme,
@@ -688,9 +684,11 @@ def _run_dead_channel_recovery(args, norm_params):
         npho_scale2=norm_params["npho_scale2"],
     )
     print(f"[INFO] Npho transform: {transform}")
-    _mem_log("after imports")
 
     # --- Run inpainter in isolated subprocess (if requested) ---
+    # IMPORTANT: Do NOT import onnxruntime/uproot before the subprocess finishes.
+    # SLURM counts total memory of parent + child; keeping the parent lean
+    # during the subprocess phase avoids OOM.
     have_inpainter = bool(args.inpainter_torchscript or args.inpainter_checkpoint)
     inpaint_bin_path = None
     inpaint_file = None
@@ -698,6 +696,8 @@ def _run_dead_channel_recovery(args, norm_params):
     if have_inpainter:
         import subprocess as sp
         import tempfile
+
+        _mem_log("before inpainter subprocess")
 
         inpaint_bin_path = tempfile.mktemp(suffix=".bin", prefix="inpaint_")
         cmd = [
@@ -734,6 +734,12 @@ def _run_dead_channel_recovery(args, norm_params):
         inpaint_file = open(inpaint_bin_path, "rb")
     else:
         print("[INFO] No inpainter provided — inpainted strategy will output 1e10")
+
+    # --- Now safe to import heavy libraries (subprocess has exited) ---
+    import uproot
+    import onnxruntime as ort
+    from lib.inpainter_baselines import NeighborAverageBaseline
+    _mem_log("after imports (uproot + onnxruntime)")
 
     # --- Load regressor ONNX ---
     print(f"[INFO] Loading regressor: {args.checkpoint}")
