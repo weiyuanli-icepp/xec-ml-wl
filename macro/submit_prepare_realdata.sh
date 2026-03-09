@@ -16,7 +16,7 @@
 #   ANALYZER_DIR  - Path to meganalyzer (default: $HOME/meghome/offline/analyzer)
 #   START_FROM    - Skip the first N days (default: 0)
 #
-# Output: one ROOT file per day in output_dir/DataGammaAngle_YYYY-MM-DD.root
+# Output: one ROOT file per day in output_dir/DataGamma_YYYY-MM-DD.root
 #
 
 set -euo pipefail

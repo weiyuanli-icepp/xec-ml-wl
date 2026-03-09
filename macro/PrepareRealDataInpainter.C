@@ -92,7 +92,7 @@ void PrepareRealDataInpainterFromList(TString runListFile, Int_t jobIndex, TStri
    std::cout << "[INFO] Processing run " << runNumber << ": " << filePath << std::endl;
 
    gSystem->mkdir(outputDir.Data(), kTRUE);
-   TString outFile = Form("%s/DataGammaAngle_%06d.root", outputDir.Data(), runNumber);
+   TString outFile = Form("%s/DataGamma_%06d.root", outputDir.Data(), runNumber);
    _PrepareRealDataInpainter_impl(rec, outFile);
 }
 
@@ -157,9 +157,9 @@ void PrepareRealDataInpainterFromListRange(TString runListFile, Int_t startIdx, 
    gSystem->mkdir(outputDir.Data(), kTRUE);
    TString outFile;
    if (dateLabel.Length() > 0) {
-      outFile = Form("%s/DataGammaAngle_%s.root", outputDir.Data(), dateLabel.Data());
+      outFile = Form("%s/DataGamma_%s.root", outputDir.Data(), dateLabel.Data());
    } else {
-      outFile = Form("%s/DataGammaAngle_%06d.root", outputDir.Data(), firstRun);
+      outFile = Form("%s/DataGamma_%06d.root", outputDir.Data(), firstRun);
    }
    _PrepareRealDataInpainter_impl(rec, outFile);
 }

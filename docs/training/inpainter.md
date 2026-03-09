@@ -1395,7 +1395,7 @@ After training and validating the inpainter on MC data, the model can be fine-tu
                                                            │
                                                            ▼
 ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  Fine-tuned      │<────│  Inpainter       │<────│  DataGammaAngle  │
+│  Fine-tuned      │<────│  Inpainter       │<────│  DataGamma       │
 │  Checkpoint      │     │  Training        │     │  ROOT files      │
 └──────────────────┘     └──────────────────┘     └──────────────────┘
 ```
@@ -1439,7 +1439,7 @@ Each run is processed through `PrepareRealDataInpainter.C`, which:
 - Reads rec trees with minimal selection (trigger mask only, no physics selection or pileup cut)
 - Extracts `npho`, `time` arrays from `xeccl` branch (4760 channels)
 - Computes `relative_npho` (normalized by max) and `relative_time` (shifted by min)
-- Outputs one ROOT file per run: `DataGammaAngle_RRRRRR.root`
+- Outputs one ROOT file per day: `DataGamma_YYYY-MM-DD.root`
 
 ```bash
 # Submit SLURM job array (batches ~42 runs per task)
@@ -1472,21 +1472,9 @@ Move or symlink the processed files into `train/` and `val/` directories, then c
 ```bash
 # Move processed files
 mkdir -p data/real_data/train data/real_data/val
-mv data/real_data/raw/DataGammaAngle_*.root data/real_data/train/
-mv data/real_data/val_raw/DataGammaAngle_*.root data/real_data/val/
-
-# Create symlink splits (train_tiny, train_small, train_middle, etc.)
-bash macro/symlink_realdata.sh
+mv data/real_data/raw/DataGamma_*.root data/real_data/train/
+mv data/real_data/val_raw/DataGamma_*.root data/real_data/val/
 ```
-
-Split sizes (by sorted file order, filtering out empty files < 1KB):
-| Split | Files |
-|-------|-------|
-| `train_tiny` | 10 |
-| `train_small` | 50 |
-| `train_middle` | 150 |
-| `train_large` | 467 |
-| `train_max` | all |
 
 ### Step 4: Fine-Tune the Inpainter
 
