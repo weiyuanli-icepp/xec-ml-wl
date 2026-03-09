@@ -87,7 +87,7 @@ training:
     target: uniform
 
 checkpoint:
-  resume_from: "~/meghome/xec-ml-wl/artifacts/inp_scan_s3/best_model.pt"
+  resume_from: "~/meghome/xec-ml-wl/artifacts/inp_scan_s3_nphowt/inpainter.pt"
   save_dir: "artifacts/inp_finetune_realdata"
   save_interval: 5
   save_predictions: true
