@@ -264,20 +264,31 @@ Output: `val_data/cex/patch{1..24}/predictions_energy_*.csv` (standard mode) or 
 Merge all patches and produce resolution plots with Gaussian fits:
 
 ```bash
+# Standard mode (prediction CSVs)
 python macro/combine_cex_results.py
+
+# Dead-channel mode (regressor_*.root files with recovery strategies)
+python macro/combine_cex_results.py --dead-channel
 ```
 
-**Output files:**
+**Standard mode output:**
 - `val_data/cex/CEX23_combined.root` — all events with `patch` column
 - `val_data/cex/CEX23_resolution.pdf` — multi-page PDF:
   - Page 1: Resolution (σ) and bias (μ) vs patch with Gaussian-fit error bars
   - Page 2: Combined residual histogram with Gaussian fit overlay
   - Pages 3+: Per-patch residual histograms with individual Gaussian fits
 
+**Dead-channel mode output:**
+- `val_data/cex/CEX23_dead_channel_resolution.pdf` — multi-page PDF:
+  - Page 1: Resolution (core σ) and bias (μ) vs patch for each recovery strategy
+  - Page 2: Combined residual histograms (one per strategy) with double-Gaussian fits
+  - Pages 3+: Per-patch overlaid histograms comparing all strategies
+
 Options:
 ```bash
 # Specific patches only
 python macro/combine_cex_results.py --patches 13 12 21
+python macro/combine_cex_results.py --dead-channel --patches 13 12 21
 
 # Data only, skip plots
 python macro/combine_cex_results.py --no-plots
