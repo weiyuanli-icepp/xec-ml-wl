@@ -199,6 +199,9 @@ fi
 cd \$HOME/meghome/xec-ml-wl
 echo "[JOB] Directory: \$(pwd)"
 
+# Prevent PyTorch from loading CUDA libraries on CPU-only nodes
+export CUDA_VISIBLE_DEVICES=""
+
 python macro/validate_regressor.py \\
     ${CHECKPOINT} \\
     --val_path "${VAL_PATH}" \\

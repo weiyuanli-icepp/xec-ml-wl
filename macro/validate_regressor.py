@@ -556,8 +556,9 @@ def _run_dead_channel_recovery(args, norm_params):
     # --- Load regressor ONNX ---
     print(f"[INFO] Loading regressor: {args.checkpoint}")
     sess_opts = ort.SessionOptions()
-    n_threads = int(os.environ.get("SLURM_CPUS_PER_TASK",
-                    os.environ.get("OMP_NUM_THREADS", 4)))
+    # Use 1 thread to minimise per-thread workspace memory (important when
+    # both the regressor and inpainter models are loaded simultaneously).
+    n_threads = 1
     sess_opts.inter_op_num_threads = n_threads
     sess_opts.intra_op_num_threads = n_threads
     print(f"[INFO] ONNX threads: {n_threads}")
