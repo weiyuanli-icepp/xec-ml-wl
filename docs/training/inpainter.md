@@ -1433,50 +1433,70 @@ Format (two columns, `#` comments allowed):
 430124 /data/project/meg/offline/run/430xxx/rec430124_open.root
 ```
 
-### Step 2: Process Rec Files with Meganalyzer
+### Step 2: Pre-compile the ROOT Macro
 
-Each run is processed through `PrepareRealDataInpainter.C`, which:
+Before submitting batch jobs, compile the macro once to avoid race conditions
+(multiple jobs trying to compile simultaneously). ACLiC output is redirected
+to `~/.cache/xec-ml-wl/aclic/` to keep the `macro/` directory clean.
+
+```bash
+cd ~/meghome/offline/analyzer
+
+# Create a one-shot compile loader
+echo 'void compile_prep() { gSystem->SetBuildDir("'$HOME'/.cache/xec-ml-wl/aclic"); gROOT->ProcessLine(".L '$HOME'/meghome/xec-ml-wl/macro/PrepareRealDataInpainter.C+"); }' > $HOME/.cache/xec-ml-wl/compile_prep.C
+
+# Run it
+./meganalyzer -b -q -I "$HOME/.cache/xec-ml-wl/compile_prep.C()"
+```
+
+If you see compilation artifacts in `macro/` (e.g. `*_C.so`, `*_ACLiC_dict*`), clean them up:
+```bash
+rm -f macro/PrepareRealDataInpainter_C*
+```
+
+### Step 3: Process Rec Files with Meganalyzer
+
+Each day's runs (up to 20) are chained together and processed through
+`PrepareRealDataInpainter.C`, which:
 - Reads rec trees with minimal selection (trigger mask only, no physics selection or pileup cut)
 - Extracts `npho`, `time` arrays from `xeccl` branch (4760 channels)
 - Computes `relative_npho` (normalized by max) and `relative_time` (shifted by min)
 - Outputs one ROOT file per day: `DataGamma_YYYY-MM-DD.root`
 
 ```bash
-# Submit SLURM job array (batches ~42 runs per task)
-bash macro/submit_prepare_realdata.sh data/real_data/runlist_train.txt data/real_data/raw
+# Submit train processing (one SLURM task per day)
+bash macro/submit_prepare_realdata.sh \
+    data/real_data/runlist_train.txt \
+    data/real_data/runlist_train_days.txt \
+    data/real_data/raw
+
+# Submit val processing
+bash macro/submit_prepare_realdata.sh \
+    data/real_data/runlist_val.txt \
+    data/real_data/runlist_val_days.txt \
+    data/real_data/val_raw
 
 # Environment variables:
-#   RUNS_PER_JOB=42      Runs processed per SLURM task (default: 42)
-#   START_FROM=0          Skip first N runlist entries (for resuming)
+#   START_FROM=0          Skip first N days (for resuming)
 #   PARTITION=meg-short   SLURM partition
-
-# Example: resume after first 2000 entries already processed
-START_FROM=2000 bash macro/submit_prepare_realdata.sh data/real_data/runlist_train.txt
 ```
 
 **Notes:**
-- Each SLURM task processes `RUNS_PER_JOB` consecutive runlist entries in series
-- SLURM max array index is 1999, so batching keeps total tasks under 2000
-- The macro must be run from the meganalyzer directory (the script handles this)
+- Each SLURM task processes one day's worth of runs (~20 files chained via TChain)
+- With ~467 days, this fits in a single SLURM array (max index 1999)
 - Time limit is 1 hour per task on `meg-short`
 
-**For val data:** repeat with the val runlist:
-```bash
-bash macro/submit_prepare_realdata.sh data/real_data/runlist_val.txt data/real_data/val_raw
-```
+### Step 4: Organize into Train/Val Directories
 
-### Step 3: Organize into Train/Val Directories
-
-Move or symlink the processed files into `train/` and `val/` directories, then create size-based splits:
+Move the processed files into `train/` and `val/` directories:
 
 ```bash
-# Move processed files
 mkdir -p data/real_data/train data/real_data/val
 mv data/real_data/raw/DataGamma_*.root data/real_data/train/
 mv data/real_data/val_raw/DataGamma_*.root data/real_data/val/
 ```
 
-### Step 4: Fine-Tune the Inpainter
+### Step 5: Fine-Tune the Inpainter
 
 Fine-tune from the best MC-trained checkpoint (e.g., scan step 3) using the real data config:
 
@@ -1507,7 +1527,7 @@ python -m lib.train_inpainter --config config/inp/finetune_realdata.yaml
 | `npho_max_used` | Float | Max npho value used for normalization |
 | `time_min_used` | Float | Min time value used for normalization |
 
-### Step 5: Validate on Real Data
+### Step 6: Validate on Real Data
 
 After fine-tuning, validate using artificial masking on held-out real data:
 
