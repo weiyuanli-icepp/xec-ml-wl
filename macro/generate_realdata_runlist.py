@@ -5,7 +5,7 @@ Generate train/val run lists for PrepareRealDataInpainter from the MEG2 database
 Queries RunCatalog for physics runs (Physics=1, Junk=0, after 2021),
 groups by date, and produces two runlists:
   - val:   1st found rec file on days divisible by 3 (day_index % 3 == 0)
-  - train: 2nd through 201st found rec files on every day (up to 200 per day)
+  - train: 2nd through 21st found rec files on every day (up to 20 per day)
 
 Usage:
     python macro/generate_realdata_runlist.py
@@ -111,7 +111,7 @@ def build_default_path(run_number):
     return os.path.join(REC_DIR, run_dir, f"rec{run_number:06d}_open.root")
 
 
-def sample_train_val(by_date, no_file_check=False, max_train_per_day=200,
+def sample_train_val(by_date, no_file_check=False, max_train_per_day=20,
                      skip_train=1):
     """
     Build train and val runlists from grouped runs.
