@@ -647,6 +647,105 @@ If you need true sparse convolution (e.g., for 3D point clouds or extremely high
 
 ---
 
+## Sparse Timing Reconstruction: Literature Survey
+
+This section summarizes how other particle physics experiments handle **sparse timing data** from photon detectors using deep learning. This is directly relevant to our timing regressor problem: out of 4760 sensors, only ~100-300 (2-6%) have valid timing (`npho >= npho_threshold`), making the time channel ~95% sentinel values.
+
+### The Problem
+
+Standard CNNs process all input positions equally. When the time channel is mostly sentinel, the network wastes capacity learning to ignore invalid values. Experiments at similar detectors have encountered the same issue and developed several approaches.
+
+### Survey of Approaches
+
+#### WatChMaL / Hyper-Kamiokande (Water Cherenkov)
+
+- **Architecture:** ResNet-18 with charge and time as 2 input channels in a 2D event display image
+- **Key finding:** Initial attempts at including additional timing channels were **not successful** at improving results
+- **Implication:** Simply stacking timing as a second channel in a standard CNN is insufficient for sparse timing data. This matches our experience.
+- **Reference:** [Hyper-K IWCD Deep Learning Analysis](https://arxiv.org/html/2411.09562v1); [WatChMaL reconstruction](https://indico.physics.lbl.gov/event/1192/contributions/4956/attachments/2349/3047/DANCE-ML_WatChMaL.pdf)
+
+#### KamNet / KamLAND-Zen (Liquid Scintillator, ~1900 PMTs)
+
+- **Architecture:** S2CNN (spherical CNN using group theory) + ConvLSTM for temporal correlations
+- **Key idea:** Separate spatial and temporal processing with architecturally distinct components, rather than simply stacking channels
+- **Spherical geometry:** Conventional CNN on a 2D projection of a sphere introduces space-varying distortion that makes translational weight sharing ineffective. S2CNN respects the true geometry.
+- **Temporal:** ConvLSTM processes time-ordered PMT hit maps as a sequence, enabling the network to learn correlations in the temporal structure
+- **Attention:** Includes attention mechanism to identify which spatial regions drive the prediction
+- **Reference:** [KamNet (arXiv:2203.01870)](https://arxiv.org/abs/2203.01870), Phys. Rev. C 107, 014323 (2023)
+
+#### JUNO (Liquid Scintillator, ~18000 PMTs)
+
+- **Architectures tested:** BDT, DNN, ResNet-50, VGG, DeepSphere (GNN)
+- **Key feature:** **First-hit-time** — the arrival time of the first photon at each PMT encodes distance to the interaction vertex. This is more informative than raw timing.
+- **Input:** PMT charge and first-hit-time as separate features. Graph-based methods (DeepSphere) use adapted ResNet blocks with graph convolution layers.
+- **Hit time residual:** Uses the residual between observed hit time and expected time-of-flight as a PDF for vertex fitting
+- **Performance:** Achieves 10 cm vertex resolution at 1 MeV using ML
+- **Reference:** [JUNO Vertex Reconstruction (arXiv:2101.04839)](https://arxiv.org/abs/2101.04839); [JUNO Aggregated Features (arXiv:2206.09040)](https://arxiv.org/abs/2206.09040)
+
+#### IceCube-style Neutrino Telescopes (Sparse DOMs)
+
+- **Architecture:** UNet++ operating in latent space
+- **Key innovation:** **VAE-compressed timing** — A Variational Autoencoder compresses variable-length photon hit time series from each sensor into a fixed 64-dimensional latent vector
+- **Input per sensor:** 3D position (3) + hit count (1) + timing latent vector (64) = 68 features
+- **Handling unhit sensors:** The timing latent vector is only trained on sensors that detected light. Unhit sensors get a learned distinct representation.
+- **Sparse CNN:** Uses Sparse Submanifold CNN (SSCNN) as baseline to avoid computation on empty regions
+- **Reference:** [Super-Resolution for Neutrino Telescopes (arXiv:2408.08474)](https://arxiv.org/html/2408.08474v1)
+
+#### GNN for LArTPC (Graph Neural Network)
+
+- **Architecture:** Graph neural network with multi-head attention message passing
+- **Input per node:** Wire index, time coordinate, Gaussian integral, RMS pulse width (4 features)
+- **Sparsity handling:** GNN naturally handles sparsity — only sensors with hits become graph nodes. Empty sensors don't exist in the graph.
+- **Connectivity:** Edges formed via Delaunay triangulation using wire/time coordinates, avoiding dense computation on empty regions
+- **Missing data:** When a nexus node has no connections on a given plane, that plane's contribution is set to zero
+- **Reference:** [GNN for Neutrino Physics (arXiv:2403.11872)](https://arxiv.org/html/2403.11872)
+
+### Key Lessons for Our Architecture
+
+| Lesson | Source | Relevance |
+|--------|--------|-----------|
+| Stacking time as a CNN channel doesn't work well for sparse data | WatChMaL | Explains why our timing regressor predicts ~0 |
+| Separate spatial and temporal processing branches | KamNet | Process npho (dense) and time (sparse) differently |
+| First-hit-time is more informative than raw timing | JUNO | Consider pre-computing timing summary features |
+| Compress timing into latent vectors | IceCube | VAE on valid-time sensors before main network |
+| GNN naturally handles sparsity | LArTPC GNN | Only process sensors with valid timing as nodes |
+| Attention helps identify relevant regions | KamNet | Use attention masking on sentinel positions |
+
+### Practical Options for Our Timing Regressor
+
+Ordered from least to most invasive:
+
+1. **Lower npho_threshold + distinct sentinel** (implemented in timing scan step 5)
+   - `npho_threshold`: 100 → 10 (~3x more valid timing sensors)
+   - `sentinel_time`: -1.0 → -5.0 (clear separation from valid range [-0.46, 2.2])
+
+2. **Binary validity mask as third input channel**
+   - Add channel: 1.0 for valid time, 0.0 for sentinel
+   - Gives the model an explicit "trust this sensor" signal
+
+3. **Aggregated timing features** (inspired by JUNO)
+   - Pre-compute summary statistics as extra input channels:
+     - Weighted-mean time (weighted by npho)
+     - Time spread / RMS across valid sensors
+     - Number of sensors with valid timing
+   - Dense features that the CNN can actually use
+
+4. **Attention masking in transformer layers**
+   - Mask sentinel positions in self-attention so they don't contribute
+   - Architecturally natural for our transformer fusion
+
+5. **Two-branch architecture** (inspired by KamNet)
+   - Branch A: npho channel (dense, all sensors) → standard CNN
+   - Branch B: time channel (sparse, valid sensors only) → sparse processing
+   - Merge at fusion stage
+
+6. **GNN / point-cloud for timing** (inspired by LArTPC GNN)
+   - Treat only valid-time sensors as graph nodes with (position, npho, time) features
+   - Naturally handles variable sparsity per event
+   - Most architecturally correct, but requires significant refactoring
+
+---
+
 ## References
 
 ### Core Architecture Papers
@@ -697,3 +796,20 @@ If you need true sparse convolution (e.g., for 3D point clouds or extremely high
 
 13. **SAGAN** - Zhang, H., et al. "Self-Attention Generative Adversarial Networks." ICML 2019. [arXiv:1805.08318](https://arxiv.org/abs/1805.08318)
     - *Summary:* Self-attention for image generation. Key finding: attention at 32×32/64×64 features outperforms 8×8/16×16 (FID 22.98 → 18.28).
+
+### Sparse Timing / Detector Reconstruction
+
+14. **KamNet** - Li, A., et al. "KamNet: An Integrated Spatiotemporal Deep Neural Network for Rare Event Search in KamLAND-Zen." Phys. Rev. C 107, 014323 (2023). [arXiv:2203.01870](https://arxiv.org/abs/2203.01870)
+    - *Summary:* S2CNN (spherical CNN) + ConvLSTM for spatiotemporal processing of sparse PMT data. Respects spherical detector geometry. Outperforms conventional CNN with attention mechanism for physics interpretability.
+
+15. **JUNO Vertex Reconstruction** - Qian, Z., et al. "Vertex and Energy Reconstruction in JUNO with Machine Learning Methods." NIM A 1010, 165527 (2021). [arXiv:2101.04839](https://arxiv.org/abs/2101.04839)
+    - *Summary:* Compares BDT, DNN, ResNet-50, VGG, DeepSphere GNN for vertex/energy reconstruction in a 18000-PMT liquid scintillator detector. First-hit-time is a key feature for vertex resolution.
+
+16. **JUNO Aggregated Features** - Gavrikov, A., et al. "Energy reconstruction for large liquid scintillator detectors with machine learning techniques: aggregated features approach." Eur. Phys. J. C 82, 1004 (2022). [arXiv:2206.09040](https://arxiv.org/abs/2206.09040)
+    - *Summary:* Pre-computes summary statistics from PMT hits as input features rather than using raw per-PMT data. Achieves competitive performance with much simpler input representation.
+
+17. **Neutrino Telescope Super-Resolution** - Li, F., et al. "Enhancing Events in Neutrino Telescopes through Deep Learning-Driven Super-Resolution." (2024). [arXiv:2408.08474](https://arxiv.org/abs/2408.08474)
+    - *Summary:* Uses VAE to compress variable-length photon timing sequences into fixed 64-dim latent vectors per sensor. UNet++ in latent space. Only trains timing encoder on sensors that detected light.
+
+18. **GNN for Neutrino Physics** - Hewes, J., et al. "Graph Neural Network for Neutrino Physics Event Reconstruction." (2024). [arXiv:2403.11872](https://arxiv.org/abs/2403.11872)
+    - *Summary:* Graph neural network for LArTPC reconstruction. Only active sensors are graph nodes (natural sparsity handling). Multi-head attention message passing with Delaunay triangulation connectivity.
