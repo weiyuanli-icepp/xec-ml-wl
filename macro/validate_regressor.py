@@ -527,6 +527,121 @@ def _expand_task_results(task_results):
 
 
 # ======================================================================
+# Inpainter subprocess (memory-isolated)
+# ======================================================================
+
+def _run_inpaint_only(args):
+    """Run inpainter in isolation and write raw npho to a binary file.
+
+    This is called in a subprocess via ``--_inpaint_to`` so that PyTorch
+    memory is completely freed before the ONNX regressor runs.
+    """
+    import torch
+    import uproot
+    import glob as globmod
+
+    output_file = args._inpaint_to
+
+    # --- Load inpainter ---
+    if args.inpainter_torchscript:
+        print(f"[inpaint] Loading TorchScript: {args.inpainter_torchscript}")
+        model = torch.jit.load(args.inpainter_torchscript,
+                               map_location=args.device)
+        model.eval()
+        is_torchscript = True
+    elif args.inpainter_checkpoint:
+        from val_data.validate_inpainter_real import load_inpainter_model
+        print(f"[inpaint] Loading checkpoint: {args.inpainter_checkpoint}")
+        model, _ = load_inpainter_model(args.inpainter_checkpoint,
+                                        device=args.device)
+        is_torchscript = False
+    else:
+        print("[inpaint] ERROR: no inpainter model specified")
+        sys.exit(1)
+
+    # --- Resolve dead mask ---
+    dead_mask_1d = None
+    if args.dead_from_db is not None:
+        from lib.db_utils import get_dead_channel_mask
+        dead_mask_1d = get_dead_channel_mask(args.dead_from_db)
+    elif args.dead_from_file is not None:
+        from lib.db_utils import load_dead_channel_list
+        dead_indices = load_dead_channel_list(args.dead_from_file)
+        dead_mask_1d = np.zeros(N_CHANNELS, dtype=bool)
+        dead_mask_1d[dead_indices] = True
+
+    # --- Discover branches ---
+    tree_name = args.tree_name
+    branches_needed = ["npho", "relative_time", "dead"]
+    if any(c in args.val_path for c in "*?["):
+        discover_files = sorted(globmod.glob(args.val_path))
+        if not discover_files:
+            print(f"[inpaint] ERROR: no files match: {args.val_path}")
+            sys.exit(1)
+        discover_path = discover_files[0]
+    else:
+        discover_path = args.val_path
+    with uproot.open(discover_path) as f_check:
+        available = set(f_check[tree_name].keys())
+    read_branches = [b for b in branches_needed if b in available]
+
+    # --- Process chunks ---
+    total = 0
+    t0 = time.time()
+
+    with open(output_file, "wb") as f_out:
+        for arrays in uproot.iterate(
+            f"{args.val_path}:{tree_name}",
+            expressions=read_branches,
+            step_size=args.chunksize,
+            library="np",
+        ):
+            npho_raw = arrays["npho"].astype(np.float32)
+            time_raw = arrays["relative_time"].astype(np.float32)
+            B = len(npho_raw)
+
+            # Auto-detect dead mask from first chunk
+            if dead_mask_1d is None:
+                dead_br = arrays.get("dead", None)
+                dead_mask_1d = _detect_dead_channels(dead_br, npho_raw)
+                print(f"[inpaint] Dead channels: {int(dead_mask_1d.sum())}")
+
+            # Build inpainter input
+            if is_torchscript:
+                x_input = np.stack([npho_raw, time_raw],
+                                   axis=-1).astype(np.float32)
+            else:
+                # Checkpoint inpainter expects normalised input —
+                # not supported in subprocess mode (rare path).
+                print("[inpaint] ERROR: --inpainter-checkpoint not supported "
+                      "in subprocess mode")
+                sys.exit(1)
+
+            mask_2d = np.broadcast_to(
+                dead_mask_1d[None, :], (B, N_CHANNELS)).copy()
+
+            result = npho_raw.copy()
+            for start in range(0, B, args.batch_size):
+                end = min(start + args.batch_size, B)
+                x_batch = torch.from_numpy(
+                    x_input[start:end]).to(args.device)
+                m_batch = torch.from_numpy(
+                    mask_2d[start:end].astype(np.float32)).to(args.device)
+                with torch.no_grad():
+                    pred = model(x_batch, m_batch)
+                result[start:end] = pred.cpu().numpy()
+
+            f_out.write(result.astype(np.float32).tobytes())
+            total += B
+            elapsed = time.time() - t0
+            rate = total / elapsed if elapsed > 0 else 0
+            print(f"  [inpaint] {total} events ({elapsed:.1f}s, "
+                  f"{rate:.0f} evt/s)", end="\r")
+
+    print(f"\n[inpaint] Done: {total} events in {time.time() - t0:.1f}s")
+
+
+# ======================================================================
 # Dead-channel recovery mode
 # ======================================================================
 
@@ -536,6 +651,10 @@ def _run_dead_channel_recovery(args, norm_params):
     Reads CEX ROOT files via uproot, applies three dead-channel recovery
     strategies (raw, neighbor averaging, ML inpainting), runs the ONNX
     regressor on each variant, and writes results to a ROOT file.
+
+    When an inpainter model is requested, it runs in an isolated subprocess
+    to avoid loading both PyTorch and ONNX runtime in the same process
+    (which would exceed available memory).
     """
     import uproot
     import onnxruntime as ort
@@ -549,12 +668,53 @@ def _run_dead_channel_recovery(args, norm_params):
     )
     print(f"[INFO] Npho transform: {transform}")
 
+    # --- Run inpainter in isolated subprocess (if requested) ---
+    have_inpainter = bool(args.inpainter_torchscript or args.inpainter_checkpoint)
+    inpaint_bin_path = None
+    inpaint_file = None
+
+    if have_inpainter:
+        import subprocess as sp
+        import tempfile
+
+        inpaint_bin_path = tempfile.mktemp(suffix=".bin", prefix="inpaint_")
+        cmd = [
+            sys.executable, os.path.abspath(__file__),
+            args.checkpoint,                # positional (unused but required)
+            "--val_path", args.val_path,
+            "--tree-name", args.tree_name,
+            "--chunksize", str(args.chunksize),
+            "--batch_size", str(args.batch_size),
+            "--device", args.device,
+            "--_inpaint_to", inpaint_bin_path,
+        ]
+        if args.inpainter_torchscript:
+            cmd += ["--inpainter-torchscript", args.inpainter_torchscript]
+        elif args.inpainter_checkpoint:
+            cmd += ["--inpainter-checkpoint", args.inpainter_checkpoint]
+        if args.dead_from_db is not None:
+            cmd += ["--dead-from-db", str(args.dead_from_db)]
+        if args.dead_from_file is not None:
+            cmd += ["--dead-from-file", args.dead_from_file]
+
+        print("[INFO] Running inpainter in isolated subprocess...")
+        result = sp.run(cmd)
+        if result.returncode != 0:
+            print(f"[ERROR] Inpainter subprocess failed (exit {result.returncode})")
+            if inpaint_bin_path and os.path.exists(inpaint_bin_path):
+                os.unlink(inpaint_bin_path)
+            sys.exit(1)
+
+        print("[INFO] Inpainter subprocess completed — memory freed")
+        inpaint_file = open(inpaint_bin_path, "rb")
+    else:
+        print("[INFO] No inpainter provided — inpainted strategy will output 1e10")
+
     # --- Load regressor ONNX ---
     print(f"[INFO] Loading regressor: {args.checkpoint}")
     sess_opts = ort.SessionOptions()
-    # Use 1 thread to minimise per-thread workspace memory (important when
-    # both the regressor and inpainter models are loaded simultaneously).
-    n_threads = 1
+    n_threads = int(os.environ.get("SLURM_CPUS_PER_TASK",
+                    os.environ.get("OMP_NUM_THREADS", 4)))
     sess_opts.inter_op_num_threads = n_threads
     sess_opts.intra_op_num_threads = n_threads
     print(f"[INFO] ONNX threads: {n_threads}")
@@ -567,28 +727,6 @@ def _run_dead_channel_recovery(args, norm_params):
     if args.tasks:
         task_map = {t: task_map[t] for t in args.tasks if t in task_map}
     print(f"[INFO] Active tasks: {list(task_map.keys())}")
-
-    # --- Load inpainter (optional) ---
-    inpainter_model = None
-    have_inpainter = False
-    inpainter_is_torchscript = False
-
-    if args.inpainter_torchscript:
-        import torch
-        print(f"[INFO] Loading TorchScript inpainter: {args.inpainter_torchscript}")
-        inpainter_model = torch.jit.load(args.inpainter_torchscript,
-                                         map_location=args.device)
-        inpainter_model.eval()
-        have_inpainter = True
-        inpainter_is_torchscript = True
-    elif args.inpainter_checkpoint:
-        from val_data.validate_inpainter_real import load_inpainter_model
-        inpainter_model, _ = load_inpainter_model(args.inpainter_checkpoint,
-                                                   device=args.device)
-        have_inpainter = True
-
-    if not have_inpainter:
-        print("[INFO] No inpainter provided \u2014 inpainted strategy will output 1e10")
 
     # --- Build neighbor baseline ---
     print(f"[INFO] Building neighbor map (k={args.neighbor_k})")
@@ -705,18 +843,26 @@ def _run_dead_channel_recovery(args, norm_params):
         flat_neighavg = _expand_task_results(res_neighavg)
         del x_neighavg, res_neighavg
 
-        # Strategy 3: inpainted
+        # Strategy 3: inpainted (read pre-computed from subprocess output)
         if have_inpainter:
-            x_inpainted = _fill_dead_inpainter(
-                x_norm, dead_mask_1d, inpainter_model,
-                args.device, npho_raw, time_raw, transform,
-                is_torchscript=inpainter_is_torchscript,
-                sentinel_npho=sentinel_npho, batch_size=args.batch_size,
-            )
-            res_inpainted = _run_regressor_onnx(reg_session, x_inpainted, task_map,
+            raw_bytes = inpaint_file.read(B * N_CHANNELS * 4)
+            inpainted_raw = np.frombuffer(
+                raw_bytes, dtype=np.float32).reshape(B, N_CHANNELS).copy()
+
+            # Re-normalize inpainted raw npho for the regressor
+            x_inpainted = x_norm.copy()
+            dead_raw = inpainted_raw[:, dead_mask_1d]
+            dead_safe = np.where(
+                (dead_raw > 9e9) | np.isnan(dead_raw), 0.0, dead_raw)
+            domain_min = transform.domain_min()
+            dead_safe = np.where(dead_safe < domain_min, 0.0, dead_safe)
+            x_inpainted[:, dead_mask_1d, 0] = transform.forward(dead_safe)
+
+            res_inpainted = _run_regressor_onnx(reg_session, x_inpainted,
+                                                task_map,
                                                 batch_size=args.batch_size)
             flat_inpainted = _expand_task_results(res_inpainted)
-            del x_inpainted, res_inpainted
+            del x_inpainted, res_inpainted, inpainted_raw
         else:
             flat_inpainted = {}
             for bname, arr in flat_raw.items():
@@ -753,6 +899,12 @@ def _run_dead_channel_recovery(args, norm_params):
 
     print()  # newline after \r
     f_out.close()
+
+    # Cleanup
+    if inpaint_file:
+        inpaint_file.close()
+    if inpaint_bin_path and os.path.exists(inpaint_bin_path):
+        os.unlink(inpaint_bin_path)
 
     elapsed = time.time() - t0
     print(f"[DONE] {total_events} events in {elapsed:.1f}s "
@@ -813,6 +965,10 @@ def main():
     dead_group.add_argument("--dead-from-file", type=str, metavar="PATH", default=None,
                             help="Load dead channel list from text file")
 
+    # Internal: run inpainter in isolated subprocess
+    parser.add_argument("--_inpaint_to", type=str, default=None,
+                        help=argparse.SUPPRESS)
+
     args = parser.parse_args()
 
     # Expand tilde in paths
@@ -824,6 +980,11 @@ def main():
         args.inpainter_checkpoint = os.path.expanduser(args.inpainter_checkpoint)
     if args.dead_from_file:
         args.dead_from_file = os.path.expanduser(args.dead_from_file)
+
+    # Inpaint-only subprocess mode (internal)
+    if args._inpaint_to:
+        _run_inpaint_only(args)
+        return
 
     if not os.path.exists(args.checkpoint):
         print(f"Error: Model not found: {args.checkpoint}")
