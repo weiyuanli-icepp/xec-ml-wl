@@ -24,8 +24,10 @@ import argparse
 import os
 import sys
 import time
+import warnings
 
 import numpy as np
+warnings.filterwarnings("ignore", message="Can't initialize NVML")
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -191,7 +193,13 @@ def _run_onnx(args, cfg, active_tasks, norm_params):
     sess_opts.inter_op_num_threads = n_threads
     sess_opts.intra_op_num_threads = n_threads
     print(f"[INFO] ONNX threads: {n_threads}")
-    sess = ort.InferenceSession(args.checkpoint, sess_options=sess_opts)
+    available_providers = ort.get_available_providers()
+    if "CUDAExecutionProvider" in available_providers:
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    else:
+        providers = ["CPUExecutionProvider"]
+    sess = ort.InferenceSession(args.checkpoint, sess_options=sess_opts,
+                                providers=providers)
 
     # Inspect model I/O
     input_info = sess.get_inputs()
@@ -553,13 +561,13 @@ def _run_dead_channel_recovery(args, norm_params):
     sess_opts.inter_op_num_threads = n_threads
     sess_opts.intra_op_num_threads = n_threads
     print(f"[INFO] ONNX threads: {n_threads}")
-    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    try:
-        reg_session = ort.InferenceSession(args.checkpoint, sess_options=sess_opts,
-                                           providers=providers)
-    except Exception:
-        reg_session = ort.InferenceSession(args.checkpoint, sess_options=sess_opts,
-                                           providers=["CPUExecutionProvider"])
+    available_providers = ort.get_available_providers()
+    if "CUDAExecutionProvider" in available_providers:
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    else:
+        providers = ["CPUExecutionProvider"]
+    reg_session = ort.InferenceSession(args.checkpoint, sess_options=sess_opts,
+                                       providers=providers)
 
     # Detect tasks
     task_map = _detect_tasks_onnx(reg_session)
