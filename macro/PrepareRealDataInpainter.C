@@ -97,6 +97,74 @@ void PrepareRealDataInpainterFromList(TString runListFile, Int_t jobIndex, TStri
 }
 
 // ---------------------------------------------------------------------------
+// Entry point: read a range of lines from a run-list file and chain them
+// into a single output file. Used for combining multiple runs (e.g. one day)
+// into one ROOT file.
+//
+//   runListFile  Text file with two columns: <run_number> <file_path>
+//   startIdx     0-based starting line index (non-comment lines)
+//   nFiles       Number of lines to read from startIdx
+//   outputDir    Directory for the output ROOT file
+//   dateLabel    Label for the output filename (e.g. "2023-11-15")
+// ---------------------------------------------------------------------------
+void PrepareRealDataInpainterFromListRange(TString runListFile, Int_t startIdx, Int_t nFiles,
+                                            TString outputDir = ".", TString dateLabel = "")
+{
+   std::ifstream ifs(runListFile.Data());
+   if (!ifs.is_open()) {
+      std::cout << "[Error] Cannot open run list: " << runListFile << std::endl;
+      return;
+   }
+
+   TChain *rec = new TChain("rec");
+   std::string line;
+   Int_t idx = 0;
+   Int_t nAdded = 0;
+   Int_t firstRun = -1;
+
+   while (std::getline(ifs, line)) {
+      if (line.empty() || line[0] == '#') { continue; }
+      if (idx >= startIdx && idx < startIdx + nFiles) {
+         Int_t runNumber = -1;
+         std::string filePath;
+         std::istringstream iss(line);
+         iss >> runNumber >> filePath;
+
+         if (runNumber < 0 || filePath.empty()) {
+            std::cout << "[WARN] Malformed line at index " << idx << ", skipping" << std::endl;
+         } else if (gSystem->AccessPathName(filePath.c_str())) {
+            std::cout << "[WARN] File not found: " << filePath << ", skipping" << std::endl;
+         } else {
+            rec->Add(filePath.c_str());
+            std::cout << "[INFO] Added run " << runNumber << ": " << filePath << std::endl;
+            if (firstRun < 0) firstRun = runNumber;
+            nAdded++;
+         }
+      }
+      if (idx >= startIdx + nFiles) break;
+      idx++;
+   }
+   ifs.close();
+
+   if (nAdded == 0) {
+      std::cout << "[Error] No valid files found in range [" << startIdx << ", "
+                << startIdx + nFiles << ")" << std::endl;
+      return;
+   }
+
+   std::cout << "[INFO] Chained " << nAdded << " files for processing" << std::endl;
+
+   gSystem->mkdir(outputDir.Data(), kTRUE);
+   TString outFile;
+   if (dateLabel.Length() > 0) {
+      outFile = Form("%s/DataGammaAngle_%s.root", outputDir.Data(), dateLabel.Data());
+   } else {
+      outFile = Form("%s/DataGammaAngle_%06d.root", outputDir.Data(), firstRun);
+   }
+   _PrepareRealDataInpainter_impl(rec, outFile);
+}
+
+// ---------------------------------------------------------------------------
 // Default entry point (not typically used with runlist workflow)
 // ---------------------------------------------------------------------------
 void PrepareRealDataInpainter(Int_t sRun = 430000, Int_t nfile = 100)

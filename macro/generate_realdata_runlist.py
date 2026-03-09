@@ -164,7 +164,7 @@ def sample_train_val(by_date, no_file_check=False, max_train_per_day=20,
 def format_runlist(lines, label, min_run, max_run):
     """Format a runlist as a string."""
     output = []
-    output.append(f"# Real data runlist ({label}): one run per day")
+    output.append(f"# Real data runlist ({label})")
     output.append(f"# Run range: {min_run or 'start'} - {max_run or 'end'}")
     output.append(f"# Filters: Physics=1, Junk=0, StartTime >= 2021")
     output.append(f"# Total: {len(lines)} runs")
@@ -177,6 +177,45 @@ def format_runlist(lines, label, min_run, max_run):
             output.append(f"# {date}")
             prev_date = date
         output.append(f"{run_number} {path}")
+
+    return "\n".join(output) + "\n"
+
+
+def format_day_manifest(lines, label, min_run, max_run):
+    """Format a day manifest mapping each day to its start index and count in the runlist.
+
+    The start index refers to the 0-based line index among non-comment lines
+    in the corresponding runlist file.
+    """
+    output = []
+    output.append(f"# Day manifest ({label})")
+    output.append(f"# Run range: {min_run or 'start'} - {max_run or 'end'}")
+    output.append(f"# Format: <date> <start_idx> <count>")
+
+    # Group lines by date, tracking the index in the runlist
+    idx = 0
+    prev_date = None
+    day_start = 0
+    day_count = 0
+    n_days = 0
+
+    for run_number, path, date in lines:
+        if date != prev_date:
+            if prev_date is not None:
+                output.append(f"{prev_date} {day_start} {day_count}")
+                n_days += 1
+            prev_date = date
+            day_start = idx
+            day_count = 0
+        day_count += 1
+        idx += 1
+
+    # Last day
+    if prev_date is not None and day_count > 0:
+        output.append(f"{prev_date} {day_start} {day_count}")
+        n_days += 1
+
+    output.insert(3, f"# Total: {n_days} days, {len(lines)} runs")
 
     return "\n".join(output) + "\n"
 
@@ -225,22 +264,36 @@ def main():
 
     train_content = format_runlist(train, "train", args.min_run, args.max_run)
     val_content = format_runlist(val, "val", args.min_run, args.max_run)
+    train_days = format_day_manifest(train, "train", args.min_run, args.max_run)
+    val_days = format_day_manifest(val, "val", args.min_run, args.max_run)
 
     if args.dry_run:
         print("\n=== TRAIN ===")
         print(train_content)
+        print("=== TRAIN DAYS ===")
+        print(train_days)
         print("=== VAL ===")
         print(val_content)
+        print("=== VAL DAYS ===")
+        print(val_days)
     else:
         os.makedirs(args.output_dir, exist_ok=True)
         train_path = os.path.join(args.output_dir, "runlist_train.txt")
         val_path = os.path.join(args.output_dir, "runlist_val.txt")
+        train_days_path = os.path.join(args.output_dir, "runlist_train_days.txt")
+        val_days_path = os.path.join(args.output_dir, "runlist_val_days.txt")
         with open(train_path, 'w') as f:
             f.write(train_content)
         with open(val_path, 'w') as f:
             f.write(val_content)
+        with open(train_days_path, 'w') as f:
+            f.write(train_days)
+        with open(val_days_path, 'w') as f:
+            f.write(val_days)
         print(f"[INFO] Written train runlist to: {train_path}")
         print(f"[INFO] Written val runlist to: {val_path}")
+        print(f"[INFO] Written train day manifest to: {train_days_path}")
+        print(f"[INFO] Written val day manifest to: {val_days_path}")
 
 
 if __name__ == "__main__":
