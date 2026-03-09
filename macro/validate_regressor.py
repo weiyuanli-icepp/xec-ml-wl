@@ -679,12 +679,11 @@ def _run_dead_channel_recovery(args, norm_params):
     if output_path is None:
         base = os.path.splitext(os.path.basename(args.val_path))[0]
         output_path = f"regressor_{base}.root"
-    else:
-        # If output_dir is a directory, auto-generate filename inside it
-        if os.path.isdir(output_path) or output_path.endswith("/"):
-            os.makedirs(output_path, exist_ok=True)
-            base = os.path.splitext(os.path.basename(args.val_path))[0]
-            output_path = os.path.join(output_path, f"regressor_{base}.root")
+    elif not output_path.endswith(".root"):
+        # Treat as directory — auto-generate filename inside it
+        os.makedirs(output_path, exist_ok=True)
+        base = os.path.splitext(os.path.basename(args.val_path))[0]
+        output_path = os.path.join(output_path, f"regressor_{base}.root")
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
