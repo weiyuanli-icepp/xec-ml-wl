@@ -23,7 +23,8 @@
 #   NEIGHBOR_K  — neighbor hops for averaging (default: 1)
 #   BATCH_SIZE  — inference batch size (default: 512)
 #   CHUNKSIZE   — events per chunk for dead-channel mode (default: 1024)
-#   MEM         — SLURM memory allocation (default: 8G)
+#   MEM         — SLURM memory allocation (default: 16G)
+#   MEM_DEBUG   — set to 1 to print RSS memory at key points
 #
 
 set -euo pipefail
@@ -38,6 +39,7 @@ PARTITION="${PARTITION:-meg-long}"
 DEAD_CHANNEL="${DEAD_CHANNEL:-0}"
 INPAINTER="${INPAINTER:-~/meghome/xec-ml-wl/artifacts/inp_scan_s3_nphowt/inpainter.pt}"
 NEIGHBOR_K="${NEIGHBOR_K:-1}"
+MEM_DEBUG="${MEM_DEBUG:-0}"
 
 case "$PARTITION" in
     meg-long|meg-short|mu3e) ACCOUNT_LINE="#SBATCH --account=meg" ;;
@@ -45,7 +47,7 @@ case "$PARTITION" in
 esac
 
 TIME="${TIME:-06:00:00}"
-MEM="${MEM:-8G}"
+MEM="${MEM:-16G}"
 BATCH_SIZE="${BATCH_SIZE:-512}"
 CHUNKSIZE="${CHUNKSIZE:-1024}"
 
@@ -118,6 +120,9 @@ if [ "$DEAD_CHANNEL" = "1" ]; then
     if [ -n "$INPAINTER" ]; then
         EXTRA_FLAGS="${EXTRA_FLAGS} --inpainter-torchscript ${INPAINTER}"
     fi
+fi
+if [ "$MEM_DEBUG" = "1" ]; then
+    EXTRA_FLAGS="${EXTRA_FLAGS} --mem-debug"
 fi
 
 for PATCH in "${PATCHES[@]}"; do

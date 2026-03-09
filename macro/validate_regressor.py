@@ -42,6 +42,21 @@ from lib.normalization import NphoTransform
 N_CHANNELS = 4760
 SENTINEL_NPHO = -1.0
 
+# Memory debugging (enabled by --mem-debug flag)
+_MEM_DEBUG = False
+
+
+def _mem_log(label: str):
+    """Print current RSS memory usage if --mem-debug is active."""
+    if not _MEM_DEBUG:
+        return
+    import resource
+    # maxrss is in KB on Linux, bytes on macOS
+    rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if sys.platform == "darwin":
+        rss_kb //= 1024  # macOS reports bytes
+    print(f"  [MEM] {label}: RSS = {rss_kb / 1024:.1f} MB")
+
 # For tasks that produce >1 value per event, define component names.
 TASK_COMPONENTS = {
     "angle": ["theta", "phi"],
@@ -542,6 +557,7 @@ def _run_inpaint_only(args):
     import glob as globmod
 
     output_file = args._inpaint_to
+    _mem_log("[inpaint] before model load")
 
     # --- Load inpainter ---
     if args.inpainter_torchscript:
@@ -587,6 +603,7 @@ def _run_inpaint_only(args):
     read_branches = [b for b in branches_needed if b in available]
 
     # --- Process chunks ---
+    _mem_log("[inpaint] after model load")
     total = 0
     t0 = time.time()
 
@@ -671,6 +688,7 @@ def _run_dead_channel_recovery(args, norm_params):
         npho_scale2=norm_params["npho_scale2"],
     )
     print(f"[INFO] Npho transform: {transform}")
+    _mem_log("after imports")
 
     # --- Run inpainter in isolated subprocess (if requested) ---
     have_inpainter = bool(args.inpainter_torchscript or args.inpainter_checkpoint)
@@ -700,6 +718,8 @@ def _run_dead_channel_recovery(args, norm_params):
             cmd += ["--dead-from-db", str(args.dead_from_db)]
         if args.dead_from_file is not None:
             cmd += ["--dead-from-file", args.dead_from_file]
+        if _MEM_DEBUG:
+            cmd += ["--mem-debug"]
 
         print("[INFO] Running inpainter in isolated subprocess...")
         result = sp.run(cmd)
@@ -710,6 +730,7 @@ def _run_dead_channel_recovery(args, norm_params):
             sys.exit(1)
 
         print("[INFO] Inpainter subprocess completed — memory freed")
+        _mem_log("after inpainter subprocess")
         inpaint_file = open(inpaint_bin_path, "rb")
     else:
         print("[INFO] No inpainter provided — inpainted strategy will output 1e10")
@@ -731,6 +752,7 @@ def _run_dead_channel_recovery(args, norm_params):
     if args.tasks:
         task_map = {t: task_map[t] for t in args.tasks if t in task_map}
     print(f"[INFO] Active tasks: {list(task_map.keys())}")
+    _mem_log("after ONNX load")
 
     # --- Build neighbor baseline ---
     print(f"[INFO] Building neighbor map (k={args.neighbor_k})")
@@ -833,12 +855,14 @@ def _run_dead_channel_recovery(args, norm_params):
 
         # --- Process strategies sequentially to reduce peak memory ---
         # Keep npho/time raw for possible re-normalization, free early where possible.
+        _mem_log(f"chunk {total_events}+{B}: after normalize")
 
         # Strategy 1: raw (no fill)
         res_raw = _run_regressor_onnx(reg_session, x_norm, task_map,
                                       batch_size=args.batch_size)
         flat_raw = _expand_task_results(res_raw)
         del res_raw
+        _mem_log(f"chunk {total_events}+{B}: after raw")
 
         # Strategy 2: neighbor average
         x_neighavg = _fill_dead_neighbor_avg(x_norm, dead_mask_1d, baseline,
@@ -847,6 +871,7 @@ def _run_dead_channel_recovery(args, norm_params):
                                            batch_size=args.batch_size)
         flat_neighavg = _expand_task_results(res_neighavg)
         del x_neighavg, res_neighavg
+        _mem_log(f"chunk {total_events}+{B}: after neighavg")
 
         # Strategy 3: inpainted (read pre-computed from subprocess output)
         if have_inpainter:
@@ -879,6 +904,7 @@ def _run_dead_channel_recovery(args, norm_params):
 
         del x_norm, npho_raw, time_raw
         gc.collect()
+        _mem_log(f"chunk {total_events}+{B}: after gc")
 
         # --- Build chunk output and write immediately ---
         chunk = {}
@@ -975,6 +1001,10 @@ def main():
     dead_group.add_argument("--dead-from-file", type=str, metavar="PATH", default=None,
                             help="Load dead channel list from text file")
 
+    # Debug
+    parser.add_argument("--mem-debug", action="store_true",
+                        help="Print RSS memory usage at key points")
+
     # Internal: run inpainter in isolated subprocess
     parser.add_argument("--_inpaint_to", type=str, default=None,
                         help=argparse.SUPPRESS)
@@ -990,6 +1020,10 @@ def main():
         args.inpainter_checkpoint = os.path.expanduser(args.inpainter_checkpoint)
     if args.dead_from_file:
         args.dead_from_file = os.path.expanduser(args.dead_from_file)
+
+    # Enable memory debugging
+    global _MEM_DEBUG
+    _MEM_DEBUG = args.mem_debug
 
     # Inpaint-only subprocess mode (internal)
     if args._inpaint_to:
