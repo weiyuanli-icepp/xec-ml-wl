@@ -102,7 +102,7 @@ if [ "$DRY_RUN" != "1" ]; then
     fi
 fi
 
-mkdir -p log "${OUTPUT_BASE}"
+mkdir -p log/cex_inference "${OUTPUT_BASE}"
 
 SUBMITTED=0
 SKIPPED=0
@@ -164,7 +164,7 @@ ${ACCOUNT_LINE}
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=${MEM}
 #SBATCH --job-name=cex_val_p${PATCH}
-#SBATCH --output=$HOME/meghome/xec-ml-wl/log/cex_val_patch${PATCH}_%j.log
+#SBATCH --output=$HOME/meghome/xec-ml-wl/log/cex_inference/patch${PATCH}_%j.log
 
 echo "=== Energy Regressor CEX Validation: Patch ${PATCH} ==="
 echo "Host: \$(hostname)"
@@ -220,6 +220,6 @@ done
 
 echo "============================================"
 echo "[CEX] Submitted ${SUBMITTED} jobs, skipped ${SKIPPED}"
-echo "Logs:   log/cex_val_patch*_*.log"
+echo "Logs:   log/cex_inference/patch*_*.log"
 echo "Output: ${OUTPUT_BASE}/patch*/"
 echo "============================================"
