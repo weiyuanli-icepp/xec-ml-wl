@@ -391,53 +391,79 @@ def _detect_dead_channels(dead_branch, npho_raw):
     return frac > 0.9
 
 
-def _fill_dead_neighbor_avg(x_norm, dead_mask_1d, baseline):
-    """Replace dead npho with neighbor average; time stays sentinel."""
+def _fill_dead_neighbor_avg(x_norm, dead_mask_1d, baseline, transform=None):
+    """Replace dead npho with neighbor average; time stays sentinel.
+
+    When ``transform`` is provided, averaging is done in raw (linear) npho
+    space and the result is re-normalised — correct for nonlinear schemes.
+    """
     x_filled = x_norm.copy()
     npho_norm = x_filled[:, :, 0]
     mask_2d = np.broadcast_to(dead_mask_1d[None, :], npho_norm.shape).copy()
-    npho_filled = baseline.predict(npho_norm, mask_2d)
+    npho_filled = baseline.predict(npho_norm, mask_2d, npho_transform=transform)
     x_filled[:, :, 0] = npho_filled
     return x_filled
 
 
 def _fill_dead_inpainter(x_norm, dead_mask_1d, model, device,
                          npho_raw, time_raw, transform,
+                         is_torchscript=True,
                          sentinel_npho=SENTINEL_NPHO, batch_size=512):
     """Replace dead npho with inpainter predictions.
 
-    The TorchScript inpainter takes raw (npho, time) and returns raw npho.
-    We re-normalize the inpainted raw npho with the regressor's transform
-    and place it into x_norm at dead channels.
+    Two model types are supported:
+
+    - **TorchScript** (``is_torchscript=True``): The wrapper takes raw
+      ``(B, 4760, 2)`` sensor values and returns raw npho ``(B, 4760)``.
+      We re-normalize with the regressor's ``transform`` before placing
+      into ``x_norm``.
+
+    - **Checkpoint** (``is_torchscript=False``): The raw inpainter model
+      takes normalised ``(B, 4760, 2)`` input and returns normalised
+      ``(B, 4760, C)`` output (C=1 or 2).  Values are placed directly
+      into ``x_norm``.
     """
     x_filled = x_norm.copy()
     N = x_filled.shape[0]
     mask_2d = np.broadcast_to(dead_mask_1d[None, :], (N, N_CHANNELS)).copy()
 
-    # Build raw input for inpainter: (B, 4760, 2)
-    x_raw_inp = np.stack([npho_raw, time_raw], axis=-1).astype(np.float32)
+    if is_torchscript:
+        # TorchScript wrapper: takes raw input, returns raw npho (2D)
+        x_input = np.stack([npho_raw, time_raw], axis=-1).astype(np.float32)
+    else:
+        # Raw checkpoint model: takes normalised input
+        x_input = x_norm
 
     for start in range(0, N, batch_size):
         end = min(start + batch_size, N)
-        x_batch = torch.from_numpy(x_raw_inp[start:end]).to(device)
+        x_batch = torch.from_numpy(x_input[start:end]).to(device)
         m_batch = torch.from_numpy(mask_2d[start:end].astype(np.float32)).to(device)
 
         with torch.no_grad():
             pred = model(x_batch, m_batch)
 
-        # pred shape: (batch, 4760) — raw npho with inpainted values
         pred_np = pred.cpu().numpy()
 
-        # Re-normalize inpainted raw npho using the regressor's transform
-        inpainted_npho = pred_np[:, dead_mask_1d]
-        inpainted_npho_safe = np.where(
-            (inpainted_npho > 9e9) | np.isnan(inpainted_npho),
-            0.0, inpainted_npho)
-        domain_min = transform.domain_min()
-        inpainted_npho_safe = np.where(
-            inpainted_npho_safe < domain_min, 0.0, inpainted_npho_safe)
-        inpainted_norm = transform.forward(inpainted_npho_safe)
-        x_filled[start:end, dead_mask_1d, 0] = inpainted_norm
+        if is_torchscript:
+            # Output: (batch, 4760) — raw npho; re-normalize for regressor
+            inpainted_npho = pred_np[:, dead_mask_1d]
+            inpainted_npho_safe = np.where(
+                (inpainted_npho > 9e9) | np.isnan(inpainted_npho),
+                0.0, inpainted_npho)
+            domain_min = transform.domain_min()
+            inpainted_npho_safe = np.where(
+                inpainted_npho_safe < domain_min, 0.0, inpainted_npho_safe)
+            inpainted_norm = transform.forward(inpainted_npho_safe)
+            x_filled[start:end, dead_mask_1d, 0] = inpainted_norm
+        else:
+            # Output: (batch, 4760, C) — already normalised
+            if pred_np.ndim == 3 and pred_np.shape[-1] >= 2:
+                x_filled[start:end, dead_mask_1d, 0] = pred_np[:, dead_mask_1d, 0]
+                x_filled[start:end, dead_mask_1d, 1] = pred_np[:, dead_mask_1d, 1]
+            elif pred_np.ndim == 3:
+                x_filled[start:end, dead_mask_1d, 0] = pred_np[:, dead_mask_1d, 0]
+            else:
+                x_filled[start:end, dead_mask_1d, 0] = pred_np[:, dead_mask_1d]
 
     return x_filled
 
@@ -520,11 +546,17 @@ def _run_dead_channel_recovery(args, norm_params):
 
     # --- Load regressor ONNX ---
     print(f"[INFO] Loading regressor: {args.checkpoint}")
+    sess_opts = ort.SessionOptions()
+    n_threads = int(os.environ.get("SLURM_CPUS_ON_NODE", os.cpu_count() or 4))
+    sess_opts.inter_op_num_threads = n_threads
+    sess_opts.intra_op_num_threads = n_threads
+    print(f"[INFO] ONNX threads: {n_threads}")
     providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
     try:
-        reg_session = ort.InferenceSession(args.checkpoint, providers=providers)
+        reg_session = ort.InferenceSession(args.checkpoint, sess_options=sess_opts,
+                                           providers=providers)
     except Exception:
-        reg_session = ort.InferenceSession(args.checkpoint,
+        reg_session = ort.InferenceSession(args.checkpoint, sess_options=sess_opts,
                                            providers=["CPUExecutionProvider"])
 
     # Detect tasks
@@ -536,6 +568,7 @@ def _run_dead_channel_recovery(args, norm_params):
     # --- Load inpainter (optional) ---
     inpainter_model = None
     have_inpainter = False
+    inpainter_is_torchscript = False
 
     if args.inpainter_torchscript:
         print(f"[INFO] Loading TorchScript inpainter: {args.inpainter_torchscript}")
@@ -543,6 +576,7 @@ def _run_dead_channel_recovery(args, norm_params):
                                          map_location=args.device)
         inpainter_model.eval()
         have_inpainter = True
+        inpainter_is_torchscript = True
     elif args.inpainter_checkpoint:
         from val_data.validate_inpainter_real import load_inpainter_model
         inpainter_model, _ = load_inpainter_model(args.inpainter_checkpoint,
@@ -640,13 +674,15 @@ def _run_dead_channel_recovery(args, norm_params):
         x_raw = x_norm
 
         # --- Strategy 2: neighbor average ---
-        x_neighavg = _fill_dead_neighbor_avg(x_norm, dead_mask_1d, baseline)
+        x_neighavg = _fill_dead_neighbor_avg(x_norm, dead_mask_1d, baseline,
+                                             transform=transform)
 
         # --- Strategy 3: inpainted ---
         if have_inpainter:
             x_inpainted = _fill_dead_inpainter(
                 x_norm, dead_mask_1d, inpainter_model,
                 args.device, npho_raw, time_raw, transform,
+                is_torchscript=inpainter_is_torchscript,
                 sentinel_npho=sentinel_npho, batch_size=args.batch_size,
             )
         else:
