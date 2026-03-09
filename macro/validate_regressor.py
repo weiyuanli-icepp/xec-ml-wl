@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """
-Run validation-only with an existing checkpoint (.pth) or ONNX model (.onnx).
+Run validation with an existing checkpoint (.pth) or ONNX model (.onnx).
 
-This script loads a model and runs validation to generate predictions
-and resolution plots without training.
+Supports two modes:
 
-Usage:
-    # PyTorch checkpoint (config embedded or from file)
+1. **Standard validation** — generate predictions and resolution plots:
+
     python macro/validate_regressor.py checkpoint.pth --val_path data/val/
+    python macro/validate_regressor.py model.onnx --val_path data/cex/ \\
+        --config config.yaml --tasks energy
 
-    # ONNX model (requires --config for normalization params)
-    python macro/validate_regressor.py model.onnx --val_path data/cex/ --config config/reg/scan/step3b_model_large.yaml --tasks energy
+2. **Dead-channel recovery** — compare raw, neighbor-avg, and inpainted strategies:
 
-    # Specify tasks explicitly
-    python macro/validate_regressor.py checkpoint.pth --val_path data/val/ --tasks energy uvwFI
+    python macro/validate_regressor.py model.onnx --val_path data/cex/CEX_patch13.root \\
+        --config config.yaml --tasks energy --dead-channel
+
+    python macro/validate_regressor.py model.onnx --val_path data/cex/CEX_patch13.root \\
+        --config config.yaml --tasks energy --dead-channel \\
+        --inpainter-torchscript inpainter.pt
 """
 
 import argparse
@@ -32,19 +36,22 @@ from lib.train_regressor import save_validation_artifacts
 from lib.geom_defs import (
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
     DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_TIME,
+    DEFAULT_NPHO_THRESHOLD,
 )
+from lib.normalization import NphoTransform
+
+N_CHANNELS = 4760
+SENTINEL_NPHO = -1.0
+
+# For tasks that produce >1 value per event, define component names.
+TASK_COMPONENTS = {
+    "angle": ["theta", "phi"],
+    "uvwFI": ["u", "v", "w"],
+}
 
 
 def _print_timing(elapsed, n_events, backend, batch_times=None):
-    """Print inference timing summary.
-
-    Args:
-        elapsed: Total wall-clock time in seconds.
-        n_events: Total number of events processed.
-        backend: Label string ("PyTorch" or "ONNX").
-        batch_times: Optional list of (dt_seconds, batch_size) per batch
-                     for detailed per-event statistics.
-    """
+    """Print inference timing summary."""
     if n_events == 0:
         print(f"[INFO] {backend} inference completed in {elapsed:.1f}s (0 events)")
         return
@@ -54,18 +61,22 @@ def _print_timing(elapsed, n_events, backend, batch_times=None):
     print(f"\n=== {backend} Inference Timing ===")
     print(f"  Total:      {elapsed:.1f}s  ({n_events} events)")
     print(f"  Throughput: {throughput:.0f} events/s")
-    print(f"  Avg/event:  {avg_us:.1f} µs")
+    print(f"  Avg/event:  {avg_us:.1f} \u00b5s")
 
     if batch_times:
         per_event = np.concatenate([
             np.full(bs, dt / bs) for dt, bs in batch_times
         ]) * 1e6  # µs
         p50, p90, p99 = np.percentile(per_event, [50, 90, 99])
-        print(f"  Median:     {p50:.1f} µs")
-        print(f"  p90:        {p90:.1f} µs")
-        print(f"  p99:        {p99:.1f} µs")
+        print(f"  Median:     {p50:.1f} \u00b5s")
+        print(f"  p90:        {p90:.1f} \u00b5s")
+        print(f"  p99:        {p99:.1f} \u00b5s")
     print()
 
+
+# ======================================================================
+# Standard validation backends (PyTorch / ONNX)
+# ======================================================================
 
 def _run_pytorch(args, cfg, active_tasks, norm_params):
     """Run validation with a PyTorch checkpoint."""
@@ -339,28 +350,423 @@ def _run_onnx(args, cfg, active_tasks, norm_params):
     return None, root_data, angle_pred, angle_true, []
 
 
+# ======================================================================
+# Dead-channel recovery helpers
+# ======================================================================
+
+def _normalize_input(npho_raw, time_raw, transform,
+                     time_scale, time_shift, sentinel_time,
+                     npho_threshold, sentinel_npho=SENTINEL_NPHO):
+    """Normalize raw npho/time arrays to model input space.
+
+    Uses NphoTransform for configurable npho normalization (log1p, sqrt, etc.).
+    """
+    mask_npho_invalid = (npho_raw > 9e9) | np.isnan(npho_raw)
+    domain_min = transform.domain_min()
+    mask_domain_break = (~mask_npho_invalid) & (npho_raw < domain_min)
+
+    mask_time_invalid = (mask_npho_invalid
+                         | (npho_raw < npho_threshold)
+                         | (np.abs(time_raw) > 9e9)
+                         | np.isnan(time_raw))
+
+    npho_safe = np.where(mask_npho_invalid | mask_domain_break, 0.0, npho_raw)
+    npho_norm = transform.forward(npho_safe)
+    npho_norm[mask_npho_invalid] = sentinel_npho
+    npho_norm[mask_domain_break] = 0.0
+
+    time_norm = (time_raw / time_scale) - time_shift
+    time_norm[mask_time_invalid] = sentinel_time
+
+    return np.stack([npho_norm, time_norm], axis=-1).astype(np.float32)
+
+
+def _detect_dead_channels(dead_branch, npho_raw):
+    """Get 1-D boolean dead mask from ``dead`` branch or sentinel fallback."""
+    if dead_branch is not None:
+        return dead_branch[0].astype(bool)
+    # Fallback: channel is dead if sentinel in >90% of events
+    invalid = npho_raw > 9e9
+    frac = invalid.mean(axis=0)
+    return frac > 0.9
+
+
+def _fill_dead_neighbor_avg(x_norm, dead_mask_1d, baseline):
+    """Replace dead npho with neighbor average; time stays sentinel."""
+    x_filled = x_norm.copy()
+    npho_norm = x_filled[:, :, 0]
+    mask_2d = np.broadcast_to(dead_mask_1d[None, :], npho_norm.shape).copy()
+    npho_filled = baseline.predict(npho_norm, mask_2d)
+    x_filled[:, :, 0] = npho_filled
+    return x_filled
+
+
+def _fill_dead_inpainter(x_norm, dead_mask_1d, model, device, batch_size=512):
+    """Replace dead npho+time with inpainter predictions."""
+    x_filled = x_norm.copy()
+    N = x_filled.shape[0]
+    mask_2d = np.broadcast_to(dead_mask_1d[None, :], (N, N_CHANNELS)).copy()
+
+    for start in range(0, N, batch_size):
+        end = min(start + batch_size, N)
+        x_batch = torch.from_numpy(x_filled[start:end]).to(device)
+        m_batch = torch.from_numpy(mask_2d[start:end]).to(device)
+
+        with torch.no_grad():
+            pred = model(x_batch, m_batch)
+
+        pred_np = pred.cpu().numpy()
+
+        if pred_np.shape[-1] >= 2:
+            x_filled[start:end, dead_mask_1d, 0] = pred_np[:, dead_mask_1d, 0]
+            x_filled[start:end, dead_mask_1d, 1] = pred_np[:, dead_mask_1d, 1]
+        else:
+            x_filled[start:end, dead_mask_1d, 0] = pred_np[:, dead_mask_1d, 0]
+
+    return x_filled
+
+
+def _run_regressor_onnx(session, x_norm, task_map, batch_size=1024):
+    """Run batched ONNX regressor inference."""
+    input_name = session.get_inputs()[0].name
+    output_names = list(task_map.values())
+    N = x_norm.shape[0]
+
+    accum = {task: [] for task in task_map}
+
+    for start in range(0, N, batch_size):
+        end = min(start + batch_size, N)
+        ort_inputs = {input_name: x_norm[start:end]}
+        outputs = session.run(output_names, ort_inputs)
+        out_dict = dict(zip(output_names, outputs))
+        for task, oname in task_map.items():
+            accum[task].append(out_dict[oname])
+
+    results = {}
+    for task, chunks in accum.items():
+        arr = np.concatenate(chunks, axis=0)
+        results[task] = arr.flatten() if arr.shape[-1] == 1 else arr
+    return results
+
+
+def _detect_tasks_onnx(session):
+    """Detect tasks from ONNX output names (``output_{task}`` convention)."""
+    task_map = {}
+    for out in session.get_outputs():
+        name = out.name
+        if name.startswith("output_"):
+            task_name = name[len("output_"):]
+            task_map[task_name] = name
+        elif name == "output":
+            task_map["angle"] = name
+        else:
+            task_map[name] = name
+    return task_map
+
+
+def _expand_task_results(task_results):
+    """Expand multi-dim task arrays into {branch_name: 1-D array}."""
+    flat = {}
+    for task, arr in task_results.items():
+        if arr.ndim == 1:
+            flat[task] = arr
+        elif task in TASK_COMPONENTS:
+            for i, comp in enumerate(TASK_COMPONENTS[task]):
+                flat[comp] = arr[:, i]
+        else:
+            for i in range(arr.shape[1]):
+                flat[f"{task}_{i}"] = arr[:, i]
+    return flat
+
+
+# ======================================================================
+# Dead-channel recovery mode
+# ======================================================================
+
+def _run_dead_channel_recovery(args, norm_params):
+    """Run ONNX regressor with dead-channel recovery strategies.
+
+    Reads CEX ROOT files via uproot, applies three dead-channel recovery
+    strategies (raw, neighbor averaging, ML inpainting), runs the ONNX
+    regressor on each variant, and writes results to a ROOT file.
+    """
+    import uproot
+    import onnxruntime as ort
+    from lib.inpainter_baselines import NeighborAverageBaseline
+
+    npho_scheme = norm_params.get("npho_scheme", "log1p")
+    transform = NphoTransform(
+        scheme=npho_scheme,
+        npho_scale=norm_params["npho_scale"],
+        npho_scale2=norm_params["npho_scale2"],
+    )
+    print(f"[INFO] Npho transform: {transform}")
+
+    # --- Load regressor ONNX ---
+    print(f"[INFO] Loading regressor: {args.checkpoint}")
+    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    try:
+        reg_session = ort.InferenceSession(args.checkpoint, providers=providers)
+    except Exception:
+        reg_session = ort.InferenceSession(args.checkpoint,
+                                           providers=["CPUExecutionProvider"])
+
+    # Detect tasks
+    task_map = _detect_tasks_onnx(reg_session)
+    if args.tasks:
+        task_map = {t: task_map[t] for t in args.tasks if t in task_map}
+    print(f"[INFO] Active tasks: {list(task_map.keys())}")
+
+    # --- Load inpainter (optional) ---
+    inpainter_model = None
+    have_inpainter = False
+
+    if args.inpainter_torchscript:
+        print(f"[INFO] Loading TorchScript inpainter: {args.inpainter_torchscript}")
+        inpainter_model = torch.jit.load(args.inpainter_torchscript,
+                                         map_location=args.device)
+        inpainter_model.eval()
+        have_inpainter = True
+    elif args.inpainter_checkpoint:
+        from val_data.validate_inpainter_real import load_inpainter_model
+        inpainter_model, _ = load_inpainter_model(args.inpainter_checkpoint,
+                                                   device=args.device)
+        have_inpainter = True
+
+    if not have_inpainter:
+        print("[INFO] No inpainter provided \u2014 inpainted strategy will output 1e10")
+
+    # --- Build neighbor baseline ---
+    print(f"[INFO] Building neighbor map (k={args.neighbor_k})")
+    baseline = NeighborAverageBaseline(k=args.neighbor_k)
+
+    # --- Resolve dead channel mask ---
+    dead_mask_1d = None
+
+    if args.dead_from_db is not None:
+        from lib.db_utils import get_dead_channel_mask
+        dead_mask_1d = get_dead_channel_mask(args.dead_from_db)
+        print(f"[INFO] Dead channels from DB (run {args.dead_from_db}): "
+              f"{dead_mask_1d.sum()}")
+    elif args.dead_from_file is not None:
+        from lib.db_utils import load_dead_channel_list
+        dead_indices = load_dead_channel_list(args.dead_from_file)
+        dead_mask_1d = np.zeros(N_CHANNELS, dtype=bool)
+        dead_mask_1d[dead_indices] = True
+        print(f"[INFO] Dead channels from file: {dead_mask_1d.sum()}")
+
+    # --- Determine branches to read ---
+    model_branches = ["npho", "relative_time"]
+    meta_branches = ["run", "event", "energyTruth", "energyReco",
+                     "Ebgo", "Angle", "gstatus", "nDead"]
+    dead_branches = ["dead"]
+    all_requested = model_branches + meta_branches + dead_branches
+
+    tree_name = args.tree_name
+    with uproot.open(args.val_path) as f_check:
+        available = set(f_check[tree_name].keys())
+    read_branches = [b for b in all_requested if b in available]
+    has_dead_branch = "dead" in available
+
+    if not has_dead_branch and dead_mask_1d is None:
+        print("[WARN] No 'dead' branch and no --dead-from-db/--dead-from-file. "
+              "Will detect dead channels from sentinel values.")
+
+    # Accumulators
+    out_data = {b: [] for b in meta_branches if b in available}
+    strategies = ["raw", "neighavg", "inpainted"]
+    strategy_accum = {s: [] for s in strategies}
+
+    total_events = 0
+    t0 = time.time()
+    npho_threshold = norm_params.get("npho_threshold", DEFAULT_NPHO_THRESHOLD)
+    sentinel_npho = norm_params.get("sentinel_npho", SENTINEL_NPHO)
+
+    print(f"[INFO] Processing {args.val_path} (chunksize={args.chunksize})")
+
+    for arrays in uproot.iterate(
+        f"{args.val_path}:{tree_name}",
+        expressions=read_branches,
+        step_size=args.chunksize,
+        library="np",
+    ):
+        B = len(arrays["run"])
+
+        # --- Normalize ---
+        npho_raw = arrays["npho"].astype(np.float32)
+        time_raw = arrays["relative_time"].astype(np.float32)
+
+        x_norm = _normalize_input(
+            npho_raw, time_raw, transform,
+            norm_params["time_scale"], norm_params["time_shift"],
+            norm_params["sentinel_time"], npho_threshold,
+            sentinel_npho=sentinel_npho,
+        )
+
+        # --- Resolve dead mask (once) ---
+        if dead_mask_1d is None:
+            dead_br = arrays.get("dead", None)
+            dead_mask_1d = _detect_dead_channels(dead_br, npho_raw)
+            n_dead = int(dead_mask_1d.sum())
+            print(f"[INFO] Dead channels detected: {n_dead}")
+
+        # --- Strategy 1: raw (no fill) ---
+        x_raw = x_norm
+
+        # --- Strategy 2: neighbor average ---
+        x_neighavg = _fill_dead_neighbor_avg(x_norm, dead_mask_1d, baseline)
+
+        # --- Strategy 3: inpainted ---
+        if have_inpainter:
+            x_inpainted = _fill_dead_inpainter(
+                x_norm, dead_mask_1d, inpainter_model,
+                args.device, batch_size=args.batch_size,
+            )
+        else:
+            x_inpainted = None
+
+        # --- Run regressor on each strategy ---
+        res_raw = _run_regressor_onnx(reg_session, x_raw, task_map,
+                                      batch_size=args.chunksize)
+        res_neighavg = _run_regressor_onnx(reg_session, x_neighavg, task_map,
+                                           batch_size=args.chunksize)
+        if x_inpainted is not None:
+            res_inpainted = _run_regressor_onnx(reg_session, x_inpainted, task_map,
+                                                batch_size=args.chunksize)
+        else:
+            res_inpainted = {}
+            for task, arr in res_raw.items():
+                res_inpainted[task] = np.full_like(arr, 1e10)
+
+        # Expand multi-dim tasks into flat branches
+        strategy_accum["raw"].append(_expand_task_results(res_raw))
+        strategy_accum["neighavg"].append(_expand_task_results(res_neighavg))
+        strategy_accum["inpainted"].append(_expand_task_results(res_inpainted))
+
+        # --- Accumulate metadata ---
+        for b in out_data:
+            out_data[b].append(arrays[b])
+
+        total_events += B
+        elapsed = time.time() - t0
+        print(f"  {total_events} events ({elapsed:.1f}s, "
+              f"{total_events / elapsed:.0f} evt/s)", end="\r")
+
+    print()  # newline after \r
+
+    # --- Concatenate and write output ---
+    final = {}
+    for b, chunks in out_data.items():
+        arr = np.concatenate(chunks)
+        if b in ("run", "event", "gstatus", "nDead"):
+            final[b] = arr.astype(np.int32)
+        else:
+            final[b] = arr.astype(np.float32)
+
+    for strategy in strategies:
+        chunks = strategy_accum[strategy]
+        if not chunks:
+            continue
+        branch_names = list(chunks[0].keys())
+        for bname in branch_names:
+            key = f"{bname}_{strategy}"
+            final[key] = np.concatenate(
+                [c[bname] for c in chunks]
+            ).astype(np.float32)
+
+    # Determine output path
+    output_path = args.output_dir
+    if output_path is None:
+        base = os.path.splitext(os.path.basename(args.val_path))[0]
+        output_path = f"regressor_{base}.root"
+    else:
+        # If output_dir is a directory, auto-generate filename inside it
+        if os.path.isdir(output_path) or output_path.endswith("/"):
+            os.makedirs(output_path, exist_ok=True)
+            base = os.path.splitext(os.path.basename(args.val_path))[0]
+            output_path = os.path.join(output_path, f"regressor_{base}.root")
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+    print(f"[INFO] Writing {output_path} ({total_events} events, "
+          f"{len(final)} branches)")
+
+    with uproot.recreate(output_path) as f_out:
+        branch_types = {}
+        for k, v in final.items():
+            branch_types[k] = np.int32 if v.dtype == np.int32 else np.float32
+        f_out.mktree("tree", branch_types)
+        f_out["tree"].extend(final)
+
+    elapsed = time.time() - t0
+    print(f"[DONE] {total_events} events in {elapsed:.1f}s "
+          f"({total_events / elapsed:.0f} evt/s)")
+    print(f"[INFO] Output: {output_path}")
+    print(f"[INFO] Branches: {sorted(final.keys())}")
+
+
+# ======================================================================
+# Main
+# ======================================================================
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Run validation-only with an existing checkpoint or ONNX model",
+        description="Run validation with an existing checkpoint or ONNX model",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("checkpoint", type=str, help="Path to checkpoint (.pth) or ONNX model (.onnx)")
-    parser.add_argument("--val_path", type=str, required=True, help="Path to validation data")
-    parser.add_argument("--config", type=str, default=None, help="Config file (required for ONNX, optional for .pth)")
-    parser.add_argument("--output_dir", type=str, default=None, help="Output directory (default: same as checkpoint)")
+    parser.add_argument("checkpoint", type=str,
+                        help="Path to checkpoint (.pth) or ONNX model (.onnx)")
+    parser.add_argument("--val_path", type=str, required=True,
+                        help="Path to validation data (directory or ROOT file)")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Config file (required for ONNX, optional for .pth)")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Output directory (default: same as checkpoint)")
     parser.add_argument("--tasks", type=str, nargs="+", default=None,
                         choices=["angle", "energy", "timing", "uvwFI"],
                         help="Tasks to evaluate (default: from checkpoint)")
     parser.add_argument("--batch_size", type=int, default=1024)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--num_threads", type=int, default=4)
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--device", type=str,
+                        default="cuda" if torch.cuda.is_available() else "cpu")
+
+    # Dead-channel recovery mode
+    dc_group = parser.add_argument_group("Dead-channel recovery",
+        "Enable with --dead-channel to compare raw, neighbor-avg, and "
+        "inpainted recovery strategies. Requires ONNX model.")
+    dc_group.add_argument("--dead-channel", action="store_true",
+                          help="Enable dead-channel recovery mode")
+    dc_group.add_argument("--chunksize", type=int, default=2048,
+                          help="Events per chunk for dead-channel mode (default: 2048)")
+    dc_group.add_argument("--neighbor-k", type=int, default=1,
+                          help="Neighbor hops for averaging (default: 1)")
+    dc_group.add_argument("--tree-name", type=str, default="tree",
+                          help="TTree name in input ROOT file (default: tree)")
+
+    # Inpainter (mutually exclusive)
+    inp_group = parser.add_mutually_exclusive_group()
+    inp_group.add_argument("--inpainter-torchscript", type=str, default=None,
+                           help="Path to inpainter TorchScript (.pt)")
+    inp_group.add_argument("--inpainter-checkpoint", type=str, default=None,
+                           help="Path to inpainter checkpoint (.pth)")
+
+    # Dead channel source overrides
+    dead_group = parser.add_mutually_exclusive_group()
+    dead_group.add_argument("--dead-from-db", type=int, metavar="RUN", default=None,
+                            help="Query dead channels from DB for this run")
+    dead_group.add_argument("--dead-from-file", type=str, metavar="PATH", default=None,
+                            help="Load dead channel list from text file")
 
     args = parser.parse_args()
 
-    # Expand tilde in checkpoint path
+    # Expand tilde in paths
     args.checkpoint = os.path.expanduser(args.checkpoint)
+    if args.inpainter_torchscript:
+        args.inpainter_torchscript = os.path.expanduser(args.inpainter_torchscript)
+    if args.inpainter_checkpoint:
+        args.inpainter_checkpoint = os.path.expanduser(args.inpainter_checkpoint)
 
     if not os.path.exists(args.checkpoint):
         print(f"Error: Model not found: {args.checkpoint}")
@@ -368,8 +774,17 @@ def main():
 
     is_onnx = args.checkpoint.endswith(".onnx")
     device = torch.device(args.device)
+
+    # Dead-channel mode requires ONNX
+    dead_channel_mode = args.dead_channel
+    if dead_channel_mode and not is_onnx:
+        print("[ERROR] Dead-channel recovery mode requires an ONNX model (.onnx)")
+        sys.exit(1)
+
     print(f"[INFO] Model format: {'ONNX' if is_onnx else 'PyTorch'}")
     print(f"[INFO] Using device: {'cpu (ONNX)' if is_onnx else device}")
+    if dead_channel_mode:
+        print("[INFO] Mode: dead-channel recovery")
 
     # --- Load config ---
     cfg = None
@@ -427,6 +842,8 @@ def main():
             norm_params["npho_scheme"] = cfg.normalization.npho_scheme
         if hasattr(cfg.normalization, 'sentinel_npho'):
             norm_params["sentinel_npho"] = cfg.normalization.sentinel_npho
+        if hasattr(cfg.normalization, 'npho_threshold'):
+            norm_params["npho_threshold"] = cfg.normalization.npho_threshold
     else:
         norm_params = {
             "npho_scale": DEFAULT_NPHO_SCALE,
@@ -441,12 +858,17 @@ def main():
           f"npho_scale2={norm_params.get('npho_scale2')}")
 
     # --- Run inference ---
-    if is_onnx:
+    if dead_channel_mode:
+        _run_dead_channel_recovery(args, norm_params)
+    elif is_onnx:
         model, root_data, angle_pred, angle_true, worst_events = \
             _run_onnx(args, cfg, active_tasks, norm_params)
     else:
         model, root_data, angle_pred, angle_true, worst_events = \
             _run_pytorch(args, cfg, active_tasks, norm_params)
+
+    if dead_channel_mode:
+        return
 
     # --- Check collected data ---
     print("\n=== Data Collection Check ===")

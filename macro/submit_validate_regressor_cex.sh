@@ -4,17 +4,23 @@
 # One job per patch (24 patches total), running in parallel.
 #
 # Usage:
-#   bash macro/submit_validate_regressor_cex.sh                    # All patches
+#   bash macro/submit_validate_regressor_cex.sh                    # All patches (standard)
 #   bash macro/submit_validate_regressor_cex.sh 13 12 21           # Only these patches
 #   DRY_RUN=1 bash macro/submit_validate_regressor_cex.sh          # Preview
+#
+#   # Dead-channel recovery mode:
+#   DEAD_CHANNEL=1 INPAINTER=inpainter.pt bash macro/submit_validate_regressor_cex.sh
 #
 # Environment variables:
 #   CHECKPOINT  — path to model (.pth or .onnx, default: ene_50epoch_sqrt_DSmax ONNX)
 #   CONFIG      — config YAML for normalization params (default: ene_50epoch_sqrt_DSmax)
 #   CEX_DIR     — directory with CEX ROOT files (default: data/cex)
 #   OUTPUT_BASE — output base directory (default: val_data/cex)
-#   PARTITION   — SLURM partition (default: mu3e)
+#   PARTITION   — SLURM partition (default: meg-long)
 #   DRY_RUN     — set to 1 to preview without submitting
+#   DEAD_CHANNEL — set to 1 to enable dead-channel recovery mode
+#   INPAINTER   — path to inpainter TorchScript (.pt) for dead-channel mode
+#   NEIGHBOR_K  — neighbor hops for averaging (default: 1)
 #
 
 set -euo pipefail
@@ -26,6 +32,9 @@ CONFIG="${CONFIG:-config/reg/ene_reg_50epoch_sqrt_DSmax.yaml}"
 CEX_DIR="${CEX_DIR:-data/cex}"
 OUTPUT_BASE="${OUTPUT_BASE:-val_data/cex}"
 PARTITION="${PARTITION:-meg-long}"
+DEAD_CHANNEL="${DEAD_CHANNEL:-0}"
+INPAINTER="${INPAINTER:-}"
+NEIGHBOR_K="${NEIGHBOR_K:-1}"
 
 case "$PARTITION" in
     meg-long|meg-short|mu3e) ACCOUNT_LINE="#SBATCH --account=meg" ;;
@@ -48,13 +57,18 @@ fi
 echo "============================================"
 echo "Energy Regressor CEX Validation"
 echo "============================================"
-echo "Model:    ${CHECKPOINT}"
-echo "Config:   ${CONFIG}"
-echo "CEX data: ${CEX_DIR}"
-echo "Output:   ${OUTPUT_BASE}"
-echo "Patches:    ${PATCHES[*]}"
-echo "Partition:  ${PARTITION}"
-echo "Dry run:    ${DRY_RUN}"
+echo "Model:       ${CHECKPOINT}"
+echo "Config:      ${CONFIG}"
+echo "CEX data:    ${CEX_DIR}"
+echo "Output:      ${OUTPUT_BASE}"
+echo "Patches:     ${PATCHES[*]}"
+echo "Partition:   ${PARTITION}"
+echo "Dead-channel: ${DEAD_CHANNEL}"
+if [ "$DEAD_CHANNEL" = "1" ]; then
+    echo "Inpainter:   ${INPAINTER:-<none>}"
+    echo "Neighbor k:  ${NEIGHBOR_K}"
+fi
+echo "Dry run:     ${DRY_RUN}"
 echo "============================================"
 echo ""
 
@@ -92,6 +106,15 @@ mkdir -p log "${OUTPUT_BASE}"
 
 SUBMITTED=0
 SKIPPED=0
+
+# Build extra flags for dead-channel mode
+EXTRA_FLAGS=""
+if [ "$DEAD_CHANNEL" = "1" ]; then
+    EXTRA_FLAGS="--dead-channel --neighbor-k ${NEIGHBOR_K}"
+    if [ -n "$INPAINTER" ]; then
+        EXTRA_FLAGS="${EXTRA_FLAGS} --inpainter-torchscript ${INPAINTER}"
+    fi
+fi
 
 for PATCH in "${PATCHES[@]}"; do
     # Find CEX files for this patch (may be multiple from batched preprocessing)
@@ -182,7 +205,7 @@ python macro/validate_regressor.py \\
     --tasks energy \\
     --output_dir ${OUTDIR} \\
     --batch_size ${BATCH_SIZE} \\
-    --device cpu
+    --device cpu ${EXTRA_FLAGS}
 
 echo ""
 echo "=== Done: \$(date) ==="
