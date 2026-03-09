@@ -31,6 +31,10 @@ tmp*/
 dist/
 out/
 
+# --- ROOT ACLiC compilation artifacts ---
+*_C_ACLiC_dict*
+*_C.d.bak
+
 # --- ROOT ACLiC temp dirs (typical) ---
 */tmp/aclic_build*/
 */analyzer/tmp/
