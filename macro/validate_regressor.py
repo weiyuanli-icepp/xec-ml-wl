@@ -791,8 +791,8 @@ def main():
         "inpainted recovery strategies. Requires ONNX model.")
     dc_group.add_argument("--dead-channel", action="store_true",
                           help="Enable dead-channel recovery mode")
-    dc_group.add_argument("--chunksize", type=int, default=2048,
-                          help="Events per chunk for dead-channel mode (default: 2048)")
+    dc_group.add_argument("--chunksize", type=int, default=512,
+                          help="Events per chunk for dead-channel mode (default: 512)")
     dc_group.add_argument("--neighbor-k", type=int, default=1,
                           help="Neighbor hops for averaging (default: 1)")
     dc_group.add_argument("--tree-name", type=str, default="tree",
