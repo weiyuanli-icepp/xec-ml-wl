@@ -3,18 +3,14 @@
 Combine per-patch CEX validation results into a single ROOT file and
 produce resolution plots with Gaussian fits.
 
-Reads prediction CSVs from val_data/cex/patch{1..24}/ and:
-  1. Prints per-patch and overall statistics
-  2. Writes a combined ROOT file (or CSV fallback) with patch ID
-  3. Produces a multi-page PDF with:
-     - Page 1: Summary — resolution vs patch (Gaussian σ ± fit error)
-     - Page 2: Combined residual histogram with Gaussian fit
-     - Pages 3+: Per-patch residual histograms with Gaussian overlays
-
-Usage:
+Standard mode — reads prediction CSVs from val_data/cex/patch{1..24}/:
     python macro/combine_cex_results.py
     python macro/combine_cex_results.py --input-base val_data/cex
     python macro/combine_cex_results.py --patches 13 12 21
+
+Dead-channel mode — reads regressor_*.root files with recovery strategies:
+    python macro/combine_cex_results.py --dead-channel
+    python macro/combine_cex_results.py --dead-channel --patches 13 12 21
 """
 
 import argparse
@@ -117,12 +113,24 @@ def fit_double_gaussian(values, nbins='auto'):
         return None, None
 
 
+STRATEGIES = ["raw", "neighavg", "inpainted"]
+STRATEGY_LABELS = {"raw": "Raw", "neighavg": "Neighbor Avg", "inpainted": "Inpainted"}
+STRATEGY_COLORS = {"raw": "tab:red", "neighavg": "tab:orange", "inpainted": "tab:blue"}
+STRATEGY_MARKERS = {"raw": "o", "neighavg": "s", "inpainted": "D"}
+
+
 def find_csv(patch_dir):
     """Find the predictions CSV in a patch directory."""
     candidates = sorted(glob.glob(os.path.join(patch_dir, "predictions_energy_*.csv")))
     if candidates:
         return candidates[-1]
     return None
+
+
+def find_dc_root(patch_dir):
+    """Find dead-channel recovery ROOT files in a patch directory."""
+    candidates = sorted(glob.glob(os.path.join(patch_dir, "regressor_*.root")))
+    return candidates or None
 
 
 def make_plots(patch_data, combined_residual, output_dir,
@@ -391,6 +399,305 @@ def make_plots(patch_data, combined_residual, output_dir,
     print(f"\nPlots: {pdf_path}")
 
 
+def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
+                            active_strategies, output_dir):
+    """Generate multi-page PDF comparing dead-channel recovery strategies.
+
+    Args:
+        patch_data_dc: list of (patch_id, n_events,
+                        {strategy: (residual, dg_popt, dg_pcov)})
+        combined_residuals_dc: {strategy: residual_mev_array}
+        active_strategies: list of strategy names with valid data
+        output_dir: directory for output PDF
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    from scipy.optimize import curve_fit
+
+    pdf_path = os.path.join(output_dir, "CEX23_dead_channel_resolution.pdf")
+    n_strat = len(active_strategies)
+    offsets = np.linspace(-0.15 * (n_strat - 1), 0.15 * (n_strat - 1), n_strat)
+
+    with PdfPages(pdf_path) as pdf:
+        # ==============================================================
+        # Page 1: Resolution (core sigma) vs patch for each strategy
+        # ==============================================================
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+        fig.suptitle("CEX23 Dead-Channel Recovery: Energy Resolution", fontsize=14)
+
+        patch_ids = []
+        strat_sigmas = {s: [] for s in active_strategies}
+        strat_sigma_errs = {s: [] for s in active_strategies}
+        strat_mus = {s: [] for s in active_strategies}
+        strat_mu_errs = {s: [] for s in active_strategies}
+
+        for pid, n_ev, strat_dict in patch_data_dc:
+            has_any = False
+            for s in active_strategies:
+                if s in strat_dict and strat_dict[s][1] is not None:
+                    has_any = True
+                    break
+            if not has_any:
+                continue
+            patch_ids.append(pid)
+            for s in active_strategies:
+                if s in strat_dict and strat_dict[s][1] is not None:
+                    dg = strat_dict[s][1]
+                    dg_cov = strat_dict[s][2]
+                    strat_sigmas[s].append(abs(dg[2]))
+                    strat_sigma_errs[s].append(np.sqrt(dg_cov[2, 2]))
+                    strat_mus[s].append(dg[1])
+                    strat_mu_errs[s].append(np.sqrt(dg_cov[1, 1]))
+                else:
+                    strat_sigmas[s].append(np.nan)
+                    strat_sigma_errs[s].append(0)
+                    strat_mus[s].append(np.nan)
+                    strat_mu_errs[s].append(0)
+
+        if patch_ids:
+            x = np.arange(len(patch_ids))
+            labels = [str(p) for p in patch_ids]
+
+            for i, s in enumerate(active_strategies):
+                ax1.errorbar(x + offsets[i], strat_sigmas[s],
+                             yerr=strat_sigma_errs[s],
+                             fmt=STRATEGY_MARKERS[s], color=STRATEGY_COLORS[s],
+                             capsize=4, markersize=6, label=STRATEGY_LABELS[s])
+            ax1.set_xticks(x)
+            ax1.set_xticklabels(labels, fontsize=8)
+            ax1.set_xlabel("Patch")
+            ax1.set_ylabel("Core $\\sigma$ [MeV]")
+            ax1.set_title("Resolution (Double-Gaussian Core $\\sigma$)")
+            ax1.legend(fontsize=9)
+
+            for i, s in enumerate(active_strategies):
+                ax2.errorbar(x + offsets[i], strat_mus[s],
+                             yerr=strat_mu_errs[s],
+                             fmt=STRATEGY_MARKERS[s], color=STRATEGY_COLORS[s],
+                             capsize=4, markersize=6, label=STRATEGY_LABELS[s])
+            ax2.axhline(0, color='black', ls='-', lw=0.5)
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(labels, fontsize=8)
+            ax2.set_xlabel("Patch")
+            ax2.set_ylabel("Core $\\mu$ [MeV]")
+            ax2.set_title("Bias (Double-Gaussian Core $\\mu$)")
+            ax2.legend(fontsize=9)
+
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        pdf.savefig(fig)
+        plt.close(fig)
+
+        # ==============================================================
+        # Page 2: Combined residual histograms (one per strategy)
+        # ==============================================================
+        fig, axes = plt.subplots(1, n_strat, figsize=(6 * n_strat, 5))
+        if n_strat == 1:
+            axes = [axes]
+        fig.suptitle("CEX23 Combined Residual by Strategy", fontsize=14)
+        plot_range = (-40, 40)
+        nbins = 100
+
+        for ax, s in zip(axes, active_strategies):
+            res = combined_residuals_dc.get(s, np.array([]))
+            if res.size == 0:
+                ax.set_title(STRATEGY_LABELS[s])
+                continue
+            counts, edges, _ = ax.hist(res, bins=nbins, range=plot_range,
+                                       alpha=0.7, color=STRATEGY_COLORS[s],
+                                       label=f"N = {len(res)}")
+            # Double Gaussian fit
+            centers = (edges[:-1] + edges[1:]) / 2
+            mu0 = np.median(res)
+            sig0 = np.std(res)
+            dx = edges[1] - edges[0]
+            A0 = len(res) * dx / (sig0 * np.sqrt(2 * np.pi))
+            try:
+                p0 = [0.7*A0, mu0, 0.6*sig0, 0.3*A0, mu0, 2.0*sig0]
+                dg, _ = curve_fit(
+                    _double_gaussian, centers, counts.astype(float),
+                    p0=p0,
+                    bounds=([0,-np.inf,1e-8,0,-np.inf,1e-8],
+                            [np.inf,np.inf,np.inf,np.inf,np.inf,np.inf]),
+                    maxfev=10000)
+                if abs(dg[5]) < abs(dg[2]):
+                    dg = np.array([dg[3], dg[4], dg[5], dg[0], dg[1], dg[2]])
+                x_fit = np.linspace(plot_range[0], plot_range[1], 300)
+                ax.plot(x_fit, _double_gaussian(x_fit, *dg), 'k-', lw=2)
+                ax.plot(x_fit, _gaussian(x_fit, *dg[:3]), 'k--', lw=1, alpha=0.5)
+                ax.plot(x_fit, _gaussian(x_fit, *dg[3:]), 'k:', lw=1, alpha=0.5)
+                label = (f"core: $\\sigma$={abs(dg[2]):.2f}, "
+                         f"$\\mu$={dg[1]:.2f} MeV")
+                ax.text(0.97, 0.95, label, transform=ax.transAxes,
+                        fontsize=9, va='top', ha='right')
+            except Exception:
+                pass
+            ax.set_xlabel("Pred - True [MeV]")
+            ax.set_ylabel("Events")
+            ax.set_title(STRATEGY_LABELS[s])
+            ax.legend(fontsize=9)
+
+        fig.tight_layout(rect=[0, 0, 1, 0.93])
+        pdf.savefig(fig)
+        plt.close(fig)
+
+        # ==============================================================
+        # Pages 3+: Per-patch overlaid histograms (6 per page)
+        # ==============================================================
+        patches_with_data = [item for item in patch_data_dc
+                             if any(s in item[2] and len(item[2][s][0]) > 0
+                                    for s in active_strategies)]
+        per_page = 6
+        for page_start in range(0, len(patches_with_data), per_page):
+            page_items = patches_with_data[page_start:page_start + per_page]
+            nrows = (len(page_items) + 2) // 3
+            ncols = min(3, len(page_items))
+            fig, axes = plt.subplots(nrows, ncols,
+                                     figsize=(5 * ncols, 4 * nrows))
+            fig.suptitle("Per-Patch Residual by Strategy", fontsize=13)
+            axes = np.atleast_1d(axes).flatten()
+
+            for i, (pid, n_ev, strat_dict) in enumerate(page_items):
+                ax = axes[i]
+                title_parts = [f"Patch {pid} (N={n_ev})"]
+                for s in active_strategies:
+                    if s not in strat_dict:
+                        continue
+                    res = strat_dict[s][0]
+                    if len(res) == 0:
+                        continue
+                    ax.hist(res, bins='auto', range=plot_range, alpha=0.4,
+                            color=STRATEGY_COLORS[s], label=STRATEGY_LABELS[s])
+                    dg = strat_dict[s][1]
+                    if dg is not None:
+                        title_parts.append(
+                            f"{STRATEGY_LABELS[s]}: "
+                            f"$\\sigma$={abs(dg[2]):.2f} MeV")
+                ax.set_title("\n".join(title_parts), fontsize=9)
+                ax.set_xlabel("Pred - True [MeV]", fontsize=9)
+                ax.set_ylabel("Events", fontsize=9)
+                ax.legend(fontsize=7)
+
+            for j in range(len(page_items), len(axes)):
+                axes[j].axis('off')
+
+            fig.tight_layout(rect=[0, 0, 1, 0.93])
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    print(f"\nPlots: {pdf_path}")
+
+
+def _run_dead_channel_mode(args, patches, input_base):
+    """Dead-channel mode: load regressor_*.root files and compare strategies."""
+    if not HAS_UPROOT:
+        print("[ERROR] uproot is required for dead-channel mode")
+        sys.exit(1)
+
+    patch_data_dc = []  # (patch_id, n_events, {strat: (residual, dg_popt, dg_pcov)})
+    combined_per_strat = {s: [] for s in STRATEGIES}
+    found = 0
+    missing = []
+
+    for patch in patches:
+        patch_dir = os.path.join(input_base, f"patch{patch}")
+        root_files = find_dc_root(patch_dir)
+
+        if root_files is None:
+            missing.append(patch)
+            continue
+
+        # Read and concatenate all ROOT files for this patch
+        all_arrays = {}
+        for rf in root_files:
+            with uproot.open(rf) as f:
+                tree = f["tree"]
+                arrays = tree.arrays(library="np")
+                for k, v in arrays.items():
+                    all_arrays.setdefault(k, []).append(v)
+        arrays = {k: np.concatenate(v) for k, v in all_arrays.items()}
+
+        n = len(arrays.get("run", []))
+        found += 1
+
+        # Get truth
+        truth = arrays.get("energyTruth", None)
+        if truth is None:
+            print(f"  Patch {patch:>2d}: {n:>6d} events | no energyTruth branch")
+            patch_data_dc.append((patch, n, {}))
+            continue
+
+        # Detect available strategies
+        strat_dict = {}
+        parts = [f"  Patch {patch:>2d}: {n:>6d} events"]
+
+        for s in STRATEGIES:
+            branch = f"energy_{s}"
+            pred = arrays.get(branch, None)
+            if pred is None:
+                continue
+            # Skip inpainted if all sentinel (no inpainter was provided)
+            if s == "inpainted" and np.all(pred > 1e9):
+                continue
+
+            valid = (truth < 1e9) & (pred < 1e9)
+            if valid.sum() == 0:
+                continue
+
+            residual = (pred[valid] - truth[valid]) * 1e3  # MeV
+            dg_popt, dg_pcov = fit_double_gaussian(residual)
+            strat_dict[s] = (residual, dg_popt, dg_pcov)
+            combined_per_strat[s].append(residual)
+
+            if dg_popt is not None:
+                core_sig = abs(dg_popt[2])
+                core_sig_err = np.sqrt(dg_pcov[2, 2])
+                parts.append(f"{STRATEGY_LABELS[s]}: "
+                             f"σ={core_sig:.2f}\u00b1{core_sig_err:.2f}")
+            else:
+                res68 = np.percentile(np.abs(residual), 68)
+                parts.append(f"{STRATEGY_LABELS[s]}: res68={res68:.2f}")
+
+        print(" | ".join(parts))
+        patch_data_dc.append((patch, n, strat_dict))
+
+    if found == 0:
+        print("\n[ERROR] No dead-channel results found. "
+              "Check that validation jobs have completed.")
+        sys.exit(1)
+
+    if missing:
+        print(f"\n[WARN] Missing patches: {missing}")
+
+    # Determine active strategies (those with data)
+    active_strategies = [s for s in STRATEGIES if combined_per_strat[s]]
+
+    # Combined stats
+    print(f"\n{'='*60}")
+    print(f"Combined: {found} patches")
+    combined_residuals_dc = {}
+    for s in active_strategies:
+        res = np.concatenate(combined_per_strat[s])
+        combined_residuals_dc[s] = res
+        dg_popt, dg_pcov = fit_double_gaussian(res)
+        parts = [f"  {STRATEGY_LABELS[s]:>14s}: N={len(res):>7d}"]
+        if dg_popt is not None:
+            core_sig = abs(dg_popt[2])
+            core_sig_err = np.sqrt(dg_pcov[2, 2])
+            parts.append(f"core σ={core_sig:.2f}\u00b1{core_sig_err:.2f} MeV")
+            parts.append(f"μ={dg_popt[1]:+.2f} MeV")
+        parts.append(f"res68={np.percentile(np.abs(res), 68):.2f} MeV")
+        print(" | ".join(parts))
+
+    # Save combined ROOT file
+    if not args.no_plots and patch_data_dc:
+        make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
+                                active_strategies, input_base)
+
+    print("Done!")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Combine per-patch CEX validation results",
@@ -405,11 +712,9 @@ def main():
                         help="Specific patches to combine (default: all 1-24)")
     parser.add_argument("--no-plots", action="store_true",
                         help="Skip plot generation")
+    parser.add_argument("--dead-channel", action="store_true",
+                        help="Dead-channel recovery mode: read regressor_*.root files")
     args = parser.parse_args()
-
-    if not HAS_PANDAS:
-        print("[ERROR] pandas is required. Install with: pip install pandas")
-        sys.exit(1)
 
     patches = args.patches or ALL_PATCHES
     input_base = args.input_base
@@ -417,6 +722,14 @@ def main():
     print(f"Input base: {input_base}")
     print(f"Patches:    {patches}")
     print()
+
+    if args.dead_channel:
+        _run_dead_channel_mode(args, patches, input_base)
+        return
+
+    if not HAS_PANDAS:
+        print("[ERROR] pandas is required. Install with: pip install pandas")
+        sys.exit(1)
 
     all_dfs = []
     patch_data = []   # (patch_id, n_events, residual_mev, popt, pcov)
