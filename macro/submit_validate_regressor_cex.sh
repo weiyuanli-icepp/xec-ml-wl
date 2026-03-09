@@ -161,6 +161,7 @@ ${ACCOUNT_LINE}
 #SBATCH --time=${TIME}
 #SBATCH --hint=nomultithread
 #SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=${MEM}
 #SBATCH --job-name=cex_val_p${PATCH}
 #SBATCH --output=$HOME/meghome/xec-ml-wl/log/cex_val_patch${PATCH}_%j.log
