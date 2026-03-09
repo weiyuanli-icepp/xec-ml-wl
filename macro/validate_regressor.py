@@ -27,8 +27,6 @@ import time
 import warnings
 
 import numpy as np
-warnings.filterwarnings("ignore", message="Can't initialize NVML")
-import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -82,6 +80,7 @@ def _print_timing(elapsed, n_events, backend, batch_times=None):
 
 def _run_pytorch(args, cfg, active_tasks, norm_params):
     """Run validation with a PyTorch checkpoint."""
+    import torch
     from lib.models import XECEncoder, XECMultiHeadModel
     from lib.engines import run_epoch_stream
 
@@ -193,11 +192,7 @@ def _run_onnx(args, cfg, active_tasks, norm_params):
     sess_opts.inter_op_num_threads = n_threads
     sess_opts.intra_op_num_threads = n_threads
     print(f"[INFO] ONNX threads: {n_threads}")
-    available_providers = ort.get_available_providers()
-    if "CUDAExecutionProvider" in available_providers:
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    else:
-        providers = ["CPUExecutionProvider"]
+    providers = ["CPUExecutionProvider"]
     sess = ort.InferenceSession(args.checkpoint, sess_options=sess_opts,
                                 providers=providers)
 
@@ -432,6 +427,7 @@ def _fill_dead_inpainter(x_norm, dead_mask_1d, model, device,
       ``(B, 4760, C)`` output (C=1 or 2).  Values are placed directly
       into ``x_norm``.
     """
+    import torch
     x_filled = x_norm.copy()
     N = x_filled.shape[0]
     mask_2d = np.broadcast_to(dead_mask_1d[None, :], (N, N_CHANNELS)).copy()
@@ -562,11 +558,7 @@ def _run_dead_channel_recovery(args, norm_params):
     sess_opts.inter_op_num_threads = n_threads
     sess_opts.intra_op_num_threads = n_threads
     print(f"[INFO] ONNX threads: {n_threads}")
-    available_providers = ort.get_available_providers()
-    if "CUDAExecutionProvider" in available_providers:
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    else:
-        providers = ["CPUExecutionProvider"]
+    providers = ["CPUExecutionProvider"]
     reg_session = ort.InferenceSession(args.checkpoint, sess_options=sess_opts,
                                        providers=providers)
 
@@ -582,6 +574,7 @@ def _run_dead_channel_recovery(args, norm_params):
     inpainter_is_torchscript = False
 
     if args.inpainter_torchscript:
+        import torch
         print(f"[INFO] Loading TorchScript inpainter: {args.inpainter_torchscript}")
         inpainter_model = torch.jit.load(args.inpainter_torchscript,
                                          map_location=args.device)
@@ -791,8 +784,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=1024)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--num_threads", type=int, default=4)
-    parser.add_argument("--device", type=str,
-                        default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--device", type=str, default="cpu")
 
     # Dead-channel recovery mode
     dc_group = parser.add_argument_group("Dead-channel recovery",
@@ -838,7 +830,6 @@ def main():
         sys.exit(1)
 
     is_onnx = args.checkpoint.endswith(".onnx")
-    device = torch.device(args.device)
 
     # Dead-channel mode requires ONNX
     dead_channel_mode = args.dead_channel
@@ -847,13 +838,15 @@ def main():
         sys.exit(1)
 
     print(f"[INFO] Model format: {'ONNX' if is_onnx else 'PyTorch'}")
-    print(f"[INFO] Using device: {'cpu (ONNX)' if is_onnx else device}")
+    print(f"[INFO] Using device: {'cpu (ONNX)' if is_onnx else args.device}")
     if dead_channel_mode:
         print("[INFO] Mode: dead-channel recovery")
 
     # --- Load config ---
     cfg = None
     if not is_onnx:
+        import torch
+        device = torch.device(args.device)
         checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
         if "config" in checkpoint:
             cfg = checkpoint["config"]
