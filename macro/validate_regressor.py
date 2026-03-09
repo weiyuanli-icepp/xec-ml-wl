@@ -563,7 +563,17 @@ def _run_dead_channel_recovery(args, norm_params):
     all_requested = model_branches + meta_branches + dead_branches
 
     tree_name = args.tree_name
-    with uproot.open(args.val_path) as f_check:
+    # Resolve glob patterns for branch discovery (uproot.open doesn't support globs)
+    import glob as globmod
+    if any(c in args.val_path for c in "*?["):
+        discover_files = sorted(globmod.glob(args.val_path))
+        if not discover_files:
+            print(f"[ERROR] No files match: {args.val_path}")
+            return
+        discover_path = discover_files[0]
+    else:
+        discover_path = args.val_path
+    with uproot.open(discover_path) as f_check:
         available = set(f_check[tree_name].keys())
     read_branches = [b for b in all_requested if b in available]
     has_dead_branch = "dead" in available
@@ -762,10 +772,13 @@ def main():
 
     # Expand tilde in paths
     args.checkpoint = os.path.expanduser(args.checkpoint)
+    args.val_path = os.path.expanduser(args.val_path)
     if args.inpainter_torchscript:
         args.inpainter_torchscript = os.path.expanduser(args.inpainter_torchscript)
     if args.inpainter_checkpoint:
         args.inpainter_checkpoint = os.path.expanduser(args.inpainter_checkpoint)
+    if args.dead_from_file:
+        args.dead_from_file = os.path.expanduser(args.dead_from_file)
 
     if not os.path.exists(args.checkpoint):
         print(f"Error: Model not found: {args.checkpoint}")
