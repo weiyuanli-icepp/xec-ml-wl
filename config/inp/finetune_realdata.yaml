@@ -97,7 +97,7 @@ checkpoint:
   new_mlflow_run: true                 # New MLflow run for fine-tuning
 
 distributed:
-  num_gpus: 1
+  num_gpus: 4
 
 mlflow:
   experiment: "inpainting"
