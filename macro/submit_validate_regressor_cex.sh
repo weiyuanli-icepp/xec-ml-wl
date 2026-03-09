@@ -27,13 +27,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DRY_RUN="${DRY_RUN:-0}"
-CHECKPOINT="${CHECKPOINT:-~/meghome/xec-ml-wl/artifacts/ene_50epoch_sqrt_DSmax/meg2ene.onnx}"
-CONFIG="${CONFIG:-config/reg/ene_reg_50epoch_sqrt_DSmax.yaml}"
+CHECKPOINT="${CHECKPOINT:-~/meghome/xec-ml-wl/artifacts/scan_s7_fulldata/ene_s7_best.onnx}"
+CONFIG="${CONFIG:-config/reg/scan/step7_fulldata.yaml}"
 CEX_DIR="${CEX_DIR:-data/cex}"
 OUTPUT_BASE="${OUTPUT_BASE:-val_data/cex}"
 PARTITION="${PARTITION:-meg-long}"
 DEAD_CHANNEL="${DEAD_CHANNEL:-0}"
-INPAINTER="${INPAINTER:-}"
+INPAINTER="${INPAINTER:-~/meghome/xec-ml-wl/artifacts/inp_scan_s3/inpainter.pt}"
 NEIGHBOR_K="${NEIGHBOR_K:-1}"
 
 case "$PARTITION" in
@@ -75,7 +75,7 @@ echo ""
 # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 # PRE-FLIGHT CHECKLIST — verify before submitting:
 #   1. CONFIG file exists and has correct npho_scheme / normalization
-#      (ene_50epoch_sqrt_DSmax uses sqrt, scale=20000)
+#      (step7_fulldata uses sqrt, scale=20000)
 #   2. CEX_DIR points to correct location (CEX data may be stored in
 #      different places depending on the server / shared storage)
 #   3. ONNX model path is accessible from compute nodes
