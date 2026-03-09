@@ -245,6 +245,81 @@ python macro/compare_cex_conventional.py --patches 13 12 21
 python macro/compare_cex_conventional.py --output path/to/comparison.pdf
 ```
 
+## CEX Validation with Dead Channel Recovery
+
+Compare energy regressor performance under three dead-channel recovery strategies: raw (sentinels), neighbor averaging, and ML inpainting.
+
+### Prerequisites
+
+Export the regressor and (optionally) the inpainter:
+
+```bash
+# Export regressor to ONNX
+python macro/export_onnx.py artifacts/<RUN>/checkpoint_best.pth \
+    --tasks energy --output regressor.onnx
+
+# Export inpainter to TorchScript
+python macro/export_onnx_inpainter.py artifacts/<RUN>/inpainter_checkpoint_best.pth \
+    --output inpainter.pt
+```
+
+CEX data must be preprocessed with dead channel info (the `dead` branch). See [Preprocess CEX data](#1-preprocess-cex-data) above.
+
+### Run inference with recovery
+
+```bash
+# All three strategies (raw + neighbor avg + inpainted)
+python val_data/run_regressor_cex.py \
+    --regressor-onnx regressor.onnx \
+    --inpainter-torchscript inpainter.pt \
+    --input data/cex/CEX23_patch13_r557545_n100.root \
+    --output results.root
+
+# Without inpainter (raw + neighbor avg only)
+python val_data/run_regressor_cex.py \
+    --regressor-onnx regressor.onnx \
+    --input data/cex/CEX23_patch13_r557545_n100.root \
+    --output results.root
+```
+
+The script:
+1. Reads events from the CEX ROOT file (npho, time, dead mask)
+2. For each event, creates three input variants:
+   - **Raw** — dead channels left as sentinel values
+   - **Neighbor average** — dead channels filled by averaging valid k-hop neighbors (`lib/inpainter_baselines.py`)
+   - **Inpainted** — dead channels filled by the ML inpainter model
+3. Normalizes and feeds each variant to the ONNX regressor
+4. Writes all predictions to the output ROOT file
+
+**Output branches:** `energy_raw`, `energy_neighavg`, `energy_inpainted` (plus metadata: `run`, `event`, `energyTruth`, `energyReco`, etc.)
+
+### Options
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--regressor-onnx` | (required) | Path to ONNX regressor model |
+| `--input` | (required) | CEX ROOT file from preprocessing |
+| `--output` | auto | Output ROOT file path |
+| `--inpainter-torchscript` | none | TorchScript inpainter (`.pt`) |
+| `--inpainter-checkpoint` | none | PyTorch inpainter checkpoint (`.pth`, alternative) |
+| `--neighbor-k` | 1 | Number of neighbor hops for averaging |
+| `--dead-from-db` | none | Query dead channels from DB for this run number |
+| `--dead-from-file` | none | Load dead channels from text file |
+| `--active-tasks` | auto | Tasks to run (default: auto-detect from ONNX) |
+| `--chunksize` | 2048 | Events to read per chunk from ROOT file |
+| `--batch-size` | 1024 | Batch size for inference |
+| `--device` | cpu | Device for inpainter (cpu or cuda) |
+
+Dead channels are detected from the `dead` branch in the ROOT file by default. Use `--dead-from-db` or `--dead-from-file` to override.
+
+### Dead channel recovery methods
+
+| Method | Source | Description |
+|--------|--------|-------------|
+| Raw | Built-in | Dead channels left as sentinels; regressor sees them as-is |
+| Neighbor avg | `lib/inpainter_baselines.py` | Geometry-aware averaging of valid k-hop neighbors (supports all 6 faces) |
+| Inpainted | Exported inpainter model | ML-based prediction using surrounding channel context |
+
 ---
 
 ## Output branches
