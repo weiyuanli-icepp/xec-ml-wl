@@ -30,9 +30,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lib.dataset import get_dataloader
 from lib.config import load_config
-from lib.train_regressor import save_validation_artifacts
 from lib.geom_defs import (
     DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
     DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT, DEFAULT_SENTINEL_TIME,
@@ -81,6 +79,7 @@ def _print_timing(elapsed, n_events, backend, batch_times=None):
 def _run_pytorch(args, cfg, active_tasks, norm_params):
     """Run validation with a PyTorch checkpoint."""
     import torch
+    from lib.dataset import get_dataloader
     from lib.models import XECEncoder, XECMultiHeadModel
     from lib.engines import run_epoch_stream
 
@@ -184,6 +183,7 @@ def _run_pytorch(args, cfg, active_tasks, norm_params):
 def _run_onnx(args, cfg, active_tasks, norm_params):
     """Run validation with an ONNX model using onnxruntime."""
     import onnxruntime as ort
+    from lib.dataset import get_dataloader
 
     print(f"[INFO] Loading ONNX model: {args.checkpoint}")
     sess_opts = ort.SessionOptions()
@@ -939,6 +939,7 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"\n[INFO] Saving artifacts to: {output_dir}")
+    from lib.train_regressor import save_validation_artifacts
     run_name = os.path.splitext(os.path.basename(args.checkpoint))[0]
     save_validation_artifacts(
         model=model,

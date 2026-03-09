@@ -5,11 +5,11 @@ Provides configurable npho normalization with forward/inverse transforms.
 """
 
 import numpy as np
-import torch
 from typing import Union
 
-# Type alias for array-like inputs
-ArrayLike = Union[np.ndarray, torch.Tensor]
+# Type alias — torch.Tensor is resolved at runtime via isinstance() checks
+# so we avoid importing torch at module level (saves ~500MB when unused).
+ArrayLike = Union[np.ndarray, "torch.Tensor"]
 
 
 class NphoTransform:
@@ -27,6 +27,11 @@ class NphoTransform:
     """
 
     SCHEMES = ("log1p", "anscombe", "sqrt", "linear")
+
+    @staticmethod
+    def _is_tensor(x) -> bool:
+        """Check if x is a torch.Tensor without importing torch eagerly."""
+        return type(x).__module__.startswith("torch")
 
     def __init__(
         self,
@@ -95,17 +100,17 @@ class NphoTransform:
     # --- log1p scheme ---
     def _forward_log1p(self, x: ArrayLike) -> ArrayLike:
         """log1p: y = log1p(x / scale) / scale2"""
-        if isinstance(x, torch.Tensor):
+        if self._is_tensor(x):
+            import torch
             return torch.log1p(x / self.npho_scale) / self.npho_scale2
-        else:
-            return np.log1p(x / self.npho_scale) / self.npho_scale2
+        return np.log1p(x / self.npho_scale) / self.npho_scale2
 
     def _inverse_log1p(self, y: ArrayLike) -> ArrayLike:
         """log1p inverse: x = scale * (exp(y * scale2) - 1)"""
-        if isinstance(y, torch.Tensor):
+        if self._is_tensor(y):
+            import torch
             return self.npho_scale * (torch.exp(y * self.npho_scale2) - 1.0)
-        else:
-            return self.npho_scale * (np.exp(y * self.npho_scale2) - 1.0)
+        return self.npho_scale * (np.exp(y * self.npho_scale2) - 1.0)
 
     # --- anscombe scheme ---
     def _forward_anscombe(self, x: ArrayLike) -> ArrayLike:
@@ -114,37 +119,34 @@ class NphoTransform:
         The standard Anscombe transform stabilizes Poisson variance to ~1.
         We divide by the transform value at x=scale so output ≈ 1 when x = scale.
         """
-        # Scale factor: transform value at x = npho_scale
         scale_factor = 2.0 * np.sqrt(self.npho_scale + 0.375)
-        if isinstance(x, torch.Tensor):
+        if self._is_tensor(x):
+            import torch
             return 2.0 * torch.sqrt(x + 0.375) / scale_factor
-        else:
-            return 2.0 * np.sqrt(x + 0.375) / scale_factor
+        return 2.0 * np.sqrt(x + 0.375) / scale_factor
 
     def _inverse_anscombe(self, y: ArrayLike) -> ArrayLike:
         """Anscombe inverse: x = (y * scale_factor / 2)^2 - 3/8"""
         scale_factor = 2.0 * np.sqrt(self.npho_scale + 0.375)
-        if isinstance(y, torch.Tensor):
+        if self._is_tensor(y):
             return (y * scale_factor / 2.0) ** 2 - 0.375
-        else:
-            return (y * scale_factor / 2.0) ** 2 - 0.375
+        return (y * scale_factor / 2.0) ** 2 - 0.375
 
     # --- sqrt scheme ---
     def _forward_sqrt(self, x: ArrayLike) -> ArrayLike:
         """sqrt: y = sqrt(x) / sqrt(scale)"""
         sqrt_scale = np.sqrt(self.npho_scale)
-        if isinstance(x, torch.Tensor):
+        if self._is_tensor(x):
+            import torch
             return torch.sqrt(x) / sqrt_scale
-        else:
-            return np.sqrt(x) / sqrt_scale
+        return np.sqrt(x) / sqrt_scale
 
     def _inverse_sqrt(self, y: ArrayLike) -> ArrayLike:
         """sqrt inverse: x = (y * sqrt(scale))^2"""
         sqrt_scale = np.sqrt(self.npho_scale)
-        if isinstance(y, torch.Tensor):
+        if self._is_tensor(y):
             return (y * sqrt_scale) ** 2
-        else:
-            return (y * sqrt_scale) ** 2
+        return (y * sqrt_scale) ** 2
 
     # --- linear scheme ---
     def _forward_linear(self, x: ArrayLike) -> ArrayLike:
