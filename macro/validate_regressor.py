@@ -21,6 +21,7 @@ Supports two modes:
 """
 
 import argparse
+import gc
 import os
 import sys
 import time
@@ -630,8 +631,11 @@ def _run_inpaint_only(args):
                 with torch.no_grad():
                     pred = model(x_batch, m_batch)
                 result[start:end] = pred.cpu().numpy()
+                del x_batch, m_batch, pred
 
             f_out.write(result.astype(np.float32).tobytes())
+            del x_input, mask_2d, result, npho_raw, time_raw
+            gc.collect()
             total += B
             elapsed = time.time() - t0
             rate = total / elapsed if elapsed > 0 else 0
@@ -828,6 +832,7 @@ def _run_dead_channel_recovery(args, norm_params):
             print(f"[INFO] Dead channels detected: {n_dead}")
 
         # --- Process strategies sequentially to reduce peak memory ---
+        # Keep npho/time raw for possible re-normalization, free early where possible.
 
         # Strategy 1: raw (no fill)
         res_raw = _run_regressor_onnx(reg_session, x_norm, task_map,
@@ -848,27 +853,32 @@ def _run_dead_channel_recovery(args, norm_params):
             raw_bytes = inpaint_file.read(B * N_CHANNELS * 4)
             inpainted_raw = np.frombuffer(
                 raw_bytes, dtype=np.float32).reshape(B, N_CHANNELS).copy()
+            del raw_bytes
 
-            # Re-normalize inpainted raw npho for the regressor
-            x_inpainted = x_norm.copy()
+            # Re-normalize inpainted raw npho for the regressor.
+            # Modify x_norm in-place for inpainted channels to avoid a full copy.
+            x_inpainted = x_norm  # reuse same array (raw strategy already done)
             dead_raw = inpainted_raw[:, dead_mask_1d]
+            del inpainted_raw
             dead_safe = np.where(
                 (dead_raw > 9e9) | np.isnan(dead_raw), 0.0, dead_raw)
             domain_min = transform.domain_min()
             dead_safe = np.where(dead_safe < domain_min, 0.0, dead_safe)
             x_inpainted[:, dead_mask_1d, 0] = transform.forward(dead_safe)
+            del dead_raw, dead_safe
 
             res_inpainted = _run_regressor_onnx(reg_session, x_inpainted,
                                                 task_map,
                                                 batch_size=args.batch_size)
             flat_inpainted = _expand_task_results(res_inpainted)
-            del x_inpainted, res_inpainted, inpainted_raw
+            del x_inpainted, res_inpainted
         else:
             flat_inpainted = {}
             for bname, arr in flat_raw.items():
                 flat_inpainted[bname] = np.full_like(arr, 1e10)
 
         del x_norm, npho_raw, time_raw
+        gc.collect()
 
         # --- Build chunk output and write immediately ---
         chunk = {}

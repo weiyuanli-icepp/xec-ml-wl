@@ -21,6 +21,9 @@
 #   DEAD_CHANNEL — set to 1 to enable dead-channel recovery mode
 #   INPAINTER   — path to inpainter TorchScript (.pt) for dead-channel mode
 #   NEIGHBOR_K  — neighbor hops for averaging (default: 1)
+#   BATCH_SIZE  — inference batch size (default: 512)
+#   CHUNKSIZE   — events per chunk for dead-channel mode (default: 1024)
+#   MEM         — SLURM memory allocation (default: 8G)
 #
 
 set -euo pipefail
@@ -42,8 +45,9 @@ case "$PARTITION" in
 esac
 
 TIME="${TIME:-06:00:00}"
-MEM="${MEM:-16G}"
-BATCH_SIZE="${BATCH_SIZE:-1024}"
+MEM="${MEM:-8G}"
+BATCH_SIZE="${BATCH_SIZE:-512}"
+CHUNKSIZE="${CHUNKSIZE:-1024}"
 
 # All 24 CEX23 patches
 ALL_PATCHES=(13 12 21 20 5 4 22 14 6 19 11 3 1 2 7 8 9 10 15 16 17 18 23 24)
@@ -209,6 +213,7 @@ python macro/validate_regressor.py \\
     --tasks energy \\
     --output_dir ${OUTDIR} \\
     --batch_size ${BATCH_SIZE} \\
+    --chunksize ${CHUNKSIZE} \\
     --device cpu ${EXTRA_FLAGS}
 
 echo ""
