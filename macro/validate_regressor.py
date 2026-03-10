@@ -913,34 +913,35 @@ def _run_dead_channel_recovery(args, norm_params):
             n_dead = int(dead_mask_1d.sum())
             print(f"[INFO] Dead channels detected: {n_dead}")
 
-        # --- Fill dead-channel time in the regressor input ---
-        # Average valid-time neighbors in raw space; if < 1/3 valid, keep sentinel.
-        _fill_dead_time_avg(x_norm, dead_mask_1d, baseline,
-                            norm_params["sentinel_time"],
-                            norm_params["time_scale"],
-                            norm_params["time_shift"])
-
         # --- Process strategies sequentially to reduce peak memory ---
-        # Keep npho/time raw for possible re-normalization, free early where possible.
+        # For each strategy: fill npho → fill time → run regressor.
+        # Time fill uses neighbor averaging in raw space (sentinel if < 1/3 valid).
+        _time_fill_kw = dict(
+            sentinel_time=norm_params["sentinel_time"],
+            time_scale=norm_params["time_scale"],
+            time_shift=norm_params["time_shift"],
+        )
         _mem_log(f"chunk {total_events}+{B}: after normalize")
 
-        # Strategy 1: raw (no fill for npho — time already filled above)
+        # Strategy 1: raw (no npho fill, only time fill)
+        _fill_dead_time_avg(x_norm, dead_mask_1d, baseline, **_time_fill_kw)
         res_raw = _run_regressor_onnx(reg_session, x_norm, task_map,
                                       batch_size=args.batch_size)
         flat_raw = _expand_task_results(res_raw)
         del res_raw
         _mem_log(f"chunk {total_events}+{B}: after raw")
 
-        # Strategy 2: neighbor average (npho only — time already filled)
+        # Strategy 2: neighbor average npho, then time fill
         x_neighavg = _fill_dead_neighbor_avg(x_norm, dead_mask_1d, baseline,
                                              transform=transform)
+        _fill_dead_time_avg(x_neighavg, dead_mask_1d, baseline, **_time_fill_kw)
         res_neighavg = _run_regressor_onnx(reg_session, x_neighavg, task_map,
                                            batch_size=args.batch_size)
         flat_neighavg = _expand_task_results(res_neighavg)
         del x_neighavg, res_neighavg
         _mem_log(f"chunk {total_events}+{B}: after neighavg")
 
-        # Strategy 3: inpainted (read pre-computed from subprocess output)
+        # Strategy 3: inpainted npho, then time fill
         if have_inpainter:
             raw_bytes = inpaint_file.read(B * N_CHANNELS * 4)
             inpainted_raw = np.frombuffer(
@@ -958,6 +959,8 @@ def _run_dead_channel_recovery(args, norm_params):
             dead_safe = np.where(dead_safe < domain_min, 0.0, dead_safe)
             x_inpainted[:, dead_mask_1d, 0] = transform.forward(dead_safe)
             del dead_raw, dead_safe
+            _fill_dead_time_avg(x_inpainted, dead_mask_1d, baseline,
+                                **_time_fill_kw)
 
             res_inpainted = _run_regressor_onnx(reg_session, x_inpainted,
                                                 task_map,
