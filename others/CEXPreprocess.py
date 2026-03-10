@@ -162,7 +162,7 @@ def process_run(iRun, dead_mask, out_arrays):
 
     # --- Event selection (vectorized) ---
     # 1. Physics triggers only (50, 51)
-    trig_ok = (mask_vals == 50)
+    trig_ok = (mask_vals == 51)
 
     # 2. Energy window
     energy_ok = (egamma_vals >= E_MIN) & (egamma_vals <= E_MAX)
