@@ -164,22 +164,12 @@ def process_run(iRun, dead_mask, out_arrays):
     # 1. Trigger
     trig_ok = (mask_vals == 51)
 
-    # 2. Energy window
-    energy_ok = (egamma_vals >= E_MIN) & (egamma_vals <= E_MAX)
-
-    # 3. EGamma + bgoEnergy ≈ Epi0 (wide tolerance)
-    if bgoenergy_vals is not None:
-        etotal = egamma_vals + bgoenergy_vals
-        etotal_ok = np.abs(etotal - Epi0) <= ETOTAL_TOL
-    else:
-        etotal_ok = np.ones(len(egamma_vals), dtype=bool)
-
-    # 4. Opening angle → Etrue, must be physical (sqrtarg >= 0)
+    # 2. Opening angle → Etrue, must be physical (sqrtarg >= 0)
     cos_oa = np.cos(np.deg2rad(openangle_vals))
     sqrtarg = 0.25 * Epi0**2 - mpi0**2 / (2.0 * (1.0 - cos_oa))
     phys_ok = sqrtarg >= 0
 
-    sel = trig_ok & energy_ok & etotal_ok & phys_ok
+    sel = trig_ok & phys_ok
 
     # 4. Require valid npho_max and time_min
     npho_sel = npho_vals[sel]

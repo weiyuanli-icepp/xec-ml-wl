@@ -835,6 +835,10 @@ def _run_dead_channel_mode(args, patches, input_base):
             # BGO energy: 65–90 MeV
             sel &= (e_bgo > 0.065) & (e_bgo < 0.090)
 
+            # Total energy: |EGamma + Ebgo - Epi0| <= 20 MeV
+            Epi0 = 0.1378  # GeV
+            sel &= np.abs(e_reco + e_bgo - Epi0) <= 0.020
+
             # Invariant mass: M = sqrt(2 * E1 * E2 * (1 - cos theta))
             # pi0 mass window: 132–138 MeV
             cos_theta = np.cos(np.deg2rad(angle))
