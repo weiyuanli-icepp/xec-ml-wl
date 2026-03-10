@@ -836,11 +836,11 @@ def _run_dead_channel_mode(args, patches, input_base):
             sel &= (e_bgo > 0.065) & (e_bgo < 0.090)
 
             # Invariant mass: M = sqrt(2 * E1 * E2 * (1 - cos theta))
-            # pi0 mass window: 134.5–135.5 MeV
+            # pi0 mass window: 132–138 MeV
             cos_theta = np.cos(np.deg2rad(angle))
             m_inv_sq = 2 * e_reco * e_bgo * (1 - cos_theta)
             m_inv = np.where(m_inv_sq > 0, np.sqrt(m_inv_sq), 0.0)
-            sel &= (m_inv > 0.1345) & (m_inv < 0.1355)
+            sel &= (m_inv > 0.132) & (m_inv < 0.138)
 
         arrays = {k: v[sel] for k, v in arrays.items()}
         n = int(sel.sum())
@@ -863,9 +863,11 @@ def _run_dead_channel_mode(args, patches, input_base):
         if e_reco is not None:
             valid_eg = (truth < 1e9) & (e_reco < 1e9)
             if valid_eg.sum() > 0:
-                combined_egamma_residual.append(
-                    (e_reco[valid_eg] - truth[valid_eg]) * 1e3)
-                combined_egamma_pred.append(e_reco[valid_eg])
+                eg_res = (e_reco[valid_eg] - truth[valid_eg]) * 1e3
+                eg_bias = np.median(eg_res)
+                combined_egamma_residual.append(eg_res - eg_bias)
+                combined_egamma_pred.append(
+                    e_reco[valid_eg] - eg_bias * 1e-3)
 
         # Detect available strategies
         strat_dict = {}
@@ -885,19 +887,23 @@ def _run_dead_channel_mode(args, patches, input_base):
                 continue
 
             residual = (pred[valid] - truth[valid]) * 1e3  # MeV
+            bias = np.median(residual)
             dg_popt, dg_pcov = fit_double_gaussian(residual)
             strat_dict[s] = (residual, dg_popt, dg_pcov)
-            combined_per_strat[s].append(residual)
-            combined_pred_per_strat[s].append(pred[valid])
+            # Bias-corrected residual and predicted energy for combined plots
+            combined_per_strat[s].append(residual - bias)
+            combined_pred_per_strat[s].append(pred[valid] - bias * 1e-3)
 
             if dg_popt is not None:
                 core_sig = abs(dg_popt[2])
                 core_sig_err = np.sqrt(dg_pcov[2, 2])
                 parts.append(f"{STRATEGY_LABELS[s]}: "
-                             f"σ={core_sig:.2f}\u00b1{core_sig_err:.2f}")
+                             f"σ={core_sig:.2f}\u00b1{core_sig_err:.2f} "
+                             f"(bias={bias:+.2f})")
             else:
                 res68 = np.percentile(np.abs(residual), 68)
-                parts.append(f"{STRATEGY_LABELS[s]}: res68={res68:.2f}")
+                parts.append(f"{STRATEGY_LABELS[s]}: res68={res68:.2f} "
+                             f"(bias={bias:+.2f})")
 
         print(" | ".join(parts))
         patch_data_dc.append((patch, n, strat_dict))
