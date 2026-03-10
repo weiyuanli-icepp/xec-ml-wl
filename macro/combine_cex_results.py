@@ -46,6 +46,62 @@ def _double_gaussian(x, A1, mu1, sigma1, A2, mu2, sigma2):
             + _gaussian(x, A2, mu2, sigma2))
 
 
+def _expgaus(x, A, mu, sigma, tau):
+    """Gaussian with exponential low-energy tail (ExpGaus).
+
+    Matches the ExpGausLocal function from CompareDCRMethods3.cpp.
+    For x > mu + tau: standard Gaussian.
+    For x <= mu + tau: exponential tail that joins continuously.
+
+    Parameters: A (height), mu (peak), sigma (width), tau (transition, < 0).
+    """
+    result = np.empty_like(x, dtype=float)
+    gauss_region = x > (mu + tau)
+    # Gaussian region
+    result[gauss_region] = A * np.exp(
+        -0.5 * ((x[gauss_region] - mu) / sigma) ** 2)
+    # Exponential tail
+    exp_region = ~gauss_region
+    result[exp_region] = A * np.exp(
+        tau / sigma**2 * (tau / 2.0 - (x[exp_region] - mu)))
+    return result
+
+
+def fit_expgaus(energies_gev, nbins=600, hist_range=(0.04, 0.1),
+                fit_range=(0.052, 0.0535)):
+    """Fit ExpGaus to an energy spectrum (in GeV).
+
+    Returns (popt, pcov, counts, edges) or (None, None, counts, edges).
+    popt = [A, mu, sigma, tau].
+    """
+    from scipy.optimize import curve_fit
+
+    counts, edges = np.histogram(energies_gev, bins=nbins, range=hist_range)
+    centers = (edges[:-1] + edges[1:]) / 2
+
+    # Restrict fit to fit_range
+    mask = (centers >= fit_range[0]) & (centers <= fit_range[1])
+    if mask.sum() < 4:
+        return None, None, counts, edges
+
+    x_fit = centers[mask]
+    y_fit = counts[mask].astype(float)
+
+    mu0 = 0.0528  # ~52.8 MeV peak
+    sig0 = 0.01 * mu0
+    tau0 = -0.001 * mu0
+    A0 = y_fit.max() if y_fit.max() > 0 else 1.0
+
+    try:
+        popt, pcov = curve_fit(
+            _expgaus, x_fit, y_fit,
+            p0=[A0, mu0, sig0, tau0],
+            maxfev=10000)
+        return popt, pcov, counts, edges
+    except Exception:
+        return None, None, counts, edges
+
+
 def fit_gaussian(values, nbins='auto'):
     """Fit a Gaussian to a 1D array. Returns (popt, pcov) or (None, None)."""
     from scipy.optimize import curve_fit
@@ -400,7 +456,8 @@ def make_plots(patch_data, combined_residual, output_dir,
 
 
 def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
-                            active_strategies, output_dir):
+                            active_strategies, output_dir,
+                            combined_pred_energies=None):
     """Generate multi-page PDF comparing dead-channel recovery strategies.
 
     Args:
@@ -409,6 +466,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         combined_residuals_dc: {strategy: residual_mev_array}
         active_strategies: list of strategy names with valid data
         output_dir: directory for output PDF
+        combined_pred_energies: {strategy: predicted_energy_gev_array}
     """
     import matplotlib
     matplotlib.use('Agg')
@@ -543,7 +601,67 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         plt.close(fig)
 
         # ==============================================================
-        # Pages 3+: Per-patch overlaid histograms (6 per page)
+        # Page 3: ExpGaus fit on predicted energy spectrum (like C++ macro)
+        # ==============================================================
+        if combined_pred_energies:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+            fig.suptitle("CEX23 Energy Spectrum by Strategy (ExpGaus Fit)",
+                         fontsize=14)
+
+            fit_results = {}
+            ymax = 0
+            for s in active_strategies:
+                pred_e = combined_pred_energies.get(s, np.array([]))
+                if pred_e.size == 0:
+                    continue
+                popt, pcov, counts, edges = fit_expgaus(pred_e)
+                fit_results[s] = (popt, pcov, counts, edges)
+                centers = (edges[:-1] + edges[1:]) / 2
+                ax.step(centers, counts, where='mid',
+                        color=STRATEGY_COLORS[s], linewidth=2,
+                        label=STRATEGY_LABELS[s])
+                ymax = max(ymax, counts.max())
+
+                if popt is not None:
+                    x_fine = np.linspace(0.04, 0.1, 500)
+                    ax.plot(x_fine, _expgaus(x_fine, *popt),
+                            color=STRATEGY_COLORS[s], linewidth=1.5,
+                            linestyle='--')
+
+            # Build legend with fit results
+            legend_entries = []
+            for s in active_strategies:
+                if s not in fit_results:
+                    continue
+                popt = fit_results[s][0]
+                if popt is not None:
+                    mu_mev = popt[1] * 1e3
+                    reso_pct = abs(popt[2]) / popt[1] * 100 if popt[1] != 0 else 0
+                    legend_entries.append(
+                        f"{STRATEGY_LABELS[s]}: "
+                        f"$\\mu$={mu_mev:.2f} MeV, "
+                        f"$\\sigma/E$={reso_pct:.2f}%")
+                else:
+                    legend_entries.append(f"{STRATEGY_LABELS[s]}: fit failed")
+
+            if legend_entries:
+                ax.text(0.97, 0.95, "\n".join(legend_entries),
+                        transform=ax.transAxes, fontsize=10,
+                        va='top', ha='right',
+                        bbox=dict(boxstyle='round', facecolor='wheat',
+                                  alpha=0.5))
+
+            ax.set_xlim(0.04, 0.07)
+            ax.set_ylim(0, ymax * 1.15)
+            ax.set_xlabel("$E_{\\gamma}$ [GeV]")
+            ax.set_ylabel("Entries / (100 keV)")
+            ax.legend(fontsize=10, loc='upper left')
+            fig.tight_layout(rect=[0, 0, 1, 0.93])
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        # ==============================================================
+        # Pages 4+: Per-patch overlaid histograms (6 per page)
         # ==============================================================
         patches_with_data = [item for item in patch_data_dc
                              if any(s in item[2] and len(item[2][s][0]) > 0
@@ -597,6 +715,7 @@ def _run_dead_channel_mode(args, patches, input_base):
 
     patch_data_dc = []  # (patch_id, n_events, {strat: (residual, dg_popt, dg_pcov)})
     combined_per_strat = {s: [] for s in STRATEGIES}
+    combined_pred_per_strat = {s: [] for s in STRATEGIES}
     found = 0
     missing = []
 
@@ -649,6 +768,7 @@ def _run_dead_channel_mode(args, patches, input_base):
             dg_popt, dg_pcov = fit_double_gaussian(residual)
             strat_dict[s] = (residual, dg_popt, dg_pcov)
             combined_per_strat[s].append(residual)
+            combined_pred_per_strat[s].append(pred[valid])
 
             if dg_popt is not None:
                 core_sig = abs(dg_popt[2])
@@ -677,9 +797,11 @@ def _run_dead_channel_mode(args, patches, input_base):
     print(f"\n{'='*60}")
     print(f"Combined: {found} patches")
     combined_residuals_dc = {}
+    combined_pred_energies = {}
     for s in active_strategies:
         res = np.concatenate(combined_per_strat[s])
         combined_residuals_dc[s] = res
+        combined_pred_energies[s] = np.concatenate(combined_pred_per_strat[s])
         dg_popt, dg_pcov = fit_double_gaussian(res)
         parts = [f"  {STRATEGY_LABELS[s]:>14s}: N={len(res):>7d}"]
         if dg_popt is not None:
@@ -690,10 +812,26 @@ def _run_dead_channel_mode(args, patches, input_base):
         parts.append(f"res68={np.percentile(np.abs(res), 68):.2f} MeV")
         print(" | ".join(parts))
 
-    # Save combined ROOT file
+    # ExpGaus fit on predicted energy spectra
+    print(f"\n--- ExpGaus fit (predicted energy spectrum) ---")
+    for s in active_strategies:
+        pred_e = combined_pred_energies[s]
+        popt, pcov, _, _ = fit_expgaus(pred_e)
+        if popt is not None:
+            mu_mev = popt[1] * 1e3
+            sigma_mev = abs(popt[2]) * 1e3
+            reso_pct = abs(popt[2]) / popt[1] * 100 if popt[1] != 0 else 0
+            print(f"  {STRATEGY_LABELS[s]:>14s}: "
+                  f"μ={mu_mev:.3f} MeV, σ={sigma_mev:.3f} MeV, "
+                  f"σ/E={reso_pct:.2f}%")
+        else:
+            print(f"  {STRATEGY_LABELS[s]:>14s}: fit failed")
+
+    # Generate plots
     if not args.no_plots and patch_data_dc:
         make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
-                                active_strategies, input_base)
+                                active_strategies, input_base,
+                                combined_pred_energies=combined_pred_energies)
 
     print("Done!")
 
