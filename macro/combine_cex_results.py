@@ -458,7 +458,9 @@ def make_plots(patch_data, combined_residual, output_dir,
 def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                             active_strategies, output_dir,
                             combined_pred_energies=None,
-                            kin_arrays=None):
+                            kin_arrays=None,
+                            egamma_residual=None,
+                            egamma_pred=None):
     """Generate multi-page PDF comparing dead-channel recovery strategies.
 
     Args:
@@ -469,6 +471,8 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         output_dir: directory for output PDF
         combined_pred_energies: {strategy: predicted_energy_gev_array}
         kin_arrays: {energyReco, Ebgo, Angle} arrays for selected events
+        egamma_residual: conventional EGamma residual (MeV) array
+        egamma_pred: conventional EGamma predicted energy (GeV) array
     """
     import matplotlib
     matplotlib.use('Agg')
@@ -550,22 +554,31 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         plt.close(fig)
 
         # ==============================================================
-        # Page 2: Combined residual histograms (one per strategy)
+        # Page 2: Combined residual histograms (EGamma + each strategy)
         # ==============================================================
-        fig, axes = plt.subplots(1, n_strat, figsize=(6 * n_strat, 5))
-        if n_strat == 1:
+        n_panels = n_strat + (1 if egamma_residual is not None else 0)
+        fig, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 5))
+        if n_panels == 1:
             axes = [axes]
         fig.suptitle("CEX23 Combined Residual by Strategy", fontsize=14)
         plot_range = (-40, 40)
         nbins = 100
 
-        for ax, s in zip(axes, active_strategies):
-            res = combined_residuals_dc.get(s, np.array([]))
+        # Build list of (label, residual, color) to plot
+        panel_data = []
+        if egamma_residual is not None:
+            panel_data.append(("EGamma (conv)", egamma_residual, "tab:gray"))
+        for s in active_strategies:
+            panel_data.append((STRATEGY_LABELS[s],
+                               combined_residuals_dc.get(s, np.array([])),
+                               STRATEGY_COLORS[s]))
+
+        for ax, (label, res, color) in zip(axes, panel_data):
             if res.size == 0:
-                ax.set_title(STRATEGY_LABELS[s])
+                ax.set_title(label)
                 continue
             counts, edges, _ = ax.hist(res, bins=nbins, range=plot_range,
-                                       alpha=0.7, color=STRATEGY_COLORS[s],
+                                       alpha=0.7, color=color,
                                        label=f"N = {len(res)}")
             # Double Gaussian fit
             centers = (edges[:-1] + edges[1:]) / 2
@@ -587,15 +600,15 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                 ax.plot(x_fit, _double_gaussian(x_fit, *dg), 'k-', lw=2)
                 ax.plot(x_fit, _gaussian(x_fit, *dg[:3]), 'k--', lw=1, alpha=0.5)
                 ax.plot(x_fit, _gaussian(x_fit, *dg[3:]), 'k:', lw=1, alpha=0.5)
-                label = (f"core: $\\sigma$={abs(dg[2]):.2f}, "
-                         f"$\\mu$={dg[1]:.2f} MeV")
-                ax.text(0.97, 0.95, label, transform=ax.transAxes,
+                fit_label = (f"core: $\\sigma$={abs(dg[2]):.2f}, "
+                             f"$\\mu$={dg[1]:.2f} MeV")
+                ax.text(0.97, 0.95, fit_label, transform=ax.transAxes,
                         fontsize=9, va='top', ha='right')
             except Exception:
                 pass
             ax.set_xlabel("Pred - True [MeV]")
             ax.set_ylabel("Events")
-            ax.set_title(STRATEGY_LABELS[s])
+            ax.set_title(label)
             ax.legend(fontsize=9)
 
         fig.tight_layout(rect=[0, 0, 1, 0.93])
@@ -605,13 +618,29 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         # ==============================================================
         # Page 3: ExpGaus fit on predicted energy spectrum (like C++ macro)
         # ==============================================================
-        if combined_pred_energies:
+        if combined_pred_energies or egamma_pred is not None:
             fig, ax = plt.subplots(1, 1, figsize=(8, 6))
             fig.suptitle("CEX23 Energy Spectrum by Strategy (ExpGaus Fit)",
                          fontsize=14)
 
             fit_results = {}
             ymax = 0
+
+            # EGamma (conventional) baseline
+            if egamma_pred is not None and egamma_pred.size > 0:
+                popt, pcov, counts, edges = fit_expgaus(egamma_pred)
+                fit_results["egamma"] = (popt, pcov, counts, edges)
+                centers = (edges[:-1] + edges[1:]) / 2
+                ax.step(centers, counts, where='mid',
+                        color='tab:gray', linewidth=2,
+                        label='EGamma (conv)')
+                ymax = max(ymax, counts.max())
+                if popt is not None:
+                    x_fine = np.linspace(0.04, 0.1, 500)
+                    ax.plot(x_fine, _expgaus(x_fine, *popt),
+                            color='tab:gray', linewidth=1.5,
+                            linestyle='--')
+
             for s in active_strategies:
                 pred_e = combined_pred_energies.get(s, np.array([]))
                 if pred_e.size == 0:
@@ -632,19 +661,21 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
 
             # Build legend with fit results
             legend_entries = []
-            for s in active_strategies:
-                if s not in fit_results:
-                    continue
-                popt = fit_results[s][0]
+            all_keys = (["egamma"] if "egamma" in fit_results else []) + \
+                       [s for s in active_strategies if s in fit_results]
+            labels_map = {"egamma": "EGamma (conv)"}
+            labels_map.update({s: STRATEGY_LABELS[s] for s in STRATEGIES})
+            for key in all_keys:
+                popt = fit_results[key][0]
                 if popt is not None:
                     mu_mev = popt[1] * 1e3
                     reso_pct = abs(popt[2]) / popt[1] * 100 if popt[1] != 0 else 0
                     legend_entries.append(
-                        f"{STRATEGY_LABELS[s]}: "
+                        f"{labels_map[key]}: "
                         f"$\\mu$={mu_mev:.2f} MeV, "
                         f"$\\sigma/E$={reso_pct:.2f}%")
                 else:
-                    legend_entries.append(f"{STRATEGY_LABELS[s]}: fit failed")
+                    legend_entries.append(f"{labels_map[key]}: fit failed")
 
             if legend_entries:
                 ax.text(0.97, 0.95, "\n".join(legend_entries),
@@ -758,6 +789,8 @@ def _run_dead_channel_mode(args, patches, input_base):
     patch_data_dc = []  # (patch_id, n_events, {strat: (residual, dg_popt, dg_pcov)})
     combined_per_strat = {s: [] for s in STRATEGIES}
     combined_pred_per_strat = {s: [] for s in STRATEGIES}
+    combined_egamma_residual = []
+    combined_egamma_pred = []
     combined_kin = {"energyReco": [], "Ebgo": [], "Angle": []}
     found = 0
     missing = []
@@ -825,6 +858,15 @@ def _run_dead_channel_mode(args, patches, input_base):
             patch_data_dc.append((patch, n, {}))
             continue
 
+        # EGamma (conventional) residual
+        e_reco = arrays.get("energyReco", None)
+        if e_reco is not None:
+            valid_eg = (truth < 1e9) & (e_reco < 1e9)
+            if valid_eg.sum() > 0:
+                combined_egamma_residual.append(
+                    (e_reco[valid_eg] - truth[valid_eg]) * 1e3)
+                combined_egamma_pred.append(e_reco[valid_eg])
+
         # Detect available strategies
         strat_dict = {}
         parts = [f"  Patch {patch:>2d}: {n:>6d} events"]
@@ -874,6 +916,23 @@ def _run_dead_channel_mode(args, patches, input_base):
     # Combined stats
     print(f"\n{'='*60}")
     print(f"Combined: {found} patches")
+
+    # EGamma (conventional) baseline
+    egamma_residual = None
+    egamma_pred = None
+    if combined_egamma_residual:
+        egamma_residual = np.concatenate(combined_egamma_residual)
+        egamma_pred = np.concatenate(combined_egamma_pred)
+        dg_popt, dg_pcov = fit_double_gaussian(egamma_residual)
+        parts = [f"  {'EGamma (conv)':>14s}: N={len(egamma_residual):>7d}"]
+        if dg_popt is not None:
+            core_sig = abs(dg_popt[2])
+            core_sig_err = np.sqrt(dg_pcov[2, 2])
+            parts.append(f"core σ={core_sig:.2f}\u00b1{core_sig_err:.2f} MeV")
+            parts.append(f"μ={dg_popt[1]:+.2f} MeV")
+        parts.append(f"res68={np.percentile(np.abs(egamma_residual), 68):.2f} MeV")
+        print(" | ".join(parts))
+
     combined_residuals_dc = {}
     combined_pred_energies = {}
     for s in active_strategies:
@@ -892,6 +951,17 @@ def _run_dead_channel_mode(args, patches, input_base):
 
     # ExpGaus fit on predicted energy spectra
     print(f"\n--- ExpGaus fit (predicted energy spectrum) ---")
+    if egamma_pred is not None:
+        popt, pcov, _, _ = fit_expgaus(egamma_pred)
+        if popt is not None:
+            mu_mev = popt[1] * 1e3
+            sigma_mev = abs(popt[2]) * 1e3
+            reso_pct = abs(popt[2]) / popt[1] * 100 if popt[1] != 0 else 0
+            print(f"  {'EGamma (conv)':>14s}: "
+                  f"μ={mu_mev:.3f} MeV, σ={sigma_mev:.3f} MeV, "
+                  f"σ/E={reso_pct:.2f}%")
+        else:
+            print(f"  {'EGamma (conv)':>14s}: fit failed")
     for s in active_strategies:
         pred_e = combined_pred_energies[s]
         popt, pcov, _, _ = fit_expgaus(pred_e)
@@ -916,7 +986,9 @@ def _run_dead_channel_mode(args, patches, input_base):
         make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                                 active_strategies, input_base,
                                 combined_pred_energies=combined_pred_energies,
-                                kin_arrays=kin_arrays)
+                                kin_arrays=kin_arrays,
+                                egamma_residual=egamma_residual,
+                                egamma_pred=egamma_pred)
 
     print("Done!")
 
