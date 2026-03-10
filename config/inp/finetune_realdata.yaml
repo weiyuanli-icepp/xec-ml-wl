@@ -88,14 +88,14 @@ training:
     target: uniform
 
 checkpoint:
-  resume_from: "~/meghome/xec-ml-wl/artifacts/inp_scan_s3_nphowt/inpainter_checkpoint_best.pth"
+  resume_from: "artifacts/inp_finetune_realdata/inpainter_checkpoint_last.pth"
   save_dir: "artifacts/inp_finetune_realdata"
   save_interval: 5
   save_predictions: true
   root_save_interval: 10
-  reset_epoch: true                    # Start from epoch 0 (fresh schedule)
-  refresh_lr: true                     # Use new LR schedule from the config
-  new_mlflow_run: true                 # New MLflow run for fine-tuning
+  reset_epoch: false                   # Continue from saved epoch
+  refresh_lr: false                    # Continue existing LR schedule
+  new_mlflow_run: false                # Resume same MLflow run
 
 distributed:
   num_gpus: 4
