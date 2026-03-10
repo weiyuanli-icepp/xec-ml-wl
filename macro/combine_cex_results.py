@@ -457,7 +457,8 @@ def make_plots(patch_data, combined_residual, output_dir,
 
 def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                             active_strategies, output_dir,
-                            combined_pred_energies=None):
+                            combined_pred_energies=None,
+                            kin_arrays=None):
     """Generate multi-page PDF comparing dead-channel recovery strategies.
 
     Args:
@@ -467,6 +468,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         active_strategies: list of strategy names with valid data
         output_dir: directory for output PDF
         combined_pred_energies: {strategy: predicted_energy_gev_array}
+        kin_arrays: {energyReco, Ebgo, Angle} arrays for selected events
     """
     import matplotlib
     matplotlib.use('Agg')
@@ -661,7 +663,47 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             plt.close(fig)
 
         # ==============================================================
-        # Pages 4+: Per-patch overlaid histograms (6 per page)
+        # Page 4: Kinematic distributions of selected events
+        # ==============================================================
+        if kin_arrays and all(k in kin_arrays for k in ("energyReco", "Ebgo", "Angle")):
+            e_reco = kin_arrays["energyReco"] * 1e3   # → MeV
+            e_bgo = kin_arrays["Ebgo"] * 1e3           # → MeV
+            angle = kin_arrays["Angle"]                # degrees
+
+            fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+            fig.suptitle(f"Kinematic Distributions of Selected Events "
+                         f"(N = {len(e_reco)})", fontsize=14)
+
+            # Top-left: EGamma
+            axes[0, 0].hist(e_reco, bins=80, color='tab:blue', alpha=0.7)
+            axes[0, 0].set_xlabel("$E_{\\gamma}$ (LXe) [MeV]")
+            axes[0, 0].set_ylabel("Events")
+            axes[0, 0].set_title("LXe Photon Energy")
+
+            # Top-right: BGO energy
+            axes[0, 1].hist(e_bgo, bins=80, color='tab:green', alpha=0.7)
+            axes[0, 1].set_xlabel("$E_{BGO}$ [MeV]")
+            axes[0, 1].set_ylabel("Events")
+            axes[0, 1].set_title("BGO Energy")
+
+            # Bottom-left: Opening angle
+            axes[1, 0].hist(angle, bins=80, color='tab:orange', alpha=0.7)
+            axes[1, 0].set_xlabel("Opening Angle [deg]")
+            axes[1, 0].set_ylabel("Events")
+            axes[1, 0].set_title("Opening Angle")
+
+            # Bottom-right: 2D scatter EGamma vs BGO energy
+            axes[1, 1].hist2d(e_reco, e_bgo, bins=80, cmap='viridis')
+            axes[1, 1].set_xlabel("$E_{\\gamma}$ (LXe) [MeV]")
+            axes[1, 1].set_ylabel("$E_{BGO}$ [MeV]")
+            axes[1, 1].set_title("$E_{\\gamma}$ vs $E_{BGO}$")
+
+            fig.tight_layout(rect=[0, 0, 1, 0.95])
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        # ==============================================================
+        # Pages 5+: Per-patch overlaid histograms (6 per page)
         # ==============================================================
         patches_with_data = [item for item in patch_data_dc
                              if any(s in item[2] and len(item[2][s][0]) > 0
@@ -716,6 +758,7 @@ def _run_dead_channel_mode(args, patches, input_base):
     patch_data_dc = []  # (patch_id, n_events, {strat: (residual, dg_popt, dg_pcov)})
     combined_per_strat = {s: [] for s in STRATEGIES}
     combined_pred_per_strat = {s: [] for s in STRATEGIES}
+    combined_kin = {"energyReco": [], "Ebgo": [], "Angle": []}
     found = 0
     missing = []
 
@@ -773,6 +816,12 @@ def _run_dead_channel_mode(args, patches, input_base):
 
         arrays = {k: v[sel] for k, v in arrays.items()}
         n = int(sel.sum())
+
+        # Collect kinematic arrays (after all cuts)
+        for kin_key in combined_kin:
+            arr = arrays.get(kin_key, None)
+            if arr is not None and n > 0:
+                combined_kin[kin_key].append(arr)
 
         # Get truth
         truth = arrays.get("energyTruth", None)
@@ -861,11 +910,18 @@ def _run_dead_channel_mode(args, patches, input_base):
         else:
             print(f"  {STRATEGY_LABELS[s]:>14s}: fit failed")
 
+    # Concatenate kinematic arrays
+    kin_arrays = {}
+    for k, chunks in combined_kin.items():
+        if chunks:
+            kin_arrays[k] = np.concatenate(chunks)
+
     # Generate plots
     if not args.no_plots and patch_data_dc:
         make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                                 active_strategies, input_base,
-                                combined_pred_energies=combined_pred_energies)
+                                combined_pred_energies=combined_pred_energies,
+                                kin_arrays=kin_arrays)
 
     print("Done!")
 
