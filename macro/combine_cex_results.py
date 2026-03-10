@@ -825,9 +825,22 @@ def _run_dead_channel_mode(args, patches, input_base):
             sel &= gstatus < 2
 
         # Kinematic cuts (energies in GeV in the ROOT file)
+        e_reco = arrays.get("energyReco", None)
         e_bgo = arrays.get("Ebgo", None)
-        if e_bgo is not None:
-            sel &= (e_bgo < 1e9) & (e_bgo > 0.065) & (e_bgo < 0.090)
+        angle = arrays.get("Angle", None)
+        if e_reco is not None and e_bgo is not None and angle is not None:
+            valid_kin = (e_reco < 1e9) & (e_bgo < 1e9) & (angle < 1e9)
+            sel &= valid_kin
+
+            # BGO energy: 65–90 MeV
+            sel &= (e_bgo > 0.065) & (e_bgo < 0.090)
+
+            # Invariant mass: M = sqrt(2 * E1 * E2 * (1 - cos theta))
+            # pi0 mass window: 134.5–135.5 MeV
+            cos_theta = np.cos(np.deg2rad(angle))
+            m_inv_sq = 2 * e_reco * e_bgo * (1 - cos_theta)
+            m_inv = np.where(m_inv_sq > 0, np.sqrt(m_inv_sq), 0.0)
+            sel &= (m_inv > 0.1345) & (m_inv < 0.1355)
 
         arrays = {k: v[sel] for k, v in arrays.items()}
         n = int(sel.sum())
