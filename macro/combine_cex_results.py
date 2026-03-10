@@ -797,15 +797,10 @@ def _run_dead_channel_mode(args, patches, input_base):
         angle = arrays.get("Angle", None)
         if e_reco is not None and e_bgo is not None and angle is not None:
             valid_kin = (e_reco < 1e9) & (e_bgo < 1e9) & (angle < 1e9)
+            sel &= valid_kin
 
-            # LXe photon energy: 54.5–55.5 MeV
-            sel &= valid_kin & (e_reco > 0.0545) & (e_reco < 0.0555)
-
-            # BGO energy: 82.5–83.5 MeV
-            sel &= (e_bgo > 0.0825) & (e_bgo < 0.0835)
-
-            # Opening angle: > 176 degrees
-            sel &= angle > 176.0
+            # BGO energy: 65–90 MeV
+            sel &= (e_bgo > 0.065) & (e_bgo < 0.090)
 
             # Invariant mass: M = sqrt(2 * E1 * E2 * (1 - cos theta))
             # pi0 mass window: 134.5–135.5 MeV
