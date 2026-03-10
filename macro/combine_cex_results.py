@@ -298,7 +298,7 @@ def make_plots(patch_data, combined_residual, output_dir,
         # Page 2: Combined residual histogram with double Gaussian fit
         # ============================================================
         fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-        plot_range = (-40, 40)
+        plot_range = (-20, 20)
         nbins = 100
         counts, edges, _ = ax.hist(combined_residual, bins=nbins,
                                    range=plot_range, alpha=0.7,
@@ -561,7 +561,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         if n_panels == 1:
             axes = [axes]
         fig.suptitle("CEX23 Combined Residual by Strategy", fontsize=14)
-        plot_range = (-40, 40)
+        plot_range = (-20, 20)
         nbins = 100
 
         # Build list of (label, residual, color) to plot
