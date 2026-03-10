@@ -737,8 +737,17 @@ def _run_dead_channel_mode(args, patches, input_base):
                     all_arrays.setdefault(k, []).append(v)
         arrays = {k: np.concatenate(v) for k, v in all_arrays.items()}
 
-        n = len(arrays.get("run", []))
+        n_total = len(arrays.get("run", []))
         found += 1
+
+        # EvstatGamma cut: keep only events with gstatus < 2
+        gstatus = arrays.get("gstatus", None)
+        if gstatus is not None:
+            evstat_ok = gstatus < 2
+            arrays = {k: v[evstat_ok] for k, v in arrays.items()}
+            n = int(evstat_ok.sum())
+        else:
+            n = n_total
 
         # Get truth
         truth = arrays.get("energyTruth", None)
