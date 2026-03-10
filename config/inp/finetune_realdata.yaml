@@ -88,14 +88,14 @@ training:
     target: uniform
 
 checkpoint:
-  resume_from: "artifacts/inp_finetune_realdata/inpainter_checkpoint_last.pth"
+  resume_from: "artifacts/inp_finetune_realdata/inpainter_checkpoint_best.pth"
   save_dir: "artifacts/inp_finetune_realdata"
   save_interval: 5
   save_predictions: true
   root_save_interval: 10
-  reset_epoch: false                   # Continue from saved epoch
-  refresh_lr: false                    # Continue existing LR schedule
-  new_mlflow_run: false                # Resume same MLflow run
+  reset_epoch: true                    # Start fresh from best checkpoint
+  refresh_lr: true                     # Fresh LR schedule
+  new_mlflow_run: true                 # New MLflow run
 
 distributed:
   num_gpus: 4
