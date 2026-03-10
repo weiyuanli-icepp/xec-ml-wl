@@ -411,6 +411,53 @@ def _detect_dead_channels(dead_branch, npho_raw):
     return frac > 0.9
 
 
+def _fill_dead_time_avg(x, dead_mask_1d, baseline, sentinel_time,
+                        min_valid_frac=1.0 / 3.0):
+    """Replace dead-channel time with average of valid-time neighbors.
+
+    For each dead channel, gather its neighbors' time values.  Only
+    neighbors whose time differs from *sentinel_time* are considered
+    "valid".  If the fraction of valid neighbors is below
+    *min_valid_frac* (default 1/3), the channel keeps the sentinel
+    value; otherwise it gets the mean of the valid neighbors' times.
+
+    Operates **in-place** on ``x[:, :, 1]``.
+    """
+    nbr_idx = baseline.nbr_indices   # (4760, max_nbrs)
+    nbr_cnt = baseline.nbr_counts    # (4760,)
+    max_nbrs = nbr_idx.shape[1]
+    N = x.shape[0]
+    time_ch = x[:, :, 1]             # (N, 4760)
+    dead_sensors = np.where(dead_mask_1d)[0]
+    if dead_sensors.size == 0:
+        return
+
+    # Pre-compute slot range for vectorised validity check
+    slot_range = np.arange(max_nbrs)[None, :]          # (1, max_nbrs)
+    counts = nbr_cnt[dead_sensors]                       # (n_dead,)
+    in_range = slot_range < counts[:, None]              # (n_dead, max_nbrs)
+    nbrs = nbr_idx[dead_sensors]                         # (n_dead, max_nbrs)
+
+    for i in range(N):
+        nbr_times = time_ch[i][nbrs]                     # (n_dead, max_nbrs)
+        valid_time = in_range & (nbr_times != sentinel_time)
+        n_total = counts.astype(np.float64)
+        n_valid = valid_time.sum(axis=1).astype(np.float64)
+
+        # Fraction of valid-time neighbors out of total neighbors
+        safe_total = np.maximum(n_total, 1.0)
+        frac_valid = n_valid / safe_total
+
+        # Average valid-time neighbors
+        nbr_times_safe = np.where(valid_time, nbr_times, 0.0)
+        safe_n = np.maximum(n_valid, 1.0)
+        avg_time = nbr_times_safe.sum(axis=1) / safe_n
+
+        # Apply: use average if enough valid neighbors, else keep sentinel
+        use_avg = (n_valid > 0) & (frac_valid >= min_valid_frac)
+        time_ch[i, dead_sensors] = np.where(use_avg, avg_time, sentinel_time)
+
+
 def _fill_dead_neighbor_avg(x_norm, dead_mask_1d, baseline, transform=None):
     """Replace dead npho with neighbor average; time stays sentinel.
 
@@ -870,9 +917,11 @@ def _run_dead_channel_recovery(args, norm_params):
         del res_raw
         _mem_log(f"chunk {total_events}+{B}: after raw")
 
-        # Strategy 2: neighbor average
+        # Strategy 2: neighbor average (npho + time)
         x_neighavg = _fill_dead_neighbor_avg(x_norm, dead_mask_1d, baseline,
                                              transform=transform)
+        _fill_dead_time_avg(x_neighavg, dead_mask_1d, baseline,
+                            norm_params["sentinel_time"])
         res_neighavg = _run_regressor_onnx(reg_session, x_neighavg, task_map,
                                            batch_size=args.batch_size)
         flat_neighavg = _expand_task_results(res_neighavg)
@@ -897,6 +946,8 @@ def _run_dead_channel_recovery(args, norm_params):
             dead_safe = np.where(dead_safe < domain_min, 0.0, dead_safe)
             x_inpainted[:, dead_mask_1d, 0] = transform.forward(dead_safe)
             del dead_raw, dead_safe
+            _fill_dead_time_avg(x_inpainted, dead_mask_1d, baseline,
+                                norm_params["sentinel_time"])
 
             res_inpainted = _run_regressor_onnx(reg_session, x_inpainted,
                                                 task_map,
