@@ -740,14 +740,29 @@ def _run_dead_channel_mode(args, patches, input_base):
         n_total = len(arrays.get("run", []))
         found += 1
 
+        # Event selection cuts
+        sel = np.ones(n_total, dtype=bool)
+
         # EvstatGamma cut: keep only events with gstatus < 2
         gstatus = arrays.get("gstatus", None)
         if gstatus is not None:
-            evstat_ok = gstatus < 2
-            arrays = {k: v[evstat_ok] for k, v in arrays.items()}
-            n = int(evstat_ok.sum())
-        else:
-            n = n_total
+            sel &= gstatus < 2
+
+        # Invariant mass cut: M = sqrt(2 * E1 * E2 * (1 - cos theta))
+        # Keep events near pi0 mass (134.97 MeV)
+        e_reco = arrays.get("energyReco", None)
+        e_bgo = arrays.get("Ebgo", None)
+        angle = arrays.get("Angle", None)
+        if e_reco is not None and e_bgo is not None and angle is not None:
+            valid_kin = (e_reco < 1e9) & (e_bgo < 1e9) & (angle < 1e9)
+            cos_theta = np.cos(np.deg2rad(angle))
+            m_inv_sq = 2 * e_reco * e_bgo * (1 - cos_theta)
+            m_inv = np.where(m_inv_sq > 0, np.sqrt(m_inv_sq), 0.0)
+            # pi0 mass window: 120–150 MeV (0.120–0.150 GeV)
+            sel &= valid_kin & (m_inv > 0.120) & (m_inv < 0.150)
+
+        arrays = {k: v[sel] for k, v in arrays.items()}
+        n = int(sel.sum())
 
         # Get truth
         truth = arrays.get("energyTruth", None)
