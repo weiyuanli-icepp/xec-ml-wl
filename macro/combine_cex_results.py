@@ -761,6 +761,9 @@ def _run_dead_channel_mode(args, patches, input_base):
             # BGO energy: 82.5–83.5 MeV
             sel &= (e_bgo > 0.0825) & (e_bgo < 0.0835)
 
+            # Opening angle: > 176 degrees
+            sel &= angle > 176.0
+
             # Invariant mass: M = sqrt(2 * E1 * E2 * (1 - cos theta))
             # pi0 mass window: 134.5–135.5 MeV
             cos_theta = np.cos(np.deg2rad(angle))
