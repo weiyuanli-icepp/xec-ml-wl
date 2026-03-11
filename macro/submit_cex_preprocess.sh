@@ -28,7 +28,7 @@ TIME="${TIME:-12:00:00}"
 MEM="${MEM:-8G}"
 DEAD_DIR="${DEAD_DIR:-data/dead_channels}"
 OUTPUT_DIR="${OUTPUT_DIR:-data/cex}"
-RUNLIST="${RUNLIST:-val_data/cex/cex2023_runlist.txt}"
+RUNLIST="${RUNLIST:-data/cex/cex2023_runlist.txt}"
 
 case "$PARTITION" in
     meg-long|meg-short|mu3e) ACCOUNT_LINE="#SBATCH --account=meg" ;;
