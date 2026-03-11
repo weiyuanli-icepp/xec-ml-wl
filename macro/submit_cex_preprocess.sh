@@ -156,7 +156,7 @@ for PATCH in "${PATCHES[@]}"; do
         nf="${r#*:}"
         PREPROCESS_CMDS+="
 echo \"--- Range: srun=${sr} nfiles=${nf} ---\"
-python others/CEXPreprocess.py \\
+python -u others/CEXPreprocess.py \\
     --srun ${sr} --nfiles ${nf} --patch ${PATCH} \\
     --output-dir ${OUTPUT_DIR} \\
     --dead-dir ${DEAD_DIR}
