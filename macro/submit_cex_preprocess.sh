@@ -135,35 +135,21 @@ for PATCH in "${PATCHES[@]}"; do
 
     echo "--- Patch ${PATCH}: ${total_runs} runs in ${n_ranges} range(s) ---"
 
-    if [ "$DRY_RUN" = "1" ]; then
-        for r in $ranges; do
-            sr="${r%%:*}"
-            nf="${r#*:}"
-            echo "  CEXPreprocess.py --srun ${sr} --nfiles ${nf} --patch ${PATCH}"
-        done
-        echo ""
-        SUBMITTED=$((SUBMITTED + 1))
-        continue
-    fi
-
-    mkdir -p "$HOME/.cache/xec-ml-wl"
-    BATCH_SCRIPT=$(mktemp "$HOME/.cache/xec-ml-wl/cex_preproc_patch${PATCH}_XXXXXX.sh")
-
-    # Build the CEXPreprocess commands
-    PREPROCESS_CMDS=""
+    # Submit ONE JOB PER RANGE (parallel) instead of one job per patch (serial)
     for r in $ranges; do
         sr="${r%%:*}"
         nf="${r#*:}"
-        PREPROCESS_CMDS+="
-echo \"--- Range: srun=${sr} nfiles=${nf} ---\"
-python others/CEXPreprocess.py \\
-    --srun ${sr} --nfiles ${nf} --patch ${PATCH} \\
-    --output-dir ${OUTPUT_DIR} \\
-    --dead-dir ${DEAD_DIR}
-"
-    done
 
-    cat > "${BATCH_SCRIPT}" << SLURM_EOF
+        if [ "$DRY_RUN" = "1" ]; then
+            echo "  CEXPreprocess.py --srun ${sr} --nfiles ${nf} --patch ${PATCH}"
+            SUBMITTED=$((SUBMITTED + 1))
+            continue
+        fi
+
+        mkdir -p "$HOME/.cache/xec-ml-wl"
+        BATCH_SCRIPT=$(mktemp "$HOME/.cache/xec-ml-wl/cex_preproc_p${PATCH}_r${sr}_XXXXXX.sh")
+
+        cat > "${BATCH_SCRIPT}" << SLURM_EOF
 #!/bin/bash
 ${ACCOUNT_LINE}
 #SBATCH --partition=${PARTITION}
@@ -172,10 +158,10 @@ ${ACCOUNT_LINE}
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=${MEM}
-#SBATCH --job-name=cex_pre_p${PATCH}
-#SBATCH --output=${HOME}/meghome/xec-ml-wl/log/cex_preprocess/patch${PATCH}_%j.log
+#SBATCH --job-name=cex_p${PATCH}_r${sr}
+#SBATCH --output=${HOME}/meghome/xec-ml-wl/log/cex_preprocess/patch${PATCH}_r${sr}_%j.log
 
-echo "=== CEX Preprocessing: Patch ${PATCH} ==="
+echo "=== CEX Preprocessing: Patch ${PATCH}, srun=${sr}, nfiles=${nf} ==="
 echo "Host: \$(hostname)"
 echo "Date: \$(date)"
 echo ""
@@ -204,15 +190,21 @@ conda activate xec-ml-wl
 cd \$HOME/meghome/xec-ml-wl
 echo "[JOB] Directory: \$(pwd)"
 echo ""
-${PREPROCESS_CMDS}
+
+python others/CEXPreprocess.py \\
+    --srun ${sr} --nfiles ${nf} --patch ${PATCH} \\
+    --output-dir ${OUTPUT_DIR} \\
+    --dead-dir ${DEAD_DIR}
+
 echo ""
 echo "=== Done: \$(date) ==="
 SLURM_EOF
 
-    sbatch "${BATCH_SCRIPT}"
-    SUBMITTED=$((SUBMITTED + 1))
+        sbatch "${BATCH_SCRIPT}"
+        SUBMITTED=$((SUBMITTED + 1))
+        sleep 0.2
+    done
     echo ""
-    sleep 0.2
 done
 
 echo "============================================"
