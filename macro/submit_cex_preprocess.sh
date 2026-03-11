@@ -12,10 +12,11 @@
 # Environment variables:
 #   PARTITION   — SLURM partition (default: daily)
 #   TIME        — time limit (default: 12:00:00)
-#   MEM         — memory (default: 8G)
+#   MEM         — memory (default: 16G)
 #   DEAD_DIR    — directory with per-run dead channel files (default: data/dead_channels)
 #   OUTPUT_DIR  — output directory for ROOT files (default: data/cex)
-#   RUNLIST     — path to runlist file (default: val_data/cex/cex2023_runlist.txt)
+#   RUNLIST     — path to runlist file (default: data/cex/cex2023_runlist.txt)
+#   MAX_RUNS    — max runs per CEXPreprocess.py invocation (default: 10)
 #   DRY_RUN     — set to 1 to preview without submitting
 #
 
@@ -29,6 +30,7 @@ MEM="${MEM:-16G}"
 DEAD_DIR="${DEAD_DIR:-data/dead_channels}"
 OUTPUT_DIR="${OUTPUT_DIR:-data/cex}"
 RUNLIST="${RUNLIST:-data/cex/cex2023_runlist.txt}"
+MAX_RUNS="${MAX_RUNS:-10}"
 
 case "$PARTITION" in
     meg-long|meg-short|mu3e) ACCOUNT_LINE="#SBATCH --account=meg" ;;
@@ -42,6 +44,7 @@ echo "Runlist:   ${RUNLIST}"
 echo "Output:    ${OUTPUT_DIR}"
 echo "Dead dir:  ${DEAD_DIR}"
 echo "Partition: ${PARTITION}"
+echo "Max runs:  ${MAX_RUNS}"
 echo "Dry run:   ${DRY_RUN}"
 echo "============================================"
 echo ""
@@ -135,8 +138,22 @@ for PATCH in "${PATCHES[@]}"; do
 
     echo "--- Patch ${PATCH}: ${total_runs} runs in ${n_ranges} range(s) ---"
 
+    # Split each range into sub-ranges of at most MAX_RUNS to limit memory.
+    # 80 runs accumulate ~9 GB of output arrays; 10 runs ≈ 1.1 GB.
+    split_ranges=""
+    for r in $ranges; do
+        sr="${r%%:*}"
+        nf="${r#*:}"
+        while [ "$nf" -gt 0 ]; do
+            chunk=$(( nf > MAX_RUNS ? MAX_RUNS : nf ))
+            split_ranges+="${sr}:${chunk} "
+            sr=$(( sr + chunk ))
+            nf=$(( nf - chunk ))
+        done
+    done
+
     if [ "$DRY_RUN" = "1" ]; then
-        for r in $ranges; do
+        for r in $split_ranges; do
             sr="${r%%:*}"
             nf="${r#*:}"
             echo "  CEXPreprocess.py --srun ${sr} --nfiles ${nf} --patch ${PATCH}"
@@ -151,7 +168,7 @@ for PATCH in "${PATCHES[@]}"; do
 
     # Build the CEXPreprocess commands
     PREPROCESS_CMDS=""
-    for r in $ranges; do
+    for r in $split_ranges; do
         sr="${r%%:*}"
         nf="${r#*:}"
         PREPROCESS_CMDS+="
