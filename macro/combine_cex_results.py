@@ -68,8 +68,10 @@ def _expgaus(x, A, mu, sigma, tau):
 
 
 def fit_expgaus(energies_gev, nbins=600, hist_range=(0.04, 0.1),
-                fit_range=(0.052, 0.0535)):
+                fit_half_width=0.003):
     """Fit ExpGaus to an energy spectrum (in GeV).
+
+    The fit range is determined automatically: peak ± fit_half_width.
 
     Returns (popt, pcov, counts, edges) or (None, None, counts, edges).
     popt = [A, mu, sigma, tau].
@@ -79,18 +81,25 @@ def fit_expgaus(energies_gev, nbins=600, hist_range=(0.04, 0.1),
     counts, edges = np.histogram(energies_gev, bins=nbins, range=hist_range)
     centers = (edges[:-1] + edges[1:]) / 2
 
-    # Restrict fit to fit_range
-    mask = (centers >= fit_range[0]) & (centers <= fit_range[1])
+    # Find peak from histogram
+    peak_idx = np.argmax(counts)
+    mu0 = centers[peak_idx]
+    A0 = float(counts[peak_idx])
+    if A0 <= 0:
+        return None, None, counts, edges
+
+    # Fit range: peak ± half_width
+    fit_lo = mu0 - fit_half_width
+    fit_hi = mu0 + fit_half_width
+    mask = (centers >= fit_lo) & (centers <= fit_hi)
     if mask.sum() < 4:
         return None, None, counts, edges
 
     x_fit = centers[mask]
     y_fit = counts[mask].astype(float)
 
-    mu0 = 0.0528  # ~52.8 MeV peak
     sig0 = 0.01 * mu0
     tau0 = -0.001 * mu0
-    A0 = y_fit.max() if y_fit.max() > 0 else 1.0
 
     try:
         popt, pcov = curve_fit(
