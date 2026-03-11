@@ -150,7 +150,9 @@ def process_run(iRun, dead_mask, out_arrays):
 
     # 2. Opening angle → Etrue, must be physical (sqrtarg >= 0)
     cos_oa = np.cos(np.deg2rad(openangle_vals))
-    sqrtarg = 0.25 * Epi0**2 - mpi0**2 / (2.0 * (1.0 - cos_oa))
+    denom = 2.0 * (1.0 - cos_oa)
+    denom = np.where(denom == 0, np.inf, denom)  # avoid div-by-zero at 0°
+    sqrtarg = 0.25 * Epi0**2 - mpi0**2 / denom
     phys_ok = sqrtarg >= 0
 
     sel_idx = np.where(trig_ok & phys_ok)[0]
