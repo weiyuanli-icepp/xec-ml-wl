@@ -849,11 +849,11 @@ def _run_dead_channel_mode(args, patches, input_base):
             sel &= np.abs(e_reco + e_bgo - Epi0) <= 0.020
 
             # Invariant mass: M = sqrt(2 * E1 * E2 * (1 - cos theta))
-            # pi0 mass window: 132–138 MeV
+            # pi0 mass window: 125–138 MeV
             cos_theta = np.cos(np.deg2rad(angle))
             m_inv_sq = 2 * e_reco * e_bgo * (1 - cos_theta)
             m_inv = np.where(m_inv_sq > 0, np.sqrt(m_inv_sq), 0.0)
-            sel &= (m_inv > 0.132) & (m_inv < 0.138)
+            sel &= (m_inv > 0.125) & (m_inv < 0.138)
 
         arrays = {k: v[sel] for k, v in arrays.items()}
         n = int(sel.sum())
