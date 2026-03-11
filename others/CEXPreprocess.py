@@ -25,13 +25,6 @@ N_CHANNELS = 4760
 Epi0 = 0.1378    # π⁰ kinetic energy + mass at rest in MEG target
 mpi0 = 0.13497   # π⁰ mass (GeV/c²)
 
-# CEX23 energy window for 55 MeV peak (GeV)
-E_MIN = 0.054
-E_MAX = 0.057
-
-# Tolerance for EGamma + bgoEnergy ≈ Epi0 cut (GeV)
-ETOTAL_TOL = 0.02
-
 REC_DIR = "/data/project/meg/offline/run"
 
 
@@ -115,21 +108,6 @@ def process_run(iRun, dead_mask, out_arrays):
         discover_branches(rec)
         return -1
 
-    # Read all data at once using awkward arrays (handles jagged/nested data)
-    read_keys = [key_mask, key_egamma, key_evstat,
-                 key_ugamma, key_vgamma, key_wgamma,
-                 key_npho, key_nphe, key_tpm,
-                 key_openangle, key_bgoenergy]
-    read_keys = [k for k in read_keys if k in available]
-
-    arrays = rec.arrays(read_keys, library="ak")
-
-    def get_field(key):
-        """Get field from awkward record, or None if not read."""
-        if key in read_keys:
-            return arrays[key]
-        return None
-
     def ak_to_flat(arr, dtype=np.float32):
         """Convert awkward array to flat 1-D numpy, taking index 0 for nested dims."""
         if arr is None:
@@ -146,19 +124,25 @@ def process_run(iRun, dead_mask, out_arrays):
             arr = arr[:, :, 0]
         return ak.to_numpy(arr).astype(dtype)
 
-    mask_vals = ak_to_flat(get_field(key_mask), dtype=np.int32)
-    egamma_vals = ak_to_flat(get_field(key_egamma))
-    openangle_vals = ak_to_flat(get_field(key_openangle))
-    bgoenergy_vals = ak_to_flat(get_field(key_bgoenergy))
+    # --- Phase 1: Read small branches for event selection ---
+    small_keys = [key_mask, key_egamma, key_evstat,
+                  key_ugamma, key_vgamma, key_wgamma,
+                  key_openangle, key_bgoenergy]
+    small_keys = [k for k in small_keys if k in available]
+    small = rec.arrays(small_keys, library="ak")
 
-    evstat_vals = ak_to_flat(get_field(key_evstat), dtype=np.int32)
-    ugamma_vals = ak_to_flat(get_field(key_ugamma))
-    vgamma_vals = ak_to_flat(get_field(key_vgamma))
-    wgamma_vals = ak_to_flat(get_field(key_wgamma))
+    def get_small(key):
+        return small[key] if key in small_keys else None
 
-    npho_vals = ak_to_2d(get_field(key_npho))
-    tpm_vals = ak_to_2d(get_field(key_tpm))
-    nphe_vals = ak_to_2d(get_field(key_nphe), fallback_shape=npho_vals.shape)
+    mask_vals = ak_to_flat(get_small(key_mask), dtype=np.int32)
+    egamma_vals = ak_to_flat(get_small(key_egamma))
+    openangle_vals = ak_to_flat(get_small(key_openangle))
+    bgoenergy_vals = ak_to_flat(get_small(key_bgoenergy))
+    evstat_vals = ak_to_flat(get_small(key_evstat), dtype=np.int32)
+    ugamma_vals = ak_to_flat(get_small(key_ugamma))
+    vgamma_vals = ak_to_flat(get_small(key_vgamma))
+    wgamma_vals = ak_to_flat(get_small(key_wgamma))
+    del small
 
     # --- Event selection (vectorized) ---
     # 1. Trigger
@@ -169,13 +153,44 @@ def process_run(iRun, dead_mask, out_arrays):
     sqrtarg = 0.25 * Epi0**2 - mpi0**2 / (2.0 * (1.0 - cos_oa))
     phys_ok = sqrtarg >= 0
 
-    sel = trig_ok & phys_ok
+    sel_idx = np.where(trig_ok & phys_ok)[0]
+    if len(sel_idx) == 0:
+        print(f"  -> 0 events pass trigger+kinematics")
+        return 0
 
-    # 4. Require valid npho_max and time_min
-    npho_sel = npho_vals[sel]
-    nphe_sel = nphe_vals[sel]
-    tpm_sel = tpm_vals[sel]
+    # --- Phase 2: Read large branches in CHUNKS to limit peak memory ---
+    # Each large array is (N_entries, 4760) float32 ≈ 19 kB/row × 3 arrays.
+    # Reading all at once for a 50k-entry run ≈ 2.9 GB.  Chunked reading
+    # keeps peak memory at CHUNK_SIZE × 57 kB regardless of total entries.
+    CHUNK_SIZE = 2000
+    large_keys = [key_npho, key_nphe, key_tpm]
+    large_keys = [k for k in large_keys if k in available]
 
+    n_presel = len(sel_idx)
+    npho_sel = np.empty((n_presel, N_CHANNELS), dtype=np.float32)
+    tpm_sel = np.empty((n_presel, N_CHANNELS), dtype=np.float32)
+    nphe_sel = np.full((n_presel, N_CHANNELS), 1e10, dtype=np.float32)
+
+    for chunk_start in range(0, n_entries, CHUNK_SIZE):
+        chunk_end = min(chunk_start + CHUNK_SIZE, n_entries)
+        in_chunk = (sel_idx >= chunk_start) & (sel_idx < chunk_end)
+        if not np.any(in_chunk):
+            continue
+
+        chunk = rec.arrays(large_keys, entry_start=chunk_start,
+                           entry_stop=chunk_end, library="ak")
+        local_idx = sel_idx[in_chunk] - chunk_start
+        out_idx = np.where(in_chunk)[0]
+
+        if key_npho in large_keys:
+            npho_sel[out_idx] = ak_to_2d(chunk[key_npho])[local_idx]
+        if key_tpm in large_keys:
+            tpm_sel[out_idx] = ak_to_2d(chunk[key_tpm])[local_idx]
+        if key_nphe in large_keys:
+            nphe_sel[out_idx] = ak_to_2d(chunk[key_nphe])[local_idx]
+        del chunk
+
+    # Require valid npho_max and time_min
     valid_npho = np.isfinite(npho_sel) & (npho_sel >= 0) & (npho_sel < 1e9)
     npho_max = np.where(valid_npho, npho_sel, -np.inf).max(axis=1)
     ch_npho_max = np.where(valid_npho, npho_sel, -np.inf).argmax(axis=1)
@@ -189,9 +204,18 @@ def process_run(iRun, dead_mask, out_arrays):
     has_time = time_min < 1e9
     valid_evt = has_npho & has_time
 
-    # Apply final cut
-    sel_idx = np.where(sel)[0][valid_evt]
+    # Final selected indices (into original event array)
+    sel_idx = sel_idx[valid_evt]
     n_selected = len(sel_idx)
+
+    # Also slice the npho/nphe/tpm to final selection
+    npho_sel = npho_sel[valid_evt]
+    nphe_sel = nphe_sel[valid_evt]
+    tpm_sel = tpm_sel[valid_evt]
+    npho_max = npho_max[valid_evt]
+    ch_npho_max = ch_npho_max[valid_evt]
+    time_min = time_min[valid_evt]
+    ch_time_min = ch_time_min[valid_evt]
 
     if n_selected == 0:
         print(f"  -> 0 events selected")
@@ -200,10 +224,11 @@ def process_run(iRun, dead_mask, out_arrays):
     # --- Fill output arrays ---
     etrue = Epi0 / 2.0 - np.sqrt(sqrtarg[sel_idx])
 
-    # npho / nphe / time for selected events
-    npho_out = npho_vals[sel_idx].astype(np.float32)
-    nphe_out = nphe_vals[sel_idx].astype(np.float32)
-    tpm_out = tpm_vals[sel_idx].astype(np.float32)
+    # npho / nphe / time for selected events (already sliced)
+    npho_out = npho_sel.astype(np.float32)
+    nphe_out = nphe_sel.astype(np.float32)
+    tpm_out = tpm_sel.astype(np.float32)
+    del npho_sel, nphe_sel, tpm_sel
 
     # Set invalid values to sentinel
     npho_out[~np.isfinite(npho_out)] = 1e10
@@ -211,20 +236,18 @@ def process_run(iRun, dead_mask, out_arrays):
     tpm_out[~np.isfinite(tpm_out)] = 1e10
 
     # relative_time
-    valid_time_sel = valid_time[valid_evt]
-    time_min_sel = time_min[valid_evt]
     relative_time = np.full_like(tpm_out, 1e10)
     for i in range(n_selected):
-        valid_ch = np.isfinite(tpm_out[i]) & (tpm_out[i] < 1e9) & (time_min_sel[i] < 1e9)
-        relative_time[i, valid_ch] = tpm_out[i, valid_ch] - time_min_sel[i]
+        valid_ch = np.isfinite(tpm_out[i]) & (tpm_out[i] < 1e9) & (time_min[i] < 1e9)
+        relative_time[i, valid_ch] = tpm_out[i, valid_ch] - time_min[i]
 
-    # Metadata
-    npho_max_final = npho_max[valid_evt].astype(np.float32)
-    time_min_final = time_min[valid_evt].astype(np.float32)
+    # Metadata (already sliced to valid_evt)
+    npho_max_final = npho_max.astype(np.float32)
+    time_min_final = time_min.astype(np.float32)
     npho_max_final[npho_max_final >= 1e9] = 1e10
     time_min_final[time_min_final >= 1e9] = 1e10
-    ch_npho_max_final = ch_npho_max[valid_evt].astype(np.int16)
-    ch_time_min_final = ch_time_min[valid_evt].astype(np.int16)
+    ch_npho_max_final = ch_npho_max.astype(np.int16)
+    ch_time_min_final = ch_time_min.astype(np.int16)
 
     # Append to output
     out = out_arrays
