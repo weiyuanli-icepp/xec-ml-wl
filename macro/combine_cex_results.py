@@ -68,7 +68,7 @@ def _expgaus(x, A, mu, sigma, tau):
 
 
 def fit_expgaus(energies_gev, nbins=600, hist_range=(0.04, 0.1),
-                fit_half_width=0.003):
+                fit_half_width=0.00075):
     """Fit ExpGaus to an energy spectrum (in GeV).
 
     The fit range is determined automatically: peak ± fit_half_width.
