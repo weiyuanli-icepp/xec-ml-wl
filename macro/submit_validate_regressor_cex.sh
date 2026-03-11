@@ -141,29 +141,22 @@ for PATCH in "${PATCHES[@]}"; do
     echo "--- Patch ${PATCH}: ${N_FILES} file(s) ---"
     echo "  Output: ${OUTDIR}"
 
-    if [ "$DRY_RUN" = "1" ]; then
-        echo "  [DRY RUN] Skipping submission"
-        for f in "${PATCH_FILES[@]}"; do
-            echo "    $(basename "$f")"
-        done
-        echo ""
-        SUBMITTED=$((SUBMITTED + 1))
-        continue
-    fi
+    # Submit one job per input file to limit memory usage.
+    # Each file has ~15k events (10 runs); all files in a patch share
+    # the same output directory and combine_cex_results.py merges them.
+    for VAL_FILE in "${PATCH_FILES[@]}"; do
+        BASENAME="$(basename "${VAL_FILE}" .root)"
 
-    # Build space-separated list of input files for the Python script
-    # If multiple files per patch, pass the glob pattern
-    if [ ${N_FILES} -eq 1 ]; then
-        VAL_PATH="${PATCH_FILES[0]}"
-    else
-        # Use glob pattern to match all files for this patch
-        VAL_PATH="${CEX_DIR}/CEX23_patch${PATCH}_r*.root"
-    fi
+        if [ "$DRY_RUN" = "1" ]; then
+            echo "  [DRY RUN] ${BASENAME}"
+            SUBMITTED=$((SUBMITTED + 1))
+            continue
+        fi
 
-    mkdir -p "$HOME/.cache/xec-ml-wl"
-    BATCH_SCRIPT=$(mktemp "$HOME/.cache/xec-ml-wl/val_cex_patch${PATCH}_XXXXXX.sh")
+        mkdir -p "$HOME/.cache/xec-ml-wl"
+        BATCH_SCRIPT=$(mktemp "$HOME/.cache/xec-ml-wl/val_cex_${BASENAME}_XXXXXX.sh")
 
-    cat > "${BATCH_SCRIPT}" << SLURM_EOF
+        cat > "${BATCH_SCRIPT}" << SLURM_EOF
 #!/bin/bash
 ${ACCOUNT_LINE}
 #SBATCH --partition=${PARTITION}
@@ -172,10 +165,10 @@ ${ACCOUNT_LINE}
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=${MEM}
-#SBATCH --job-name=cex_val_p${PATCH}
-#SBATCH --output=$HOME/meghome/xec-ml-wl/log/cex_inference/patch${PATCH}_%j.log
+#SBATCH --job-name=cex_v_${BASENAME}
+#SBATCH --output=$HOME/meghome/xec-ml-wl/log/cex_inference/${BASENAME}_%j.log
 
-echo "=== Energy Regressor CEX Validation: Patch ${PATCH} ==="
+echo "=== Energy Regressor CEX Validation: ${BASENAME} ==="
 echo "Host: \$(hostname)"
 echo "Date: \$(date)"
 echo ""
@@ -213,7 +206,7 @@ export CUDA_VISIBLE_DEVICES=""
 
 python -u macro/validate_regressor.py \\
     ${CHECKPOINT} \\
-    --val_path "${VAL_PATH}" \\
+    --val_path "${VAL_FILE}" \\
     --config ${CONFIG} \\
     --tasks energy \\
     --output_dir ${OUTDIR} \\
@@ -225,10 +218,11 @@ echo ""
 echo "=== Done: \$(date) ==="
 SLURM_EOF
 
-    sbatch "${BATCH_SCRIPT}"
-    SUBMITTED=$((SUBMITTED + 1))
+        sbatch "${BATCH_SCRIPT}"
+        SUBMITTED=$((SUBMITTED + 1))
+        sleep 0.2
+    done
     echo ""
-    sleep 0.5
 done
 
 echo "============================================"
