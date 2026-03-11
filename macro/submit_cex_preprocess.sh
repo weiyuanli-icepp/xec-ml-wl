@@ -173,7 +173,7 @@ ${ACCOUNT_LINE}
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=${MEM}
 #SBATCH --job-name=cex_pre_p${PATCH}
-#SBATCH --output=\$HOME/meghome/xec-ml-wl/log/cex_preprocess/patch${PATCH}_%j.log
+#SBATCH --output=${HOME}/meghome/xec-ml-wl/log/cex_preprocess/patch${PATCH}_%j.log
 
 echo "=== CEX Preprocessing: Patch ${PATCH} ==="
 echo "Host: \$(hostname)"
