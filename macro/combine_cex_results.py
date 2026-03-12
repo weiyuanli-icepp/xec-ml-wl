@@ -112,8 +112,10 @@ def fit_expgaus(energies_gev, nbins=600, hist_range=(0.04, 0.1),
 
 
 def fit_expgaus_residual(values_mev, nbins=200, hist_range=(-20, 20),
-                         fit_half_width=2.0):
+                         fit_lo_offset=3.0, fit_hi_offset=1.5):
     """Fit ExpGaus to a residual distribution (in MeV).
+
+    Fit range: [peak - fit_lo_offset, peak + fit_hi_offset].
 
     Returns (popt, pcov) or (None, None).
     popt = [A, mu, sigma, tau] in MeV.
@@ -132,8 +134,8 @@ def fit_expgaus_residual(values_mev, nbins=200, hist_range=(-20, 20),
     if A0 <= 0:
         return None, None
 
-    fit_lo = mu0 - fit_half_width
-    fit_hi = mu0 + fit_half_width
+    fit_lo = mu0 - fit_lo_offset
+    fit_hi = mu0 + fit_hi_offset
     mask = (centers >= fit_lo) & (centers <= fit_hi)
     if mask.sum() < 4:
         return None, None
@@ -773,7 +775,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                     if popt_s is not None:
                         # Draw fitted ExpGaus curve (fitted range only)
                         mu_s = popt_s[1]
-                        x_fit = np.linspace(mu_s - 2, mu_s + 2, 200)
+                        x_fit = np.linspace(mu_s - 3, mu_s + 1.5, 200)
                         # Scale amplitude to match auto-binned histogram
                         h_edges = np.array([p.get_x() for p in patches_h]
                                            + [patches_h[-1].get_x()
@@ -836,7 +838,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                 amp_scale = dx_plot / dx_fit
                 fit_popt = [popt[0] * amp_scale, popt[1],
                             abs(popt[2]), popt[3]]
-                x_fit = np.linspace(popt[1] - 2, popt[1] + 2, 200)
+                x_fit = np.linspace(popt[1] - 3, popt[1] + 1.5, 200)
                 ax.plot(x_fit, _expgaus(x_fit, *fit_popt), 'k-', lw=2)
                 fit_label = (f"$\\sigma$={abs(popt[2]):.2f}, "
                              f"$\\mu$={popt[1]:.2f} MeV")
