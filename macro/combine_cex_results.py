@@ -843,54 +843,47 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             plt.close(fig)
 
         # ==============================================================
-        # Last page: Combined residual histograms (ExpGaus fit)
+        # Last page: Combined residual overlaid (ExpGaus fit)
         # ==============================================================
-        n_panels = len(active_strategies) + (1 if egamma_residual is not None else 0)
-        ncols = (n_panels + 1) // 2
-        nrows = 2 if n_panels > 1 else 1
-        fig, axes = plt.subplots(nrows, ncols,
-                                 figsize=(6 * ncols, 5 * nrows))
-        axes = np.atleast_1d(axes).flatten()
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
         fig.suptitle("CEX23 Combined Residual", fontsize=14)
-        nbins = 100
 
-        panel_data = []
+        overlay_data = []
         if egamma_residual is not None:
-            panel_data.append(("EGamma (conv)", egamma_residual, "tab:gray"))
+            overlay_data.append(("egamma", egamma_residual))
         for s in active_strategies:
-            panel_data.append((STRATEGY_LABELS[s],
-                               combined_residuals_dc.get(s, np.array([])),
-                               STRATEGY_COLORS[s]))
+            res = combined_residuals_dc.get(s, np.array([]))
+            if res.size > 0:
+                overlay_data.append((s, res))
 
-        for ax, (label, res, color) in zip(axes, panel_data):
-            if res.size == 0:
-                ax.set_title(label)
-                continue
-            counts, edges, _ = ax.hist(res, bins=nbins, range=plot_range,
-                                       alpha=0.7, color=color,
-                                       label=f"N = {len(res)}")
-            # ExpGaus fit on residual (MeV)
+        title_parts = []
+        for key, res in overlay_data:
+            _, _, patches_h = ax.hist(
+                res, bins='auto', range=plot_range, alpha=0.4,
+                color=STRATEGY_COLORS[key], label=STRATEGY_LABELS[key])
             popt, pcov = fit_expgaus_residual(res)
             if popt is not None:
-                # Scale amplitude to match displayed histogram bin width
-                dx_plot = (plot_range[1] - plot_range[0]) / nbins
-                dx_fit = (20 - (-20)) / 200  # bin width in fit_expgaus_residual
-                amp_scale = dx_plot / dx_fit
+                mu_s = popt[1]
+                x_fit = np.linspace(mu_s - 3, mu_s + 1.5, 200)
+                h_edges = np.array([p.get_x() for p in patches_h]
+                                   + [patches_h[-1].get_x()
+                                      + patches_h[-1].get_width()])
+                dx_hist = h_edges[1] - h_edges[0]
+                dx_fit = (20 - (-20)) / 200
+                amp_scale = dx_hist / dx_fit
                 fit_popt = [popt[0] * amp_scale, popt[1],
                             abs(popt[2]), popt[3]]
-                x_fit = np.linspace(popt[1] - 3, popt[1] + 1.5, 200)
-                ax.plot(x_fit, _expgaus(x_fit, *fit_popt), 'k-', lw=2)
-                fit_label = (f"$\\sigma$={abs(popt[2]):.2f}, "
-                             f"$\\mu$={popt[1]:.2f} MeV")
-                ax.text(0.97, 0.95, fit_label, transform=ax.transAxes,
-                        fontsize=9, va='top', ha='right')
-            ax.set_xlabel("Pred - True [MeV]")
-            ax.set_ylabel("Events")
-            ax.set_title(label)
-            ax.legend(fontsize=9)
+                ax.plot(x_fit, _expgaus(x_fit, *fit_popt),
+                        color=STRATEGY_COLORS[key], linewidth=2)
+                title_parts.append(
+                    f"{STRATEGY_LABELS[key]}: "
+                    f"$\\sigma$={abs(popt[2]):.2f} MeV")
 
-        for j in range(len(panel_data), len(axes)):
-            axes[j].axis('off')
+        ax.set_xlabel("Pred - True [MeV]")
+        ax.set_ylabel("Events")
+        if title_parts:
+            ax.set_title("\n".join(title_parts), fontsize=9)
+        ax.legend(fontsize=9)
 
         fig.tight_layout(rect=[0, 0, 1, 0.93])
         pdf.savefig(fig)
