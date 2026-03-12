@@ -64,12 +64,13 @@ def _expgaus(x, A, mu, sigma, tau):
 
 
 def fit_expgaus(energies_gev, nbins=600, hist_range=(0.04, 0.1),
-                fit_half_width=0.00075):
+                fit_lo_offset=0.003, fit_hi_offset=0.0015):
     """Fit ExpGaus to an energy spectrum (in GeV).
 
-    The fit range is determined automatically: peak ± fit_half_width.
+    Fit range: [peak - fit_lo_offset, peak + fit_hi_offset].
 
-    Returns (popt, pcov, counts, edges) or (None, None, counts, edges).
+    Returns (popt, pcov, counts, edges, fit_lo, fit_hi)
+    or (None, None, counts, edges, None, None).
     popt = [A, mu, sigma, tau].
     """
     from scipy.optimize import curve_fit
@@ -82,14 +83,14 @@ def fit_expgaus(energies_gev, nbins=600, hist_range=(0.04, 0.1),
     mu0 = centers[peak_idx]
     A0 = float(counts[peak_idx])
     if A0 <= 0:
-        return None, None, counts, edges
+        return None, None, counts, edges, None, None
 
-    # Fit range: peak ± half_width
-    fit_lo = mu0 - fit_half_width
-    fit_hi = mu0 + fit_half_width
+    # Fit range: asymmetric around peak
+    fit_lo = mu0 - fit_lo_offset
+    fit_hi = mu0 + fit_hi_offset
     mask = (centers >= fit_lo) & (centers <= fit_hi)
     if mask.sum() < 4:
-        return None, None, counts, edges
+        return None, None, counts, edges, None, None
 
     x_fit = centers[mask]
     y_fit = counts[mask].astype(float)
@@ -106,9 +107,9 @@ def fit_expgaus(energies_gev, nbins=600, hist_range=(0.04, 0.1),
                 _expgaus, x_fit, y_fit,
                 p0=[A0, mu0, sig0, tau0],
                 maxfev=10000)
-        return popt, pcov, counts, edges
+        return popt, pcov, counts, edges, fit_lo, fit_hi
     except Exception:
-        return None, None, counts, edges
+        return None, None, counts, edges, None, None
 
 
 def fit_expgaus_residual(values_mev, nbins=200, hist_range=(-20, 20),
@@ -638,7 +639,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
 
             # EGamma (conventional) baseline
             if egamma_pred is not None and egamma_pred.size > 0:
-                popt, pcov, counts, edges = fit_expgaus(egamma_pred)
+                popt, pcov, counts, edges, flo, fhi = fit_expgaus(egamma_pred)
                 fit_results["egamma"] = (popt, pcov, counts, edges)
                 centers = (edges[:-1] + edges[1:]) / 2
                 ax.step(centers * 1e3, counts, where='mid',
@@ -646,7 +647,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                         label='EGamma (conv)')
                 ymax = max(ymax, counts.max())
                 if popt is not None:
-                    x_fine = np.linspace(40, 100, 500)
+                    x_fine = np.linspace(flo * 1e3, fhi * 1e3, 300)
                     ax.plot(x_fine, _expgaus(x_fine * 1e-3, *popt),
                             color='tab:gray', linewidth=2.5)
 
@@ -654,7 +655,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                 pred_e = combined_pred_energies.get(s, np.array([]))
                 if pred_e.size == 0:
                     continue
-                popt, pcov, counts, edges = fit_expgaus(pred_e)
+                popt, pcov, counts, edges, flo, fhi = fit_expgaus(pred_e)
                 fit_results[s] = (popt, pcov, counts, edges)
                 centers = (edges[:-1] + edges[1:]) / 2
                 ax.step(centers * 1e3, counts, where='mid',
@@ -663,7 +664,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                 ymax = max(ymax, counts.max())
 
                 if popt is not None:
-                    x_fine = np.linspace(40, 100, 500)
+                    x_fine = np.linspace(flo * 1e3, fhi * 1e3, 300)
                     ax.plot(x_fine, _expgaus(x_fine * 1e-3, *popt),
                             color=STRATEGY_COLORS[s], linewidth=2.5)
 
@@ -723,7 +724,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             axes[0, 1].hist(e_bgo, bins=80, color='tab:green', alpha=0.7)
             axes[0, 1].set_xlabel("$E_{BGO}$ [MeV]")
             axes[0, 1].set_ylabel("Events")
-            axes[0, 1].set_title("BGO Energy")
+            axes[0, 1].set_title("BGO Photon Energy")
 
             # Bottom-left: Opening angle
             axes[1, 0].hist(angle, bins=80, color='tab:orange', alpha=0.7)
@@ -1049,7 +1050,7 @@ def _run_dead_channel_mode(args, patches, input_base):
     # ExpGaus fit on predicted energy spectra
     print(f"\n--- ExpGaus fit (predicted energy spectrum) ---")
     if egamma_pred is not None:
-        popt, pcov, _, _ = fit_expgaus(egamma_pred)
+        popt, pcov, _, _, _, _ = fit_expgaus(egamma_pred)
         if popt is not None:
             mu_mev = popt[1] * 1e3
             sigma_mev = abs(popt[2]) * 1e3
@@ -1061,7 +1062,7 @@ def _run_dead_channel_mode(args, patches, input_base):
             print(f"  {'EGamma (conv)':>14s}: fit failed")
     for s in active_strategies:
         pred_e = combined_pred_energies[s]
-        popt, pcov, _, _ = fit_expgaus(pred_e)
+        popt, pcov, _, _, _, _ = fit_expgaus(pred_e)
         if popt is not None:
             mu_mev = popt[1] * 1e3
             sigma_mev = abs(popt[2]) * 1e3
