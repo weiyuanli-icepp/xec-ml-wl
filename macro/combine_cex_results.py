@@ -778,7 +778,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             # ExpGaus fit on residual (convert to GeV for fit_expgaus)
             popt, pcov, _, _ = fit_expgaus(
                 res * 1e-3, nbins=200, hist_range=(-0.020, 0.020),
-                fit_half_width=0.005)
+                fit_half_width=0.002)
             if popt is not None:
                 mu_mev = popt[1] * 1e3
                 sig_mev = abs(popt[2]) * 1e3
@@ -911,7 +911,7 @@ def _run_dead_channel_mode(args, patches, input_base):
                 # Store per-patch EGamma fit for per-patch plots & Page 1
                 eg_popt, eg_pcov, _, _ = fit_expgaus(
                     eg_res * 1e-3, nbins=200, hist_range=(-0.020, 0.020),
-                    fit_half_width=0.005)
+                    fit_half_width=0.002)
                 if eg_popt is not None:
                     eg_popt = np.array([eg_popt[0], eg_popt[1] * 1e3,
                                         eg_popt[2] * 1e3, eg_popt[3] * 1e3])
@@ -937,7 +937,7 @@ def _run_dead_channel_mode(args, patches, input_base):
             bias = np.median(residual)
             eg_popt, eg_pcov, _, _ = fit_expgaus(
                 residual * 1e-3, nbins=200, hist_range=(-0.020, 0.020),
-                fit_half_width=0.005)
+                fit_half_width=0.002)
             if eg_popt is not None:
                 eg_popt = np.array([eg_popt[0], eg_popt[1] * 1e3,
                                     eg_popt[2] * 1e3, eg_popt[3] * 1e3])
