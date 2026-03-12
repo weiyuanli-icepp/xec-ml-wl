@@ -106,6 +106,49 @@ def fit_expgaus(energies_gev, nbins=600, hist_range=(0.04, 0.1),
         return None, None, counts, edges
 
 
+def fit_expgaus_residual(values_mev, nbins=200, hist_range=(-20, 20),
+                         fit_half_width=2.0):
+    """Fit ExpGaus to a residual distribution (in MeV).
+
+    Returns (popt, pcov) or (None, None).
+    popt = [A, mu, sigma, tau] in MeV.
+    """
+    from scipy.optimize import curve_fit
+
+    if len(values_mev) < 30:
+        return None, None
+
+    counts, edges = np.histogram(values_mev, bins=nbins, range=hist_range)
+    centers = (edges[:-1] + edges[1:]) / 2
+
+    peak_idx = np.argmax(counts)
+    mu0 = centers[peak_idx]
+    A0 = float(counts[peak_idx])
+    if A0 <= 0:
+        return None, None
+
+    fit_lo = mu0 - fit_half_width
+    fit_hi = mu0 + fit_half_width
+    mask = (centers >= fit_lo) & (centers <= fit_hi)
+    if mask.sum() < 4:
+        return None, None
+
+    x_fit = centers[mask]
+    y_fit = counts[mask].astype(float)
+
+    sig0 = 1.5  # MeV — typical resolution
+    tau0 = -1.0  # MeV — slight low-side tail
+
+    try:
+        popt, pcov = curve_fit(
+            _expgaus, x_fit, y_fit,
+            p0=[A0, mu0, sig0, tau0],
+            maxfev=10000)
+        return popt, pcov
+    except Exception:
+        return None, None
+
+
 def fit_gaussian(values, nbins='auto'):
     """Fit a Gaussian to a 1D array. Returns (popt, pcov) or (None, None)."""
     from scipy.optimize import curve_fit
@@ -721,16 +764,15 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                     if popt_s is not None:
                         # Draw fitted ExpGaus curve
                         x_fit = np.linspace(plot_range[0], plot_range[1], 300)
-                        # Scale amplitude: fit was done on GeV histogram,
-                        # rescale to match MeV histogram bin width
+                        # Scale amplitude to match auto-binned histogram
                         h_edges = np.array([p.get_x() for p in patches_h]
                                            + [patches_h[-1].get_x()
                                               + patches_h[-1].get_width()])
-                        dx_mev = h_edges[1] - h_edges[0]
-                        dx_gev = 0.040 / 200  # bin width used in fit_expgaus
-                        amp_scale = dx_mev / (dx_gev * 1e3)
+                        dx_hist = h_edges[1] - h_edges[0]
+                        dx_fit = (20 - (-20)) / 200  # bin width in fit
+                        amp_scale = dx_hist / dx_fit
                         fit_popt = [popt_s[0] * amp_scale,
-                                    popt_s[1], popt_s[2], popt_s[3]]
+                                    popt_s[1], abs(popt_s[2]), popt_s[3]]
                         ax.plot(x_fit, _expgaus(x_fit, *fit_popt),
                                 color=STRATEGY_COLORS[s], linewidth=2)
                         title_parts.append(
@@ -775,23 +817,19 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             counts, edges, _ = ax.hist(res, bins=nbins, range=plot_range,
                                        alpha=0.7, color=color,
                                        label=f"N = {len(res)}")
-            # ExpGaus fit on residual (convert to GeV for fit_expgaus)
-            popt, pcov, _, _ = fit_expgaus(
-                res * 1e-3, nbins=200, hist_range=(-0.020, 0.020),
-                fit_half_width=0.002)
+            # ExpGaus fit on residual (MeV)
+            popt, pcov = fit_expgaus_residual(res)
             if popt is not None:
-                mu_mev = popt[1] * 1e3
-                sig_mev = abs(popt[2]) * 1e3
-                tau_mev = popt[3] * 1e3
-                # Scale amplitude to match displayed histogram bins
-                dx_mev = (plot_range[1] - plot_range[0]) / nbins
-                dx_gev = 0.040 / 200
-                amp_scale = dx_mev / (dx_gev * 1e3)
-                fit_popt = [popt[0] * amp_scale, mu_mev, sig_mev, tau_mev]
+                # Scale amplitude to match displayed histogram bin width
+                dx_plot = (plot_range[1] - plot_range[0]) / nbins
+                dx_fit = (20 - (-20)) / 200  # bin width in fit_expgaus_residual
+                amp_scale = dx_plot / dx_fit
+                fit_popt = [popt[0] * amp_scale, popt[1],
+                            abs(popt[2]), popt[3]]
                 x_fit = np.linspace(plot_range[0], plot_range[1], 300)
                 ax.plot(x_fit, _expgaus(x_fit, *fit_popt), 'k-', lw=2)
-                fit_label = (f"$\\sigma$={sig_mev:.2f}, "
-                             f"$\\mu$={mu_mev:.2f} MeV")
+                fit_label = (f"$\\sigma$={abs(popt[2]):.2f}, "
+                             f"$\\mu$={popt[1]:.2f} MeV")
                 ax.text(0.97, 0.95, fit_label, transform=ax.transAxes,
                         fontsize=9, va='top', ha='right')
             ax.set_xlabel("Pred - True [MeV]")
@@ -909,15 +947,7 @@ def _run_dead_channel_mode(args, patches, input_base):
                 combined_egamma_pred.append(
                     e_reco[valid_eg] - eg_bias * 1e-3)
                 # Store per-patch EGamma fit for per-patch plots & Page 1
-                eg_popt, eg_pcov, _, _ = fit_expgaus(
-                    eg_res * 1e-3, nbins=200, hist_range=(-0.020, 0.020),
-                    fit_half_width=0.002)
-                if eg_popt is not None:
-                    eg_popt = np.array([eg_popt[0], eg_popt[1] * 1e3,
-                                        eg_popt[2] * 1e3, eg_popt[3] * 1e3])
-                    eg_pcov = eg_pcov.copy()
-                    scale = np.array([1, 1e3, 1e3, 1e3])
-                    eg_pcov = eg_pcov * np.outer(scale, scale)
+                eg_popt, eg_pcov = fit_expgaus_residual(eg_res)
                 strat_dict["egamma"] = (eg_res, eg_popt, eg_pcov)
 
         for s in STRATEGIES:
@@ -935,25 +965,15 @@ def _run_dead_channel_mode(args, patches, input_base):
 
             residual = (pred[valid] - truth[valid]) * 1e3  # MeV
             bias = np.median(residual)
-            eg_popt, eg_pcov, _, _ = fit_expgaus(
-                residual * 1e-3, nbins=200, hist_range=(-0.020, 0.020),
-                fit_half_width=0.002)
-            if eg_popt is not None:
-                eg_popt = np.array([eg_popt[0], eg_popt[1] * 1e3,
-                                    eg_popt[2] * 1e3, eg_popt[3] * 1e3])
-                eg_pcov_scaled = eg_pcov.copy()
-                scale = np.array([1, 1e3, 1e3, 1e3])
-                eg_pcov_scaled = eg_pcov_scaled * np.outer(scale, scale)
-            else:
-                eg_pcov_scaled = None
-            strat_dict[s] = (residual, eg_popt, eg_pcov_scaled)
+            eg_popt, eg_pcov = fit_expgaus_residual(residual)
+            strat_dict[s] = (residual, eg_popt, eg_pcov)
             # Bias-corrected residual and predicted energy for combined plots
             combined_per_strat[s].append(residual - bias)
             combined_pred_per_strat[s].append(pred[valid] - bias * 1e-3)
 
             if eg_popt is not None:
                 sig = abs(eg_popt[2])
-                sig_err = np.sqrt(eg_pcov_scaled[2, 2])
+                sig_err = np.sqrt(eg_pcov[2, 2])
                 parts.append(f"{STRATEGY_LABELS[s]}: "
                              f"σ={sig:.2f}\u00b1{sig_err:.2f} "
                              f"(bias={bias:+.2f})")
