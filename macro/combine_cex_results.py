@@ -174,9 +174,12 @@ def fit_double_gaussian(values, nbins='auto'):
 
 
 STRATEGIES = ["raw", "neighavg", "inpainted"]
-STRATEGY_LABELS = {"raw": "Raw", "neighavg": "Neighbor Avg", "inpainted": "Inpainted"}
-STRATEGY_COLORS = {"raw": "tab:red", "neighavg": "tab:orange", "inpainted": "tab:blue"}
-STRATEGY_MARKERS = {"raw": "o", "neighavg": "s", "inpainted": "D"}
+STRATEGY_LABELS = {"raw": "Raw", "neighavg": "Neighbor Avg", "inpainted": "Inpainted",
+                   "egamma": "EGamma (conv)"}
+STRATEGY_COLORS = {"raw": "tab:red", "neighavg": "tab:orange", "inpainted": "tab:blue",
+                   "egamma": "tab:gray"}
+STRATEGY_MARKERS = {"raw": "o", "neighavg": "s", "inpainted": "D",
+                    "egamma": "^"}
 
 
 def find_csv(patch_dir):
@@ -485,8 +488,6 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
     from scipy.optimize import curve_fit
 
     pdf_path = os.path.join(output_dir, "CEX23_dead_channel_resolution.pdf")
-    n_strat = len(active_strategies)
-    offsets = np.linspace(-0.15 * (n_strat - 1), 0.15 * (n_strat - 1), n_strat)
 
     with PdfPages(pdf_path) as pdf:
         # ==============================================================
@@ -495,22 +496,28 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
         fig.suptitle("CEX23 Dead-Channel Recovery: Energy Resolution", fontsize=14)
 
+        # Include EGamma alongside ML strategies on Page 1
+        page1_keys = ["egamma"] + active_strategies
+        n_page1 = len(page1_keys)
+        offsets = np.linspace(-0.15 * (n_page1 - 1),
+                              0.15 * (n_page1 - 1), n_page1)
+
         patch_ids = []
-        strat_sigmas = {s: [] for s in active_strategies}
-        strat_sigma_errs = {s: [] for s in active_strategies}
-        strat_mus = {s: [] for s in active_strategies}
-        strat_mu_errs = {s: [] for s in active_strategies}
+        strat_sigmas = {s: [] for s in page1_keys}
+        strat_sigma_errs = {s: [] for s in page1_keys}
+        strat_mus = {s: [] for s in page1_keys}
+        strat_mu_errs = {s: [] for s in page1_keys}
 
         for pid, n_ev, strat_dict in patch_data_dc:
             has_any = False
-            for s in active_strategies:
+            for s in page1_keys:
                 if s in strat_dict and strat_dict[s][1] is not None:
                     has_any = True
                     break
             if not has_any:
                 continue
             patch_ids.append(pid)
-            for s in active_strategies:
+            for s in page1_keys:
                 if s in strat_dict and strat_dict[s][1] is not None:
                     dg = strat_dict[s][1]
                     dg_cov = strat_dict[s][2]
@@ -528,7 +535,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             x = np.arange(len(patch_ids))
             labels = [str(p) for p in patch_ids]
 
-            for i, s in enumerate(active_strategies):
+            for i, s in enumerate(page1_keys):
                 ax1.errorbar(x + offsets[i], strat_sigmas[s],
                              yerr=strat_sigma_errs[s],
                              fmt=STRATEGY_MARKERS[s], color=STRATEGY_COLORS[s],
@@ -540,7 +547,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             ax1.set_title("Resolution (Double-Gaussian Core $\\sigma$)")
             ax1.legend(fontsize=9)
 
-            for i, s in enumerate(active_strategies):
+            for i, s in enumerate(page1_keys):
                 ax2.errorbar(x + offsets[i], strat_mus[s],
                              yerr=strat_mu_errs[s],
                              fmt=STRATEGY_MARKERS[s], color=STRATEGY_COLORS[s],
@@ -560,7 +567,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         # ==============================================================
         # Page 2: Combined residual histograms (EGamma + each strategy)
         # ==============================================================
-        n_panels = n_strat + (1 if egamma_residual is not None else 0)
+        n_panels = len(active_strategies) + (1 if egamma_residual is not None else 0)
         fig, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 5))
         if n_panels == 1:
             axes = [axes]
@@ -743,6 +750,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         patches_with_data = [item for item in patch_data_dc
                              if any(s in item[2] and len(item[2][s][0]) > 0
                                     for s in active_strategies)]
+        per_patch_keys = ["egamma"] + active_strategies
         per_page = 6
         for page_start in range(0, len(patches_with_data), per_page):
             page_items = patches_with_data[page_start:page_start + per_page]
@@ -756,7 +764,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             for i, (pid, n_ev, strat_dict) in enumerate(page_items):
                 ax = axes[i]
                 title_parts = [f"Patch {pid} (N={n_ev})"]
-                for s in active_strategies:
+                for s in per_patch_keys:
                     if s not in strat_dict:
                         continue
                     res = strat_dict[s][0]
@@ -869,6 +877,10 @@ def _run_dead_channel_mode(args, patches, input_base):
             patch_data_dc.append((patch, n, {}))
             continue
 
+        # Detect available strategies
+        strat_dict = {}
+        parts = [f"  Patch {patch:>2d}: {n:>6d} events"]
+
         # EGamma (conventional) residual
         e_reco = arrays.get("energyReco", None)
         if e_reco is not None:
@@ -879,10 +891,9 @@ def _run_dead_channel_mode(args, patches, input_base):
                 combined_egamma_residual.append(eg_res - eg_bias)
                 combined_egamma_pred.append(
                     e_reco[valid_eg] - eg_bias * 1e-3)
-
-        # Detect available strategies
-        strat_dict = {}
-        parts = [f"  Patch {patch:>2d}: {n:>6d} events"]
+                # Store per-patch EGamma fit for per-patch plots & Page 1
+                dg_popt_eg, dg_pcov_eg = fit_double_gaussian(eg_res)
+                strat_dict["egamma"] = (eg_res, dg_popt_eg, dg_pcov_eg)
 
         for s in STRATEGIES:
             branch = f"energy_{s}"
