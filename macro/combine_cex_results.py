@@ -142,12 +142,19 @@ def fit_double_gaussian(values, nbins='auto'):
     if len(values) < 30:
         return None, None
     try:
-        counts, edges = np.histogram(values, bins=nbins)
+        # Clip extreme outliers so auto-binning doesn't create millions of
+        # bins when the range is huge but the core is narrow (e.g. EGamma).
+        q_lo, q_hi = np.percentile(values, [0.5, 99.5])
+        margin = (q_hi - q_lo) * 0.5
+        clip_mask = (values >= q_lo - margin) & (values <= q_hi + margin)
+        vals = values[clip_mask] if clip_mask.sum() >= 30 else values
+
+        counts, edges = np.histogram(vals, bins=nbins)
         centers = (edges[:-1] + edges[1:]) / 2
-        mu0 = np.median(values)
-        sig0 = np.std(values)
+        mu0 = np.median(vals)
+        sig0 = np.std(vals)
         dx = edges[1] - edges[0]
-        A0 = len(values) * dx / (sig0 * np.sqrt(2 * np.pi))
+        A0 = len(vals) * dx / (sig0 * np.sqrt(2 * np.pi))
 
         # Initial guess: core (70% of events, narrow) + tail (30%, wider)
         p0 = [0.7 * A0, mu0, 0.6 * sig0,
