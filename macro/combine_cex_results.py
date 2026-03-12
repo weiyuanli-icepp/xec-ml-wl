@@ -771,8 +771,9 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                         color=STRATEGY_COLORS[s], label=STRATEGY_LABELS[s])
                     popt_s = strat_dict[s][1]
                     if popt_s is not None:
-                        # Draw fitted ExpGaus curve
-                        x_fit = np.linspace(plot_range[0], plot_range[1], 300)
+                        # Draw fitted ExpGaus curve (fitted range only)
+                        mu_s = popt_s[1]
+                        x_fit = np.linspace(mu_s - 2, mu_s + 2, 200)
                         # Scale amplitude to match auto-binned histogram
                         h_edges = np.array([p.get_x() for p in patches_h]
                                            + [patches_h[-1].get_x()
@@ -835,7 +836,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                 amp_scale = dx_plot / dx_fit
                 fit_popt = [popt[0] * amp_scale, popt[1],
                             abs(popt[2]), popt[3]]
-                x_fit = np.linspace(plot_range[0], plot_range[1], 300)
+                x_fit = np.linspace(popt[1] - 2, popt[1] + 2, 200)
                 ax.plot(x_fit, _expgaus(x_fit, *fit_popt), 'k-', lw=2)
                 fit_label = (f"$\\sigma$={abs(popt[2]):.2f}, "
                              f"$\\mu$={popt[1]:.2f} MeV")
