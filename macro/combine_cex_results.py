@@ -714,8 +714,8 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                          f"(N = {len(e_reco)})", fontsize=14)
 
             # Top-left: EGamma
-            axes[0, 0].hist(e_reco, bins=80, range=(30, 90), color='tab:blue', alpha=0.7)
-            axes[0, 0].set_xlabel("$E_{\\gamma}$ (LXe) [MeV]")
+            axes[0, 0].hist(e_reco, bins=80, range=(30, 70), color='tab:blue', alpha=0.7)
+            axes[0, 0].set_xlabel("$E_{LXe}$ [MeV]")
             axes[0, 0].set_ylabel("Events")
             axes[0, 0].set_title("LXe Photon Energy")
 
@@ -732,8 +732,9 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             axes[1, 0].set_title("Opening Angle")
 
             # Bottom-right: 2D scatter EGamma vs BGO energy
-            axes[1, 1].hist2d(e_reco, e_bgo, bins=80, cmap='viridis')
-            axes[1, 1].set_xlabel("$E_{\\gamma}$ (LXe) [MeV]")
+            axes[1, 1].hist2d(e_reco, e_bgo, bins=80,
+                              range=[[30, 70], [60, 95]], cmap='viridis')
+            axes[1, 1].set_xlabel("$E_{LXe}$ [MeV]")
             axes[1, 1].set_ylabel("$E_{BGO}$ [MeV]")
             axes[1, 1].set_title("$E_{\\gamma}$ vs $E_{BGO}$")
 
