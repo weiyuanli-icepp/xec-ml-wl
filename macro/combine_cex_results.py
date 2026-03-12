@@ -572,69 +572,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         plt.close(fig)
 
         # ==============================================================
-        # Page 2: Combined residual histograms (EGamma + each strategy)
-        # ==============================================================
-        n_panels = len(active_strategies) + (1 if egamma_residual is not None else 0)
-        fig, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 5))
-        if n_panels == 1:
-            axes = [axes]
-        fig.suptitle("CEX23 Combined Residual by Strategy", fontsize=14)
-        plot_range = (-20, 20)
-        nbins = 100
-
-        # Build list of (label, residual, color) to plot
-        panel_data = []
-        if egamma_residual is not None:
-            panel_data.append(("EGamma (conv)", egamma_residual, "tab:gray"))
-        for s in active_strategies:
-            panel_data.append((STRATEGY_LABELS[s],
-                               combined_residuals_dc.get(s, np.array([])),
-                               STRATEGY_COLORS[s]))
-
-        for ax, (label, res, color) in zip(axes, panel_data):
-            if res.size == 0:
-                ax.set_title(label)
-                continue
-            counts, edges, _ = ax.hist(res, bins=nbins, range=plot_range,
-                                       alpha=0.7, color=color,
-                                       label=f"N = {len(res)}")
-            # Double Gaussian fit
-            centers = (edges[:-1] + edges[1:]) / 2
-            mu0 = np.median(res)
-            sig0 = np.std(res)
-            dx = edges[1] - edges[0]
-            A0 = len(res) * dx / (sig0 * np.sqrt(2 * np.pi))
-            try:
-                p0 = [0.7*A0, mu0, 0.6*sig0, 0.3*A0, mu0, 2.0*sig0]
-                dg, _ = curve_fit(
-                    _double_gaussian, centers, counts.astype(float),
-                    p0=p0,
-                    bounds=([0,-np.inf,1e-8,0,-np.inf,1e-8],
-                            [np.inf,np.inf,np.inf,np.inf,np.inf,np.inf]),
-                    maxfev=10000)
-                if abs(dg[5]) < abs(dg[2]):
-                    dg = np.array([dg[3], dg[4], dg[5], dg[0], dg[1], dg[2]])
-                x_fit = np.linspace(plot_range[0], plot_range[1], 300)
-                ax.plot(x_fit, _double_gaussian(x_fit, *dg), 'k-', lw=2)
-                ax.plot(x_fit, _gaussian(x_fit, *dg[:3]), 'k--', lw=1, alpha=0.5)
-                ax.plot(x_fit, _gaussian(x_fit, *dg[3:]), 'k:', lw=1, alpha=0.5)
-                fit_label = (f"core: $\\sigma$={abs(dg[2]):.2f}, "
-                             f"$\\mu$={dg[1]:.2f} MeV")
-                ax.text(0.97, 0.95, fit_label, transform=ax.transAxes,
-                        fontsize=9, va='top', ha='right')
-            except Exception:
-                pass
-            ax.set_xlabel("Pred - True [MeV]")
-            ax.set_ylabel("Events")
-            ax.set_title(label)
-            ax.legend(fontsize=9)
-
-        fig.tight_layout(rect=[0, 0, 1, 0.93])
-        pdf.savefig(fig)
-        plt.close(fig)
-
-        # ==============================================================
-        # Page 3: ExpGaus fit on predicted energy spectrum 
+        # Page 2: ExpGaus fit on predicted energy spectrum
         # ==============================================================
         if combined_pred_energies or egamma_pred is not None:
             fig, ax = plt.subplots(1, 1, figsize=(8, 6))
@@ -750,8 +688,9 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             plt.close(fig)
 
         # ==============================================================
-        # Pages 5+: Per-patch overlaid histograms (6 per page)
+        # Per-patch overlaid histograms (6 per page)
         # ==============================================================
+        plot_range = (-20, 20)
         patches_with_data = [item for item in patch_data_dc
                              if any(s in item[2] and len(item[2][s][0]) > 0
                                     for s in active_strategies)]
@@ -808,6 +747,64 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             fig.tight_layout(rect=[0, 0, 1, 0.93])
             pdf.savefig(fig)
             plt.close(fig)
+
+        # ==============================================================
+        # Last page: Combined residual histograms (ExpGaus fit)
+        # ==============================================================
+        n_panels = len(active_strategies) + (1 if egamma_residual is not None else 0)
+        ncols = (n_panels + 1) // 2
+        nrows = 2 if n_panels > 1 else 1
+        fig, axes = plt.subplots(nrows, ncols,
+                                 figsize=(6 * ncols, 5 * nrows))
+        axes = np.atleast_1d(axes).flatten()
+        fig.suptitle("CEX23 Combined Residual by Strategy", fontsize=14)
+        nbins = 100
+
+        panel_data = []
+        if egamma_residual is not None:
+            panel_data.append(("EGamma (conv)", egamma_residual, "tab:gray"))
+        for s in active_strategies:
+            panel_data.append((STRATEGY_LABELS[s],
+                               combined_residuals_dc.get(s, np.array([])),
+                               STRATEGY_COLORS[s]))
+
+        for ax, (label, res, color) in zip(axes, panel_data):
+            if res.size == 0:
+                ax.set_title(label)
+                continue
+            counts, edges, _ = ax.hist(res, bins=nbins, range=plot_range,
+                                       alpha=0.7, color=color,
+                                       label=f"N = {len(res)}")
+            # ExpGaus fit on residual (convert to GeV for fit_expgaus)
+            popt, pcov, _, _ = fit_expgaus(
+                res * 1e-3, nbins=200, hist_range=(-0.020, 0.020),
+                fit_half_width=0.005)
+            if popt is not None:
+                mu_mev = popt[1] * 1e3
+                sig_mev = abs(popt[2]) * 1e3
+                tau_mev = popt[3] * 1e3
+                # Scale amplitude to match displayed histogram bins
+                dx_mev = (plot_range[1] - plot_range[0]) / nbins
+                dx_gev = 0.040 / 200
+                amp_scale = dx_mev / (dx_gev * 1e3)
+                fit_popt = [popt[0] * amp_scale, mu_mev, sig_mev, tau_mev]
+                x_fit = np.linspace(plot_range[0], plot_range[1], 300)
+                ax.plot(x_fit, _expgaus(x_fit, *fit_popt), 'k-', lw=2)
+                fit_label = (f"$\\sigma$={sig_mev:.2f}, "
+                             f"$\\mu$={mu_mev:.2f} MeV")
+                ax.text(0.97, 0.95, fit_label, transform=ax.transAxes,
+                        fontsize=9, va='top', ha='right')
+            ax.set_xlabel("Pred - True [MeV]")
+            ax.set_ylabel("Events")
+            ax.set_title(label)
+            ax.legend(fontsize=9)
+
+        for j in range(len(panel_data), len(axes)):
+            axes[j].axis('off')
+
+        fig.tight_layout(rect=[0, 0, 1, 0.93])
+        pdf.savefig(fig)
+        plt.close(fig)
 
     print(f"\nPlots: {pdf_path}")
 
