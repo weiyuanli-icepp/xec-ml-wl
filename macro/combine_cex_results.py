@@ -624,13 +624,16 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
 
             # Relative resolution: σ_strategy / σ_EGamma
             eg_sigmas = np.array(strat_sigmas.get("egamma", []))
+            eg_sigma_errs = np.array(strat_sigma_errs.get("egamma", []))
             if len(eg_sigmas) == len(patch_ids):
                 for i, s in enumerate(active_strategies):
                     idx = page1_keys.index(s)
                     s_sigmas = np.array(strat_sigmas[s])
                     s_sigma_errs = np.array(strat_sigma_errs[s])
                     ratio = s_sigmas / eg_sigmas
-                    ratio_err = s_sigma_errs / eg_sigmas
+                    ratio_err = ratio * np.sqrt(
+                        (s_sigma_errs / s_sigmas) ** 2
+                        + (eg_sigma_errs / eg_sigmas) ** 2)
                     ax3.errorbar(x + offsets[idx], ratio,
                                  yerr=ratio_err,
                                  fmt=STRATEGY_MARKERS[s], color=STRATEGY_COLORS[s],
