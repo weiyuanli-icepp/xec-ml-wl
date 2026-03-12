@@ -622,21 +622,27 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             ax2.set_title("Bias (ExpGaus $\\mu$)")
             ax2.legend(fontsize=9)
 
-            # Relative resolution: σ / (55 MeV) in %
-            E_PEAK = 55.0  # MeV
-            for i, s in enumerate(page1_keys):
-                rel_res = [sig / E_PEAK * 100 for sig in strat_sigmas[s]]
-                rel_err = [err / E_PEAK * 100 for err in strat_sigma_errs[s]]
-                ax3.errorbar(x + offsets[i], rel_res,
-                             yerr=rel_err,
-                             fmt=STRATEGY_MARKERS[s], color=STRATEGY_COLORS[s],
-                             capsize=4, markersize=6, label=STRATEGY_LABELS[s])
-            ax3.set_xticks(x)
-            ax3.set_xticklabels(labels, fontsize=8)
-            ax3.set_xlabel("Patch")
-            ax3.set_ylabel("$\\sigma / E$ [%]")
-            ax3.set_title("Relative Resolution ($\\sigma$ / 55 MeV)")
-            ax3.legend(fontsize=9)
+            # Relative resolution: σ_strategy / σ_EGamma
+            eg_sigmas = np.array(strat_sigmas.get("egamma", []))
+            if len(eg_sigmas) == len(patch_ids):
+                for i, s in enumerate(active_strategies):
+                    idx = page1_keys.index(s)
+                    s_sigmas = np.array(strat_sigmas[s])
+                    s_sigma_errs = np.array(strat_sigma_errs[s])
+                    ratio = s_sigmas / eg_sigmas
+                    ratio_err = s_sigma_errs / eg_sigmas
+                    ax3.errorbar(x + offsets[idx], ratio,
+                                 yerr=ratio_err,
+                                 fmt=STRATEGY_MARKERS[s], color=STRATEGY_COLORS[s],
+                                 capsize=4, markersize=6, label=STRATEGY_LABELS[s])
+                ax3.axhline(1.0, color='tab:gray', ls='--', lw=1,
+                            label='EGamma (conv)')
+                ax3.set_xticks(x)
+                ax3.set_xticklabels(labels, fontsize=8)
+                ax3.set_xlabel("Patch")
+                ax3.set_ylabel("$\\sigma / \\sigma_{EGamma}$")
+                ax3.set_title("Resolution Relative to EGamma")
+                ax3.legend(fontsize=9)
 
         fig.tight_layout(rect=[0, 0, 1, 0.95])
         pdf.savefig(fig)
