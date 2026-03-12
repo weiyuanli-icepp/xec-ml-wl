@@ -551,7 +551,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             ax1.set_xticklabels(labels, fontsize=8)
             ax1.set_xlabel("Patch")
             ax1.set_ylabel("Core $\\sigma$ [MeV]")
-            ax1.set_title("Resolution (Double-Gaussian Core $\\sigma$)")
+            ax1.set_title("Resolution (ExpGaus $\\sigma$)")
             ax1.legend(fontsize=9)
 
             for i, s in enumerate(page1_keys):
@@ -564,7 +564,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             ax2.set_xticklabels(labels, fontsize=8)
             ax2.set_xlabel("Patch")
             ax2.set_ylabel("Core $\\mu$ [MeV]")
-            ax2.set_title("Bias (Double-Gaussian Core $\\mu$)")
+            ax2.set_title("Bias (ExpGaus $\\mu$)")
             ax2.legend(fontsize=9)
 
         fig.tight_layout(rect=[0, 0, 1, 0.95])
@@ -775,13 +775,28 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                     res = strat_dict[s][0]
                     if len(res) == 0:
                         continue
-                    ax.hist(res, bins='auto', range=plot_range, alpha=0.4,
-                            color=STRATEGY_COLORS[s], label=STRATEGY_LABELS[s])
-                    dg = strat_dict[s][1]
-                    if dg is not None:
+                    _, _, patches_h = ax.hist(
+                        res, bins='auto', range=plot_range, alpha=0.4,
+                        color=STRATEGY_COLORS[s], label=STRATEGY_LABELS[s])
+                    popt_s = strat_dict[s][1]
+                    if popt_s is not None:
+                        # Draw fitted ExpGaus curve
+                        x_fit = np.linspace(plot_range[0], plot_range[1], 300)
+                        # Scale amplitude: fit was done on GeV histogram,
+                        # rescale to match MeV histogram bin width
+                        h_edges = np.array([p.get_x() for p in patches_h]
+                                           + [patches_h[-1].get_x()
+                                              + patches_h[-1].get_width()])
+                        dx_mev = h_edges[1] - h_edges[0]
+                        dx_gev = 0.040 / 200  # bin width used in fit_expgaus
+                        amp_scale = dx_mev / (dx_gev * 1e3)
+                        fit_popt = [popt_s[0] * amp_scale,
+                                    popt_s[1], popt_s[2], popt_s[3]]
+                        ax.plot(x_fit, _expgaus(x_fit, *fit_popt),
+                                color=STRATEGY_COLORS[s], linewidth=2)
                         title_parts.append(
                             f"{STRATEGY_LABELS[s]}: "
-                            f"$\\sigma$={abs(dg[2]):.2f} MeV")
+                            f"$\\sigma$={abs(popt_s[2]):.2f} MeV")
                 ax.set_title("\n".join(title_parts), fontsize=9)
                 ax.set_xlabel("Pred - True [MeV]", fontsize=9)
                 ax.set_ylabel("Events", fontsize=9)
@@ -897,8 +912,16 @@ def _run_dead_channel_mode(args, patches, input_base):
                 combined_egamma_pred.append(
                     e_reco[valid_eg] - eg_bias * 1e-3)
                 # Store per-patch EGamma fit for per-patch plots & Page 1
-                dg_popt_eg, dg_pcov_eg = fit_double_gaussian(eg_res)
-                strat_dict["egamma"] = (eg_res, dg_popt_eg, dg_pcov_eg)
+                eg_popt, eg_pcov, _, _ = fit_expgaus(
+                    eg_res * 1e-3, nbins=200, hist_range=(-0.020, 0.020),
+                    fit_half_width=0.005)
+                if eg_popt is not None:
+                    eg_popt = np.array([eg_popt[0], eg_popt[1] * 1e3,
+                                        eg_popt[2] * 1e3, eg_popt[3] * 1e3])
+                    eg_pcov = eg_pcov.copy()
+                    scale = np.array([1, 1e3, 1e3, 1e3])
+                    eg_pcov = eg_pcov * np.outer(scale, scale)
+                strat_dict["egamma"] = (eg_res, eg_popt, eg_pcov)
 
         for s in STRATEGIES:
             branch = f"energy_{s}"
@@ -915,17 +938,27 @@ def _run_dead_channel_mode(args, patches, input_base):
 
             residual = (pred[valid] - truth[valid]) * 1e3  # MeV
             bias = np.median(residual)
-            dg_popt, dg_pcov = fit_double_gaussian(residual)
-            strat_dict[s] = (residual, dg_popt, dg_pcov)
+            eg_popt, eg_pcov, _, _ = fit_expgaus(
+                residual * 1e-3, nbins=200, hist_range=(-0.020, 0.020),
+                fit_half_width=0.005)
+            if eg_popt is not None:
+                eg_popt = np.array([eg_popt[0], eg_popt[1] * 1e3,
+                                    eg_popt[2] * 1e3, eg_popt[3] * 1e3])
+                eg_pcov_scaled = eg_pcov.copy()
+                scale = np.array([1, 1e3, 1e3, 1e3])
+                eg_pcov_scaled = eg_pcov_scaled * np.outer(scale, scale)
+            else:
+                eg_pcov_scaled = None
+            strat_dict[s] = (residual, eg_popt, eg_pcov_scaled)
             # Bias-corrected residual and predicted energy for combined plots
             combined_per_strat[s].append(residual - bias)
             combined_pred_per_strat[s].append(pred[valid] - bias * 1e-3)
 
-            if dg_popt is not None:
-                core_sig = abs(dg_popt[2])
-                core_sig_err = np.sqrt(dg_pcov[2, 2])
+            if eg_popt is not None:
+                sig = abs(eg_popt[2])
+                sig_err = np.sqrt(eg_pcov_scaled[2, 2])
                 parts.append(f"{STRATEGY_LABELS[s]}: "
-                             f"σ={core_sig:.2f}\u00b1{core_sig_err:.2f} "
+                             f"σ={sig:.2f}\u00b1{sig_err:.2f} "
                              f"(bias={bias:+.2f})")
             else:
                 res68 = np.percentile(np.abs(residual), 68)
