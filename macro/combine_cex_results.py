@@ -17,6 +17,7 @@ import argparse
 import os
 import sys
 import glob
+import warnings
 
 import numpy as np
 
@@ -97,10 +98,14 @@ def fit_expgaus(energies_gev, nbins=600, hist_range=(0.04, 0.1),
     tau0 = -0.001 * mu0
 
     try:
-        popt, pcov = curve_fit(
-            _expgaus, x_fit, y_fit,
-            p0=[A0, mu0, sig0, tau0],
-            maxfev=10000)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            from scipy.optimize import OptimizeWarning
+            warnings.simplefilter("ignore", category=OptimizeWarning)
+            popt, pcov = curve_fit(
+                _expgaus, x_fit, y_fit,
+                p0=[A0, mu0, sig0, tau0],
+                maxfev=10000)
         return popt, pcov, counts, edges
     except Exception:
         return None, None, counts, edges
@@ -140,10 +145,14 @@ def fit_expgaus_residual(values_mev, nbins=200, hist_range=(-20, 20),
     tau0 = -1.0  # MeV — slight low-side tail
 
     try:
-        popt, pcov = curve_fit(
-            _expgaus, x_fit, y_fit,
-            p0=[A0, mu0, sig0, tau0],
-            maxfev=10000)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            from scipy.optimize import OptimizeWarning
+            warnings.simplefilter("ignore", category=OptimizeWarning)
+            popt, pcov = curve_fit(
+                _expgaus, x_fit, y_fit,
+                p0=[A0, mu0, sig0, tau0],
+                maxfev=10000)
         return popt, pcov
     except Exception:
         return None, None
@@ -910,7 +919,8 @@ def _run_dead_channel_mode(args, patches, input_base):
             # pi0 mass window: 125–138 MeV
             cos_theta = np.cos(np.deg2rad(angle))
             m_inv_sq = 2 * e_reco * e_bgo * (1 - cos_theta)
-            m_inv = np.where(m_inv_sq > 0, np.sqrt(m_inv_sq), 0.0)
+            with np.errstate(invalid='ignore'):
+                m_inv = np.where(m_inv_sq > 0, np.sqrt(m_inv_sq), 0.0)
             # sel &= (m_inv > 0.125) & (m_inv < 0.138)
             
             # Angle cut: >170 deg
