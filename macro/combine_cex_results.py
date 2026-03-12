@@ -656,8 +656,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                 if popt is not None:
                     x_fine = np.linspace(0.04, 0.1, 500)
                     ax.plot(x_fine, _expgaus(x_fine, *popt),
-                            color='tab:gray', linewidth=1.5,
-                            linestyle='--')
+                            color='tab:gray', linewidth=2.5)
 
             for s in active_strategies:
                 pred_e = combined_pred_energies.get(s, np.array([]))
@@ -674,8 +673,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                 if popt is not None:
                     x_fine = np.linspace(0.04, 0.1, 500)
                     ax.plot(x_fine, _expgaus(x_fine, *popt),
-                            color=STRATEGY_COLORS[s], linewidth=1.5,
-                            linestyle='--')
+                            color=STRATEGY_COLORS[s], linewidth=2.5)
 
             # Build legend with fit results
             legend_entries = []
@@ -724,7 +722,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                          f"(N = {len(e_reco)})", fontsize=14)
 
             # Top-left: EGamma
-            axes[0, 0].hist(e_reco, bins=80, color='tab:blue', alpha=0.7)
+            axes[0, 0].hist(e_reco, bins=80, range=(30, 90), color='tab:blue', alpha=0.7)
             axes[0, 0].set_xlabel("$E_{\\gamma}$ (LXe) [MeV]")
             axes[0, 0].set_ylabel("Events")
             axes[0, 0].set_title("LXe Photon Energy")
