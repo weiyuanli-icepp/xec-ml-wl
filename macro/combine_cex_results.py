@@ -236,8 +236,8 @@ def fit_double_gaussian(values, nbins='auto'):
 
 
 STRATEGIES = ["raw", "neighavg", "inpainted"]
-STRATEGY_LABELS = {"raw": "Raw", "neighavg": "Neighbor Avg", "inpainted": "Inpainted",
-                   "egamma": "EGamma (conv)"}
+STRATEGY_LABELS = {"raw": "ML raw", "neighavg": "ML avg", "inpainted": "ML inp",
+                   "egamma": "conv"}
 STRATEGY_COLORS = {"raw": "tab:red", "neighavg": "tab:orange", "inpainted": "tab:blue",
                    "egamma": "tab:gray"}
 STRATEGY_MARKERS = {"raw": "o", "neighavg": "s", "inpainted": "D",
@@ -639,7 +639,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                                  fmt=STRATEGY_MARKERS[s], color=STRATEGY_COLORS[s],
                                  capsize=4, markersize=6, label=STRATEGY_LABELS[s])
                 ax3.axhline(1.0, color='tab:gray', ls='--', lw=1,
-                            label='EGamma (conv)')
+                            label='conv')
                 ax3.set_xticks(x)
                 ax3.set_xticklabels(labels, fontsize=8)
                 ax3.set_xlabel("Patch")
@@ -669,7 +669,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                 centers = (edges[:-1] + edges[1:]) / 2
                 ax.step(centers * 1e3, counts, where='mid',
                         color='tab:gray', linewidth=2,
-                        label='EGamma (conv)')
+                        label='conv')
                 ymax = max(ymax, counts.max())
                 if popt is not None:
                     x_fine = np.linspace(flo * 1e3, fhi * 1e3, 300)
@@ -812,7 +812,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                     if len(res) == 0:
                         continue
                     _, _, patches_h = ax.hist(
-                        res, bins='auto', range=plot_range, alpha=0.4,
+                        res, bins=200, range=plot_range, alpha=0.4,
                         color=STRATEGY_COLORS[s], label=STRATEGY_LABELS[s])
                     popt_s = strat_dict[s][1]
                     if popt_s is not None:
@@ -835,7 +835,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                             f"$\\sigma$={abs(popt_s[2]):.2f} MeV")
                 ax.set_title("\n".join(title_parts), fontsize=9)
                 ax.set_xlabel("Pred - True [MeV]", fontsize=9)
-                ax.set_ylabel("Events", fontsize=9)
+                ax.set_ylabel("Entries / (200 keV)", fontsize=9)
                 ax.legend(fontsize=7)
 
             for j in range(len(page_items), len(axes)):
@@ -862,7 +862,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         title_parts = []
         for key, res in overlay_data:
             _, _, patches_h = ax.hist(
-                res, bins='auto', range=plot_range, alpha=0.4,
+                res, bins=200, range=plot_range, alpha=0.4,
                 color=STRATEGY_COLORS[key], label=STRATEGY_LABELS[key])
             popt, pcov = fit_expgaus_residual(res)
             if popt is not None:
@@ -883,7 +883,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                     f"$\\sigma$={abs(popt[2]):.2f} MeV")
 
         ax.set_xlabel("Pred - True [MeV]")
-        ax.set_ylabel("Events")
+        ax.set_ylabel("Entries / (200 keV)")
         if title_parts:
             ax.set_title("\n".join(title_parts), fontsize=9)
         ax.legend(fontsize=9)
@@ -1056,7 +1056,7 @@ def _run_dead_channel_mode(args, patches, input_base):
         egamma_residual = np.concatenate(combined_egamma_residual)
         egamma_pred = np.concatenate(combined_egamma_pred)
         dg_popt, dg_pcov = fit_double_gaussian(egamma_residual)
-        parts = [f"  {'EGamma (conv)':>14s}: N={len(egamma_residual):>7d}"]
+        parts = [f"  {'conv':>14s}: N={len(egamma_residual):>7d}"]
         if dg_popt is not None:
             core_sig = abs(dg_popt[2])
             core_sig_err = np.sqrt(dg_pcov[2, 2])
@@ -1089,11 +1089,11 @@ def _run_dead_channel_mode(args, patches, input_base):
             mu_mev = popt[1] * 1e3
             sigma_mev = abs(popt[2]) * 1e3
             reso_pct = abs(popt[2]) / popt[1] * 100 if popt[1] != 0 else 0
-            print(f"  {'EGamma (conv)':>14s}: "
+            print(f"  {'conv':>14s}: "
                   f"μ={mu_mev:.3f} MeV, σ={sigma_mev:.3f} MeV, "
                   f"σ/E={reso_pct:.2f}%")
         else:
-            print(f"  {'EGamma (conv)':>14s}: fit failed")
+            print(f"  {'conv':>14s}: fit failed")
     for s in active_strategies:
         pred_e = combined_pred_energies[s]
         popt, pcov, _, _, _, _ = fit_expgaus(pred_e)
