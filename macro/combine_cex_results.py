@@ -630,7 +630,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         # ==============================================================
         if combined_pred_energies or egamma_pred is not None:
             fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-            fig.suptitle("CEX23 Energy Spectrum by Strategy (ExpGaus Fit)",
+            fig.suptitle("CEX23 Energy Spectrum (ExpGaus Fit)",
                          fontsize=14)
 
             fit_results = {}
@@ -756,7 +756,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             ncols = min(3, len(page_items))
             fig, axes = plt.subplots(nrows, ncols,
                                      figsize=(5 * ncols, 4 * nrows))
-            fig.suptitle("Per-Patch Residual by Strategy", fontsize=13)
+            fig.suptitle("Per-Patch Residual", fontsize=13)
             axes = np.atleast_1d(axes).flatten()
 
             for i, (pid, n_ev, strat_dict) in enumerate(page_items):
@@ -811,7 +811,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         fig, axes = plt.subplots(nrows, ncols,
                                  figsize=(6 * ncols, 5 * nrows))
         axes = np.atleast_1d(axes).flatten()
-        fig.suptitle("CEX23 Combined Residual by Strategy", fontsize=14)
+        fig.suptitle("CEX23 Combined Residual", fontsize=14)
         nbins = 100
 
         panel_data = []
