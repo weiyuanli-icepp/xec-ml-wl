@@ -49,21 +49,16 @@ def _double_gaussian(x, A1, mu1, sigma1, A2, mu2, sigma2):
 def _expgaus(x, A, mu, sigma, tau):
     """Gaussian with exponential low-energy tail (ExpGaus).
 
-    Matches the ExpGausLocal function from CompareDCRMethods3.cpp.
     For x > mu + tau: standard Gaussian.
     For x <= mu + tau: exponential tail that joins continuously.
 
     Parameters: A (height), mu (peak), sigma (width), tau (transition, < 0).
     """
-    result = np.empty_like(x, dtype=float)
+    result       = np.empty_like(x, dtype=float)
     gauss_region = x > (mu + tau)
-    # Gaussian region
-    result[gauss_region] = A * np.exp(
-        -0.5 * ((x[gauss_region] - mu) / sigma) ** 2)
-    # Exponential tail
-    exp_region = ~gauss_region
-    result[exp_region] = A * np.exp(
-        tau / sigma**2 * (tau / 2.0 - (x[exp_region] - mu)))
+    exp_region   = ~gauss_region
+    result[gauss_region] = A * np.exp(-0.5 * ((x[gauss_region] - mu) / sigma) ** 2)        # Gaussian region
+    result[exp_region]   = A * np.exp(tau / sigma**2 * (tau / 2.0 - (x[exp_region] - mu))) # Exponential tail
     return result
 
 
@@ -625,7 +620,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         plt.close(fig)
 
         # ==============================================================
-        # Page 3: ExpGaus fit on predicted energy spectrum (like C++ macro)
+        # Page 3: ExpGaus fit on predicted energy spectrum 
         # ==============================================================
         if combined_pred_energies or egamma_pred is not None:
             fig, ax = plt.subplots(1, 1, figsize=(8, 6))
@@ -846,14 +841,17 @@ def _run_dead_channel_mode(args, patches, input_base):
 
             # Total energy: |EGamma + Ebgo - Epi0| <= 20 MeV
             Epi0 = 0.1378  # GeV
-            sel &= np.abs(e_reco + e_bgo - Epi0) <= 0.020
+            # sel &= np.abs(e_reco + e_bgo - Epi0) <= 0.020
 
             # Invariant mass: M = sqrt(2 * E1 * E2 * (1 - cos theta))
             # pi0 mass window: 125–138 MeV
             cos_theta = np.cos(np.deg2rad(angle))
             m_inv_sq = 2 * e_reco * e_bgo * (1 - cos_theta)
             m_inv = np.where(m_inv_sq > 0, np.sqrt(m_inv_sq), 0.0)
-            sel &= (m_inv > 0.125) & (m_inv < 0.138)
+            # sel &= (m_inv > 0.125) & (m_inv < 0.138)
+            
+            # Angle cut: >170 deg
+            sel &= angle > 170
 
         arrays = {k: v[sel] for k, v in arrays.items()}
         n = int(sel.sum())
