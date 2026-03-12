@@ -641,13 +641,13 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                 popt, pcov, counts, edges = fit_expgaus(egamma_pred)
                 fit_results["egamma"] = (popt, pcov, counts, edges)
                 centers = (edges[:-1] + edges[1:]) / 2
-                ax.step(centers, counts, where='mid',
+                ax.step(centers * 1e3, counts, where='mid',
                         color='tab:gray', linewidth=2,
                         label='EGamma (conv)')
                 ymax = max(ymax, counts.max())
                 if popt is not None:
-                    x_fine = np.linspace(0.04, 0.1, 500)
-                    ax.plot(x_fine, _expgaus(x_fine, *popt),
+                    x_fine = np.linspace(40, 100, 500)
+                    ax.plot(x_fine, _expgaus(x_fine * 1e-3, *popt),
                             color='tab:gray', linewidth=2.5)
 
             for s in active_strategies:
@@ -657,14 +657,14 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                 popt, pcov, counts, edges = fit_expgaus(pred_e)
                 fit_results[s] = (popt, pcov, counts, edges)
                 centers = (edges[:-1] + edges[1:]) / 2
-                ax.step(centers, counts, where='mid',
+                ax.step(centers * 1e3, counts, where='mid',
                         color=STRATEGY_COLORS[s], linewidth=2,
                         label=STRATEGY_LABELS[s])
                 ymax = max(ymax, counts.max())
 
                 if popt is not None:
-                    x_fine = np.linspace(0.04, 0.1, 500)
-                    ax.plot(x_fine, _expgaus(x_fine, *popt),
+                    x_fine = np.linspace(40, 100, 500)
+                    ax.plot(x_fine, _expgaus(x_fine * 1e-3, *popt),
                             color=STRATEGY_COLORS[s], linewidth=2.5)
 
             # Build legend with fit results
@@ -692,9 +692,9 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                         bbox=dict(boxstyle='round', facecolor='wheat',
                                   alpha=0.5))
 
-            ax.set_xlim(0.04, 0.07)
+            ax.set_xlim(40, 70)
             ax.set_ylim(0, ymax * 1.15)
-            ax.set_xlabel("$E_{\\gamma}$ [GeV]")
+            ax.set_xlabel("$E_{\\gamma}$ [MeV]")
             ax.set_ylabel("Entries / (100 keV)")
             ax.legend(fontsize=10, loc='upper left')
             fig.tight_layout(rect=[0, 0, 1, 0.93])
