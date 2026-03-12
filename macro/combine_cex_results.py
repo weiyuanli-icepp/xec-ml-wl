@@ -731,35 +731,51 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             e_reco = kin_arrays["energyReco"] * 1e3   # → MeV
             e_bgo = kin_arrays["Ebgo"] * 1e3           # → MeV
             angle = kin_arrays["Angle"]                # degrees
+            e_truth = kin_arrays.get("energyTruth", None)
+            if e_truth is not None:
+                e_truth = e_truth * 1e3  # → MeV
 
-            fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+            fig, axes = plt.subplots(2, 3, figsize=(16, 10))
             fig.suptitle(f"Kinematic Distributions of Selected Events "
                          f"(N = {len(e_reco)})", fontsize=14)
 
-            # Top-left: EGamma
+            # (0,0): EGamma reco
             axes[0, 0].hist(e_reco, bins=80, range=(30, 70), color='tab:blue', alpha=0.7)
             axes[0, 0].set_xlabel("$E_{LXe}$ [MeV]")
             axes[0, 0].set_ylabel("Events")
-            axes[0, 0].set_title("LXe Photon Energy")
+            axes[0, 0].set_title("LXe Photon Energy (Reco)")
 
-            # Top-right: BGO energy
+            # (0,1): BGO energy
             axes[0, 1].hist(e_bgo, bins=80, color='tab:green', alpha=0.7)
             axes[0, 1].set_xlabel("$E_{BGO}$ [MeV]")
             axes[0, 1].set_ylabel("Events")
             axes[0, 1].set_title("BGO Photon Energy")
 
-            # Bottom-left: Opening angle
+            # (0,2): energyTruth
+            if e_truth is not None:
+                axes[0, 2].hist(e_truth, bins=80, range=(50, 70),
+                                color='tab:purple', alpha=0.7)
+                axes[0, 2].set_xlabel("$E_{truth}$ [MeV]")
+                axes[0, 2].set_ylabel("Events")
+                axes[0, 2].set_title("True Photon Energy")
+            else:
+                axes[0, 2].axis('off')
+
+            # (1,0): Opening angle
             axes[1, 0].hist(angle, bins=80, color='tab:orange', alpha=0.7)
             axes[1, 0].set_xlabel("Opening Angle [deg]")
             axes[1, 0].set_ylabel("Events")
             axes[1, 0].set_title("Opening Angle")
 
-            # Bottom-right: 2D scatter EGamma vs BGO energy
+            # (1,1): 2D scatter EGamma vs BGO energy
             axes[1, 1].hist2d(e_reco, e_bgo, bins=80,
                               range=[[30, 70], [60, 95]], cmap='viridis')
             axes[1, 1].set_xlabel("$E_{LXe}$ [MeV]")
             axes[1, 1].set_ylabel("$E_{BGO}$ [MeV]")
-            axes[1, 1].set_title("$E_{\\gamma}$ vs $E_{BGO}$")
+            axes[1, 1].set_title("$E_{LXe}$ vs $E_{BGO}$")
+
+            # (1,2): empty
+            axes[1, 2].axis('off')
 
             fig.tight_layout(rect=[0, 0, 1, 0.95])
             pdf.savefig(fig)
@@ -894,7 +910,7 @@ def _run_dead_channel_mode(args, patches, input_base):
     combined_pred_per_strat = {s: [] for s in STRATEGIES}
     combined_egamma_residual = []
     combined_egamma_pred = []
-    combined_kin = {"energyReco": [], "Ebgo": [], "Angle": []}
+    combined_kin = {"energyReco": [], "Ebgo": [], "Angle": [], "energyTruth": []}
     found = 0
     missing = []
 
