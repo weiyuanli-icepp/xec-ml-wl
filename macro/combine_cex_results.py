@@ -555,7 +555,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         # Page 1: Resolution (core sigma) vs patch for each strategy
         # ==============================================================
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-        fig.suptitle("CEX23 Dead-Channel Recovery: Energy Resolution", fontsize=14)
+        fig.suptitle("CEX23 55 MeV Energy Peak", fontsize=14)
 
         # Include EGamma alongside ML strategies on Page 1
         page1_keys = ["egamma"] + active_strategies
