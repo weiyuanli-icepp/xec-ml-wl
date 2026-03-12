@@ -753,7 +753,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
 
             # (0,2): energyTruth
             if e_truth is not None:
-                axes[0, 2].hist(e_truth, bins=80, range=(50, 70),
+                axes[0, 2].hist(e_truth, bins=80, range=(54, 58),
                                 color='tab:purple', alpha=0.7)
                 axes[0, 2].set_xlabel("$E_{truth}$ [MeV]")
                 axes[0, 2].set_ylabel("Events")
