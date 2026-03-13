@@ -592,8 +592,10 @@ def train_with_config(config_path: str, profile: bool = None):
             reset_epoch = getattr(cfg.checkpoint, 'reset_epoch', False)
             if reset_epoch:
                 start_epoch = 1
+                best_val = float('inf')
                 if is_main_process():
                     print(f"[INFO] reset_epoch=True: Starting from epoch 1 (weights loaded from epoch {checkpoint_epoch})")
+                    print(f"[INFO] reset_epoch=True: Reset best_val_loss to inf")
             else:
                 start_epoch = checkpoint_epoch + 1
 

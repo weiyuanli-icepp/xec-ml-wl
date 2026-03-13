@@ -686,8 +686,10 @@ Examples:
             # Handle reset_epoch: start from epoch 0 (only load weights)
             if reset_epoch:
                 start_epoch = 0
+                best_val_loss = float('inf')
                 if is_main_process():
                     print(f"[INFO] reset_epoch=True: Starting from epoch 0 (weights loaded from epoch {checkpoint_epoch})")
+                    print(f"[INFO] reset_epoch=True: Reset best_val_loss to inf")
             else:
                 start_epoch = checkpoint_epoch + 1
 
