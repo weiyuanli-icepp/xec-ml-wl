@@ -71,25 +71,35 @@ def normalize_input(raw_npho, raw_time,
                     time_shift=DEFAULT_TIME_SHIFT,
                     sentinel_time=DEFAULT_SENTINEL_TIME,
                     sentinel_npho=-1.0,
-                    npho_scheme="log1p"):
+                    npho_scheme="log1p",
+                    npho_threshold=DEFAULT_NPHO_THRESHOLD):
     """
     Apply the same normalization as training to raw input data.
+    Matches XECStreamingDataset._normalize_subset() logic exactly.
     Returns normalized (npho, time) arrays.
     """
-    # Identify bad values
-    mask_npho_bad = (raw_npho <= 0.0) | (raw_npho > 9e9) | np.isnan(raw_npho)
-    mask_time_bad = mask_npho_bad | (np.abs(raw_time) > 9e9) | np.isnan(raw_time)
-
-    # Normalize npho using NphoTransform
-    raw_npho_safe = np.where(mask_npho_bad, 0.0, raw_npho)
     npho_transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+
+    # True invalids: dead/missing sensors, corrupted data
+    mask_npho_invalid = (raw_npho > 9e9) | np.isnan(raw_npho)
+
+    # Domain-breaking values: would cause NaN in transform
+    domain_min = npho_transform.domain_min()
+    mask_domain_break = (~mask_npho_invalid) & (raw_npho < domain_min)
+
+    # Time invalid: npho invalid, npho below threshold, or time corrupted
+    mask_time_invalid = (mask_npho_invalid | (raw_npho < npho_threshold)
+                         | (np.abs(raw_time) > 9e9) | np.isnan(raw_time))
+
+    # Normalize npho
+    raw_npho_safe = np.where(mask_npho_invalid | mask_domain_break, 0.0, raw_npho)
     npho_norm = npho_transform.forward(raw_npho_safe)
+    npho_norm[mask_npho_invalid] = sentinel_npho
+    npho_norm[mask_domain_break] = 0.0
 
     # Normalize time
     time_norm = (raw_time / time_scale) - time_shift
-
-    npho_norm[mask_npho_bad] = sentinel_npho
-    time_norm[mask_time_bad] = sentinel_time
+    time_norm[mask_time_invalid] = sentinel_time
 
     return npho_norm, time_norm
 
@@ -350,7 +360,8 @@ Examples:
             event_info["theta"] = float(ang[0])
             event_info["phi"] = float(ang[1])
 
-    # Normalize
+    # Normalize (must match XECStreamingDataset._normalize_subset exactly)
+    raw_threshold = args.npho_threshold if args.npho_threshold is not None else DEFAULT_NPHO_THRESHOLD
     npho_norm, time_norm = normalize_input(
         raw_npho, raw_time,
         npho_scale=npho_scale,
@@ -358,7 +369,8 @@ Examples:
         time_scale=time_scale,
         time_shift=time_shift,
         sentinel_time=sentinel_time,
-        npho_scheme=npho_scheme
+        npho_scheme=npho_scheme,
+        npho_threshold=raw_threshold,
     )
 
     # x_truth: full normalized sensor values
