@@ -204,6 +204,11 @@ def main():
                         help="k-hop parameter for neighbor search (default: 1)")
     parser.add_argument("--solid-angle-branch", type=str, default=None,
                         help="Branch name for solid angles (enables SA baseline)")
+    parser.add_argument("--distance-threshold", type=float, default=20.0,
+                        help="Distance threshold (cm) for SA neighbor selection (default: 20)")
+    parser.add_argument("--npho-threshold", type=float, default=50.0,
+                        help="Min total neighbor npho for SA weighting; "
+                             "below this falls back to simple average (default: 50)")
 
     # Options
     parser.add_argument("--max-events", type=int, default=None,
@@ -259,8 +264,12 @@ def main():
     }
 
     if solid_angles is not None:
-        print(f"[INFO] Running SolidAngleWeightedBaseline (k={args.baseline_k})...")
-        sa_baseline = SolidAngleWeightedBaseline(k=args.baseline_k)
+        print(f"[INFO] Running SolidAngleWeightedBaseline "
+              f"(dist={args.distance_threshold} cm, npho_thr={args.npho_threshold})...")
+        sa_baseline = SolidAngleWeightedBaseline(
+            distance_threshold=args.distance_threshold,
+            npho_threshold=args.npho_threshold,
+        )
         baseline_preds['sa'] = sa_baseline.predict(
             npho_clean, combined_mask, solid_angles=solid_angles,
         )
