@@ -218,6 +218,77 @@ def _load_localfit(path):
     }
 
 
+def _load_baselines(path):
+    """Load standalone baseline ROOT file (from compute_inpainter_baselines.py).
+
+    Returns a dict mapping baseline name to {truth_raw, pred_raw, error_raw, face, ...}.
+    Same structure as the 'baselines' sub-dict in _load_entry().
+    """
+    print(f"[INFO] Loading standalone baselines: {path}")
+    with uproot.open(path) as f:
+        # metadata
+        meta = {'npho_scheme': 'log1p', 'npho_scale': 1000.0, 'npho_scale2': 4.08}
+        if 'metadata' in f:
+            mt = f['metadata']
+            mk = mt.keys()
+            if 'npho_scheme' in mk:
+                v = mt['npho_scheme'].array(library='np')[0]
+                meta['npho_scheme'] = v.decode() if isinstance(v, bytes) else str(v)
+            for k in ('npho_scale', 'npho_scale2'):
+                if k in mk:
+                    v = mt[k].array(library='np')[0]
+                    if not np.isnan(v):
+                        meta[k] = float(v)
+
+        # predictions tree
+        for tname in ('predictions', 'tree'):
+            if tname in f:
+                tree = f[tname]
+                break
+        else:
+            tree = f[f.keys()[0]]
+        data = {k: tree[k].array(library='np') for k in tree.keys()}
+
+    # Validity
+    has_mask_type = 'mask_type' in data
+    # For baselines, use mask_type == 0 (artificial, has truth)
+    valid_base = np.ones(len(data['face']), dtype=bool)
+    if has_mask_type:
+        valid_base = data['mask_type'] == 0
+
+    # Denormalize truth
+    xf = NphoTransform(
+        scheme=meta['npho_scheme'],
+        npho_scale=meta['npho_scale'],
+        npho_scale2=meta['npho_scale2'],
+    )
+    truth_raw = xf.inverse(data['truth_npho'])
+
+    baselines = {}
+    for bname in BASELINE_DEFS:
+        pred_key = f'baseline_{bname}_npho'
+        err_key = f'baseline_{bname}_error_npho'
+        if pred_key not in data:
+            continue
+        bl_pred_raw = xf.inverse(data[pred_key])
+        bl_error_raw = bl_pred_raw - truth_raw
+        bl_valid = valid_base & ~np.isnan(data[err_key]) & (data[err_key] > -999)
+        bl_result = {
+            'truth_raw': truth_raw[bl_valid],
+            'pred_raw': bl_pred_raw[bl_valid],
+            'error_raw': bl_error_raw[bl_valid],
+            'face': data['face'][bl_valid],
+        }
+        if 'run_number' in data:
+            bl_result['run_number'] = data['run_number'][bl_valid]
+        if 'event_number' in data:
+            bl_result['event_number'] = data['event_number'][bl_valid]
+        baselines[bname] = bl_result
+
+    print(f"[INFO]   Found baselines: {list(baselines.keys())}")
+    return baselines
+
+
 def _compute_slice_metrics(truth, error, bin_edges):
     """Binned MAE, bias, RMS of error.  Returns bin_centers and all three."""
     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
@@ -316,6 +387,9 @@ def main():
     parser.add_argument('--mode', type=str, default='mc',
                         choices=list(ENTRIES_BY_MODE.keys()),
                         help='Validation type to compare (default: mc)')
+    parser.add_argument('--baselines', type=str, default=None,
+                        help='Path to standalone baseline ROOT file '
+                             '(from compute_inpainter_baselines.py)')
     parser.add_argument('--localfit', type=str, default=None,
                         help='Path to LocalFitBaseline output ROOT file (raw photons)')
     parser.add_argument('--mc-data', type=str, default=None,
@@ -378,12 +452,25 @@ def main():
     global_max = max(max_vals) if max_vals else 1e5
     bin_edges = np.logspace(np.log10(TRUTH_RAW_MIN), np.log10(global_max), N_BINS + 1)
 
-    # Decide which entry supplies baselines (first one that has any)
+    # Decide baseline source: standalone file (--baselines) or embedded in entries
+    standalone_baselines = None
+    if args.baselines:
+        if not Path(args.baselines).exists():
+            print(f"[ERROR] Baseline file not found: {args.baselines}")
+            sys.exit(1)
+        standalone_baselines = _load_baselines(args.baselines)
+
     baseline_entry_idx = None
-    for i, (_, d) in enumerate(loaded):
-        if d['baselines']:
-            baseline_entry_idx = i
-            break
+    if standalone_baselines is None:
+        for i, (_, d) in enumerate(loaded):
+            if d['baselines']:
+                baseline_entry_idx = i
+                break
+
+    # Unified baseline dict for all downstream code
+    bl_dict = (standalone_baselines if standalone_baselines is not None
+               else (loaded[baseline_entry_idx][1]['baselines']
+                     if baseline_entry_idx is not None else {}))
 
     # --- Precompute per-face metrics for all entries & baselines ---
     # metrics_cache[(entry_idx_or_bname, face_int)] = (centers, mae, bias, rms)
@@ -399,8 +486,7 @@ def main():
                 continue
             metrics_cache[(ei, face_int)] = _compute_slice_metrics(tr, er, bin_edges)
 
-    if baseline_entry_idx is not None:
-        bl_dict = loaded[baseline_entry_idx][1]['baselines']
+    if bl_dict:
         for bname in BASELINE_DEFS:
             if bname not in bl_dict:
                 continue
@@ -441,12 +527,11 @@ def main():
             pred_metrics_cache[(ei, face_int)] = _compute_slice_metrics(
                 pr, er, pred_bin_edges)
 
-    if baseline_entry_idx is not None:
-        bl_dict_pred = loaded[baseline_entry_idx][1]['baselines']
+    if bl_dict:
         for bname in BASELINE_DEFS:
-            if bname not in bl_dict_pred:
+            if bname not in bl_dict:
                 continue
-            bl = bl_dict_pred[bname]
+            bl = bl_dict[bname]
             for face_int in FACE_INT_TO_NAME:
                 fm = bl['face'] == face_int
                 pr = bl['pred_raw'][fm]
@@ -466,8 +551,7 @@ def main():
         methods.append((entry['label'], entry['color'],
                          d['truth_raw'][cut], d['error_raw'][cut],
                          d['face'][cut], False))
-    if baseline_entry_idx is not None:
-        bl_dict = loaded[baseline_entry_idx][1]['baselines']
+    if bl_dict:
         for bname, bdef in BASELINE_DEFS.items():
             if bname not in bl_dict:
                 continue
@@ -602,7 +686,7 @@ def main():
                     ax.plot(centers, vals, 'o-', color=entry['color'],
                             markersize=3, label=entry['label'])
 
-                if baseline_entry_idx is not None:
+                if bl_dict:
                     for bname, bdef in BASELINE_DEFS.items():
                         key = (bname, face_int)
                         if key not in metrics_cache:
@@ -660,7 +744,7 @@ def main():
                     ax.plot(centers, vals, 'o-', color=entry['color'],
                             markersize=3, label=entry['label'])
 
-                if baseline_entry_idx is not None:
+                if bl_dict:
                     for bname, bdef in BASELINE_DEFS.items():
                         key = (bname, face_int)
                         if key not in pred_metrics_cache:
@@ -718,8 +802,7 @@ def main():
                     ecut_metrics[(ei, face_int)] = _compute_slice_metrics(
                         tr, er, bin_edges)
 
-            if baseline_entry_idx is not None:
-                bl_dict = loaded[baseline_entry_idx][1]['baselines']
+            if bl_dict:
                 for bname in BASELINE_DEFS:
                     if bname not in bl_dict:
                         continue
@@ -784,7 +867,7 @@ def main():
                             ax.plot(centers, vals, 'o-', color=entry['color'],
                                     markersize=3, label=entry['label'])
 
-                        if baseline_entry_idx is not None:
+                        if bl_dict:
                             for bname, bdef in BASELINE_DEFS.items():
                                 key = (bname, face_int)
                                 if key not in ecut_metrics:
