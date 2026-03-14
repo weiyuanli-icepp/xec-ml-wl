@@ -320,24 +320,14 @@ class NeighborAverageBaseline:
             if masked_sensors.size == 0:
                 continue
 
-            # Gather neighbor values and their mask status for all masked
-            # sensors at once.
-            # nbrs shape: (n_masked, max_nbrs)  -- global sensor ids
             nbrs = nbr_idx[masked_sensors]                     # (n_masked, max_nbrs)
             counts = nbr_cnt[masked_sensors]                   # (n_masked,)
 
-            # Validity mask: neighbor slot is valid if (a) it is within the
-            # count and (b) the neighbor itself is not masked.
             slot_range = np.arange(max_nbrs)[None, :]          # (1, max_nbrs)
             in_range = slot_range < counts[:, None]             # (n_masked, max_nbrs)
-
-            # Check that the neighbor is unmasked.
             neighbor_unmasked = ~mask[i][nbrs]                  # (n_masked, max_nbrs)
             valid = in_range & neighbor_unmasked                # (n_masked, max_nbrs)
 
-            # Neighbor npho values (use 0 for invalid slots so they don't
-            # affect the sum).  Denormalize only gathered values to avoid
-            # allocating a full (N, 4760) array.
             nbr_vals = x_npho[i][nbrs]                         # (n_masked, max_nbrs)
             if npho_transform is not None:
                 nbr_vals = npho_transform.inverse(nbr_vals)
@@ -347,12 +337,9 @@ class NeighborAverageBaseline:
             n_valid = valid.sum(axis=1).astype(np.float64)     # (n_masked,)
             total = nbr_vals.sum(axis=1)                       # (n_masked,)
 
-            # Clamp denominator to avoid division-by-zero warning;
-            # the np.where ensures 0.0 is returned when n_valid == 0.
             safe_n = np.maximum(n_valid, 1.0)
             avg = np.where(n_valid > 0, total / safe_n, 0.0)
 
-            # Re-normalise back to normalised space
             if npho_transform is not None:
                 avg = npho_transform.forward(np.maximum(avg, 0.0))
 
@@ -438,40 +425,31 @@ class SolidAngleWeightedBaseline:
             neighbor_unmasked = ~mask[i][nbrs]
             valid = in_range & neighbor_unmasked
 
-            # Denormalize only gathered neighbor values (not the full array)
             nbr_vals = x_npho[i][nbrs]
             if npho_transform is not None:
                 nbr_vals = npho_transform.inverse(nbr_vals)
                 nbr_vals = np.maximum(nbr_vals, 0.0)
 
             if solid_angles is not None:
-                # omega_m: solid angle of each masked sensor.
-                omega_m = solid_angles[i][masked_sensors]       # (n_masked,)
-                # omega_n: solid angle of each neighbor.
-                omega_n = solid_angles[i][nbrs]                 # (n_masked, max_nbrs)
+                omega_m = solid_angles[i][masked_sensors]
+                omega_n = solid_angles[i][nbrs]
 
-                # Per-neighbor estimate: v_n * (omega_m / omega_n)
-                # Exclude neighbors with omega_n == 0 (facing away from
-                # source) — their ratio is undefined.
                 sa_valid = valid & (omega_n > 0)
-
                 safe_omega_n = np.where(sa_valid, omega_n, 1.0)
-                ratio = omega_m[:, None] / safe_omega_n         # (n_masked, max_nbrs)
+                ratio = omega_m[:, None] / safe_omega_n
                 ratio = np.where(sa_valid, ratio, 0.0)
                 corrected = np.where(sa_valid, nbr_vals * ratio, 0.0)
 
-                n_valid = sa_valid.sum(axis=1).astype(np.float64)  # (n_masked,)
+                n_valid = sa_valid.sum(axis=1).astype(np.float64)
                 safe_n = np.maximum(n_valid, 1.0)
                 avg = np.where(n_valid > 0, corrected.sum(axis=1) / safe_n, 0.0)
             else:
-                # Simple average fallback.
                 nbr_vals = np.where(valid, nbr_vals, 0.0)
                 n_valid = valid.sum(axis=1).astype(np.float64)
                 total = nbr_vals.sum(axis=1)
                 safe_n = np.maximum(n_valid, 1.0)
                 avg = np.where(n_valid > 0, total / safe_n, 0.0)
 
-            # Re-normalise back to normalised space
             if npho_transform is not None:
                 avg = npho_transform.forward(np.maximum(avg, 0.0))
 
