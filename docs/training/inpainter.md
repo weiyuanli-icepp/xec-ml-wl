@@ -150,24 +150,28 @@ python -m lib.train_inpainter --config config/inp/inpainter_config.yaml \
 # 3. Export to TorchScript
 python macro/export_onnx_inpainter.py checkpoint.pth --output inpainter.pt
 
-# 4a. MC Validation (single checkpoint)
+# 4a. MC Validation (single checkpoint, ML inference only)
 python macro/validate_inpainter.py \
     --checkpoint checkpoint.pth --input mc_data.root \
-    --run 430000 --baselines --local-fit-baseline \
-    --output validation_mc/
+    --run 430000 --output validation_mc/
 
-# 4b. Sensorfront Validation (single checkpoint)
+# 4b. Baselines (independent of any model, run once)
+python macro/compute_inpainter_baselines.py \
+    --input mc_data.root --run 430000 \
+    --output baselines_mc_run430000.root
+
+# 4c. Sensorfront Validation (single checkpoint)
 python macro/validate_inpainter_sensorfront.py \
     --checkpoint checkpoint.pth --input mc_data.root \
     --solid-angle-branch solid_angle --output validation_sensorfront/
 
-# 4c. Real Data Validation
+# 4d. Real Data Validation
 python val_data/validate_inpainter_real.py \
     --torchscript inpainter.pt --input real_data.root \
     --run 430000 --output validation_data/
 
 # 5. Batch Validation (scan steps, SLURM)
-bash macro/submit_validate_scan.sh 1 2 3 4 5 6          # MC validation
+./jobs/run_validate_inpainter.sh 1 2 3 4 5 6            # MC validation
 
 # 5b. Sensorfront: prepare shared data, then parallel localfit + inference
 bash macro/submit_sensorfront_prepare_scan.sh            # Manifest + baselines (once)
@@ -177,7 +181,8 @@ SHARED_DIR=artifacts/sensorfront_shared \
     bash macro/submit_validate_sensorfront_scan.sh       # ML inference (parallel)
 
 # 6. Cross-Configuration Comparison
-python macro/compare_inpainter.py --mode mc              # MC comparison PDF
+python macro/compare_inpainter.py --mode mc \
+    --baselines baselines_mc_run430000.root               # MC comparison PDF
 python macro/compare_inpainter.py --mode sensorfront     # Sensorfront comparison
 python macro/compare_inpainter.py --mode data            # Real data comparison
 
@@ -1194,34 +1199,44 @@ artifacts/
 
 ### 12.2 MC Validation (All Scan Steps)
 
-Submit SLURM jobs for all scan steps at once. Each job runs `validate_inpainter.py` with baselines (neighbor avg, solid-angle weighted) and LocalFitBaseline.
+ML inference and baseline computation are separate:
 
-```bash
-# Submit all steps (default: s1-s8)
-bash macro/submit_validate_scan.sh
+1. **Baselines** (run once, independent of any model):
+   ```bash
+   python macro/compute_inpainter_baselines.py \
+       --input data/E15to60_AngUni_PosSQ/val/ \
+       --run 430000 \
+       --output baselines_mc_run430000.root
 
-# Submit specific steps
-bash macro/submit_validate_scan.sh 1 2 3 4 5 6
+   # Or with a dead channel list file (no database access needed)
+   python macro/compute_inpainter_baselines.py \
+       --input data/E15to60_AngUni_PosSQ/val/ \
+       --dead-channel-file dead_channels_430000.txt \
+       --output baselines_mc_run430000.root
+   ```
 
-# Preview without submitting
-DRY_RUN=1 bash macro/submit_validate_scan.sh
-```
+2. **ML inference** (per scan step, via SLURM):
+   ```bash
+   # Submit all steps
+   ./jobs/run_validate_inpainter.sh
 
-**Environment variables:**
+   # Submit specific steps
+   ./jobs/run_validate_inpainter.sh 3 5
+
+   # Preview without submitting
+   DRY_RUN=1 ./jobs/run_validate_inpainter.sh
+   ```
+
+**Environment variables for `run_validate_inpainter.sh`:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PARTITION` | `mu3e` | SLURM partition (`meg-long`, `meg-short`, `mu3e`, `hourly`, `daily`, `general`) |
-| `LOCAL_FIT` | `1` | Enable LocalFitBaseline via ROOT macro (`0` to disable) |
-| `RUN_NUMBER` | `430000` | Dead channel pattern run number |
-| `VAL_PATH` | `data/E15to60_AngUni_PosSQ/val2/` | Validation data path |
-| `MAX_EVENTS` | (all) | Limit number of events |
-| `BATCH_SIZE` | `64` | Batch size for inference |
+| `PARTITION` | `a100-daily` | SLURM partition |
+| `TIME` | `04:00:00` | Job time limit |
+| `DEVICE` | `cuda` | `cpu` or `cuda` |
+| `RUN_NUM` | `430000` | Dead channel pattern run number |
+| `VAL_PATH` | (from config) | Override validation data path |
 | `DRY_RUN` | `0` | Preview without submitting |
-
-Partitions `meg-long`, `meg-short`, `mu3e` automatically add `--account=meg`. Other partitions (`hourly`, `daily`, `general`) omit it.
-
-**Memory usage:** Each job requests 30 GB. For 130K events with all baselines + LocalFit, peak memory is ~17 GB. All intermediate results use numpy arrays — baseline predictions are stored as `(N, 4760)` arrays rather than per-sensor dicts. Solid angles are freed after baseline computation. See [Troubleshooting §2b](../operations/troubleshooting.md#2b-validation-script-oom-validate_inpainterpy) if OOM occurs.
 
 ### 12.3 Sensorfront Validation (All Scan Steps)
 
@@ -1281,11 +1296,13 @@ python val_data/validate_inpainter_real.py \
 
 ### 12.5 Cross-Configuration Comparison
 
-After validation jobs complete, generate comparison PDFs:
+After validation jobs complete, generate comparison PDFs. Use `--baselines` to
+load the standalone baseline file (from `compute_inpainter_baselines.py`):
 
 ```bash
-# MC validation comparison (7-page PDF)
-python macro/compare_inpainter.py --mode mc
+# MC validation comparison with baselines
+python macro/compare_inpainter.py --mode mc \
+    --baselines baselines_mc_run430000.root
 
 # Sensorfront comparison
 python macro/compare_inpainter.py --mode sensorfront
@@ -1294,7 +1311,9 @@ python macro/compare_inpainter.py --mode sensorfront
 python macro/compare_inpainter.py --mode data
 
 # Overlay standalone LocalFitBaseline result
-python macro/compare_inpainter.py --mode mc --localfit path/to/localfit_merged.root
+python macro/compare_inpainter.py --mode mc \
+    --baselines baselines_mc_run430000.root \
+    --localfit path/to/localfit_merged.root
 
 # Custom output path
 python macro/compare_inpainter.py --mode mc -o my_comparison.pdf
@@ -1308,7 +1327,7 @@ python macro/compare_inpainter.py --mode mc -o my_comparison.pdf
 | 2-4 | Per-face relative MAE / RMS / Bias vs truth npho (log-scale bins) |
 | 5-7 | Per-face relative MAE / RMS / Bias vs pred npho (log-scale bins) |
 
-**Baselines** (from the first entry that has them):
+**Baselines** (from `--baselines` file or first entry that has embedded baselines):
 - Neighbor Avg — k-hop average of valid neighbors
 - Solid-Angle Weighted — solid-angle-based weighted average
 - Local Fit — physics-based position fit + solid-angle prediction (`LocalFitBaseline.C`)
@@ -1317,44 +1336,45 @@ python macro/compare_inpainter.py --mode mc -o my_comparison.pdf
 
 ### 12.6 Typical End-to-End Workflow
 
-Steps 2 and 3 can run in parallel. Step 4 requires step 3 to complete first, but 4a and 4b can run in parallel with each other (and with step 2).
+Baselines and ML inference are independent. Steps 2a-2c can all run in parallel.
 
 ```
                     ┌──────────────────────────────┐
                     │ 1. Train scan steps (s1-s8)  │
                     └──────────────┬───────────────┘
                                    │
-                    ┌──────────────┴───────────────┐
-                    │                              │
-          ┌─────────▼──────────┐      ┌────────────▼────────────┐
-          │ 2. MC validation   │      │ 3. Sensorfront prepare  │
-          │    (all steps,     │      │    (manifest+baselines, │
-          │    baselines+LF)   │      │     run once)           │
-          └─────────┬──────────┘      └────────────┬────────────┘
-                    │                   ┌──────────┴──────────┐
-                    │          ┌────────▼────────┐  ┌─────────▼─────────┐
-                    │          │ 4a. LocalFit    │  │ 4b. ML inference  │
-                    │          │  (batch array)  │  │  (per scan step)  │
-                    │          └────────┬────────┘  └─────────┬─────────┘
-                    │                   └──────────┬──────────┘
-                    │                              │
-          ┌─────────▼──────────────────────────────▼─────────┐
-          │           5. Generate comparison PDFs             │
-          └──────────────────────────────────────────────────┘
+          ┌────────────────────────┼────────────────────────┐
+          │                        │                        │
+┌─────────▼──────────┐  ┌─────────▼──────────┐  ┌──────────▼───────────┐
+│ 2a. Baselines      │  │ 2b. MC validation  │  │ 2c. Sensorfront      │
+│ (run once, no      │  │ (ML inference,     │  │ prepare + inference  │
+│  model needed)     │  │  per scan step)    │  │                      │
+└─────────┬──────────┘  └─────────┬──────────┘  └──────────┬───────────┘
+          │                        │                        │
+          └────────────────────────┼────────────────────────┘
+                                   │
+                    ┌──────────────▼───────────────┐
+                    │ 3. Generate comparison PDFs  │
+                    └──────────────────────────────┘
 ```
 
 ```bash
 # 1. Train scan steps (s1-s8 with different configs)
 #    ... (see training section)
 
-# 2. MC validation with baselines + LocalFit (runs in parallel with 3-4)
-bash macro/submit_validate_scan.sh         # default: all s1-s8
+# 2a. Baselines (no model needed, run once)
+python macro/compute_inpainter_baselines.py \
+    --input data/E15to60_AngUni_PosSQ/val/ \
+    --run 430000 -o baselines_mc_run430000.root
 
-# 3. Sensorfront: prepare shared data (manifest + baselines, no model needed)
+# 2b. MC validation — ML inference only (runs in parallel with 2a, 2c)
+./jobs/run_validate_inpainter.sh               # default: all s1-s8
+
+# 2c. Sensorfront: prepare shared data (manifest + baselines, no model needed)
 bash macro/submit_sensorfront_prepare_scan.sh
 #    → creates artifacts/sensorfront_shared/
 
-# 4. After step 3 completes, run LocalFit and ML inference in parallel:
+# After 2c completes, run LocalFit and ML inference in parallel:
 #    4a. LocalFit batch jobs (one array job, shared across all steps)
 bash macro/submit_localfit_sensorfront.sh \
     artifacts/sensorfront_shared/_sensorfront_manifest.npz
@@ -1362,8 +1382,9 @@ bash macro/submit_localfit_sensorfront.sh \
 SHARED_DIR=artifacts/sensorfront_shared \
     bash macro/submit_validate_sensorfront_scan.sh
 
-# 5. After ALL jobs complete, generate comparison PDFs
-python macro/compare_inpainter.py --mode mc -o compare_mc.pdf
+# 3. After ALL jobs complete, generate comparison PDFs
+python macro/compare_inpainter.py --mode mc \
+    --baselines baselines_mc_run430000.root -o compare_mc.pdf
 python macro/compare_inpainter.py --mode sensorfront -o compare_sf.pdf
 ```
 
