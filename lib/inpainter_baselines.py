@@ -434,13 +434,9 @@ class SolidAngleWeightedBaseline:
                 omega_m = solid_angles[i][masked_sensors]
                 omega_n = solid_angles[i][nbrs]
 
-                # Require omega_n >= 1% of omega_m to avoid explosion
-                # when a neighbor is nearly edge-on to the source
-                omega_m_col = omega_m[:, None]               # (n_masked, 1)
-                min_omega = np.maximum(omega_m_col * 0.01, 1e-12)
-                sa_valid = valid & (omega_n >= min_omega)
+                sa_valid = valid & (omega_n > 0)
                 safe_omega_n = np.where(sa_valid, omega_n, 1.0)
-                ratio = omega_m_col / safe_omega_n
+                ratio = omega_m[:, None] / safe_omega_n
                 ratio = np.where(sa_valid, ratio, 0.0)
                 corrected = np.where(sa_valid, nbr_vals * ratio, 0.0)
 
