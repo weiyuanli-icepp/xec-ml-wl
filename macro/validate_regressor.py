@@ -815,8 +815,8 @@ def _run_dead_channel_recovery(args, norm_params):
     _mem_log("after ONNX load")
 
     # --- Build neighbor baseline ---
-    print(f"[INFO] Building neighbor map (k={args.neighbor_k})")
-    baseline = NeighborAverageBaseline(k=args.neighbor_k)
+    print(f"[INFO] Building neighbor map (dist={args.distance_threshold} cm)")
+    baseline = NeighborAverageBaseline(distance_threshold=args.distance_threshold)
 
     # --- Resolve dead channel mask ---
     dead_mask_1d = None
@@ -1052,8 +1052,8 @@ def main():
                           help="Enable dead-channel recovery mode")
     dc_group.add_argument("--chunksize", type=int, default=2048,
                           help="Events per chunk for dead-channel mode (default: 2048)")
-    dc_group.add_argument("--neighbor-k", type=int, default=1,
-                          help="Neighbor hops for averaging (default: 1)")
+    dc_group.add_argument("--distance-threshold", type=float, default=20.0,
+                          help="Distance threshold (cm) for neighbor averaging (default: 20)")
     dc_group.add_argument("--tree-name", type=str, default="tree",
                           help="TTree name in input ROOT file (default: tree)")
 
