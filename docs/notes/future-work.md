@@ -660,4 +660,50 @@ with uproot.recreate("predictions.root") as f:
 
 ---
 
-*Last updated: February 2026 (added inpainter improvements and baselines)*
+## I. Geometry Bug: Outer Face Grid Layout
+
+### Problem
+
+`OUTER_COARSE_FULL_INDEX_MAP` in `lib/geom_defs.py` is defined as:
+```python
+OUTER_COARSE_FULL_INDEX_MAP = np.arange(4092, 4308, dtype=np.int32).reshape(9, 24)
+```
+
+The physical layout of the outer face is **24 phi-strips × 9 z-positions**: consecutive
+sensor IDs (e.g. 4092–4100) run along the z-axis within a single phi-strip, and there
+are 24 such strips around the azimuth.  The correct physical grid is `reshape(24, 9)`.
+
+With the current `(9, 24)` layout, each "row" of 24 spans 2.67 phi-strips.  Every 9th
+column crosses a phi-strip boundary where adjacent grid cells are **83 cm apart** instead
+of ~10 cm.  This affects every convolution on the outer face in all three pipelines
+(MAE encoder/decoder, inpainter heads, regressor encoder).
+
+### Evidence
+
+Using `lib/sensor_positions.txt`:
+- `reshape(9, 24)`: row-neighbor distance at strip boundary = **83.4 cm** (wrong)
+- `reshape(24, 9)`: row-neighbor distance = **10.4 cm**, column-neighbor = **9.7 cm** (correct)
+
+### Partial Fix (March 2026)
+
+The baseline neighbor map in `lib/inpainter_baselines.py` was fixed to use
+`reshape(24, 9)` for physical neighbor lookup (commit c01b5d5).  Max neighbor distance
+dropped from 83.4 cm to 17.9 cm.
+
+### Full Fix (requires retrain)
+
+Change `OUTER_COARSE_FULL_INDEX_MAP` in `geom_defs.py` to `reshape(24, 9)` and update
+all downstream references that hardcode `(9, 24)` or `view(B, 1, 9, 24)`:
+
+- `lib/geom_defs.py`: reshape definition + fine grid constants
+- `lib/models/mae.py:155`: `out_h, out_w = 9, 24` → `24, 9`
+- `lib/models/regressor.py:253,255,286`: `.view(B, 1, 9, 24)`
+- `lib/models/inpainter.py:1393`: `FaceInpaintingHead(9, 24, ...)`
+- `lib/models/inpainter.py:1810,1986`: `.view(B, 9, 24)`
+
+**This invalidates all existing checkpoints** since CNN weights were learned for the
+`(9, 24)` arrangement.  Best to batch with a planned full retrain.
+
+---
+
+*Last updated: March 2026*
