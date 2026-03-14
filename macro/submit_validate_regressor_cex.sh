@@ -20,7 +20,7 @@
 #   DRY_RUN     — set to 1 to preview without submitting
 #   DEAD_CHANNEL — set to 1 to enable dead-channel recovery mode
 #   INPAINTER   — path to inpainter TorchScript (.pt) for dead-channel mode
-#   NEIGHBOR_K  — neighbor hops for averaging (default: 1)
+#   DIST_THRESHOLD — distance threshold (cm) for neighbor averaging (default: 20)
 #   BATCH_SIZE  — inference batch size (default: 512)
 #   CHUNKSIZE   — events per chunk for dead-channel mode (default: 1024)
 #   MEM         — SLURM memory allocation (default: 16G)
@@ -38,7 +38,7 @@ OUTPUT_BASE="${OUTPUT_BASE:-val_data/cex}"
 PARTITION="${PARTITION:-meg-long}"
 DEAD_CHANNEL="${DEAD_CHANNEL:-0}"
 INPAINTER="${INPAINTER:-~/meghome/xec-ml-wl/artifacts/inp_scan_s3_nphowt/inpainter.pt}"
-NEIGHBOR_K="${NEIGHBOR_K:-1}"
+DIST_THRESHOLD="${DIST_THRESHOLD:-20}"
 MEM_DEBUG="${MEM_DEBUG:-0}"
 
 case "$PARTITION" in
@@ -72,7 +72,7 @@ echo "Partition:   ${PARTITION}"
 echo "Dead-channel: ${DEAD_CHANNEL}"
 if [ "$DEAD_CHANNEL" = "1" ]; then
     echo "Inpainter:   ${INPAINTER:-<none>}"
-    echo "Neighbor k:  ${NEIGHBOR_K}"
+    echo "Dist thresh: ${DIST_THRESHOLD} cm"
 fi
 echo "Dry run:     ${DRY_RUN}"
 echo "============================================"
@@ -116,7 +116,7 @@ SKIPPED=0
 # Build extra flags for dead-channel mode
 EXTRA_FLAGS=""
 if [ "$DEAD_CHANNEL" = "1" ]; then
-    EXTRA_FLAGS="--dead-channel --neighbor-k ${NEIGHBOR_K}"
+    EXTRA_FLAGS="--dead-channel --distance-threshold ${DIST_THRESHOLD}"
     if [ -n "$INPAINTER" ]; then
         EXTRA_FLAGS="${EXTRA_FLAGS} --inpainter-torchscript ${INPAINTER}"
     fi
