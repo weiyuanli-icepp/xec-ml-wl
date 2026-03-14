@@ -78,6 +78,13 @@ TRUTH_RAW_MIN = 100.0   # photon cut for log-space binning
 N_BINS = 30
 
 
+def _plot_valid(ax, x, y, *args, **kwargs):
+    """Plot x vs y, skipping NaN entries but connecting valid points."""
+    valid = np.isfinite(y)
+    if valid.any():
+        ax.plot(x[valid], y[valid], *args, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -687,8 +694,8 @@ def main():
                         vals = rms / centers
                     else:
                         vals = bias / centers
-                    ax.plot(centers, vals, 'o-', color=entry['color'],
-                            markersize=3, label=entry['label'])
+                    _plot_valid(ax, centers, vals, 'o-', color=entry['color'],
+                               markersize=3, label=entry['label'])
 
                 if bl_dict:
                     for bname, bdef in BASELINE_DEFS.items():
@@ -702,8 +709,8 @@ def main():
                             vals = rms / centers
                         else:
                             vals = bias / centers
-                        ax.plot(centers, vals, 's--', color=bdef['color'],
-                                markersize=3, alpha=0.8, label=bdef['label'])
+                        _plot_valid(ax, centers, vals, 's--', color=bdef['color'],
+                                   markersize=3, alpha=0.8, label=bdef['label'])
 
                 ax.set_xscale('log')
                 ax.set_xlabel('Truth Npho [photons]')
@@ -745,8 +752,8 @@ def main():
                         vals = rms / centers
                     else:
                         vals = bias / centers
-                    ax.plot(centers, vals, 'o-', color=entry['color'],
-                            markersize=3, label=entry['label'])
+                    _plot_valid(ax, centers, vals, 'o-', color=entry['color'],
+                               markersize=3, label=entry['label'])
 
                 if bl_dict:
                     for bname, bdef in BASELINE_DEFS.items():
@@ -760,8 +767,8 @@ def main():
                             vals = rms / centers
                         else:
                             vals = bias / centers
-                        ax.plot(centers, vals, 's--', color=bdef['color'],
-                                markersize=3, alpha=0.8, label=bdef['label'])
+                        _plot_valid(ax, centers, vals, 's--', color=bdef['color'],
+                                   markersize=3, alpha=0.8, label=bdef['label'])
 
                 ax.set_xscale('log')
                 ax.set_xlabel('Pred Npho [photons]')
@@ -868,8 +875,8 @@ def main():
                                 vals = rms / centers
                             else:
                                 vals = bias / centers
-                            ax.plot(centers, vals, 'o-', color=entry['color'],
-                                    markersize=3, label=entry['label'])
+                            _plot_valid(ax, centers, vals, 'o-', color=entry['color'],
+                                       markersize=3, label=entry['label'])
 
                         if bl_dict:
                             for bname, bdef in BASELINE_DEFS.items():
@@ -883,10 +890,10 @@ def main():
                                     vals = rms / centers
                                 else:
                                     vals = bias / centers
-                                ax.plot(centers, vals, 's--',
-                                        color=bdef['color'],
-                                        markersize=3, alpha=0.8,
-                                        label=bdef['label'])
+                                _plot_valid(ax, centers, vals, 's--',
+                                            color=bdef['color'],
+                                            markersize=3, alpha=0.8,
+                                            label=bdef['label'])
 
                         ax.set_xscale('log')
                         ax.set_xlabel('Truth Npho [photons]')
