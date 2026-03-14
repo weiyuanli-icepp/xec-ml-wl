@@ -1,11 +1,17 @@
 #!/bin/bash
 # =============================================================================
-# Inpainter Validation (standalone, with baselines)
+# Inpainter Validation (ML inference only)
 # =============================================================================
 # Usage:
 #   ./jobs/run_validate_inpainter.sh              # Validate all scan steps
 #   ./jobs/run_validate_inpainter.sh 3 5          # Validate steps 3 and 5 only
 #   DRY_RUN=1 ./jobs/run_validate_inpainter.sh    # Preview without submitting
+#
+# For baselines (neighbor avg, solid-angle), run separately:
+#   python macro/compute_inpainter_baselines.py \
+#       --input data/.../val/ --run 430000 -o baselines.root
+# Then compare:
+#   python macro/compare_inpainter.py --baselines baselines.root
 #
 # Environment variables:
 #   PARTITION  - SLURM partition (default: a100-daily)
@@ -150,7 +156,6 @@ python macro/validate_inpainter.py \\
     --input "${INPUT_PATH}" \\
     --run ${RUN_NUM} \\
     --output "${OUTPUT_DIR}" \\
-    --baselines \\
     --device ${DEVICE}
 
 echo "[JOB] Finished validation for ${NAME}."
