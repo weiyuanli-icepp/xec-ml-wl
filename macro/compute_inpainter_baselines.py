@@ -200,8 +200,6 @@ def main():
                         help="Random seed for artificial masking (default: 42)")
 
     # Baselines
-    parser.add_argument("--baseline-k", type=int, default=1,
-                        help="k-hop parameter for neighbor search (default: 1)")
     parser.add_argument("--solid-angle-branch", type=str, default=None,
                         help="Branch name for solid angles (enables SA baseline)")
     parser.add_argument("--distance-threshold", type=float, default=20.0,
@@ -257,8 +255,10 @@ def main():
     npho_invalid = (raw_npho > 9e9) | np.isnan(raw_npho) | (raw_npho < 0)
     npho_clean[npho_invalid] = 0.0
 
-    print(f"[INFO] Running NeighborAverageBaseline (k={args.baseline_k})...")
-    avg_baseline = NeighborAverageBaseline(k=args.baseline_k)
+    print(f"[INFO] Running NeighborAverageBaseline (dist={args.distance_threshold} cm)...")
+    avg_baseline = NeighborAverageBaseline(
+        distance_threshold=args.distance_threshold,
+    )
     baseline_preds = {
         'avg': avg_baseline.predict(npho_clean, combined_mask),
     }
@@ -358,7 +358,7 @@ def main():
     # --- Save ---
     metadata = {
         'npho_scheme': np.array(['raw'], dtype='U16'),
-        'baseline_k': np.array([args.baseline_k], dtype=np.int32),
+        'distance_threshold': np.array([args.distance_threshold], dtype=np.float64),
         'seed': np.array([args.seed], dtype=np.int32),
     }
 

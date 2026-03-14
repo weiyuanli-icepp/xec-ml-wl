@@ -264,55 +264,117 @@ def _neighbor_map_to_padded_array(neighbor_map: dict):
 
 
 # =========================================================
+# Distance-based same-face neighbor construction
+# (shared by both baselines, matching MEGTXECEnePMWeight)
+# =========================================================
+
+def _build_sensor_face_map() -> np.ndarray:
+    """Return array (N_SENSORS,) mapping sensor_id -> face int."""
+    sensor_face = np.full(N_SENSORS, -1, dtype=np.int32)
+    for face_int, idx_map in [(0, INNER_INDEX_MAP), (1, US_INDEX_MAP),
+                               (2, DS_INDEX_MAP)]:
+        flat = idx_map.flatten()
+        sensor_face[flat[flat >= 0]] = face_int
+    sensor_face[OUTER_ALL_SENSOR_IDS] = 3
+    sensor_face[flatten_hex_rows(TOP_HEX_ROWS)] = 4
+    sensor_face[flatten_hex_rows(BOTTOM_HEX_ROWS)] = 5
+    return sensor_face
+
+
+def _build_distance_neighbors(distance_threshold: float = 20.0,
+                               sensor_positions_path: Optional[str] = None):
+    """Build padded neighbor arrays for same-face sensors within threshold.
+
+    Matches MEGTXECEnePMWeight::RecoverDeadChannelFromSurroundings
+    neighbor selection.
+
+    Returns (nbr_indices, nbr_counts) with shapes (N_SENSORS, max_nbrs)
+    and (N_SENSORS,).
+    """
+    import os
+    if sensor_positions_path is None:
+        sensor_positions_path = os.path.join(
+            os.path.dirname(__file__), "sensor_positions.txt")
+    pos_data = np.loadtxt(sensor_positions_path, comments='#')
+    xyz = pos_data[:, 1:4]  # (N_SENSORS, 3)
+
+    sensor_face = _build_sensor_face_map()
+    dt2 = distance_threshold ** 2
+
+    nbr_map = {}
+    for face_int in range(6):
+        face_sids = np.where(sensor_face == face_int)[0]
+        if len(face_sids) == 0:
+            continue
+        face_xyz = xyz[face_sids]
+        for i, sid in enumerate(face_sids):
+            dist2 = ((face_xyz - face_xyz[i]) ** 2).sum(axis=1)
+            within = (dist2 < dt2) & (dist2 > 0)
+            nbr_map[int(sid)] = face_sids[within]
+
+    max_nbrs = max((len(v) for v in nbr_map.values()), default=0)
+    nbr_indices = np.zeros((N_SENSORS, max_nbrs), dtype=np.int32)
+    nbr_counts = np.zeros(N_SENSORS, dtype=np.int32)
+    for sid, nbrs in nbr_map.items():
+        n = len(nbrs)
+        nbr_counts[sid] = n
+        if n > 0:
+            nbr_indices[sid, :n] = nbrs
+
+    return nbr_indices, nbr_counts
+
+
+# =========================================================
 # Baselines
 # =========================================================
 
 class NeighborAverageBaseline:
-    """Predict masked sensors as the unweighted mean of their unmasked
-    k-hop neighbors.
+    """Predict masked sensors as the unweighted mean of surrounding
+    unmasked sensors on the same face within a distance threshold.
+
+    Matches the kRecoverFromSurroundingsAverage mode in
+    MEGTXECEnePMWeight::RecoverDeadChannelFromSurroundings.
 
     Parameters
     ----------
-    k : int
-        Number of neighbor hops (k=1 -> 8-connected for rectangular grids,
-        immediate neighbors for hex grids).
+    distance_threshold : float
+        Maximum distance (cm) for neighbor selection (default: 20.0).
+    sensor_positions_path : str or None
+        Path to sensor_positions.txt.  Auto-detected if None.
     """
 
-    def __init__(self, k: int = 1):
-        self.k = k
-        self.neighbor_map = build_neighbor_map(k)
-        self.nbr_indices, self.nbr_counts = _neighbor_map_to_padded_array(
-            self.neighbor_map
-        )
+    def __init__(self, distance_threshold: float = 20.0,
+                 sensor_positions_path: Optional[str] = None):
+        self.distance_threshold = distance_threshold
+        self.nbr_indices, self.nbr_counts = _build_distance_neighbors(
+            distance_threshold, sensor_positions_path)
 
     def predict(self, x_npho: np.ndarray, mask: np.ndarray,
                 npho_transform: Optional[NphoTransform] = None) -> np.ndarray:
         """Predict values for masked sensors.
 
+        pred_m = sum(npho_neighbors) / count(neighbors)
+
         Parameters
         ----------
         x_npho : ndarray, shape (N_events, 4760)
-            Normalised npho values.  Masked positions may contain the
-            sentinel value (sentinel_npho = -1.0) or 0.
+            Npho values (raw or normalised).
         mask : ndarray, shape (N_events, 4760)
             Boolean array where True marks a masked / dead channel.
         npho_transform : NphoTransform, optional
             If provided, averaging is done in raw (linear) npho space
-            and the result is re-normalised.  This is the correct
-            behaviour for nonlinear schemes (log1p, sqrt, etc.).
+            and the result is re-normalised.
 
         Returns
         -------
         predictions : ndarray, shape (N_events, 4760)
-            Copy of *x_npho* with masked positions replaced by the average
-            of their unmasked k-hop neighbors' values.  Sensors with no
-            unmasked neighbors get 0.0.
+            Copy of *x_npho* with masked positions replaced.
         """
         N = x_npho.shape[0]
         predictions = x_npho.copy()
 
-        nbr_idx = self.nbr_indices   # (4760, max_nbrs)
-        nbr_cnt = self.nbr_counts    # (4760,)
+        nbr_idx = self.nbr_indices
+        nbr_cnt = self.nbr_counts
         max_nbrs = nbr_idx.shape[1]
 
         for i in range(N):
@@ -320,25 +382,25 @@ class NeighborAverageBaseline:
             if masked_sensors.size == 0:
                 continue
 
-            nbrs = nbr_idx[masked_sensors]                     # (n_masked, max_nbrs)
-            counts = nbr_cnt[masked_sensors]                   # (n_masked,)
+            nbrs = nbr_idx[masked_sensors]
+            counts = nbr_cnt[masked_sensors]
 
-            slot_range = np.arange(max_nbrs)[None, :]          # (1, max_nbrs)
-            in_range = slot_range < counts[:, None]             # (n_masked, max_nbrs)
-            neighbor_unmasked = ~mask[i][nbrs]                  # (n_masked, max_nbrs)
-            valid = in_range & neighbor_unmasked                # (n_masked, max_nbrs)
+            slot_range = np.arange(max_nbrs)[None, :]
+            in_range = slot_range < counts[:, None]
+            neighbor_unmasked = ~mask[i][nbrs]
+            valid = in_range & neighbor_unmasked
 
-            nbr_vals = x_npho[i][nbrs]                         # (n_masked, max_nbrs)
+            nbr_vals = x_npho[i][nbrs]
             if npho_transform is not None:
                 nbr_vals = npho_transform.inverse(nbr_vals)
                 nbr_vals = np.maximum(nbr_vals, 0.0)
             nbr_vals = np.where(valid, nbr_vals, 0.0)
 
-            n_valid = valid.sum(axis=1).astype(np.float64)     # (n_masked,)
-            total = nbr_vals.sum(axis=1)                       # (n_masked,)
+            npho_sum = nbr_vals.sum(axis=1)
+            n_valid = valid.sum(axis=1).astype(np.float64)
 
             safe_n = np.maximum(n_valid, 1.0)
-            avg = np.where(n_valid > 0, total / safe_n, 0.0)
+            avg = np.where(n_valid > 0, npho_sum / safe_n, 0.0)
 
             if npho_transform is not None:
                 avg = npho_transform.forward(np.maximum(avg, 0.0))
@@ -350,8 +412,8 @@ class NeighborAverageBaseline:
 
 class SolidAngleWeightedBaseline:
     """Predict masked sensors using solid-angle-weighted averaging,
-    matching the MEGTXECEnePMWeight::RecoverDeadChannelFromSurroundings
-    algorithm.
+    matching the kRecoverFromSurroundingsSolidAngle mode in
+    MEGTXECEnePMWeight::RecoverDeadChannelFromSurroundings.
 
     For a masked sensor *m*, gathers all unmasked sensors on the same
     face within a distance threshold.  Prediction is::
@@ -375,67 +437,10 @@ class SolidAngleWeightedBaseline:
     def __init__(self, distance_threshold: float = 20.0,
                  npho_threshold: float = 50.0,
                  sensor_positions_path: Optional[str] = None):
-        import os
         self.distance_threshold = distance_threshold
         self.npho_threshold = npho_threshold
-
-        # Load sensor positions
-        if sensor_positions_path is None:
-            sensor_positions_path = os.path.join(
-                os.path.dirname(__file__), "sensor_positions.txt")
-        pos_data = np.loadtxt(sensor_positions_path, comments='#')
-        self.sensor_xyz = pos_data[:, 1:4]  # (N_SENSORS, 3)
-
-        # Build sensor -> face mapping
-        self.sensor_face = np.full(N_SENSORS, -1, dtype=np.int32)
-        face_maps = {
-            0: INNER_INDEX_MAP,
-            1: US_INDEX_MAP,
-            2: DS_INDEX_MAP,
-        }
-        for face_int, idx_map in face_maps.items():
-            flat = idx_map.flatten()
-            valid = flat[flat >= 0]
-            self.sensor_face[valid] = face_int
-        # Outer face
-        self.sensor_face[OUTER_ALL_SENSOR_IDS] = 3
-        # Hex faces
-        top_flat = flatten_hex_rows(TOP_HEX_ROWS)
-        bot_flat = flatten_hex_rows(BOTTOM_HEX_ROWS)
-        self.sensor_face[top_flat] = 4
-        self.sensor_face[bot_flat] = 5
-
-        # Precompute distance-based same-face neighbor lists
-        self._build_distance_neighbors()
-
-    def _build_distance_neighbors(self):
-        """Build neighbor lists: same-face sensors within distance_threshold."""
-        self.dist_nbr_indices = {}  # sensor_id -> array of neighbor ids
-        xyz = self.sensor_xyz
-        dt2 = self.distance_threshold ** 2
-
-        for face_int in range(6):
-            face_sids = np.where(self.sensor_face == face_int)[0]
-            if len(face_sids) == 0:
-                continue
-            face_xyz = xyz[face_sids]  # (n_face, 3)
-
-            for i, sid in enumerate(face_sids):
-                diffs = face_xyz - face_xyz[i]  # (n_face, 3)
-                dist2 = (diffs ** 2).sum(axis=1)
-                within = (dist2 < dt2) & (dist2 > 0)  # exclude self
-                self.dist_nbr_indices[int(sid)] = face_sids[within]
-
-        # Convert to padded array for vectorized access
-        max_nbrs = max((len(v) for v in self.dist_nbr_indices.values()),
-                       default=0)
-        self.nbr_indices = np.zeros((N_SENSORS, max_nbrs), dtype=np.int32)
-        self.nbr_counts = np.zeros(N_SENSORS, dtype=np.int32)
-        for sid, nbrs in self.dist_nbr_indices.items():
-            n = len(nbrs)
-            self.nbr_counts[sid] = n
-            if n > 0:
-                self.nbr_indices[sid, :n] = nbrs
+        self.nbr_indices, self.nbr_counts = _build_distance_neighbors(
+            distance_threshold, sensor_positions_path)
 
     def predict(
         self,
@@ -479,30 +484,28 @@ class SolidAngleWeightedBaseline:
             if masked_sensors.size == 0:
                 continue
 
-            nbrs = nbr_idx[masked_sensors]                     # (n_masked, max_nbrs)
-            counts = nbr_cnt[masked_sensors]                   # (n_masked,)
+            nbrs = nbr_idx[masked_sensors]
+            counts = nbr_cnt[masked_sensors]
 
             slot_range = np.arange(max_nbrs)[None, :]
             in_range = slot_range < counts[:, None]
             neighbor_unmasked = ~mask[i][nbrs]
             valid = in_range & neighbor_unmasked
 
-            nbr_vals = x_npho[i][nbrs]                         # (n_masked, max_nbrs)
+            nbr_vals = x_npho[i][nbrs]
             if npho_transform is not None:
                 nbr_vals = npho_transform.inverse(nbr_vals)
                 nbr_vals = np.maximum(nbr_vals, 0.0)
             nbr_vals_valid = np.where(valid, nbr_vals, 0.0)
 
-            npho_sum = nbr_vals_valid.sum(axis=1)              # (n_masked,)
+            npho_sum = nbr_vals_valid.sum(axis=1)
             n_valid = valid.sum(axis=1).astype(np.float64)
 
             if solid_angles is not None:
-                omega_m = solid_angles[i][masked_sensors]      # (n_masked,)
-                omega_n = solid_angles[i][nbrs]                # (n_masked, max_nbrs)
-                omega_sum = np.where(valid, omega_n, 0.0).sum(axis=1)  # (n_masked,)
+                omega_m = solid_angles[i][masked_sensors]
+                omega_n = solid_angles[i][nbrs]
+                omega_sum = np.where(valid, omega_n, 0.0).sum(axis=1)
 
-                # SA mode: pred = npho_sum * omega_m / omega_sum
-                # Fallback to average when npho_sum <= threshold
                 use_sa = (npho_sum > self.npho_threshold) & (omega_sum > 0)
                 safe_omega_sum = np.where(use_sa, omega_sum, 1.0)
                 sa_pred = npho_sum * omega_m / safe_omega_sum

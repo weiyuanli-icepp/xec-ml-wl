@@ -486,7 +486,7 @@ def run_baselines(x_original: np.ndarray, combined_mask: np.ndarray,
     x_npho = x_original[:, :, 0]  # (N, 4760) normalized npho, unmasked
 
     print("[INFO] Running NeighborAverageBaseline...")
-    avg_baseline = NeighborAverageBaseline(k=baseline_k)
+    avg_baseline = NeighborAverageBaseline()
     baseline_preds = {
         'avg': avg_baseline.predict(x_npho, combined_mask,
                                     npho_transform=npho_transform),
@@ -494,7 +494,7 @@ def run_baselines(x_original: np.ndarray, combined_mask: np.ndarray,
 
     if solid_angles is not None:
         print("[INFO] Running SolidAngleWeightedBaseline...")
-        sa_baseline = SolidAngleWeightedBaseline(k=baseline_k)
+        sa_baseline = SolidAngleWeightedBaseline()
         baseline_preds['sa'] = sa_baseline.predict(
             x_npho, combined_mask, solid_angles=solid_angles,
             npho_transform=npho_transform,

@@ -466,7 +466,7 @@ def run_baselines_raw(
     result = {}
 
     print("[INFO] Running NeighborAverageBaseline...")
-    avg_baseline = NeighborAverageBaseline(k=1)
+    avg_baseline = NeighborAverageBaseline()
     avg_preds = avg_baseline.predict(x_npho_norm, combined_mask,
                                      npho_transform=npho_xf)
     # Extract prediction at masked sensor, convert to raw
@@ -476,7 +476,7 @@ def run_baselines_raw(
 
     if solid_angles is not None:
         print("[INFO] Running SolidAngleWeightedBaseline...")
-        sa_baseline = SolidAngleWeightedBaseline(k=1)
+        sa_baseline = SolidAngleWeightedBaseline()
         sa_preds = sa_baseline.predict(x_npho_norm, combined_mask,
                                        solid_angles=solid_angles,
                                        npho_transform=npho_xf)
@@ -782,13 +782,13 @@ def main():
         x_npho_orig = x_norm[:, :, 0]
 
         print("[INFO] Running NeighborAverageBaseline...")
-        avg_baseline = NeighborAverageBaseline(k=1)
+        avg_baseline = NeighborAverageBaseline()
         baseline_results["avg"] = avg_baseline.predict(
             x_npho_orig, combined_mask, npho_transform=npho_xf)
 
         if solid_angles is not None:
             print("[INFO] Running SolidAngleWeightedBaseline...")
-            sa_baseline = SolidAngleWeightedBaseline(k=1)
+            sa_baseline = SolidAngleWeightedBaseline()
             baseline_results["sa"] = sa_baseline.predict(
                 x_npho_orig, combined_mask, solid_angles=solid_angles,
                 npho_transform=npho_xf)
