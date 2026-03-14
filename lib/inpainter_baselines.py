@@ -140,27 +140,30 @@ def _outer_face_neighbors(k: int) -> dict:
     """Build k-hop neighbors for the outer face.
 
     The outer face has two overlapping grids:
-      - A 9x24 coarse grid (OUTER_COARSE_FULL_INDEX_MAP, 216 sensors)
+      - A coarse grid of 216 sensors (24 phi-strips × 9 z-positions)
       - An additional set of center sensors that interleave with 12 of
         the coarse sensors (OUTER_ALL_SENSOR_IDS has 234 unique sensors).
 
-    For simplicity and correctness, we treat the coarse 9x24 grid as the
-    primary rectangular grid for the 216 coarse sensors.  The 18 extra
-    center-only sensors (IDs >= 4742) do not sit on this grid; they are
-    handled by giving them neighbours from the coarse grid cells that are
-    physically adjacent in the OUTER_CENTER_INDEX_MAP.
+    Note: OUTER_COARSE_FULL_INDEX_MAP is shaped (9, 24) for the CNN encoder,
+    but the physical layout is (24, 9): 24 rows along phi, 9 columns along z.
+    Consecutive sensor IDs run along z within each phi-strip (stride=9 per
+    phi-strip).  For correct physical neighbors we must use the transposed
+    layout here.
 
     Strategy:
-      1. Coarse sensors: standard rectangular k-hop on the 9x24 grid.
+      1. Coarse sensors: standard rectangular k-hop on the (24, 9) physical grid.
       2. Center-only sensors (the 18 IDs 4742..4759): They live on a small
-         5x6 center grid (OUTER_CENTER_INDEX_MAP transposed).  We do k-hop
-         on that small grid, but then *also* connect them to the coarse
-         grid neighbors of any coarse sensor that shares the center grid.
+         center grid (OUTER_CENTER_INDEX_MAP).  We do k-hop on that grid,
+         then merge with the coarse-grid neighbors.
     """
     from .geom_defs import OUTER_CENTER_INDEX_MAP, CENTRAL_COARSE_IDS
 
-    # --- Step 1: coarse 9x24 rectangular neighbors ---
-    coarse_nbrs = _rect_khop_neighbors(OUTER_COARSE_FULL_INDEX_MAP, k)
+    # --- Step 1: coarse (24 phi × 9 z) rectangular neighbors ---
+    # OUTER_COARSE_FULL_INDEX_MAP is (9, 24) for the CNN encoder, but
+    # physically sensors are 24 phi-strips of 9 z-positions each
+    # (consecutive IDs run along z within a phi-strip).
+    coarse_physical = np.arange(4092, 4308, dtype=np.int32).reshape(24, 9)
+    coarse_nbrs = _rect_khop_neighbors(coarse_physical, k)
 
     # --- Step 2: center 5x6 rectangular neighbors ---
     # OUTER_CENTER_INDEX_MAP is (5,6) after the .T in geom_defs.
