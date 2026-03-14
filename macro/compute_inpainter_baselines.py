@@ -3,28 +3,29 @@
 Standalone baseline computation for inpainter validation.
 
 Computes rule-based baselines (neighbor average, solid-angle weighted) for
-dead/masked sensors, independent of any inpainter model.  Produces a ROOT
+dead/masked sensors, independent of any inpainter model or normalization
+scheme.  All computation is done in raw photon space.  Produces a ROOT
 file that can be passed to compare_inpainter.py via --baselines.
 
 Usage:
     # MC pseudo-experiment with run 430000 dead pattern
-    python macro/compute_inpainter_baselines.py \
-        --input data/E15to60_AngUni_PosSQ/val/ \
-        --run 430000 \
+    python macro/compute_inpainter_baselines.py \\
+        --input data/E15to60_AngUni_PosSQ/val/ \\
+        --run 430000 \\
         --output baselines_mc_run430000.root
 
     # With solid-angle-weighted baseline
-    python macro/compute_inpainter_baselines.py \
-        --input data/E15to60_AngUni_PosSQ/val/ \
-        --run 430000 \
-        --solid-angle-branch solidAngle \
+    python macro/compute_inpainter_baselines.py \\
+        --input data/E15to60_AngUni_PosSQ/val2/ \\
+        --run 430000 \\
+        --solid-angle-branch solidAngle \\
         --output baselines_mc_run430000.root
 
-    # Custom normalization
-    python macro/compute_inpainter_baselines.py \
-        --input data/val/ --run 430000 \
-        --npho-scheme sqrt \
-        --output baselines_sqrt.root
+    # With dead channel file (no database needed)
+    python macro/compute_inpainter_baselines.py \\
+        --input data/val/ \\
+        --dead-channel-file dead_channels_430000.txt \\
+        --output baselines.root
 """
 
 import os
@@ -36,25 +37,20 @@ import uproot
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from lib.inpainter_baselines import NeighborAverageBaseline, SolidAngleWeightedBaseline
-from lib.normalization import NphoTransform
 from lib.geom_defs import (
     INNER_INDEX_MAP, US_INDEX_MAP, DS_INDEX_MAP,
     OUTER_COARSE_FULL_INDEX_MAP, OUTER_ALL_SENSOR_IDS,
     TOP_HEX_ROWS, BOTTOM_HEX_ROWS, flatten_hex_rows,
-    DEFAULT_NPHO_SCALE, DEFAULT_NPHO_SCALE2,
-    DEFAULT_TIME_SCALE, DEFAULT_TIME_SHIFT,
-    DEFAULT_SENTINEL_TIME, DEFAULT_NPHO_THRESHOLD,
 )
+from lib.dataset import expand_path
 
 # Import reusable functions from validate_inpainter
 from validate_inpainter import (
-    load_data, normalize_data, get_dead_channels,
-    create_artificial_mask, load_solid_angles,
+    get_dead_channels, load_solid_angles,
     get_face_sensor_ids, FACE_NAME_TO_INT,
 )
 
 N_CHANNELS = 4760
-MODEL_SENTINEL_NPHO = -1.0
 
 
 def parse_n_artificial(value: str):
@@ -67,6 +63,114 @@ def parse_n_artificial(value: str):
             face, count = part.strip().split(':')
             result[face.strip()] = int(count.strip())
         return result
+
+
+def load_raw_data(input_path, tree_name="tree", max_events=None,
+                  npho_branch="npho", time_branch="relative_time"):
+    """Load raw (unnormalized) data from ROOT files.
+
+    Returns dict with 'npho' (N, 4760), 'time' (N, 4760), and
+    optional 'run', 'event' arrays.
+    """
+    file_list = expand_path(input_path)
+    print(f"[INFO] Loading data from {len(file_list)} file(s)")
+    if len(file_list) > 1:
+        for f in file_list[:5]:
+            print(f"  - {f}")
+        if len(file_list) > 5:
+            print(f"  ... and {len(file_list) - 5} more")
+
+    all_data = {'npho': [], 'time': [], 'run': [], 'event': []}
+    total = 0
+
+    for fpath in file_list:
+        if max_events and total >= max_events:
+            break
+        with uproot.open(fpath) as f:
+            tree = f[tree_name]
+            keys = tree.keys()
+
+            actual_npho = npho_branch
+            if npho_branch not in keys and "relative_npho" in keys:
+                actual_npho = "relative_npho"
+
+            npho = tree[actual_npho].array(library='np')
+            time = tree[time_branch].array(library='np')
+
+            n = len(npho)
+            if max_events:
+                remaining = max_events - total
+                if n > remaining:
+                    npho = npho[:remaining]
+                    time = time[:remaining]
+                    n = remaining
+
+            all_data['npho'].append(npho)
+            all_data['time'].append(time)
+
+            for branch in ['run', 'event']:
+                if branch in keys:
+                    arr = tree[branch].array(library='np')
+                    if max_events:
+                        arr = arr[:n]
+                    all_data[branch].append(arr)
+
+            total += n
+
+    data = {
+        'npho': np.concatenate(all_data['npho']).astype(np.float32),
+        'time': np.concatenate(all_data['time']).astype(np.float32),
+    }
+    if all_data['run']:
+        data['run'] = np.concatenate(all_data['run'])
+    if all_data['event']:
+        data['event'] = np.concatenate(all_data['event'])
+
+    print(f"[INFO] Loaded {len(data['npho']):,} events")
+    return data
+
+
+def create_artificial_mask_raw(raw_npho, n_artificial, dead_mask, seed=42):
+    """Create artificial mask on healthy sensors using raw npho values.
+
+    Sensors with raw_npho > 9e9 or NaN are considered invalid and excluded.
+
+    Returns (artificial_mask, combined_mask).
+    """
+    rng = np.random.default_rng(seed)
+    n_events = raw_npho.shape[0]
+    artificial_mask = np.zeros((n_events, N_CHANNELS), dtype=bool)
+
+    # Invalid sensor mask (same as training pipeline)
+    invalid = (raw_npho > 9e9) | np.isnan(raw_npho)
+
+    if isinstance(n_artificial, dict):
+        face_sensor_ids = {
+            fname: get_face_sensor_ids(fname) for fname in n_artificial
+        }
+        for i in range(n_events):
+            for fname, n_per_face in n_artificial.items():
+                if n_per_face <= 0:
+                    continue
+                sids = face_sensor_ids[fname]
+                valid = ~dead_mask[sids] & ~invalid[i, sids]
+                valid_sids = sids[valid]
+                if len(valid_sids) >= n_per_face:
+                    chosen = rng.choice(valid_sids, size=n_per_face, replace=False)
+                    artificial_mask[i, chosen] = True
+    else:
+        for i in range(n_events):
+            valid = ~dead_mask & ~invalid[i]
+            valid_indices = np.where(valid)[0]
+            if len(valid_indices) > n_artificial:
+                chosen = rng.choice(valid_indices, size=n_artificial, replace=False)
+                artificial_mask[i, chosen] = True
+
+    combined_mask = np.zeros((n_events, N_CHANNELS), dtype=bool)
+    combined_mask[:, dead_mask] = True
+    combined_mask |= artificial_mask
+
+    return artificial_mask, combined_mask
 
 
 def main():
@@ -95,15 +199,6 @@ def main():
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for artificial masking (default: 42)")
 
-    # Normalization
-    parser.add_argument("--npho-scheme", type=str, default="log1p",
-                        choices=["log1p", "sqrt", "anscombe", "linear"],
-                        help="Npho normalization scheme (default: log1p)")
-    parser.add_argument("--npho-scale", type=float, default=DEFAULT_NPHO_SCALE)
-    parser.add_argument("--npho-scale2", type=float, default=DEFAULT_NPHO_SCALE2)
-    parser.add_argument("--time-scale", type=float, default=DEFAULT_TIME_SCALE)
-    parser.add_argument("--time-shift", type=float, default=DEFAULT_TIME_SHIFT)
-
     # Baselines
     parser.add_argument("--baseline-k", type=int, default=1,
                         help="k-hop parameter for neighbor search (default: 1)")
@@ -118,26 +213,13 @@ def main():
 
     args = parser.parse_args()
 
-    # --- Load and normalize data ---
-    print("[INFO] Loading data...")
-    data = load_data(args.input, tree_name=args.tree_name,
-                     max_events=args.max_events)
+    # --- Load raw data (no normalization) ---
+    data = load_raw_data(args.input, tree_name=args.tree_name,
+                         max_events=args.max_events)
 
-    npho_scheme = args.npho_scheme
-    npho_scale = args.npho_scale
-    npho_scale2 = args.npho_scale2
-    time_scale = args.time_scale
-    time_shift = args.time_shift
-
-    print(f"[INFO] Normalizing with scheme={npho_scheme}")
-    x = normalize_data(data['npho'], data['time'],
-                       npho_scheme=npho_scheme,
-                       npho_scale=npho_scale,
-                       npho_scale2=npho_scale2,
-                       time_scale=time_scale,
-                       time_shift=time_shift)
-
-    n_events = x.shape[0]
+    raw_npho = data['npho']   # (N, 4760)
+    raw_time = data['time']   # (N, 4760)
+    n_events = raw_npho.shape[0]
     print(f"[INFO] {n_events} events, {N_CHANNELS} sensors")
 
     # --- Dead channels ---
@@ -149,10 +231,10 @@ def main():
     dead_mask[dead_channels] = True
     print(f"[INFO] Dead channels: {len(dead_channels)}")
 
-    # --- Artificial masking ---
+    # --- Artificial masking (on raw data) ---
     n_artificial = parse_n_artificial(args.n_artificial)
-    artificial_mask, combined_mask = create_artificial_mask(
-        x, n_artificial, dead_mask, seed=args.seed,
+    artificial_mask, combined_mask = create_artificial_mask_raw(
+        raw_npho, n_artificial, dead_mask, seed=args.seed,
     )
     print(f"[INFO] Artificial masks per event: {n_artificial}")
 
@@ -164,30 +246,28 @@ def main():
             tree_name=args.tree_name, max_events=args.max_events,
         )
 
-    # --- Run baselines ---
-    npho_transform = NphoTransform(
-        scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2,
-    )
+    # --- Run baselines in raw photon space (no normalization needed) ---
+    # Clamp invalid values to 0 for averaging
+    npho_clean = raw_npho.copy()
+    npho_invalid = (raw_npho > 9e9) | np.isnan(raw_npho) | (raw_npho < 0)
+    npho_clean[npho_invalid] = 0.0
 
     print(f"[INFO] Running NeighborAverageBaseline (k={args.baseline_k})...")
     avg_baseline = NeighborAverageBaseline(k=args.baseline_k)
     baseline_preds = {
-        'avg': avg_baseline.predict(x[:, :, 0], combined_mask,
-                                    npho_transform=npho_transform),
+        'avg': avg_baseline.predict(npho_clean, combined_mask),
     }
 
     if solid_angles is not None:
         print(f"[INFO] Running SolidAngleWeightedBaseline (k={args.baseline_k})...")
         sa_baseline = SolidAngleWeightedBaseline(k=args.baseline_k)
         baseline_preds['sa'] = sa_baseline.predict(
-            x[:, :, 0], combined_mask, solid_angles=solid_angles,
-            npho_transform=npho_transform,
+            npho_clean, combined_mask, solid_angles=solid_angles,
         )
 
     # --- Collect per-sensor entries ---
     print("[INFO] Collecting per-sensor predictions...")
 
-    # Build sensor_id -> face mapping
     sensor_face = np.full(N_CHANNELS, -1, dtype=np.int32)
     for fname, fint in FACE_NAME_TO_INT.items():
         sids = get_face_sensor_ids(fname)
@@ -201,7 +281,6 @@ def main():
     all_face = []
     all_mask_type = []
     all_truth_npho = []
-    all_truth_time = []
     all_run_number = []
     all_event_number = []
     all_baselines = {bname: [] for bname in baseline_preds}
@@ -216,12 +295,11 @@ def main():
         all_sensor_id.append(masked_sensors.astype(np.int32))
         all_face.append(sensor_face[masked_sensors])
 
-        # mask_type: 0 = artificial (has truth), 1 = dead
         mt = np.where(artificial_mask[i, masked_sensors], 0, 1).astype(np.int32)
         all_mask_type.append(mt)
 
-        all_truth_npho.append(x[i, masked_sensors, 0].astype(np.float32))
-        all_truth_time.append(x[i, masked_sensors, 1].astype(np.float32))
+        # Store raw photon values as truth
+        all_truth_npho.append(raw_npho[i, masked_sensors].astype(np.float32))
 
         run_val = int(data['run'][i]) if has_run else -1
         evt_val = int(data['event'][i]) if has_event else i
@@ -229,8 +307,8 @@ def main():
         all_event_number.append(np.full(n_masked, evt_val, dtype=np.int64))
 
         for bname, bpred_full in baseline_preds.items():
-            bpred = bpred_full[i, masked_sensors].astype(np.float32)
-            all_baselines[bname].append(bpred)
+            all_baselines[bname].append(
+                bpred_full[i, masked_sensors].astype(np.float32))
 
     # Concatenate
     event_idx = np.concatenate(all_event_idx)
@@ -238,7 +316,6 @@ def main():
     face = np.concatenate(all_face)
     mask_type = np.concatenate(all_mask_type)
     truth_npho = np.concatenate(all_truth_npho)
-    truth_time = np.concatenate(all_truth_time)
     run_number = np.concatenate(all_run_number)
     event_number = np.concatenate(all_event_number)
 
@@ -246,7 +323,8 @@ def main():
     print(f"[INFO] {n_entries:,} masked-sensor entries")
 
     # Compute errors and build branches
-    has_truth = (mask_type == 0) & (truth_npho != MODEL_SENTINEL_NPHO)
+    # For raw data: truth > 9e9 or NaN means no ground truth
+    has_truth = (mask_type == 0) & (truth_npho < 9e9) & np.isfinite(truth_npho)
 
     branches = {
         'event_idx': event_idx,
@@ -254,7 +332,6 @@ def main():
         'face': face,
         'mask_type': mask_type,
         'truth_npho': truth_npho,
-        'truth_time': truth_time,
         'run_number': run_number,
         'event_number': event_number,
     }
@@ -271,11 +348,7 @@ def main():
 
     # --- Save ---
     metadata = {
-        'npho_scheme': np.array([npho_scheme], dtype='U16'),
-        'npho_scale': np.array([npho_scale], dtype=np.float64),
-        'npho_scale2': np.array([npho_scale2], dtype=np.float64),
-        'time_scale': np.array([time_scale], dtype=np.float64),
-        'time_shift': np.array([time_shift], dtype=np.float64),
+        'npho_scheme': np.array(['raw'], dtype='U16'),
         'baseline_k': np.array([args.baseline_k], dtype=np.int32),
         'seed': np.array([args.seed], dtype=np.int32),
     }
@@ -288,6 +361,7 @@ def main():
     print(f"[INFO] Saved baselines to {args.output}")
     baselines_str = ", ".join(f"baseline_{b}" for b in baseline_preds)
     print(f"[INFO] Baselines: {baselines_str}")
+    print(f"[INFO] Values stored in raw photon space (no normalization)")
     print(f"[INFO] Use with: python macro/compare_inpainter.py --baselines {args.output}")
 
 

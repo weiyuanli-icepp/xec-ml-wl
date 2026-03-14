@@ -256,13 +256,17 @@ def _load_baselines(path):
     if has_mask_type:
         valid_base = data['mask_type'] == 0
 
-    # Denormalize truth
-    xf = NphoTransform(
-        scheme=meta['npho_scheme'],
-        npho_scale=meta['npho_scale'],
-        npho_scale2=meta['npho_scale2'],
-    )
-    truth_raw = xf.inverse(data['truth_npho'])
+    # Denormalize truth (skip if already in raw photon space)
+    is_raw = (meta['npho_scheme'] == 'raw')
+    if is_raw:
+        truth_raw = data['truth_npho']
+    else:
+        xf = NphoTransform(
+            scheme=meta['npho_scheme'],
+            npho_scale=meta['npho_scale'],
+            npho_scale2=meta['npho_scale2'],
+        )
+        truth_raw = xf.inverse(data['truth_npho'])
 
     baselines = {}
     for bname in BASELINE_DEFS:
@@ -270,7 +274,7 @@ def _load_baselines(path):
         err_key = f'baseline_{bname}_error_npho'
         if pred_key not in data:
             continue
-        bl_pred_raw = xf.inverse(data[pred_key])
+        bl_pred_raw = data[pred_key] if is_raw else xf.inverse(data[pred_key])
         bl_error_raw = bl_pred_raw - truth_raw
         bl_valid = valid_base & ~np.isnan(data[err_key]) & (data[err_key] > -999)
         bl_result = {
