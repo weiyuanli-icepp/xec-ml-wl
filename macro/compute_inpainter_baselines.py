@@ -192,6 +192,11 @@ def main():
     dead_group.add_argument("--dead-channel-file", type=str,
                             help="Path to dead channel list file")
 
+    # Mode
+    parser.add_argument("--real-data", action="store_true",
+                        help="Real data mode: dead channels have no truth (mask_type=1). "
+                             "Default is MC mode where all sensors have truth (mask_type=0).")
+
     # Masking
     parser.add_argument("--n-artificial", type=str,
                         default="inner:10,us:1,ds:1,outer:1,top:1,bot:1",
@@ -304,7 +309,12 @@ def main():
         all_sensor_id.append(masked_sensors.astype(np.int32))
         all_face.append(sensor_face[masked_sensors])
 
-        mt = np.where(artificial_mask[i, masked_sensors], 0, 1).astype(np.int32)
+        # MC mode: all sensors have truth (mask_type=0)
+        # Real data: only artificial masks have truth (0), dead channels don't (1)
+        if args.real_data:
+            mt = np.where(artificial_mask[i, masked_sensors], 0, 1).astype(np.int32)
+        else:
+            mt = np.zeros(n_masked, dtype=np.int32)
         all_mask_type.append(mt)
 
         # Store raw photon values as truth
