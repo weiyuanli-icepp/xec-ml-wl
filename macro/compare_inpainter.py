@@ -617,10 +617,14 @@ def main():
 
     with PdfPages(args.output) as pdf:
         # ===== Page 1: Summary =====
-        fig, (ax_bar, ax_face) = plt.subplots(1, 2, figsize=(18, 8),
-                                               gridspec_kw={'width_ratios': [1, 1.5]})
+        show_per_face = len(active_faces) > 1
+        if show_per_face:
+            fig, (ax_bar, ax_face) = plt.subplots(1, 2, figsize=(18, 8),
+                                                   gridspec_kw={'width_ratios': [1, 1.5]})
+        else:
+            fig, ax_bar = plt.subplots(1, 1, figsize=(10, 8))
 
-        # -- Left panel: global relative MAE horizontal bar chart (sorted) --
+        # -- Left (or only) panel: global relative MAE horizontal bar chart --
         sorted_mm = sorted(method_metrics, key=lambda m: m['rel_mae'])
         labels_bar = [m['label'] for m in sorted_mm]
         vals_bar = [m['rel_mae'] for m in sorted_mm]
@@ -641,7 +645,6 @@ def main():
             bar.set_hatch(hatch)
         for i, (v, v_clip) in enumerate(zip(vals_bar, vals_bar_clipped)):
             if v > x_max:
-                # Annotate clipped bars with actual value
                 ax_bar.text(v_clip - 0.01, i, f'{v:.1f}', va='center',
                             ha='right', fontsize=9, color='white', fontweight='bold')
             else:
@@ -653,30 +656,31 @@ def main():
         ax_bar.invert_yaxis()
         ax_bar.set_xlim(0, x_max * 1.1)
 
-        # -- Right panel: per-face relative MAE grouped bar chart --
-        face_names = [fn for _, fn in active_faces]
-        n_methods = len(method_metrics)
-        n_faces = len(face_names)
-        bar_width = 0.8 / max(n_methods, 1)
-        x_faces = np.arange(n_faces)
+        # -- Right panel: per-face grouped bar chart (skip if only 1 face) --
+        if show_per_face:
+            face_names = [fn for _, fn in active_faces]
+            n_methods = len(method_metrics)
+            n_faces = len(face_names)
+            bar_width = 0.8 / max(n_methods, 1)
+            x_faces = np.arange(n_faces)
 
-        for mi, mm in enumerate(method_metrics):
-            face_vals = [mm['face_rel_mae'].get(fn, 0.0) for fn in face_names]
-            face_mask = [fn in mm['face_rel_mae'] for fn in face_names]
-            x_offset = (mi - n_methods / 2 + 0.5) * bar_width
-            bar_objs = ax_face.bar(x_faces + x_offset, face_vals, bar_width,
-                                   color=mm['color'], edgecolor='black',
-                                   linewidth=0.3, label=mm['label'],
-                                   hatch='//' if mm['is_bl'] else '')
-            for bi, present in enumerate(face_mask):
-                if not present:
-                    bar_objs[bi].set_alpha(0.0)
+            for mi, mm in enumerate(method_metrics):
+                face_vals = [mm['face_rel_mae'].get(fn, 0.0) for fn in face_names]
+                face_mask = [fn in mm['face_rel_mae'] for fn in face_names]
+                x_offset = (mi - n_methods / 2 + 0.5) * bar_width
+                bar_objs = ax_face.bar(x_faces + x_offset, face_vals, bar_width,
+                                       color=mm['color'], edgecolor='black',
+                                       linewidth=0.3, label=mm['label'],
+                                       hatch='//' if mm['is_bl'] else '')
+                for bi, present in enumerate(face_mask):
+                    if not present:
+                        bar_objs[bi].set_alpha(0.0)
 
-        ax_face.set_xticks(x_faces)
-        ax_face.set_xticklabels(face_names, fontsize=10)
-        ax_face.set_ylabel('Relative MAE')
-        ax_face.set_title('Per-Face Relative MAE  (truth >= 100 photons)')
-        ax_face.legend(fontsize=13, loc='upper right', ncol=2)
+            ax_face.set_xticks(x_faces)
+            ax_face.set_xticklabels(face_names, fontsize=10)
+            ax_face.set_ylabel('Relative MAE')
+            ax_face.set_title('Per-Face Relative MAE  (truth >= 100 photons)')
+            ax_face.legend(fontsize=13, loc='upper right', ncol=2)
 
         fig.suptitle(f'Inpainter Comparison Summary — {args.mode}', fontsize=14)
         plt.tight_layout()
