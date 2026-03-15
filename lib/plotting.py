@@ -66,7 +66,7 @@ def _get_binned_gaussian(x, y, nbins):
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
     bin_idx = np.digitize(x, bin_edges) - 1
 
-    sigmas, sigma_errs, bin_info = [], [], []
+    sigmas, sigma_errs, mus, mu_errs, bin_info = [], [], [], [], []
     for i in range(n):
         mask = bin_idx == i
         vals = y[mask]
@@ -75,6 +75,8 @@ def _get_binned_gaussian(x, y, nbins):
         if len(vals) < 10:
             sigmas.append(np.nan)
             sigma_errs.append(np.nan)
+            mus.append(np.nan)
+            mu_errs.append(np.nan)
             bin_info.append((vals, None, lo, hi))
             continue
 
@@ -93,14 +95,19 @@ def _get_binned_gaussian(x, y, nbins):
             )
             sigmas.append(abs(popt[2]))
             sigma_errs.append(np.sqrt(pcov[2, 2]))
+            mus.append(popt[1])
+            mu_errs.append(np.sqrt(pcov[1, 1]))
             bin_info.append((vals, popt, lo, hi))
         except Exception:
             # Fallback: std with analytic error
             sigmas.append(np.std(vals))
             sigma_errs.append(np.std(vals) / np.sqrt(2 * max(len(vals) - 1, 1)))
+            mus.append(np.mean(vals))
+            mu_errs.append(np.std(vals) / np.sqrt(max(len(vals), 1)))
             bin_info.append((vals, None, lo, hi))
 
-    return bin_centers, np.array(sigmas), np.array(sigma_errs), bin_info
+    return (bin_centers, np.array(sigmas), np.array(sigma_errs),
+            np.array(mus), np.array(mu_errs), bin_info)
 
 
 def _sigma_eff(values):
@@ -603,7 +610,8 @@ def plot_saliency_profile(saliency_data, outfile=None):
         plt.show()
         
 def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
-                                   outfile=None, gaussian_fit=False):
+                                   outfile=None, gaussian_fit=False,
+                                   pred_vs_true_bins=50):
     """
     Plots energy resolution profile (multi-page PDF when UVW data available):
     - Page 1: Residual histogram, Resolution vs energy, Relative resolution
@@ -665,15 +673,27 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
     # Resolution vs True Energy
     _eb = dict(fmt='none', capsize=3, elinewidth=0.8)
     if gaussian_fit:
-        x, y, ye, binfo = _get_binned_gaussian(true, residual, bins)
+        x, y, ye, mu_g, mu_ge, binfo = _get_binned_gaussian(true, residual, bins)
         hist_figs.append(_plot_bin_histograms(
             binfo, "Residual [MeV]", "Resolution vs True Energy – Bin Histograms"))
     else:
         x, y, ye = _get_binned_stat(true, abs_residual, percentile_68, bins)
-    axs1[0, 1].errorbar(x, y, yerr=ye, marker='o', color='tab:orange', ms=5, **_eb)
+    axs1[0, 1].errorbar(x, y, yerr=ye, marker='o', color='tab:orange', ms=5,
+                         label='σ', **_eb)
     axs1[0, 1].set_xlabel("True Energy [MeV]")
     axs1[0, 1].set_ylabel("σ [MeV]" if gaussian_fit else "68% |Residual| [MeV]")
     axs1[0, 1].set_title("Resolution vs True Energy")
+    if gaussian_fit:
+        ax_mu = axs1[0, 1].twinx()
+        ax_mu.errorbar(x, mu_g, yerr=mu_ge, marker='s', color='tab:purple',
+                       ms=4, label='μ', **_eb)
+        ax_mu.axhline(0, color='gray', ls='--', lw=0.5)
+        ax_mu.set_ylabel("μ [MeV]", color='tab:purple')
+        ax_mu.tick_params(axis='y', labelcolor='tab:purple')
+        # Combined legend
+        lines1, labels1 = axs1[0, 1].get_legend_handles_labels()
+        lines2, labels2 = ax_mu.get_legend_handles_labels()
+        axs1[0, 1].legend(lines1 + lines2, labels1 + labels2, fontsize=8)
 
     # Normalized Resolution (sigma/E) vs True Energy with fit
     if gaussian_fit:
@@ -710,7 +730,8 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
     # Pred vs True scatter
     vmin = min(true.min(), pred.min())
     vmax = max(true.max(), pred.max())
-    h = axs1[1, 1].hist2d(true, pred, bins=50, range=[[vmin, vmax], [vmin, vmax]],
+    h = axs1[1, 1].hist2d(true, pred, bins=pred_vs_true_bins,
+                           range=[[vmin, vmax], [vmin, vmax]],
                            cmap='viridis', norm=LogNorm())
     axs1[1, 1].plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=1, label='y=x')
     axs1[1, 1].set_xlabel("True Energy [MeV]")
@@ -731,6 +752,19 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
         uvw_colors = ['tab:blue', 'tab:orange', 'tab:green']
         uvw_markers = ['o', 's', 'D']
 
+        # Adaptive W binning: finer below 30 cm, wider above 30 cm
+        w_lo, w_hi = true_w.min(), true_w.max()
+        if w_hi > 30.0 and w_lo < 30.0:
+            n_fine = max(1, int(bins * (30.0 - w_lo) / (w_hi - w_lo)))
+            n_coarse = max(1, (bins - n_fine) // 3)
+            w_bin_edges = np.concatenate([
+                np.linspace(w_lo, 30.0, n_fine + 1),
+                np.linspace(30.0, w_hi, n_coarse + 1)[1:],
+            ])
+        else:
+            w_bin_edges = bins
+        uvw_bins = [bins, bins, w_bin_edges]
+
         fig2, axs2 = plt.subplots(2, 3, figsize=(15, 9))
         fig2.suptitle("Energy Resolution vs Position", fontsize=14)
         all_figs.append(fig2)
@@ -738,11 +772,11 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
         # Row 1: Absolute resolution vs U, V, W
         for i, (uvw_val, label, color, mk) in enumerate(zip(uvw_data, uvw_labels, uvw_colors, uvw_markers)):
             if gaussian_fit:
-                x, y, ye, binfo = _get_binned_gaussian(uvw_val, residual, bins)
+                x, y, ye, _, _, binfo = _get_binned_gaussian(uvw_val, residual, uvw_bins[i])
                 hist_figs.append(_plot_bin_histograms(
                     binfo, "Residual [MeV]", f"Resolution vs {label} – Bin Histograms"))
             else:
-                x, y, ye = _get_binned_stat(uvw_val, abs_residual, percentile_68, bins)
+                x, y, ye = _get_binned_stat(uvw_val, abs_residual, percentile_68, uvw_bins[i])
             axs2[0, i].errorbar(x, y, yerr=ye, marker=mk, color=color, ms=5, **_eb)
             axs2[0, i].set_xlabel(f"True {label} [cm]")
             axs2[0, i].set_ylabel("σ [MeV]" if gaussian_fit else "68% |Residual| [MeV]")
@@ -767,14 +801,14 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
         for i, (uvw_val, label, color, mk) in enumerate(zip(sig_uvw_data, uvw_labels, uvw_colors, uvw_markers)):
             if n_sig > 0:
                 if gaussian_fit:
-                    x, y, ye, binfo = _get_binned_gaussian(uvw_val, sig_residual, bins)
+                    x, y, ye, _, _, binfo = _get_binned_gaussian(uvw_val, sig_residual, uvw_bins[i])
                     hist_figs.append(_plot_bin_histograms(
                         binfo, "Residual [MeV]",
                         f"Rel. Res. vs {label} (50–55 MeV) – Bin Histograms"))
                     y = y / mean_sig_e
                     ye = ye / mean_sig_e
                 else:
-                    x, y, ye = _get_binned_stat(uvw_val, sig_rel_residual, percentile_68, bins)
+                    x, y, ye = _get_binned_stat(uvw_val, sig_rel_residual, percentile_68, uvw_bins[i])
                 axs2[1, i].errorbar(x, y, yerr=ye, marker=mk, color=color, ms=5, **_eb)
             axs2[1, i].set_xlabel(f"True {label} [cm]")
             axs2[1, i].set_ylabel("σ/E" if gaussian_fit else "68% |Residual|/E")
@@ -986,7 +1020,7 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
                                 f"68%={np.percentile(abs_residuals[i], 68):.3f}")
 
             if gaussian_fit:
-                x, y, ye, binfo = _get_binned_gaussian(true_uvw[:, i], residuals[i], comp_bins[i])
+                x, y, ye, _, _, binfo = _get_binned_gaussian(true_uvw[:, i], residuals[i], comp_bins[i])
                 hist_figs.append(_plot_bin_histograms(
                     binfo, f"{labels[i]} Residual",
                     f"{labels[i]} Resolution vs True – Bin Histograms"))
@@ -1049,7 +1083,7 @@ def plot_position_resolution_profile(pred_uvw, true_uvw, root_data=None,
             true_energy = root_data['true_energy'] * 1000.0  # GeV -> MeV
             for i in range(3):
                 if gaussian_fit:
-                    x, y, ye, binfo = _get_binned_gaussian(true_energy, residuals[i], bins)
+                    x, y, ye, _, _, binfo = _get_binned_gaussian(true_energy, residuals[i], bins)
                     hist_figs.append(_plot_bin_histograms(
                         binfo, f"{labels[i]} Residual",
                         f"{labels[i]} Res vs Energy – Bin Histograms"))

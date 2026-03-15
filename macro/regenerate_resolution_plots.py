@@ -107,6 +107,8 @@ Examples:
     parser.add_argument("--gaussian-fit", action="store_true",
                         help="Use Gaussian fits for resolution error bars and "
                              "append per-bin histogram diagnostic pages (energy only)")
+    parser.add_argument("--pred-vs-true-bins", type=int, default=200,
+                        help="Number of bins for Pred vs True 2D histogram (default: 200)")
 
     args = parser.parse_args()
 
@@ -172,7 +174,8 @@ Examples:
                     if key in df.columns and key not in energy_root_data:
                         energy_root_data[key] = df[key].values
                 plot_energy_resolution_profile(pred, true, root_data=energy_root_data,
-                                               outfile=outfile, gaussian_fit=args.gaussian_fit)
+                                               outfile=outfile, gaussian_fit=args.gaussian_fit,
+                                               pred_vs_true_bins=args.pred_vs_true_bins)
                 print(f"[OK] Generated: {outfile}")
 
             elif task == "timing":
