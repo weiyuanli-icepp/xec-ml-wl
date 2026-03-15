@@ -381,7 +381,7 @@ def plot_comparison(args):
         bar_colors = []
         bar_hatches = []
         for mname in method_order:
-            for mode_name in ['mc', 'sensorfront', 'data']:
+            for mode_name in ['mc', 'data', 'sensorfront']:
                 if mode_name not in modes:
                     continue
                 mode_data = modes[mode_name]
@@ -427,7 +427,7 @@ def plot_comparison(args):
         # Group: for each face, show (method × mode) bars
         face_names = [fn for _, fn in active_faces]
         n_faces = len(face_names)
-        mode_list = [m for m in ['mc', 'sensorfront', 'data'] if m in modes]
+        mode_list = [m for m in ['mc', 'data', 'sensorfront'] if m in modes]
         n_groups = len(perface_methods) * len(mode_list)
         bar_width = 0.8 / max(n_groups, 1)
         x_faces = np.arange(n_faces)
@@ -488,7 +488,7 @@ def plot_comparison(args):
             for idx, (face_int, face_name) in enumerate(active_faces):
                 ax = axes_flat[idx]
 
-                for mode_name in ['mc', 'sensorfront', 'data']:
+                for mode_name in ['mc', 'data', 'sensorfront']:
                     if mode_name not in modes:
                         continue
                     mode_data = modes[mode_name]
@@ -548,7 +548,7 @@ def main():
 
     # Export subcommand
     exp = sub.add_parser('export', help='Export one mode to npz cache')
-    exp.add_argument('mode', choices=['mc', 'sensorfront', 'data'],
+    exp.add_argument('mode', choices=['mc', 'data', 'sensorfront'],
                      help='Validation mode')
     exp.add_argument('--predictions', '-p', required=True,
                      help='ML prediction ROOT file (single inpainter step)')
