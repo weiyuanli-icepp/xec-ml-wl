@@ -444,7 +444,11 @@ def plot_comparison(args):
                 for fn in face_names:
                     key = f'{mname}_{fn}_rel_mae'
                     if key in mode_data:
-                        face_vals.append(float(mode_data[key]))
+                        val = float(mode_data[key])
+                        # Scale non-inner faces ×2 for visibility
+                        if fn != 'inner':
+                            val *= 2
+                        face_vals.append(val)
                         face_present.append(True)
                     else:
                         face_vals.append(0.0)
@@ -469,16 +473,17 @@ def plot_comparison(args):
         ax_face.set_ylim(0, 1.5)
         ax_face.set_xticks(x_faces)
         ax_face.set_xticklabels(face_names, fontsize=11)
-        ax_face.set_ylabel('Relative MAE')
-        ax_face.set_title('Per-Face Relative MAE  (truth >= 100 photons)')
+        ax_face.set_ylabel('Relative MAE (inner)')
+        ax_face.set_title('Per-Face Relative MAE  (truth >= 100 photons)'
+                          '  [non-inner bars ×2 height]')
         ax_face.legend(legend_handles, legend_labels,
                        fontsize=15, loc='upper right', ncol=2)
 
-        # Add secondary y-axis with 2x scale for non-inner faces
+        # Right y-axis: true scale for non-inner faces (1/2 of left axis)
         ax_right = ax_face.secondary_yaxis('right',
-                                            functions=(lambda x: x * 2,
-                                                       lambda x: x / 2))
-        ax_right.set_ylabel('Relative MAE (×2 scale)', fontsize=10)
+                                            functions=(lambda x: x / 2,
+                                                       lambda x: x * 2))
+        ax_right.set_ylabel('Relative MAE (non-inner)', fontsize=10)
 
         fig.suptitle('Cross-Mode Inpainter Comparison', fontsize=14)
         plt.tight_layout()
