@@ -357,10 +357,10 @@ def main():
 
     for bname in baseline_preds:
         bpred = np.concatenate(all_baselines[bname])
-        has_bpred = np.isfinite(bpred) & (bpred > -900)
+        has_bpred = np.isfinite(bpred)
         berror = np.where(
-            has_truth & has_bpred, bpred - truth_npho, -999.0,
-        ).astype(np.float32)
+            has_truth & has_bpred, bpred - truth_npho, np.float32(-999.0),
+        )
         bpred = np.where(np.isfinite(bpred), bpred, -999.0).astype(np.float32)
         branches[f'baseline_{bname}_npho'] = bpred
         branches[f'baseline_{bname}_error_npho'] = berror

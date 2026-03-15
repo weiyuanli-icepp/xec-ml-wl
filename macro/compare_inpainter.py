@@ -137,7 +137,7 @@ def _load_entry(entry):
 
     # Valid mask
     has_mask_type = 'mask_type' in data
-    valid = data['error_npho'] > -999
+    valid = data['error_npho'] > -998
     if has_mask_type:
         valid = valid & (data['mask_type'] == 0)
 
@@ -169,7 +169,7 @@ def _load_entry(entry):
             bl_pred_raw = xf.inverse(data[pred_key])
         bl_error_raw = bl_pred_raw - truth_raw
         # Validity: finite and not sentinel
-        bl_valid = valid & ~np.isnan(data[err_key]) & (data[err_key] > -999)
+        bl_valid = valid & ~np.isnan(data[err_key]) & (data[err_key] > -998)
         bl_result = {
             'truth_raw': truth_raw[bl_valid],
             'pred_raw': bl_pred_raw[bl_valid],
@@ -211,7 +211,7 @@ def _load_localfit(path):
 
         data = {k: tree[k].array(library='np') for k in tree.keys()}
 
-    valid = data['error_npho'] > -999
+    valid = data['error_npho'] > -998
     if 'mask_type' in data:
         valid = valid & (data['mask_type'] == 0)
 
@@ -283,7 +283,7 @@ def _load_baselines(path):
             continue
         bl_pred_raw = data[pred_key] if is_raw else xf.inverse(data[pred_key])
         bl_error_raw = bl_pred_raw - truth_raw
-        bl_valid = valid_base & ~np.isnan(data[err_key]) & (data[err_key] > -999)
+        bl_valid = valid_base & ~np.isnan(data[err_key]) & (data[err_key] > -998)
         bl_result = {
             'truth_raw': truth_raw[bl_valid],
             'pred_raw': bl_pred_raw[bl_valid],
