@@ -289,6 +289,12 @@ def export_mode(args):
             save_data[f'{mname}_global_mae'] = np.mean(np.abs(er))
             save_data[f'{mname}_global_n'] = len(tr)
 
+        # Per-face global relative MAE
+        for fi, fn in FACE_INT_TO_NAME.items():
+            fm = fc == fi
+            if fm.sum() >= MIN_BIN_COUNT:
+                save_data[f'{mname}_{fn}_rel_mae'] = np.mean(np.abs(er[fm]) / tr[fm])
+
         # Per-face binned metrics
         for fi, fn in FACE_INT_TO_NAME.items():
             fm = fc == fi
@@ -361,10 +367,17 @@ def plot_comparison(args):
         if valid.any():
             ax.plot(x[valid], y[valid], *plot_args, **kwargs)
 
+    # Methods for per-face chart (skip localfit)
+    perface_methods = [m for m in method_order if m != 'lf']
+
     with PdfPages(args.o) as pdf:
-        # Page 1: global summary bar chart (grouped by method)
-        fig, ax = plt.subplots(figsize=(12, 6))
-        bar_data = []  # (label, value)
+        # Page 1: global + per-face summary
+        fig, (ax_global, ax_face) = plt.subplots(
+            2, 1, figsize=(14, 12),
+            gridspec_kw={'height_ratios': [1, 1.2]})
+
+        # -- Top: global bar chart (grouped by method) --
+        bar_data = []
         bar_colors = []
         bar_hatches = []
         for mname in method_order:
@@ -382,37 +395,84 @@ def plot_comparison(args):
                 bar_hatches.append('//' if mname != 'ml' else '')
 
         if bar_data:
-            # Keep grouped by method (no sorting)
             labels = [d[0] for d in bar_data]
             vals = [d[1] for d in bar_data]
-            colors = bar_colors
-            hatches = bar_hatches
             y_pos = np.arange(len(labels))
 
-            # Cap outliers
             median_val = np.median(vals)
             non_outlier = [v for v in vals if v <= 3 * median_val]
             x_max = max(non_outlier) * 1.5 if non_outlier else max(vals) * 1.25
             vals_clipped = [min(v, x_max) for v in vals]
 
-            bars = ax.barh(y_pos, vals_clipped, color=colors,
-                           edgecolor='black', linewidth=0.5)
-            for bar, hatch in zip(bars, hatches):
+            bars = ax_global.barh(y_pos, vals_clipped, color=bar_colors,
+                                  edgecolor='black', linewidth=0.5)
+            for bar, hatch in zip(bars, bar_hatches):
                 bar.set_hatch(hatch)
             for i, (v, vc) in enumerate(zip(vals, vals_clipped)):
                 if v > x_max:
-                    ax.text(vc - 0.01, i, f'{v:.1f}', va='center',
-                            ha='right', fontsize=8, color='white',
-                            fontweight='bold')
+                    ax_global.text(vc - 0.01, i, f'{v:.1f}', va='center',
+                                   ha='right', fontsize=8, color='white',
+                                   fontweight='bold')
                 else:
-                    ax.text(v + 0.002, i, f'{v:.3f}', va='center', fontsize=8)
-            ax.set_yticks(y_pos)
-            ax.set_yticklabels(labels, fontsize=9)
-            ax.set_xlabel('Global Relative MAE')
-            ax.set_title('Cross-Mode Comparison  (truth >= 100 photons)')
-            ax.invert_yaxis()
-            ax.set_xlim(0, x_max * 1.1)
+                    ax_global.text(v + 0.002, i, f'{v:.3f}', va='center',
+                                   fontsize=8)
+            ax_global.set_yticks(y_pos)
+            ax_global.set_yticklabels(labels, fontsize=9)
+            ax_global.set_xlabel('Global Relative MAE')
+            ax_global.set_title('Global Relative MAE  (truth >= 100 photons)')
+            ax_global.invert_yaxis()
+            ax_global.set_xlim(0, x_max * 1.1)
 
+        # -- Bottom: per-face grouped bar chart --
+        # Group: for each face, show (method × mode) bars
+        face_names = [fn for _, fn in active_faces]
+        n_faces = len(face_names)
+        mode_list = [m for m in ['mc', 'sensorfront', 'data'] if m in modes]
+        n_groups = len(perface_methods) * len(mode_list)
+        bar_width = 0.8 / max(n_groups, 1)
+        x_faces = np.arange(n_faces)
+
+        legend_handles = []
+        legend_labels = []
+        gi = 0
+        for mname in perface_methods:
+            for mode_name in mode_list:
+                mode_data = modes[mode_name]
+                face_vals = []
+                face_present = []
+                for fn in face_names:
+                    key = f'{mname}_{fn}_rel_mae'
+                    if key in mode_data:
+                        face_vals.append(float(mode_data[key]))
+                        face_present.append(True)
+                    else:
+                        face_vals.append(0.0)
+                        face_present.append(False)
+
+                x_offset = (gi - n_groups / 2 + 0.5) * bar_width
+                color = MODE_COLORS[mode_name][mname]
+                hatch = '//' if mname != 'ml' else ''
+                bar_objs = ax_face.bar(
+                    x_faces + x_offset, face_vals, bar_width,
+                    color=color, edgecolor='black', linewidth=0.3,
+                    hatch=hatch)
+                for bi, present in enumerate(face_present):
+                    if not present:
+                        bar_objs[bi].set_alpha(0.0)
+
+                label = f'{method_labels[mname]} — {MODE_LABELS[mode_name]}'
+                legend_handles.append(bar_objs[0])
+                legend_labels.append(label)
+                gi += 1
+
+        ax_face.set_xticks(x_faces)
+        ax_face.set_xticklabels(face_names, fontsize=11)
+        ax_face.set_ylabel('Relative MAE')
+        ax_face.set_title('Per-Face Relative MAE  (truth >= 100 photons)')
+        ax_face.legend(legend_handles, legend_labels,
+                       fontsize=8, loc='upper right', ncol=2)
+
+        fig.suptitle('Cross-Mode Inpainter Comparison', fontsize=14)
         plt.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
