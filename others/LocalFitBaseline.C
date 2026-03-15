@@ -291,8 +291,49 @@ void FCNSolid(Int_t &npar, Double_t * /*gin*/, Double_t &f, Double_t *par, Int_t
 }
 
 // ========================================================================
-//  Analytical Inner Face PM Geometry
+//  PM Geometry: load from file or compute analytically
 // ========================================================================
+
+Bool_t LoadPMGeometryFromFile(const char* geomFile)
+{
+   // Load positions and normals from sensor_directions.txt.
+   // Format: sensor_id  dir_x dir_y dir_z  pos_x pos_y pos_z  face
+   std::ifstream fin(geomFile);
+   if (!fin.is_open()) return kFALSE;
+
+   std::string line;
+   Int_t nLoaded = 0;
+   while (std::getline(fin, line)) {
+      if (line.empty() || line[0] == '#') continue;
+      Int_t sid, face;
+      Double_t dx, dy, dz, px, py, pz;
+      std::istringstream iss(line);
+      if (!(iss >> sid >> dx >> dy >> dz >> px >> py >> pz >> face)) continue;
+      if (sid < 0 || sid >= kXECNChan) continue;
+      gPMPos[sid][0] = px;
+      gPMPos[sid][1] = py;
+      gPMPos[sid][2] = pz;
+      gPMDir[sid][0] = dx;
+      gPMDir[sid][1] = dy;
+      gPMDir[sid][2] = dz;
+      nLoaded++;
+   }
+   fin.close();
+
+   if (nLoaded < kNInner) return kFALSE;
+
+   // Compute UVW for inner face sensors (needed for Stage 1 projection)
+   for (Int_t ch = 0; ch < kNInner; ch++) {
+      Double_t uvw[3];
+      MyXYZ2UVW(gPMPos[ch], uvw);
+      gPMU[ch] = uvw[0];
+      gPMV[ch] = uvw[1];
+   }
+
+   std::cout << "Loaded PM geometry from " << geomFile
+             << " (" << nLoaded << " sensors)\n";
+   return kTRUE;
+}
 
 void ComputeAnalyticalPMGeometry()
 {
@@ -426,13 +467,15 @@ void LocalFitBaseline(const char* inputFile  = "",
 
    std::cout << "PM intervals: U=" << gPMIntervalU << " cm, V=" << gPMIntervalV << " cm\n";
 
-   // --- Compute analytical PM geometry ---
-   ComputeAnalyticalPMGeometry();
-
-   // Note: if run from within the MEG offline framework with MEGXECPMRunHeader available,
-   // PM geometry from the run header could be loaded for higher accuracy. For standalone
-   // use, the analytical geometry (computed above) is sufficient for the inner face.
-   std::cout << "Using analytical PM geometry for inner face.\n";
+   // --- Load PM geometry ---
+   // Try sensor_directions.txt (exact geometry from XECPMRunHeader) first,
+   // fall back to analytical computation if not found.
+   TString geomPath = gSystem->GetDirName(gInterpreter->GetCurrentMacroName());
+   geomPath += "/../lib/sensor_directions.txt";
+   if (!LoadPMGeometryFromFile(geomPath.Data())) {
+      std::cout << "sensor_directions.txt not found, using analytical PM geometry.\n";
+      ComputeAnalyticalPMGeometry();
+   }
 
    // --- Input file ---
    TFile* fIn = TFile::Open(inputFile, "READ");
