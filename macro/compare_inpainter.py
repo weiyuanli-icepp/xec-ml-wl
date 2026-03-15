@@ -664,7 +664,7 @@ def main():
         ax_face.set_xticklabels(face_names, fontsize=10)
         ax_face.set_ylabel('Relative MAE')
         ax_face.set_title('Per-Face Relative MAE  (truth >= 100 photons)')
-        ax_face.legend(fontsize=9, loc='upper right', ncol=2)
+        ax_face.legend(fontsize=13, loc='upper right', ncol=2)
 
         fig.suptitle(f'Inpainter Comparison Summary — {args.mode}', fontsize=14)
         plt.tight_layout()
