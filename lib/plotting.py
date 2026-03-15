@@ -798,8 +798,18 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
             rel_residual_all = np.abs(residual) / np.abs(safe_true_all) * 100
             sig_rel_residual = rel_residual_all[sig_mask]
 
-        # Custom W bins for signal region: [15,19] and [19,35.3] as two coarse bins
-        sig_w_bin_edges = np.array([15.0, 19.0, 35.3])
+        # Custom W bins for signal region: fine bins up to 15, then
+        # two coarse bins [15,19] and [19,35.3] for sparse large-W region
+        sig_w_vals = sig_w[np.isfinite(sig_w)]
+        if len(sig_w_vals) > 0:
+            sig_w_lo = sig_w_vals.min()
+            n_fine_sig = max(1, int(bins * (15.0 - sig_w_lo) / (35.3 - sig_w_lo)))
+            sig_w_bin_edges = np.concatenate([
+                np.linspace(sig_w_lo, 15.0, n_fine_sig + 1),
+                np.array([19.0, 35.3]),
+            ])
+        else:
+            sig_w_bin_edges = bins
         sig_uvw_bins = [bins, bins, sig_w_bin_edges]
 
         for i, (uvw_val, label, color, mk) in enumerate(zip(sig_uvw_data, uvw_labels, uvw_colors, uvw_markers)):
