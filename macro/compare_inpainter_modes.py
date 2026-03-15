@@ -465,6 +465,7 @@ def plot_comparison(args):
                 legend_labels.append(label)
                 gi += 1
 
+        ax_face.set_ylim(0, 1.5)
         ax_face.set_xticks(x_faces)
         ax_face.set_xticklabels(face_names, fontsize=11)
         ax_face.set_ylabel('Relative MAE')
