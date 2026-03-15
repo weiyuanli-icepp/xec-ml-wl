@@ -141,7 +141,13 @@ Examples:
 
     # Process each task
     for task in tasks:
-        df = load_predictions(args.artifact_dir, task)
+        # Reuse already-loaded DataFrames to avoid double-loading
+        if task == "energy" and energy_df is not None:
+            df = energy_df
+        elif task == "uvwFI" and uvwFI_df is not None:
+            df = uvwFI_df
+        else:
+            df = load_predictions(args.artifact_dir, task)
         if df is None:
             print(f"[WARN] No predictions found for task: {task}")
             continue
