@@ -1001,60 +1001,67 @@ Examples:
                         t_best_elapsed = time.time() - t_best_start
                         print(f"  Saved best checkpoint to {best_path} ({t_best_elapsed:.1f}s)")
 
-                # Save ROOT predictions periodically (and at end)
-                if save_root_predictions and all_val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs):
-                    t_root_start = time.time()
-                    print(f"  Collecting predictions for ROOT output...")
-                    with RootPredictionWriter(
-                        save_path, epoch + 1, run_id=mlflow_run_id,
+            # Barrier before ROOT predictions: all ranks sync here so that
+            # other ranks are idle (not stuck in a pending NCCL collective)
+            # while rank 0 runs the slow prediction loop (can exceed the
+            # 600 s NCCL watchdog timeout).
+            do_root = save_root_predictions and all_val_files and ((epoch + 1) % root_save_interval == 0 or (epoch + 1) == epochs)
+            if do_root:
+                barrier()
+
+            if is_main_process() and do_root:
+                t_root_start = time.time()
+                print(f"  Collecting predictions for ROOT output...")
+                with RootPredictionWriter(
+                    save_path, epoch + 1, run_id=mlflow_run_id,
+                    npho_scale=float(npho_scale),
+                    npho_scale2=float(npho_scale2),
+                    time_scale=float(time_scale),
+                    time_shift=float(time_shift),
+                    sentinel_time=float(sentinel_time),
+                    predict_channels=list(predict_channels),
+                    npho_scheme=npho_scheme,
+                ) as writer:
+                    # Use EMA model for predictions if available
+                    pred_model = ema_model if ema_model is not None else model_without_ddp
+                    val_metrics_with_pred, _ = run_eval_inpainter(
+                        pred_model, device,
+                        all_val_files, "tree",
+                        batch_size=batch_size,
+                        step_size=chunksize,
+                        mask_ratio=mask_ratio,
+                        npho_branch=npho_branch,
+                        time_branch=time_branch,
                         npho_scale=float(npho_scale),
                         npho_scale2=float(npho_scale2),
                         time_scale=float(time_scale),
                         time_shift=float(time_shift),
                         sentinel_time=float(sentinel_time),
-                        predict_channels=list(predict_channels),
+                        loss_fn=loss_fn,
+                        loss_beta=loss_beta,
+                        npho_weight=npho_weight,
+                        time_weight=time_weight,
+                        collect_predictions=True,
+                        prediction_writer=writer.write,
+                        track_mae_rmse=track_mae_rmse,
+                        dataloader_workers=num_workers,
+                        dataset_workers=num_threads,
+                        prefetch_factor=prefetch_factor,
+                        npho_threshold=npho_threshold,
+                        use_npho_time_weight=use_npho_time_weight,
+                        profile=False,
+                        log_invalid_npho=log_invalid_npho,
+                        amp=amp,
                         npho_scheme=npho_scheme,
-                    ) as writer:
-                        # Use EMA model for predictions if available
-                        pred_model = ema_model if ema_model is not None else model_without_ddp
-                        val_metrics_with_pred, _ = run_eval_inpainter(
-                            pred_model, device,
-                            all_val_files, "tree",
-                            batch_size=batch_size,
-                            step_size=chunksize,
-                            mask_ratio=mask_ratio,
-                            npho_branch=npho_branch,
-                            time_branch=time_branch,
-                            npho_scale=float(npho_scale),
-                            npho_scale2=float(npho_scale2),
-                            time_scale=float(time_scale),
-                            time_shift=float(time_shift),
-                            sentinel_time=float(sentinel_time),
-                            loss_fn=loss_fn,
-                            loss_beta=loss_beta,
-                            npho_weight=npho_weight,
-                            time_weight=time_weight,
-                            collect_predictions=True,
-                            prediction_writer=writer.write,
-                            track_mae_rmse=track_mae_rmse,
-                            dataloader_workers=num_workers,
-                            dataset_workers=num_threads,
-                            prefetch_factor=prefetch_factor,
-                            npho_threshold=npho_threshold,
-                            use_npho_time_weight=use_npho_time_weight,
-                            profile=False,
-                            log_invalid_npho=log_invalid_npho,
-                            amp=amp,
-                            npho_scheme=npho_scheme,
-                            npho_loss_weight_enabled=npho_loss_weight_enabled,
-                            npho_loss_weight_alpha=npho_loss_weight_alpha,
-                            sentinel_npho=sentinel_npho,
-                        )
-                    root_path = writer.filepath if writer.count > 0 else None
-                    t_root_elapsed = time.time() - t_root_start
-                    if root_path:
-                        print(f"  Saved predictions to {root_path} ({t_root_elapsed:.1f}s)")
-                        mlflow.log_artifact(root_path)
+                        npho_loss_weight_enabled=npho_loss_weight_enabled,
+                        npho_loss_weight_alpha=npho_loss_weight_alpha,
+                        sentinel_npho=sentinel_npho,
+                    )
+                root_path = writer.filepath if writer.count > 0 else None
+                t_root_elapsed = time.time() - t_root_start
+                if root_path:
+                    print(f"  Saved predictions to {root_path} ({t_root_elapsed:.1f}s)")
+                    mlflow.log_artifact(root_path)
 
             # Barrier: all ranks wait for rank 0 to finish checkpointing/ROOT saving
             barrier()
