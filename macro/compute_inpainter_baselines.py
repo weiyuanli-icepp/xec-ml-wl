@@ -204,9 +204,15 @@ def main():
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for artificial masking (default: 42)")
 
-    # Baselines
-    parser.add_argument("--solid-angle-branch", type=str, default=None,
-                        help="Branch name for solid angles (enables SA baseline)")
+    # Baselines / solid angles
+    sa_group = parser.add_mutually_exclusive_group()
+    sa_group.add_argument("--solid-angle-branch", type=str, default=None,
+                          help="Branch name for pre-computed solid angles")
+    sa_group.add_argument("--compute-solid-angles", type=str, default=None,
+                          metavar="XYZ_BRANCH",
+                          help="Compute solid angles on the fly from vertex position "
+                               "branch (e.g., --compute-solid-angles xyzRecoFI). "
+                               "Uses sensor_directions.txt for geometry.")
     parser.add_argument("--distance-threshold", type=float, default=20.0,
                         help="Distance threshold (cm) for SA neighbor selection (default: 20)")
     parser.add_argument("--npho-threshold", type=float, default=50.0,
@@ -253,6 +259,47 @@ def main():
             args.input, args.solid_angle_branch,
             tree_name=args.tree_name, max_events=args.max_events,
         )
+    elif args.compute_solid_angles:
+        from lib.solid_angle import compute_solid_angles
+        xyz_branch = args.compute_solid_angles
+        print(f"[INFO] Computing solid angles from branch '{xyz_branch}'...")
+
+        # Load vertex positions
+        xyz_list = []
+        total = 0
+        for fpath in expand_path(args.input):
+            if args.max_events and total >= args.max_events:
+                break
+            with uproot.open(fpath) as f:
+                tree = f[args.tree_name]
+                xyz = tree[xyz_branch].array(library='np')
+                n = len(xyz)
+                if args.max_events:
+                    remaining = args.max_events - total
+                    if n > remaining:
+                        xyz = xyz[:remaining]
+                        n = remaining
+                xyz_list.append(xyz)
+                total += n
+        xyz_reco = np.concatenate(xyz_list).astype(np.float64)
+        assert len(xyz_reco) == n_events, \
+            f"xyz_reco has {len(xyz_reco)} events but data has {n_events}"
+
+        # Load sensor geometry from sensor_directions.txt
+        geom_path = os.path.join(os.path.dirname(__file__),
+                                 "..", "lib", "sensor_directions.txt")
+        geom_data = np.loadtxt(geom_path, comments='#')
+        sensor_positions = geom_data[:, 4:7]  # pos_x, pos_y, pos_z
+        sensor_normals = geom_data[:, 1:4]    # dir_x, dir_y, dir_z
+
+        # SiPM: 4 chips of 5.9mm x 5.9mm; PMT: cathode radius 3.81cm
+        sensor_areas = np.full(N_CHANNELS, 4 * 0.59**2, dtype=np.float64)
+        sensor_areas[4596:] = np.pi * 3.81**2  # PMTs
+
+        solid_angles = compute_solid_angles(
+            xyz_reco, sensor_positions, sensor_normals, sensor_areas,
+        ).astype(np.float32)
+        print(f"[INFO] Computed solid angles: shape {solid_angles.shape}")
 
     # --- Run baselines in raw photon space (no normalization needed) ---
     # Clamp invalid values to 0 for averaging
