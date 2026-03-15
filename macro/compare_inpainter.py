@@ -721,9 +721,9 @@ def main():
                 ax.set_ylabel(ylabel)
                 ax.set_title(face_name)
                 if metric_key in ('mae', 'rms'):
-                    ax.set_ylim(0, 1)
+                    ax.set_ylim(0, 1.5)
                 else:
-                    ax.set_ylim(-1, 1)
+                    ax.set_ylim(-1.5, 1.5)
                 ax.legend(fontsize=7)
 
             # Hide unused axes
@@ -779,9 +779,9 @@ def main():
                 ax.set_ylabel(ylabel)
                 ax.set_title(face_name)
                 if metric_key in ('mae', 'rms'):
-                    ax.set_ylim(0, 1)
+                    ax.set_ylim(0, 1.5)
                 else:
-                    ax.set_ylim(-1, 1)
+                    ax.set_ylim(-1.5, 1.5)
                 ax.legend(fontsize=7)
 
             for idx in range(n_active, len(axes_flat)):
@@ -904,9 +904,9 @@ def main():
                         ax.set_ylabel(ylabel)
                         ax.set_title(face_name)
                         if metric_key in ('mae', 'rms'):
-                            ax.set_ylim(0, 1)
+                            ax.set_ylim(0, 1.5)
                         else:
-                            ax.set_ylim(-1, 1)
+                            ax.set_ylim(-1.5, 1.5)
                         ax.legend(fontsize=7)
 
                     for idx in range(ecut_n_active, len(axes_flat)):
