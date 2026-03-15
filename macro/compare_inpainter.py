@@ -628,18 +628,30 @@ def main():
         hatches_bar = ['//' if m['is_bl'] else '' for m in sorted_mm]
         y_pos = np.arange(len(labels_bar))
 
-        bars = ax_bar.barh(y_pos, vals_bar, color=colors_bar, edgecolor='black',
-                           linewidth=0.5)
+        # Cap x-axis: use 2x the largest non-outlier value
+        # (outlier = > 3x median) so extreme baselines don't squash the rest
+        median_val = np.median(vals_bar)
+        non_outlier = [v for v in vals_bar if v <= 3 * median_val]
+        x_max = max(non_outlier) * 1.5 if non_outlier else max(vals_bar) * 1.25
+        vals_bar_clipped = [min(v, x_max) for v in vals_bar]
+
+        bars = ax_bar.barh(y_pos, vals_bar_clipped, color=colors_bar,
+                           edgecolor='black', linewidth=0.5)
         for bar, hatch in zip(bars, hatches_bar):
             bar.set_hatch(hatch)
-        for i, v in enumerate(vals_bar):
-            ax_bar.text(v + 0.002, i, f'{v:.3f}', va='center', fontsize=9)
+        for i, (v, v_clip) in enumerate(zip(vals_bar, vals_bar_clipped)):
+            if v > x_max:
+                # Annotate clipped bars with actual value
+                ax_bar.text(v_clip - 0.01, i, f'{v:.1f}', va='center',
+                            ha='right', fontsize=9, color='white', fontweight='bold')
+            else:
+                ax_bar.text(v + 0.002, i, f'{v:.3f}', va='center', fontsize=9)
         ax_bar.set_yticks(y_pos)
         ax_bar.set_yticklabels(labels_bar, fontsize=9)
         ax_bar.set_xlabel('Global Relative MAE')
         ax_bar.set_title('Global Relative MAE  (truth >= 100 photons)')
         ax_bar.invert_yaxis()
-        ax_bar.set_xlim(0, max(vals_bar) * 1.25)
+        ax_bar.set_xlim(0, x_max * 1.1)
 
         # -- Right panel: per-face relative MAE grouped bar chart --
         face_names = [fn for _, fn in active_faces]
