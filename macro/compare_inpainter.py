@@ -695,8 +695,11 @@ def main():
                         vals = rms / centers
                     else:
                         vals = bias / centers
-                    _plot_valid(ax, centers, vals, 'o-', color=entry['color'],
-                               markersize=3, label=entry['label'])
+                    is_bl = entry.get('is_baseline', False)
+                    style = 's--' if is_bl else 'o-'
+                    alpha = 0.8 if is_bl else 1.0
+                    _plot_valid(ax, centers, vals, style, color=entry['color'],
+                               markersize=3, alpha=alpha, label=entry['label'])
 
                 if bl_dict:
                     for bname, bdef in BASELINE_DEFS.items():
