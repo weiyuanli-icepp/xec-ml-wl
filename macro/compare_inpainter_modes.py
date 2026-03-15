@@ -362,33 +362,31 @@ def plot_comparison(args):
             ax.plot(x[valid], y[valid], *plot_args, **kwargs)
 
     with PdfPages(args.o) as pdf:
-        # Page 1: global summary bar chart
+        # Page 1: global summary bar chart (grouped by method)
         fig, ax = plt.subplots(figsize=(12, 6))
         bar_data = []  # (label, value)
         bar_colors = []
         bar_hatches = []
-        for mode_name in ['mc', 'sensorfront', 'data']:
-            if mode_name not in modes:
-                continue
-            mode_data = modes[mode_name]
-            for mname in method_order:
+        for mname in method_order:
+            for mode_name in ['mc', 'sensorfront', 'data']:
+                if mode_name not in modes:
+                    continue
+                mode_data = modes[mode_name]
                 key = f'{mname}_global_rel_mae'
                 if key not in mode_data:
                     continue
                 val = float(mode_data[key])
-                label = f'{MODE_LABELS[mode_name]} — {method_labels[mname]}'
+                label = f'{method_labels[mname]} — {MODE_LABELS[mode_name]}'
                 bar_data.append((label, val))
                 bar_colors.append(MODE_COLORS[mode_name][mname])
                 bar_hatches.append('//' if mname != 'ml' else '')
 
         if bar_data:
-            # Sort by value
-            sorted_idx = sorted(range(len(bar_data)),
-                                key=lambda i: bar_data[i][1])
-            labels = [bar_data[i][0] for i in sorted_idx]
-            vals = [bar_data[i][1] for i in sorted_idx]
-            colors = [bar_colors[i] for i in sorted_idx]
-            hatches = [bar_hatches[i] for i in sorted_idx]
+            # Keep grouped by method (no sorting)
+            labels = [d[0] for d in bar_data]
+            vals = [d[1] for d in bar_data]
+            colors = bar_colors
+            hatches = bar_hatches
             y_pos = np.arange(len(labels))
 
             # Cap outliers
