@@ -449,16 +449,21 @@ void LocalFitBaseline(const char* inputFile  = "",
    // --- Input branches ---
    Int_t   run = 0, event = 0;
    Float_t npho[kXECNChan];
-   Float_t uvwRecoFI[3], uvwTruth[3], xyzTruth[3];
+   Float_t uvwRecoFI[3], uvwTruth[3] = {0}, xyzTruth[3] = {0};
    Float_t energyTruth = 0;
 
    tree->SetBranchAddress("run",        &run);
    tree->SetBranchAddress("event",      &event);
    tree->SetBranchAddress("npho",       npho);
    tree->SetBranchAddress("uvwRecoFI",  uvwRecoFI);
-   tree->SetBranchAddress("uvwTruth",   uvwTruth);
-   tree->SetBranchAddress("xyzTruth",   xyzTruth);
-   tree->SetBranchAddress("energyTruth", &energyTruth);
+
+   // Truth branches are optional (not present in real data)
+   Bool_t hasTruth = (tree->GetBranch("uvwTruth") != nullptr);
+   if (hasTruth) {
+      tree->SetBranchAddress("uvwTruth",   uvwTruth);
+      tree->SetBranchAddress("xyzTruth",   xyzTruth);
+      tree->SetBranchAddress("energyTruth", &energyTruth);
+   }
 
    // --- Output file ---
    TString outName;
@@ -538,7 +543,7 @@ void LocalFitBaseline(const char* inputFile  = "",
 
       // Skip events with invalid reconstruction
       if (!std::isfinite(uvwRecoFI[0]) || std::abs(uvwRecoFI[0]) > 1e5) continue;
-      if (!std::isfinite(uvwTruth[0])  || std::abs(uvwTruth[0])  > 1e5) continue;
+      if (hasTruth && (!std::isfinite(uvwTruth[0]) || std::abs(uvwTruth[0]) > 1e5)) continue;
 
       // Resolve dead channels for this event
       const std::set<Int_t>& deadForEvent =
