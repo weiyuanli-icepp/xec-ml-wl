@@ -65,11 +65,17 @@ for step in "${STEPS[@]}"; do
         continue
     fi
 
+    LOCALFIT_ARG=""
+    if [ -d "${SHARED_DIR}/localfit_results" ]; then
+        LOCALFIT_ARG="--local-fit-results ${SHARED_DIR}/localfit_results"
+    fi
+
     echo "=== Step ${step}: ${label} ==="
     python macro/validate_inpainter_sensorfront.py \
         --checkpoint "$ckpt" \
         --load-manifest "${SHARED_DIR}" \
         --baselines-from "${SHARED_DIR}" \
+        ${LOCALFIT_ARG} \
         --output "$outdir" \
         --device cpu
     echo ""
