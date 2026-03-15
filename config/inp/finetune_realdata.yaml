@@ -56,7 +56,7 @@ model:
 
 training:
   mae_checkpoint: null
-  epochs: 30
+  epochs: 50
   lr: 5.0e-5                          # Increased from 2e-5 for faster convergence
   lr_scheduler: "cosine"
   lr_min: 1.0e-6
