@@ -472,7 +472,13 @@ def plot_comparison(args):
         ax_face.set_ylabel('Relative MAE')
         ax_face.set_title('Per-Face Relative MAE  (truth >= 100 photons)')
         ax_face.legend(legend_handles, legend_labels,
-                       fontsize=8, loc='upper right', ncol=2)
+                       fontsize=15, loc='upper right', ncol=2)
+
+        # Add secondary y-axis with 2x scale for non-inner faces
+        ax_right = ax_face.secondary_yaxis('right',
+                                            functions=(lambda x: x * 2,
+                                                       lambda x: x / 2))
+        ax_right.set_ylabel('Relative MAE (×2 scale)', fontsize=10)
 
         fig.suptitle('Cross-Mode Inpainter Comparison', fontsize=14)
         plt.tight_layout()
