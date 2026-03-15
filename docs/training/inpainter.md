@@ -160,12 +160,18 @@ python macro/compute_inpainter_baselines.py \
     --input mc_data.root --run 430000 \
     --output baselines_mc_run430000.root
 
-# 4c. Sensorfront Validation (single checkpoint)
+# 4c. Real Data Baselines (with on-the-fly solid angles)
+python macro/compute_inpainter_baselines.py \
+    --input real_data.root --run 430000 --real-data \
+    --compute-solid-angles xyzRecoFI \
+    --output baselines_real_run430000.root
+
+# 4d. Sensorfront Validation (single checkpoint)
 python macro/validate_inpainter_sensorfront.py \
     --checkpoint checkpoint.pth --input mc_data.root \
     --solid-angle-branch solid_angle --output validation_sensorfront/
 
-# 4d. Real Data Validation
+# 4e. Real Data Validation
 python val_data/validate_inpainter_real.py \
     --torchscript inpainter.pt --input real_data.root \
     --run 430000 --output validation_data/
@@ -184,7 +190,8 @@ SHARED_DIR=artifacts/sensorfront_shared \
 python macro/compare_inpainter.py --mode mc \
     --baselines baselines_mc_run430000.root               # MC comparison PDF
 python macro/compare_inpainter.py --mode sensorfront     # Sensorfront comparison
-python macro/compare_inpainter.py --mode data            # Real data comparison
+python macro/compare_inpainter.py --mode data \
+    --baselines baselines_real.root --localfit localfit.root  # Real data comparison
 
 # 7. Single-Run Analysis
 python macro/analyze_inpainter.py predictions.root --output analysis/
@@ -1199,7 +1206,17 @@ artifacts/
 
 ### 12.2 MC Validation (All Scan Steps)
 
-ML inference and baseline computation are separate:
+ML inference and baseline computation are separate. Baselines are computed once
+in raw photon space (no normalization needed), independent of any trained model.
+
+**Baseline algorithms:**
+- **Neighbor Average** -- averages valid neighbors within 20 cm on the same face
+  (distance-based, matching `MEGTXECEnePMWeight::RecoverDeadChannelFromSurroundings`)
+- **Solid-Angle Weighted** -- `sum(npho) * omega_target / sum(omega_neighbors)`,
+  with fallback to simple average when `sum(npho) <= 50`
+
+Both baselines use distance-based same-face neighbor lookup (20 cm threshold)
+instead of the old k-hop grid neighbor approach.
 
 1. **Baselines** (run once, independent of any model):
    ```bash
@@ -1212,6 +1229,26 @@ ML inference and baseline computation are separate:
    python macro/compute_inpainter_baselines.py \
        --input data/E15to60_AngUni_PosSQ/val/ \
        --dead-channel-file dead_channels_430000.txt \
+       --output baselines_mc_run430000.root
+
+   # With pre-computed solid angles from a ROOT branch
+   python macro/compute_inpainter_baselines.py \
+       --input data/E15to60_AngUni_PosSQ/val/ \
+       --run 430000 \
+       --solid-angle-branch solid_angle \
+       --output baselines_mc_run430000.root
+
+   # With on-the-fly solid angle computation (uses sensor_directions.txt)
+   python macro/compute_inpainter_baselines.py \
+       --input data/E15to60_AngUni_PosSQ/val/ \
+       --run 430000 \
+       --compute-solid-angles xyzRecoFI \
+       --output baselines_mc_run430000.root
+
+   # MC mode with dead channels only (no artificial masking)
+   python macro/compute_inpainter_baselines.py \
+       --input data/E15to60_AngUni_PosSQ/val/ \
+       --run 430000 --n-artificial 0 \
        --output baselines_mc_run430000.root
    ```
 
@@ -1237,6 +1274,11 @@ ML inference and baseline computation are separate:
 | `RUN_NUM` | `430000` | Dead channel pattern run number |
 | `VAL_PATH` | (from config) | Override validation data path |
 | `DRY_RUN` | `0` | Preview without submitting |
+
+**MC workflow summary:**
+```
+compute_inpainter_baselines.py (once) --> run_validate_inpainter.sh (per step) --> compare_inpainter.py --mode mc --baselines
+```
 
 ### 12.3 Sensorfront Validation (All Scan Steps)
 
@@ -1281,23 +1323,47 @@ bash macro/submit_validate_sensorfront_scan.sh 1 2 3 4 5 6
 | `VAL_PATH` | `data/E15to60_AngUni_PosSQ/val2/` | Validation data (standalone mode only) |
 | `DRY_RUN` | `0` | Preview without submitting |
 
+**Sensorfront workflow summary:**
+```
+validate_inpainter_sensorfront.py --manifest-only --> run_localfit_sensorfront.py --> run_sensorfront_loginNode.sh --> compare_inpainter.py --mode sensorfront
+```
+
 ### 12.4 Real Data Validation (All Scan Steps)
 
 Uses `val_data/validate_inpainter_real.py` with artificially masked healthy sensors.
 Output is in raw photons (no normalization) with `mask_type` column.
 
+Baselines and LocalFit can be computed independently of any trained model:
+
 ```bash
-# Per-step (no batch script yet — run manually or write a loop)
+# 1. Baselines in raw photon space (run once, no model needed)
+#    --real-data flag handles mask_type properly (only evaluates mask_type=0)
+#    --compute-solid-angles computes solid angles on-the-fly from vertex position
+python macro/compute_inpainter_baselines.py \
+    --input real_data.root --run 430000 --real-data \
+    --compute-solid-angles xyzRecoFI \
+    --output baselines_real_run430000.root
+
+# 2. LocalFit baseline (inner face only, truth branches optional for real data)
+root -l -b -q 'others/LocalFitBaseline.C("real_data.root", "localfit_real.root")'
+
+# 3. ML inference per scan step
 python val_data/validate_inpainter_real.py \
     --torchscript artifacts/inp_scan_s1_baseline/inpainter.pt \
     --input real_data.root --run 430000 \
     --output artifacts/inp_scan_s1_baseline/validation_data/
 ```
 
+**Real data workflow summary:**
+```
+compute_inpainter_baselines.py --real-data --compute-solid-angles xyzRecoFI --> LocalFitBaseline.C (real data) --> compare_inpainter.py --mode data --baselines --localfit
+```
+
 ### 12.5 Cross-Configuration Comparison
 
 After validation jobs complete, generate comparison PDFs. Use `--baselines` to
-load the standalone baseline file (from `compute_inpainter_baselines.py`):
+load the standalone baseline file (from `compute_inpainter_baselines.py`).
+Use `--localfit` to overlay the LocalFitBaseline result (shown with dashed lines).
 
 ```bash
 # MC validation comparison with baselines
@@ -1307,10 +1373,12 @@ python macro/compare_inpainter.py --mode mc \
 # Sensorfront comparison
 python macro/compare_inpainter.py --mode sensorfront
 
-# Real data comparison
-python macro/compare_inpainter.py --mode data
+# Real data comparison with baselines + LocalFit
+python macro/compare_inpainter.py --mode data \
+    --baselines baselines_real_run430000.root \
+    --localfit localfit_real.root
 
-# Overlay standalone LocalFitBaseline result
+# Overlay standalone LocalFitBaseline result (MC)
 python macro/compare_inpainter.py --mode mc \
     --baselines baselines_mc_run430000.root \
     --localfit path/to/localfit_merged.root
@@ -1323,35 +1391,42 @@ python macro/compare_inpainter.py --mode mc -o my_comparison.pdf
 
 | Page | Content |
 |------|---------|
-| 1 | Summary: global relative MAE bar chart + per-face grouped bars |
-| 2-4 | Per-face relative MAE / RMS / Bias vs truth npho (log-scale bins) |
-| 5-7 | Per-face relative MAE / RMS / Bias vs pred npho (log-scale bins) |
+| 1 | Summary: global relative MAE bar chart (x-axis capped to prevent outlier baselines from squashing ML entries) + per-face grouped bars (auto-hidden when only 1 active face) |
+| 2-4 | Per-face relative MAE / RMS / Bias vs truth npho (log-scale bins, data points connected across empty bins) |
+| 5-7 | Per-face relative MAE / RMS / Bias vs pred npho (log-scale bins, data points connected across empty bins) |
 
 **Baselines** (from `--baselines` file or first entry that has embedded baselines):
-- Neighbor Avg — k-hop average of valid neighbors
-- Solid-Angle Weighted — solid-angle-based weighted average
-- Local Fit — physics-based position fit + solid-angle prediction (`LocalFitBaseline.C`)
+- Neighbor Avg -- distance-based same-face average (20 cm threshold)
+- Solid-Angle Weighted -- solid-angle-based weighted average with low-npho fallback
+- Local Fit -- physics-based position fit + solid-angle prediction (`LocalFitBaseline.C`), shown with dashed lines
+
+**Plot details:**
+- `--localfit` entries are drawn with dashed lines to distinguish baselines from ML models
+- NaN sentinel (instead of -999) is used for baseline errors where truth is unavailable
+- Per-face metric plots use y-axis range [0, 1.5]
+- Per-face bar chart is auto-hidden when only 1 active face
+- Global bar chart x-axis is capped to prevent outlier baselines from squashing the scale
 
 **Stdout output** includes global metrics table, per-face MAE, and per-face relative MAE for all methods.
 
 ### 12.6 Typical End-to-End Workflow
 
-Baselines and ML inference are independent. Steps 2a-2c can all run in parallel.
+Baselines and ML inference are independent. Steps 2a-2d can all run in parallel.
 
 ```
                     ┌──────────────────────────────┐
                     │ 1. Train scan steps (s1-s8)  │
                     └──────────────┬───────────────┘
                                    │
-          ┌────────────────────────┼────────────────────────┐
-          │                        │                        │
-┌─────────▼──────────┐  ┌─────────▼──────────┐  ┌──────────▼───────────┐
-│ 2a. Baselines      │  │ 2b. MC validation  │  │ 2c. Sensorfront      │
-│ (run once, no      │  │ (ML inference,     │  │ prepare + inference  │
-│  model needed)     │  │  per scan step)    │  │                      │
-└─────────┬──────────┘  └─────────┬──────────┘  └──────────┬───────────┘
-          │                        │                        │
-          └────────────────────────┼────────────────────────┘
+     ┌──────────────┬──────────────┼──────────────┬──────────────┐
+     │              │              │              │              │
+┌────▼─────┐ ┌─────▼──────┐ ┌────▼─────┐ ┌──────▼───────┐ ┌────▼──────┐
+│2a. MC    │ │2b. MC val  │ │2c. SF    │ │2d. Real data │ │2e. Real   │
+│baselines │ │(ML per     │ │prepare + │ │baselines     │ │data val   │
+│(once)    │ │ step)      │ │inference │ │+ LocalFit    │ │(ML per    │
+└────┬─────┘ └─────┬──────┘ └────┬─────┘ └──────┬───────┘ │ step)     │
+     │              │              │              │         └────┬──────┘
+     └──────────────┴──────────────┴──────────────┴──────────────┘
                                    │
                     ┌──────────────▼───────────────┐
                     │ 3. Generate comparison PDFs  │
@@ -1362,17 +1437,17 @@ Baselines and ML inference are independent. Steps 2a-2c can all run in parallel.
 # 1. Train scan steps (s1-s8 with different configs)
 #    ... (see training section)
 
-# 2a. Baselines (no model needed, run once)
+# 2a. MC Baselines (no model needed, run once)
 python macro/compute_inpainter_baselines.py \
     --input data/E15to60_AngUni_PosSQ/val/ \
     --run 430000 -o baselines_mc_run430000.root
 
-# 2b. MC validation — ML inference only (runs in parallel with 2a, 2c)
+# 2b. MC validation -- ML inference only (runs in parallel with 2a, 2c-2e)
 ./jobs/run_validate_inpainter.sh               # default: all s1-s8
 
 # 2c. Sensorfront: prepare shared data (manifest + baselines, no model needed)
 bash macro/submit_sensorfront_prepare_scan.sh
-#    → creates artifacts/sensorfront_shared/
+#    creates artifacts/sensorfront_shared/
 
 # After 2c completes, run LocalFit and ML inference in parallel:
 #    4a. LocalFit batch jobs (one array job, shared across all steps)
@@ -1382,10 +1457,26 @@ bash macro/submit_localfit_sensorfront.sh \
 SHARED_DIR=artifacts/sensorfront_shared \
     bash macro/submit_validate_sensorfront_scan.sh
 
+# 2d. Real data baselines + LocalFit (no model needed, run once)
+python macro/compute_inpainter_baselines.py \
+    --input real_data.root --run 430000 --real-data \
+    --compute-solid-angles xyzRecoFI \
+    -o baselines_real_run430000.root
+root -l -b -q 'others/LocalFitBaseline.C("real_data.root", "localfit_real.root")'
+
+# 2e. Real data ML inference per scan step
+python val_data/validate_inpainter_real.py \
+    --torchscript artifacts/inp_scan_s1_baseline/inpainter.pt \
+    --input real_data.root --run 430000 \
+    --output artifacts/inp_scan_s1_baseline/validation_data/
+
 # 3. After ALL jobs complete, generate comparison PDFs
 python macro/compare_inpainter.py --mode mc \
     --baselines baselines_mc_run430000.root -o compare_mc.pdf
 python macro/compare_inpainter.py --mode sensorfront -o compare_sf.pdf
+python macro/compare_inpainter.py --mode data \
+    --baselines baselines_real_run430000.root \
+    --localfit localfit_real.root -o compare_data.pdf
 ```
 
 **Checking completion:**
@@ -1395,6 +1486,9 @@ ls artifacts/inp_scan_*/validation_mc/predictions_mc_run430000.root
 
 # Check which sensorfront validations finished
 ls artifacts/inp_scan_*/validation_sensorfront/predictions_sensorfront.root
+
+# Check which real data validations finished
+ls artifacts/inp_scan_*/validation_data/
 
 # Check SLURM job status
 squeue -u $USER --format="%.10i %.10P %.25j %.8T %.10M"

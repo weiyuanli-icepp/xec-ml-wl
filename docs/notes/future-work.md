@@ -684,11 +684,22 @@ Using `lib/sensor_positions.txt`:
 - `reshape(9, 24)`: row-neighbor distance at strip boundary = **83.4 cm** (wrong)
 - `reshape(24, 9)`: row-neighbor distance = **10.4 cm**, column-neighbor = **9.7 cm** (correct)
 
-### Partial Fix (March 2026)
+### Baseline Fix (March 2026)
 
-The baseline neighbor map in `lib/inpainter_baselines.py` was fixed to use
-`reshape(24, 9)` for physical neighbor lookup (commit c01b5d5).  Max neighbor distance
-dropped from 83.4 cm to 17.9 cm.
+The baseline neighbor map in `lib/inpainter_baselines.py` was initially fixed to use
+`reshape(24, 9)` for physical neighbor lookup (commit c01b5d5).  Subsequently, the
+k-hop grid neighbor approach was **replaced entirely** with distance-based same-face
+neighbor lookup using a 20 cm threshold.  Both `NeighborAverageBaseline` and
+`SolidAngleWeightedBaseline` now find neighbors by Euclidean distance from
+`sensor_positions.txt`, matching the C++ implementation in
+`MEGTXECEnePMWeight::RecoverDeadChannelFromSurroundings`.  This eliminates any
+dependence on the grid layout for baseline computation.
+
+The solid-angle weighted formula is:
+`sum(npho) * omega_target / sum(omega_neighbors)` with fallback to simple average
+when `sum(npho) <= 50`.  Solid angles are computed on the fly via `lib/solid_angle.py`
+(ported from C++: `PMSolidAngleMPPC` for 4-chip SiPMs, `PMSolidAnglePMT` Paxton disc
+formula for PMTs) using positions and normals from `sensor_directions.txt`.
 
 ### Full Fix (requires retrain)
 
