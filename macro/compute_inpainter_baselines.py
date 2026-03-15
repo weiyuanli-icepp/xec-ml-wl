@@ -359,11 +359,11 @@ def main():
         bpred = np.concatenate(all_baselines[bname])
         has_bpred = np.isfinite(bpred)
         berror = np.where(
-            has_truth & has_bpred, bpred - truth_npho, np.float32(-999.0),
+            has_truth & has_bpred, bpred - truth_npho, np.float32(np.nan),
         )
-        bpred = np.where(np.isfinite(bpred), bpred, -999.0).astype(np.float32)
-        branches[f'baseline_{bname}_npho'] = bpred
-        branches[f'baseline_{bname}_error_npho'] = berror
+        bpred = np.where(np.isfinite(bpred), bpred, np.float32(np.nan))
+        branches[f'baseline_{bname}_npho'] = bpred.astype(np.float32)
+        branches[f'baseline_{bname}_error_npho'] = berror.astype(np.float32)
 
     # --- Save ---
     metadata = {

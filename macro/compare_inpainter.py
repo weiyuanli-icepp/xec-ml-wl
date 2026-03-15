@@ -168,8 +168,8 @@ def _load_entry(entry):
         else:
             bl_pred_raw = xf.inverse(data[pred_key])
         bl_error_raw = bl_pred_raw - truth_raw
-        # Validity: finite and not sentinel
-        bl_valid = valid & ~np.isnan(data[err_key]) & (data[err_key] > -998)
+        # Validity: finite (NaN = no prediction, -999 = legacy sentinel)
+        bl_valid = valid & np.isfinite(data[err_key]) & (data[err_key] > -998)
         bl_result = {
             'truth_raw': truth_raw[bl_valid],
             'pred_raw': bl_pred_raw[bl_valid],
@@ -283,7 +283,7 @@ def _load_baselines(path):
             continue
         bl_pred_raw = data[pred_key] if is_raw else xf.inverse(data[pred_key])
         bl_error_raw = bl_pred_raw - truth_raw
-        bl_valid = valid_base & ~np.isnan(data[err_key]) & (data[err_key] > -998)
+        bl_valid = valid_base & np.isfinite(data[err_key])
         bl_result = {
             'truth_raw': truth_raw[bl_valid],
             'pred_raw': bl_pred_raw[bl_valid],
