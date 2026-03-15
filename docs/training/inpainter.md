@@ -162,16 +162,21 @@ python macro/compute_inpainter_baselines.py \
 
 # 4c. Real Data Baselines (with on-the-fly solid angles)
 python macro/compute_inpainter_baselines.py \
-    --input real_data.root --run 430000 --real-data \
-    --compute-solid-angles xyzRecoFI \
-    --output baselines_real_run430000.root
+    --input real_data.root --dead-channel-file dead_channels.txt \
+    --real-data --compute-solid-angles xyzRecoFI \
+    --output baselines_real.root
 
-# 4d. Sensorfront Validation (single checkpoint)
+# 4d. Real Data LocalFit (uses same artificial masking as baselines)
+python macro/run_localfit_realdata.py \
+    --input real_data.root --dead-channel-file dead_channels.txt \
+    --output localfit_real.root
+
+# 4e. Sensorfront Validation (single checkpoint)
 python macro/validate_inpainter_sensorfront.py \
     --checkpoint checkpoint.pth --input mc_data.root \
     --solid-angle-branch solid_angle --output validation_sensorfront/
 
-# 4e. Real Data Validation
+# 4f. Real Data Validation
 python val_data/validate_inpainter_real.py \
     --torchscript inpainter.pt --input real_data.root \
     --run 430000 --output validation_data/
@@ -1333,19 +1338,27 @@ validate_inpainter_sensorfront.py --manifest-only --> run_localfit_sensorfront.p
 Uses `val_data/validate_inpainter_real.py` with artificially masked healthy sensors.
 Output is in raw photons (no normalization) with `mask_type` column.
 
-Baselines and LocalFit can be computed independently of any trained model:
+Baselines and LocalFit can be computed independently of any trained model.
+
+**Important:** For real data, dead channels have no ground truth. Evaluation uses
+**artificially masked healthy sensors** (mask_type=0). All baseline methods must
+use the same artificial masking pattern (seed=42, stratified 15 per event) so
+their predictions are comparable.
 
 ```bash
-# 1. Baselines in raw photon space (run once, no model needed)
-#    --real-data flag handles mask_type properly (only evaluates mask_type=0)
-#    --compute-solid-angles computes solid angles on-the-fly from vertex position
+# 1. Baselines (neighbor avg + solid-angle weighted, run once)
 python macro/compute_inpainter_baselines.py \
-    --input real_data.root --run 430000 --real-data \
+    --input val_data/data/DataGammaAngle_430026-430126.root \
+    --dead-channel-file dead_channels_run430000.txt \
+    --real-data \
     --compute-solid-angles xyzRecoFI \
-    --output baselines_real_run430000.root
+    --output data/inp_baselines_realdata_dcp430000.root
 
-# 2. LocalFit baseline (inner face only, truth branches optional for real data)
-root -l -b -q 'others/LocalFitBaseline.C("real_data.root", "localfit_real.root")'
+# 2. LocalFit baseline (generates same artificial mask, runs ROOT macro)
+python macro/run_localfit_realdata.py \
+    --input val_data/data/DataGammaAngle_430026-430126.root \
+    --dead-channel-file dead_channels_run430000.txt \
+    --output localfit_realdata.root
 
 # 3. ML inference per scan step
 python val_data/validate_inpainter_real.py \
@@ -1354,9 +1367,17 @@ python val_data/validate_inpainter_real.py \
     --output artifacts/inp_scan_s1_baseline/validation_data/
 ```
 
+**How `run_localfit_realdata.py` works:** It generates the same artificial mask
+pattern as `compute_inpainter_baselines.py` (same seed, same stratified masking),
+writes a per-event dead channel file, and runs `LocalFitBaseline.C` with those
+masks. This way LocalFit predicts for the same sensors that have ground truth,
+making the comparison fair.
+
 **Real data workflow summary:**
 ```
-compute_inpainter_baselines.py --real-data --compute-solid-angles xyzRecoFI --> LocalFitBaseline.C (real data) --> compare_inpainter.py --mode data --baselines --localfit
+compute_inpainter_baselines.py --real-data  ──┐
+run_localfit_realdata.py                    ──┤── compare_inpainter.py --mode data
+val_data/validate_inpainter_real.py (×N)    ──┘     --baselines ... --localfit ...
 ```
 
 ### 12.5 Cross-Configuration Comparison
@@ -1375,8 +1396,8 @@ python macro/compare_inpainter.py --mode sensorfront
 
 # Real data comparison with baselines + LocalFit
 python macro/compare_inpainter.py --mode data \
-    --baselines baselines_real_run430000.root \
-    --localfit localfit_real.root
+    --baselines data/inp_baselines_realdata_dcp430000.root \
+    --localfit localfit_realdata.root
 
 # Overlay standalone LocalFitBaseline result (MC)
 python macro/compare_inpainter.py --mode mc \
