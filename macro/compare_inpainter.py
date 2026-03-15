@@ -428,7 +428,8 @@ def main():
 
     # Optionally add standalone LocalFitBaseline result
     if args.localfit:
-        lf_entry = {'label': 'Local Fit', 'color': 'darkred', 'path': args.localfit}
+        lf_entry = {'label': 'Local Fit', 'color': 'darkred', 'path': args.localfit,
+                     'is_baseline': True}
         loaded.append((lf_entry, _load_localfit(args.localfit)))
 
     if not loaded:
@@ -559,9 +560,10 @@ def main():
     methods = []
     for entry, d in loaded:
         cut = d['truth_raw'] >= TRUTH_RAW_MIN
+        is_bl = entry.get('is_baseline', False)
         methods.append((entry['label'], entry['color'],
                          d['truth_raw'][cut], d['error_raw'][cut],
-                         d['face'][cut], False))
+                         d['face'][cut], is_bl))
     if bl_dict:
         for bname, bdef in BASELINE_DEFS.items():
             if bname not in bl_dict:
@@ -640,21 +642,37 @@ def main():
         ax_bar.set_xlim(0, max(vals_bar) * 1.25)
 
         # -- Right panel: per-face relative MAE grouped bar chart --
+        # Separate inpainters from baselines with a gap
         face_names = [fn for _, fn in active_faces]
-        n_methods = len(method_metrics)
         n_faces = len(face_names)
-        bar_width = 0.8 / n_methods
+        mm_inpaint = [m for m in method_metrics if not m['is_bl']]
+        mm_baseline = [m for m in method_metrics if m['is_bl']]
+        n_inp = len(mm_inpaint)
+        n_bl = len(mm_baseline)
+        gap = 0.3 if mm_baseline else 0.0
+        total_width = n_inp + n_bl
+        bar_width = 0.8 / max(total_width, 1)
         x_faces = np.arange(n_faces)
 
-        for mi, mm in enumerate(method_metrics):
+        for mi, mm in enumerate(mm_inpaint):
+            x_offset = (mi - total_width / 2 + 0.5) * bar_width
             face_vals = [mm['face_rel_mae'].get(fn, 0.0) for fn in face_names]
             face_mask = [fn in mm['face_rel_mae'] for fn in face_names]
-            x_offset = (mi - n_methods / 2 + 0.5) * bar_width
+            bar_objs = ax_face.bar(x_faces + x_offset, face_vals, bar_width,
+                                   color=mm['color'], edgecolor='black',
+                                   linewidth=0.3, label=mm['label'])
+            for bi, present in enumerate(face_mask):
+                if not present:
+                    bar_objs[bi].set_alpha(0.0)
+
+        for mi, mm in enumerate(mm_baseline):
+            x_offset = (n_inp + mi - total_width / 2 + 0.5) * bar_width + gap
+            face_vals = [mm['face_rel_mae'].get(fn, 0.0) for fn in face_names]
+            face_mask = [fn in mm['face_rel_mae'] for fn in face_names]
             bar_objs = ax_face.bar(x_faces + x_offset, face_vals, bar_width,
                                    color=mm['color'], edgecolor='black',
                                    linewidth=0.3, label=mm['label'],
-                                   hatch='//' if mm['is_bl'] else '')
-            # Gray out missing faces
+                                   hatch='//')
             for bi, present in enumerate(face_mask):
                 if not present:
                     bar_objs[bi].set_alpha(0.0)
