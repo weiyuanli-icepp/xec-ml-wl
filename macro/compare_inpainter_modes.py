@@ -59,10 +59,11 @@ METHOD_STYLES = {
     'lf':  {'marker': 'D', 'ls': '--', 'lw': 1.2},
 }
 
+# Colors: method determines hue, mode determines shade
 MODE_COLORS = {
-    'mc':           {'ml': 'C0', 'avg': 'C0', 'sa': 'C0', 'lf': 'C0'},
-    'sensorfront':  {'ml': 'C1', 'avg': 'C1', 'sa': 'C1', 'lf': 'C1'},
-    'data':         {'ml': 'C3', 'avg': 'C3', 'sa': 'C3', 'lf': 'C3'},
+    'mc':           {'ml': '#1f77b4', 'avg': '#2ca02c', 'sa': '#d62728', 'lf': '#9467bd'},
+    'data':         {'ml': '#6baed6', 'avg': '#74c476', 'sa': '#fc9272', 'lf': '#c5b0d5'},
+    'sensorfront':  {'ml': '#bdd7e7', 'avg': '#bae4b3', 'sa': '#fcbba1', 'lf': '#dadaeb'},
 }
 
 MODE_LABELS = {
