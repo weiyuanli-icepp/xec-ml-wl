@@ -695,36 +695,36 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
         lines2, labels2 = ax_mu.get_legend_handles_labels()
         axs1[0, 1].legend(lines1 + lines2, labels1 + labels2, fontsize=8)
 
-    # Normalized Resolution (sigma/E) vs True Energy with fit
+    # Normalized Resolution (sigma/E) vs True Energy with fit — in percent
     if gaussian_fit:
         safe_x = np.where(x > 1e-6, x, 1e-6)
-        x_rel, y_rel, ye_rel = x, y / safe_x, ye / safe_x
+        x_rel, y_rel, ye_rel = x, y / safe_x * 100, ye / safe_x * 100
     else:
         safe_true = np.where(np.abs(true) > 1e-6, true, 1e-6)
-        rel_residual = abs_residual / np.abs(safe_true)
+        rel_residual = abs_residual / np.abs(safe_true) * 100
         x_rel, y_rel, ye_rel = _get_binned_stat(true, rel_residual, percentile_68, bins)
     axs1[1, 0].errorbar(x_rel, y_rel, yerr=ye_rel, marker='o', color='tab:green',
                          ms=5, label='Data', **_eb)
 
-    # Fit the resolution model
+    # Fit the resolution model (fit in fraction, display in %)
     fit_label = ""
     try:
         valid = ~np.isnan(y_rel) & ~np.isnan(x_rel) & (x_rel > 0)
         if np.sum(valid) >= 3:
-            popt, pcov = curve_fit(resolution_model, x_rel[valid], y_rel[valid],
+            popt, pcov = curve_fit(resolution_model, x_rel[valid], y_rel[valid] / 100,
                                    p0=[0.02, 0.01, 0.001],
                                    bounds=([0, 0, 0], [1, 1, 1]))
             a_fit, b_fit, c_fit = popt
             x_fit = np.linspace(x_rel[valid].min(), x_rel[valid].max(), 100)
-            y_fit = resolution_model(x_fit, a_fit, b_fit, c_fit)
+            y_fit = resolution_model(x_fit, a_fit, b_fit, c_fit) * 100
             axs1[1, 0].plot(x_fit, y_fit, '-', color='tab:red', linewidth=1.5, label='Fit')
             fit_label = f"\na={a_fit*100:.2f}%/√E, b={b_fit*100:.2f}%, c={c_fit*100:.2f}%/E"
     except Exception:
         pass
 
     axs1[1, 0].set_xlabel("True Energy [MeV]")
-    axs1[1, 0].set_ylabel("σ/E" if gaussian_fit else "68% |Residual|/E")
-    axs1[1, 0].set_title(f"Relative Resolution vs Energy{fit_label}")
+    axs1[1, 0].set_ylabel("σ/E [%]" if gaussian_fit else "68% |Residual|/E [%]")
+    axs1[1, 0].set_title(f"Relative Resolution vs Energy [%]{fit_label}")
     axs1[1, 0].legend(loc='upper right')
 
     # Pred vs True scatter
@@ -795,26 +795,57 @@ def plot_energy_resolution_profile(pred, true, root_data=None, bins=20,
 
         if not gaussian_fit:
             safe_true_all = np.where(np.abs(true) > 1e-6, true, 1e-6)
-            rel_residual_all = np.abs(residual) / np.abs(safe_true_all)
+            rel_residual_all = np.abs(residual) / np.abs(safe_true_all) * 100
             sig_rel_residual = rel_residual_all[sig_mask]
+
+        # Custom W bins for signal region: [15,19] and [19,35.3] as two coarse bins
+        sig_w_bin_edges = np.array([15.0, 19.0, 35.3])
+        sig_uvw_bins = [bins, bins, sig_w_bin_edges]
 
         for i, (uvw_val, label, color, mk) in enumerate(zip(sig_uvw_data, uvw_labels, uvw_colors, uvw_markers)):
             if n_sig > 0:
                 if gaussian_fit:
-                    x, y, ye, _, _, binfo = _get_binned_gaussian(uvw_val, sig_residual, uvw_bins[i])
+                    x, y, ye, _, _, binfo = _get_binned_gaussian(uvw_val, sig_residual, sig_uvw_bins[i])
                     hist_figs.append(_plot_bin_histograms(
                         binfo, "Residual [MeV]",
                         f"Rel. Res. vs {label} (50–55 MeV) – Bin Histograms"))
-                    y = y / mean_sig_e
-                    ye = ye / mean_sig_e
+                    y = y / mean_sig_e * 100
+                    ye = ye / mean_sig_e * 100
                 else:
-                    x, y, ye = _get_binned_stat(uvw_val, sig_rel_residual, percentile_68, uvw_bins[i])
+                    x, y, ye = _get_binned_stat(uvw_val, sig_rel_residual, percentile_68, sig_uvw_bins[i])
                 axs2[1, i].errorbar(x, y, yerr=ye, marker=mk, color=color, ms=5, **_eb)
             axs2[1, i].set_xlabel(f"True {label} [cm]")
-            axs2[1, i].set_ylabel("σ/E" if gaussian_fit else "68% |Residual|/E")
+            axs2[1, i].set_ylabel("σ/E [%]" if gaussian_fit else "68% |Residual|/E [%]")
             axs2[1, i].set_title(f"Rel. Resolution vs {label}\n(50–55 MeV, N={n_sig})")
 
         fig2.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+        # --- Page 3: Mean (μ) vs position (only when gaussian_fit & UVW) ---
+        if gaussian_fit:
+            fig3, axs3 = plt.subplots(2, 3, figsize=(15, 9))
+            fig3.suptitle("Energy Bias (μ) vs Position", fontsize=14)
+            all_figs.append(fig3)
+
+            # Row 1: μ vs U, V, W (all events)
+            for i, (uvw_val, label, color, mk) in enumerate(zip(uvw_data, uvw_labels, uvw_colors, uvw_markers)):
+                x, _, _, mu_v, mu_ve, binfo = _get_binned_gaussian(uvw_val, residual, uvw_bins[i])
+                axs3[0, i].errorbar(x, mu_v, yerr=mu_ve, marker=mk, color=color, ms=5, **_eb)
+                axs3[0, i].axhline(0, color='gray', ls='--', lw=0.5)
+                axs3[0, i].set_xlabel(f"True {label} [cm]")
+                axs3[0, i].set_ylabel("μ [MeV]")
+                axs3[0, i].set_title(f"Bias vs {label}")
+
+            # Row 2: μ vs U, V, W for signal region (50-55 MeV)
+            for i, (uvw_val, label, color, mk) in enumerate(zip(sig_uvw_data, uvw_labels, uvw_colors, uvw_markers)):
+                if n_sig > 0:
+                    x, _, _, mu_v, mu_ve, binfo = _get_binned_gaussian(uvw_val, sig_residual, sig_uvw_bins[i])
+                    axs3[1, i].errorbar(x, mu_v, yerr=mu_ve, marker=mk, color=color, ms=5, **_eb)
+                axs3[1, i].axhline(0, color='gray', ls='--', lw=0.5)
+                axs3[1, i].set_xlabel(f"True {label} [cm]")
+                axs3[1, i].set_ylabel("μ [MeV]")
+                axs3[1, i].set_title(f"Bias vs {label}\n(50–55 MeV, N={n_sig})")
+
+            fig3.tight_layout(rect=[0, 0.03, 1, 0.95])
 
     # --- Save ---
     extra_figs = all_figs + hist_figs
