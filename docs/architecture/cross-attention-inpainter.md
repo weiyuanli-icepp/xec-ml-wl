@@ -35,6 +35,77 @@ For each masked sensor i (out of ~238 masked at 5% rate):
      -> predicted value(s) for sensor i
 ```
 
+## Detailed Forward Pass
+
+The shared encoder produces 6 latent tokens (one per face), each 1024-dim. The cross-attention head then predicts values for each masked sensor using **two sources of information**: local neighbors and global latent tokens.
+
+### Step 1: Build Query for Each Masked Sensor
+
+Each masked sensor gets a query vector from its **3D position** and **face ID**:
+
+$$\mathbf{q}_m = [\text{SinEnc}(\mathbf{x}_m) \;\|\; \text{FaceEmb}(f_m)] \in \mathbb{R}^{128}$$
+
+where SinEnc is sinusoidal encoding (96-dim: 16 frequency bands × sin/cos × 3 coordinates) and FaceEmb is a learned 32-dim embedding.
+
+### Step 2: Local Context via KNN Attention
+
+For each masked sensor, gather its k=16 nearest neighbors in 3D space (cross-face — a sensor near the inner face edge can have US/outer neighbors):
+
+$$\mathbf{n}_j = \text{Proj}([\text{npho}_j, \text{time}_j, \text{SinEnc}(\mathbf{x}_j), \text{FaceEmb}(f_j)]) \in \mathbb{R}^{64}$$
+
+Then compute **scaled dot-product attention** over neighbors:
+
+$$\alpha_j = \text{softmax}\left(\frac{\mathbf{n}_j \cdot \mathbf{W}_q \mathbf{q}_m}{\sqrt{64}}\right)$$
+
+Masked/invalid neighbors get $-\infty$ logits. The local context is the weighted sum:
+
+$$\mathbf{h}_{\text{local}} = \sum_{j=1}^{k} \alpha_j \, \mathbf{n}_j \in \mathbb{R}^{64}$$
+
+### Step 3: Global Cross-Attention to 6 Latent Tokens
+
+The 6 latent tokens from the encoder are projected and biased by face:
+
+$$\mathbf{L}_i = \mathbf{W}_L \, \mathbf{z}_i + \mathbf{b}_{f_i} \in \mathbb{R}^{128}$$
+
+Then **multi-head cross-attention** (4 heads, head_dim=32):
+
+$$\text{Attn}(\mathbf{Q}, \mathbf{K}, \mathbf{V}) = \text{softmax}\left(\frac{\mathbf{Q}\mathbf{K}^\top}{\sqrt{32}}\right)\mathbf{V}$$
+
+where:
+- $\mathbf{Q} = \mathbf{W}_Q \, \mathbf{q}_m$ (query from masked sensor position)
+- $\mathbf{K} = \mathbf{W}_K \, \mathbf{L}$ (keys from 6 latent tokens)
+- $\mathbf{V} = \mathbf{W}_V \, \mathbf{L}$ (values from 6 latent tokens)
+
+$$\mathbf{h}_{\text{global}} = \mathbf{W}_O \, \text{concat}(\text{head}_1, \ldots, \text{head}_4) \in \mathbb{R}^{128}$$
+
+### Step 4: Prediction MLP
+
+Concatenate and predict:
+
+$$\hat{y}_m = \text{MLP}([\mathbf{h}_{\text{local}} \;\|\; \mathbf{h}_{\text{global}}])$$
+
+$$\text{MLP}: \mathbb{R}^{192} \xrightarrow{\text{LayerNorm}} \xrightarrow{\text{Linear}(64)} \xrightarrow{\text{GELU}} \xrightarrow{\text{Linear}(\text{out})}$$
+
+### Summary
+
+```
+Masked sensor m
+    │
+    ├─── Query: q_m = [SinEnc(xyz_m) | FaceEmb(f_m)]  (128-dim)
+    │
+    ├─── Local: KNN attention over k=16 neighbors
+    │    neighbor features = [npho, time, pos_enc, face_emb]
+    │    → weighted sum → h_local (64-dim)
+    │
+    ├─── Global: Multi-head cross-attention to 6 latent tokens
+    │    Q=q_m, K/V=projected latent tokens
+    │    → 4 heads → h_global (128-dim)
+    │
+    └─── MLP([h_local | h_global]) → prediction
+```
+
+**Key insight**: the query is **position-based** (not data-based), so the model asks "what should this position read?" by looking at (1) what nearby sensors actually measured and (2) what the global event pattern looks like. This means the head can predict values for any sensor regardless of whether it has ever seen data at that position during training.
+
 ## Key Components
 
 ### Sinusoidal 3D Position Embedding
