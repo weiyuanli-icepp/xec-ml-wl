@@ -21,6 +21,8 @@ Usage in training scripts:
 """
 
 import os
+from datetime import timedelta
+
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -40,7 +42,10 @@ def setup_ddp():
         world_size = int(os.environ["WORLD_SIZE"])
 
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend="nccl")
+        dist.init_process_group(
+            backend="nccl",
+            timeout=timedelta(hours=2),
+        )
 
         return rank, local_rank, world_size
 
