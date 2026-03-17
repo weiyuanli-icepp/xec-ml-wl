@@ -28,6 +28,7 @@ from functools import lru_cache
 DEFAULT_LOGIN_PATH = "meg_ro"
 DEFAULT_DATABASE = "MEG2"
 DEFAULT_HOST = os.environ.get("MYSQL_HOST", "meg.sql.psi.ch")
+DEFAULT_PORT = int(os.environ.get("MYSQL_PORT", "3306"))
 DEFAULT_USER = os.environ.get("MYSQL_USER", "meg_ro")
 DEFAULT_PASSWORD = os.environ.get("MYSQL_PASSWORD", "readonly")
 
@@ -41,7 +42,7 @@ except ImportError:
 
 
 def _run_mysql_query_pymysql(query: str, host: str, user: str, password: str,
-                              database: str) -> List[Tuple]:
+                              database: str, port: int = 3306) -> List[Tuple]:
     """Execute query using pymysql."""
     if not _HAS_PYMYSQL:
         raise RuntimeError("pymysql not installed. Install with: pip install pymysql")
@@ -49,6 +50,7 @@ def _run_mysql_query_pymysql(query: str, host: str, user: str, password: str,
     try:
         conn = pymysql.connect(
             host=host,
+            port=port,
             user=user,
             password=password,
             database=database,
@@ -129,10 +131,11 @@ def _run_mysql_query(query: str, login_path: str = DEFAULT_LOGIN_PATH,
     host = host or DEFAULT_HOST
     user = user or DEFAULT_USER
     password = password or DEFAULT_PASSWORD
+    port = DEFAULT_PORT
 
     # Try pymysql first if credentials are available
     if _HAS_PYMYSQL and host and user and password:
-        return _run_mysql_query_pymysql(query, host, user, password, database)
+        return _run_mysql_query_pymysql(query, host, user, password, database, port=port)
 
     # Fall back to subprocess with --login-path
     return _run_mysql_query_subprocess(query, login_path, database)
