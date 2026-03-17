@@ -52,29 +52,24 @@ def main():
     print("=" * 90)
 
     # Header
-    header = f"{'Period':<14s} {'Run':>7s} {'Total':>6s} {'%':>6s}"
+    header = f"{'Period':<14s} {'Run':>7s} {'Total':>14s}"
     for face in FACES:
-        header += f" | {face:>5s}"
+        header += f" | {face:>13s}"
     print(header)
     print("-" * len(header))
 
     for run, label, info in results:
         dead_set = set(info['dead_channels'])
-        row = f"{label:<14s} {run:>7d} {info['n_dead']:>6d} {info['dead_fraction']*100:>5.1f}%"
+        total_str = f"{info['n_dead']}/{TOTAL_SENSORS} ({info['dead_fraction']*100:.1f}%)"
+        row = f"{label:<14s} {run:>7d} {total_str:>14s}"
         for face in FACES:
             face_ids = FACE_SENSOR_IDS[face]
             count = sum(1 for idx in face_ids if int(idx) in dead_set)
             total = FACE_TOTALS[face]
             pct = 100.0 * count / total
-            row += f" | {pct:>4.1f}%"
+            row += f" | {count:>4d}/{total:>4d} {pct:>4.1f}%"
         print(row)
 
-    # Per-face totals line
-    totals_row = f"{'(sensors)':<14s} {'':>7s} {TOTAL_SENSORS:>6d} {'':>6s}"
-    for face in FACES:
-        totals_row += f" | {FACE_TOTALS[face]:>5d}"
-    print("-" * len(header))
-    print(totals_row)
     print("=" * len(header))
 
     # --- Overlap analysis ---
