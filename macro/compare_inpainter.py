@@ -308,24 +308,26 @@ def _load_baselines(path):
 
 
 def _compute_slice_metrics(truth, error, bin_edges):
-    """Binned MAE, bias, RMS of error.  Returns bin_centers and all three."""
+    """Binned MAE, bias, RMS of error.  Returns bin_centers, mae, bias, rms, counts."""
     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     indices = np.clip(np.digitize(truth, bin_edges) - 1, 0, len(bin_centers) - 1)
 
     mae = np.full(len(bin_centers), np.nan)
     bias = np.full(len(bin_centers), np.nan)
     rms = np.full(len(bin_centers), np.nan)
+    counts = np.zeros(len(bin_centers), dtype=int)
 
     for i in range(len(bin_centers)):
         m = indices == i
-        if m.sum() < MIN_BIN_COUNT:
+        counts[i] = m.sum()
+        if counts[i] < MIN_BIN_COUNT:
             continue
         err = error[m]
         mae[i] = np.mean(np.abs(err))
         bias[i] = np.mean(err)
         rms[i] = np.sqrt(np.mean(err ** 2))
 
-    return bin_centers, mae, bias, rms
+    return bin_centers, mae, bias, rms, counts
 
 
 def _load_mc_energy(mc_path, tree_name='tree'):
@@ -422,6 +424,8 @@ def main():
                         help='Only include these scan steps (e.g. --steps 3)')
     parser.add_argument('--ylim-mae', type=float, default=1.5,
                         help='Y-axis upper limit for relative MAE/RMS plots (default: 1.5)')
+    parser.add_argument('--show-counts', action='store_true',
+                        help='Show number of events per bin on secondary y-axis (log scale, right)')
     parser.add_argument('--only-baselines', type=str, nargs='+', default=None,
                         choices=list(BASELINE_DEFS.keys()),
                         help='Only show these baselines (e.g. --only-baselines sa)')
@@ -579,7 +583,7 @@ def main():
                      if baseline_entry_idx is not None else {}))
 
     # --- Precompute per-face metrics for all entries & baselines ---
-    # metrics_cache[(entry_idx_or_bname, face_int)] = (centers, mae, bias, rms)
+    # metrics_cache[(entry_idx_or_bname, face_int)] = (centers, mae, bias, rms, counts)
     metrics_cache = {}
     for ei, (entry, d) in enumerate(loaded):
         for face_int in FACE_INT_TO_NAME:
@@ -619,7 +623,7 @@ def main():
                                  np.log10(pred_global_max), N_BINS + 1)
 
     # --- Precompute pred-based per-face metrics ---
-    # pred_metrics_cache[(entry_idx_or_bname, face_int)] = (centers, mae, bias, rms)
+    # pred_metrics_cache[(entry_idx_or_bname, face_int)] = (centers, mae, bias, rms, counts)
     pred_metrics_cache = {}
     for ei, (entry, d) in enumerate(loaded):
         for face_int in FACE_INT_TO_NAME:
@@ -799,7 +803,7 @@ def main():
                     key = (ei, face_int)
                     if key not in metrics_cache:
                         continue
-                    centers, mae, bias, rms = metrics_cache[key]
+                    centers, mae, bias, rms, cnts = metrics_cache[key]
                     if metric_key == 'mae':
                         vals = mae / centers
                     elif metric_key == 'rms':
@@ -817,7 +821,7 @@ def main():
                         key = (bname, face_int)
                         if key not in metrics_cache:
                             continue
-                        centers, mae, bias, rms = metrics_cache[key]
+                        centers, mae, bias, rms, cnts = metrics_cache[key]
                         if metric_key == 'mae':
                             vals = mae / centers
                         elif metric_key == 'rms':
@@ -836,6 +840,25 @@ def main():
                 else:
                     ax.set_ylim(-args.ylim_mae, args.ylim_mae)
                 ax.legend(fontsize=7)
+
+                # Overlay bin counts on secondary y-axis
+                if args.show_counts:
+                    # Use counts from first available entry
+                    for ei, (entry, _) in enumerate(loaded):
+                        key = (ei, face_int)
+                        if key in metrics_cache:
+                            _, _, _, _, first_cnts = metrics_cache[key]
+                            ax2 = ax.twinx()
+                            valid_c = first_cnts > 0
+                            if valid_c.any():
+                                c_centers = bin_edges[:-1] * 0.5 + bin_edges[1:] * 0.5
+                                ax2.bar(c_centers[valid_c], first_cnts[valid_c],
+                                        width=np.diff(bin_edges)[valid_c] * 0.8,
+                                        color='gray', alpha=0.15, zorder=0)
+                            ax2.set_yscale('log')
+                            ax2.set_ylabel('Events / bin', fontsize=7, color='gray')
+                            ax2.tick_params(axis='y', labelsize=6, colors='gray')
+                            break
 
             # Hide unused axes
             for idx in range(n_active, len(axes_flat)):
@@ -860,7 +883,7 @@ def main():
                     key = (ei, face_int)
                     if key not in pred_metrics_cache:
                         continue
-                    centers, mae, bias, rms = pred_metrics_cache[key]
+                    centers, mae, bias, rms, cnts = pred_metrics_cache[key]
                     if metric_key == 'mae':
                         vals = mae / centers
                     elif metric_key == 'rms':
@@ -875,7 +898,7 @@ def main():
                         key = (bname, face_int)
                         if key not in pred_metrics_cache:
                             continue
-                        centers, mae, bias, rms = pred_metrics_cache[key]
+                        centers, mae, bias, rms, cnts = pred_metrics_cache[key]
                         if metric_key == 'mae':
                             vals = mae / centers
                         elif metric_key == 'rms':
@@ -894,6 +917,23 @@ def main():
                 else:
                     ax.set_ylim(-args.ylim_mae, args.ylim_mae)
                 ax.legend(fontsize=7)
+
+                if args.show_counts:
+                    for ei, (entry, _) in enumerate(loaded):
+                        key = (ei, face_int)
+                        if key in pred_metrics_cache:
+                            _, _, _, _, first_cnts = pred_metrics_cache[key]
+                            ax2 = ax.twinx()
+                            valid_c = first_cnts > 0
+                            if valid_c.any():
+                                c_centers = pred_bin_edges[:-1] * 0.5 + pred_bin_edges[1:] * 0.5
+                                ax2.bar(c_centers[valid_c], first_cnts[valid_c],
+                                        width=np.diff(pred_bin_edges)[valid_c] * 0.8,
+                                        color='gray', alpha=0.15, zorder=0)
+                            ax2.set_yscale('log')
+                            ax2.set_ylabel('Events / bin', fontsize=7, color='gray')
+                            ax2.tick_params(axis='y', labelsize=6, colors='gray')
+                            break
 
             for idx in range(n_active, len(axes_flat)):
                 axes_flat[idx].set_visible(False)
@@ -983,7 +1023,7 @@ def main():
                             key = (ei, face_int)
                             if key not in ecut_metrics:
                                 continue
-                            centers, mae, bias, rms = ecut_metrics[key]
+                            centers, mae, bias, rms, cnts = ecut_metrics[key]
                             if metric_key == 'mae':
                                 vals = mae / centers
                             elif metric_key == 'rms':
@@ -998,7 +1038,7 @@ def main():
                                 key = (bname, face_int)
                                 if key not in ecut_metrics:
                                     continue
-                                centers, mae, bias, rms = ecut_metrics[key]
+                                centers, mae, bias, rms, cnts = ecut_metrics[key]
                                 if metric_key == 'mae':
                                     vals = mae / centers
                                 elif metric_key == 'rms':
