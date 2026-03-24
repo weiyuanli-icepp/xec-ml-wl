@@ -235,7 +235,7 @@ def fit_double_gaussian(values, nbins='auto'):
         return None, None
 
 
-STRATEGIES = ["raw", "neighavg", "inpainted"]
+STRATEGIES = ["raw", "inpainted"]
 STRATEGY_LABELS = {"raw": "ML raw", "neighavg": "ML avg", "inpainted": "ML inp",
                    "egamma": "conv"}
 STRATEGY_COLORS = {"raw": "tab:red", "neighavg": "tab:orange", "inpainted": "tab:blue",
