@@ -605,8 +605,8 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             ax1.set_xticks(x)
             ax1.set_xticklabels(labels, fontsize=10)
             ax1.set_xlabel("Patch", fontsize=12)
-            ax1.set_ylabel("Core $\\sigma$ [MeV]", fontsize=12)
-            ax1.set_title("Resolution (ExpGaus $\\sigma$)", fontsize=12)
+            ax1.set_ylabel("$\\sigma$ [MeV]", fontsize=12)
+            ax1.set_title("Resolution", fontsize=12)
             ax1.legend(fontsize=12)
 
             for i, s in enumerate(page1_keys):
@@ -618,8 +618,8 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
             ax2.set_xticks(x)
             ax2.set_xticklabels(labels, fontsize=10)
             ax2.set_xlabel("Patch", fontsize=12)
-            ax2.set_ylabel("Core $\\mu$ [MeV]", fontsize=12)
-            ax2.set_title("Bias (ExpGaus $\\mu$)", fontsize=12)
+            ax2.set_ylabel("$\\mu$ [MeV]", fontsize=12)
+            ax2.set_title("Bias", fontsize=12)
             ax2.legend(fontsize=12)
 
             # Relative resolution: σ_strategy / σ_EGamma
