@@ -470,6 +470,11 @@ def main():
     # In cross-mode ("all"), promote each mode's baselines into separate
     # loaded entries so that e.g. SA-wt is compared fairly per mode.
     if cross_mode and BASELINE_DEFS:
+        # Load standalone baselines (--baselines) for modes missing embedded ones
+        standalone_bl = None
+        if args.baselines and Path(args.baselines).exists():
+            standalone_bl = _load_baselines(args.baselines)
+
         extra = []
         # Lighter/dashed versions of mode colors for baselines
         _BL_COLOR = {
@@ -480,9 +485,13 @@ def main():
         for entry, d in loaded:
             mode_name = entry.get('_mode', 'mc')
             for bname in list(BASELINE_DEFS.keys()):
-                if bname not in d['baselines']:
+                # Try embedded baselines first, fall back to standalone
+                if bname in d['baselines']:
+                    bl = d['baselines'][bname]
+                elif standalone_bl is not None and bname in standalone_bl:
+                    bl = standalone_bl[bname]
+                else:
                     continue
-                bl = d['baselines'][bname]
                 bl_label = f"{MODE_DISPLAY[mode_name]['label']} (SA-wt)"
                 bl_entry = {
                     'label': bl_label,
