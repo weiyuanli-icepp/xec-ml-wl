@@ -757,12 +757,33 @@ def main():
         # -- Right panel: per-face grouped bar chart (skip if only 1 face) --
         if show_per_face:
             face_names = [fn for _, fn in active_faces]
-            n_methods = len(method_metrics)
             n_faces = len(face_names)
+
+            # Sort methods: group by color (ML + SA-wt pair), ordered
+            # MC, Data, MC light map peak. ML entry first, then its SA-wt.
+            if cross_mode:
+                _MODE_ORDER = ['mc', 'data', 'sensorfront']
+                _MODE_LABEL = {v['label']: k for k, v in MODE_DISPLAY.items()}
+
+                def _sort_key(mm):
+                    label = mm['label']
+                    # Strip " (SA-wt)" to get base mode label
+                    base = label.replace(' (SA-wt)', '')
+                    mode = _MODE_LABEL.get(base, 'zzz')
+                    order = _MODE_ORDER.index(mode) if mode in _MODE_ORDER else 99
+                    # SA-wt comes after its ML counterpart
+                    is_sa = 1 if '(SA-wt)' in label else 0
+                    return (order, is_sa)
+
+                method_metrics_sorted = sorted(method_metrics, key=_sort_key)
+            else:
+                method_metrics_sorted = method_metrics
+
+            n_methods = len(method_metrics_sorted)
             bar_width = 0.8 / max(n_methods, 1)
             x_faces = np.arange(n_faces)
 
-            for mi, mm in enumerate(method_metrics):
+            for mi, mm in enumerate(method_metrics_sorted):
                 face_vals = [mm['face_rel_mae'].get(fn, 0.0) for fn in face_names]
                 face_mask = [fn in mm['face_rel_mae'] for fn in face_names]
                 x_offset = (mi - n_methods / 2 + 0.5) * bar_width
