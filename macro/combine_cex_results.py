@@ -556,7 +556,7 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
         # Page 1: Resolution (core sigma) vs patch for each strategy
         # ==============================================================
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 11))
-        fig.suptitle("CEX23 55 MeV Energy Peak", fontsize=14)
+        fig.suptitle("CEX23 55 MeV Energy Peak", fontsize=16)
 
         # Include EGamma alongside ML strategies on Page 1
         page1_keys = ["egamma"] + active_strategies
@@ -603,11 +603,11 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                              fmt=STRATEGY_MARKERS[s], color=STRATEGY_COLORS[s],
                              capsize=4, markersize=6, label=STRATEGY_LABELS[s])
             ax1.set_xticks(x)
-            ax1.set_xticklabels(labels, fontsize=8)
-            ax1.set_xlabel("Patch")
-            ax1.set_ylabel("Core $\\sigma$ [MeV]")
-            ax1.set_title("Resolution (ExpGaus $\\sigma$)")
-            ax1.legend(fontsize=9)
+            ax1.set_xticklabels(labels, fontsize=10)
+            ax1.set_xlabel("Patch", fontsize=12)
+            ax1.set_ylabel("Core $\\sigma$ [MeV]", fontsize=12)
+            ax1.set_title("Resolution (ExpGaus $\\sigma$)", fontsize=12)
+            ax1.legend(fontsize=12)
 
             for i, s in enumerate(page1_keys):
                 ax2.errorbar(x + offsets[i], strat_mus[s],
@@ -616,11 +616,11 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                              capsize=4, markersize=6, label=STRATEGY_LABELS[s])
             ax2.axhline(0, color='black', ls='-', lw=0.5)
             ax2.set_xticks(x)
-            ax2.set_xticklabels(labels, fontsize=8)
-            ax2.set_xlabel("Patch")
-            ax2.set_ylabel("Core $\\mu$ [MeV]")
-            ax2.set_title("Bias (ExpGaus $\\mu$)")
-            ax2.legend(fontsize=9)
+            ax2.set_xticklabels(labels, fontsize=10)
+            ax2.set_xlabel("Patch", fontsize=12)
+            ax2.set_ylabel("Core $\\mu$ [MeV]", fontsize=12)
+            ax2.set_title("Bias (ExpGaus $\\mu$)", fontsize=12)
+            ax2.legend(fontsize=12)
 
             # Relative resolution: σ_strategy / σ_EGamma
             eg_sigmas = np.array(strat_sigmas.get("egamma", []))
@@ -641,11 +641,11 @@ def make_plots_dead_channel(patch_data_dc, combined_residuals_dc,
                 ax3.axhline(1.0, color='tab:gray', ls='--', lw=1,
                             label='conv')
                 ax3.set_xticks(x)
-                ax3.set_xticklabels(labels, fontsize=8)
-                ax3.set_xlabel("Patch")
-                ax3.set_ylabel("$\\sigma / \\sigma_{EGamma}$")
-                ax3.set_title("Resolution Relative to EGamma")
-                ax3.legend(fontsize=9)
+                ax3.set_xticklabels(labels, fontsize=10)
+                ax3.set_xlabel("Patch", fontsize=12)
+                ax3.set_ylabel("$\\sigma / \\sigma_{\\mathrm{conv}}$", fontsize=12)
+                ax3.set_title("Resolution Relative to conv", fontsize=12)
+                ax3.legend(fontsize=12)
 
         fig.tight_layout(rect=[0, 0, 1, 0.95])
         pdf.savefig(fig)
