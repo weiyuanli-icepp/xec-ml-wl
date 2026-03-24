@@ -832,10 +832,11 @@ def main():
                     else:
                         vals = bias / centers
                     is_bl = entry.get('is_baseline', False)
-                    style = 's--' if is_bl else 'o-'
+                    marker = 's' if is_bl else 'o'
                     alpha = 0.8 if is_bl else 1.0
-                    _plot_valid(ax, centers, vals, style, color=entry['color'],
-                               markersize=3, alpha=alpha, label=entry['label'])
+                    _plot_valid(ax, centers, vals, marker, color=entry['color'],
+                               markersize=5, alpha=alpha, linestyle='none',
+                               label=entry['label'])
 
                 if bl_dict:
                     for bname, bdef in BASELINE_DEFS.items():
@@ -849,8 +850,9 @@ def main():
                             vals = rms / centers
                         else:
                             vals = bias / centers
-                        _plot_valid(ax, centers, vals, 's--', color=bdef['color'],
-                                   markersize=3, alpha=0.8, label=bdef['label'])
+                        _plot_valid(ax, centers, vals, 's', color=bdef['color'],
+                                   markersize=5, alpha=0.8, linestyle='none',
+                                   label=bdef['label'])
 
                 ax.set_xscale('log')
                 ax.set_xlabel('Truth Npho [photons]')
@@ -911,8 +913,8 @@ def main():
                         vals = rms / centers
                     else:
                         vals = bias / centers
-                    _plot_valid(ax, centers, vals, 'o-', color=entry['color'],
-                               markersize=3, label=entry['label'])
+                    _plot_valid(ax, centers, vals, 'o', color=entry['color'],
+                               markersize=5, linestyle='none', label=entry['label'])
 
                 if bl_dict:
                     for bname, bdef in BASELINE_DEFS.items():
@@ -926,8 +928,9 @@ def main():
                             vals = rms / centers
                         else:
                             vals = bias / centers
-                        _plot_valid(ax, centers, vals, 's--', color=bdef['color'],
-                                   markersize=3, alpha=0.8, label=bdef['label'])
+                        _plot_valid(ax, centers, vals, 's', color=bdef['color'],
+                                   markersize=5, alpha=0.8, linestyle='none',
+                                   label=bdef['label'])
 
                 ax.set_xscale('log')
                 ax.set_xlabel('Pred Npho [photons]')
@@ -1051,8 +1054,9 @@ def main():
                                 vals = rms / centers
                             else:
                                 vals = bias / centers
-                            _plot_valid(ax, centers, vals, 'o-', color=entry['color'],
-                                       markersize=3, label=entry['label'])
+                            _plot_valid(ax, centers, vals, 'o', color=entry['color'],
+                                       markersize=5, linestyle='none',
+                                       label=entry['label'])
 
                         if bl_dict:
                             for bname, bdef in BASELINE_DEFS.items():
@@ -1066,9 +1070,10 @@ def main():
                                     vals = rms / centers
                                 else:
                                     vals = bias / centers
-                                _plot_valid(ax, centers, vals, 's--',
+                                _plot_valid(ax, centers, vals, 's',
                                             color=bdef['color'],
-                                            markersize=3, alpha=0.8,
+                                            markersize=5, alpha=0.8,
+                                            linestyle='none',
                                             label=bdef['label'])
 
                         ax.set_xscale('log')
