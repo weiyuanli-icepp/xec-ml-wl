@@ -410,12 +410,29 @@ def main():
                         metavar=('E_MIN', 'E_MAX'),
                         help='Energy range in MeV for additional filtered pages '
                              '(e.g. --energy-range 45 50)')
+    parser.add_argument('--steps', type=int, nargs='+', default=None,
+                        help='Only include these scan steps (e.g. --steps 3)')
+    parser.add_argument('--only-baselines', type=str, nargs='+', default=None,
+                        choices=list(BASELINE_DEFS.keys()),
+                        help='Only show these baselines (e.g. --only-baselines sa)')
     args = parser.parse_args()
 
     if args.output is None:
         args.output = f'compare_inpainter_{args.mode}.pdf'
 
     entries = ENTRIES_BY_MODE[args.mode]
+
+    # Filter entries by step number if --steps is given
+    if args.steps is not None:
+        step_set = set(args.steps)
+        entries = [e for i, e in enumerate(entries) if (i + 1) in step_set]
+
+    # Filter baselines if --only-baselines is given
+    if args.only_baselines is not None:
+        keep = set(args.only_baselines)
+        for bname in list(BASELINE_DEFS.keys()):
+            if bname not in keep:
+                del BASELINE_DEFS[bname]
     print(f"[INFO] Mode: {args.mode} ({len(entries)} entries)")
 
     # Load all entries (skip missing files)
