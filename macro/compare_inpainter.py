@@ -767,13 +767,13 @@ def main():
 
                 def _sort_key(mm):
                     label = mm['label']
-                    # Strip " (SA-wt)" to get base mode label
-                    base = label.replace(' (SA-wt)', '')
+                    # Strip " (SA-wt)" / " (inpainter)" to get base mode label
+                    base = label.replace(' (SA-wt)', '').replace(' (inpainter)', '')
                     mode = _MODE_LABEL.get(base, 'zzz')
                     order = _MODE_ORDER.index(mode) if mode in _MODE_ORDER else 99
-                    # SA-wt comes after its ML counterpart
-                    is_sa = 1 if '(SA-wt)' in label else 0
-                    return (order, is_sa)
+                    # SA-wt first (0), then inpainter (1)
+                    is_inpainter = 0 if '(SA-wt)' in label else 1
+                    return (is_inpainter, order)
 
                 method_metrics_sorted = sorted(method_metrics, key=_sort_key)
             else:
