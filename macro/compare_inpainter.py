@@ -428,9 +428,13 @@ def main():
     if args.output is None:
         args.output = f'compare_inpainter_{args.mode}.pdf'
 
-    if args.mode == 'all':
-        # Cross-mode comparison: load selected step(s) from each mode
+    cross_mode = (args.mode == 'all')
+    if cross_mode:
+        # Cross-mode comparison: load selected step(s) from each mode,
+        # and promote per-mode baselines into separate entries so each
+        # mode's SA baseline is plotted independently.
         entries = []
+        _cross_mode_baseline_entries = []  # (entry_dict, mode_name) to load later
         for mode_name, mode_entries in ENTRIES_BY_MODE.items():
             disp = MODE_DISPLAY[mode_name]
             filtered = mode_entries
@@ -438,7 +442,8 @@ def main():
                 step_set = set(args.steps)
                 filtered = [e for i, e in enumerate(filtered) if (i + 1) in step_set]
             for e in filtered:
-                entries.append({**e, 'label': disp['label'], 'color': disp['color']})
+                entries.append({**e, 'label': disp['label'], 'color': disp['color'],
+                                '_mode': mode_name})
     else:
         entries = ENTRIES_BY_MODE[args.mode]
         # Filter entries by step number if --steps is given
@@ -461,6 +466,48 @@ def main():
             print(f"[WARN] Skipping {entry['label']}: {entry['path']} not found")
             continue
         loaded.append((entry, _load_entry(entry)))
+
+    # In cross-mode ("all"), promote each mode's baselines into separate
+    # loaded entries so that e.g. SA-wt is compared fairly per mode.
+    if cross_mode and BASELINE_DEFS:
+        extra = []
+        # Lighter/dashed versions of mode colors for baselines
+        _BL_COLOR = {
+            "mc":          "cornflowerblue",
+            "sensorfront": "mediumseagreen",
+            "data":        "salmon",
+        }
+        for entry, d in loaded:
+            mode_name = entry.get('_mode', 'mc')
+            for bname in list(BASELINE_DEFS.keys()):
+                if bname not in d['baselines']:
+                    continue
+                bl = d['baselines'][bname]
+                bl_label = f"{MODE_DISPLAY[mode_name]['label']} (SA-wt)"
+                bl_entry = {
+                    'label': bl_label,
+                    'color': _BL_COLOR.get(mode_name, 'gray'),
+                    'path': entry['path'],
+                    'is_baseline': True,
+                }
+                bl_data = {
+                    'truth_raw': bl['truth_raw'],
+                    'pred_raw': bl['pred_raw'],
+                    'error_raw': bl['error_raw'],
+                    'face': bl['face'],
+                    'baselines': {},
+                    'meta': d['meta'],
+                }
+                if 'run_number' in bl:
+                    bl_data['run_number'] = bl['run_number']
+                if 'event_number' in bl:
+                    bl_data['event_number'] = bl['event_number']
+                extra.append((bl_entry, bl_data))
+            # Clear baselines from the ML entry so they don't get plotted again
+            d['baselines'] = {}
+        loaded.extend(extra)
+        # Clear BASELINE_DEFS so the old single-baseline code path is skipped
+        BASELINE_DEFS.clear()
 
     # Optionally add standalone LocalFitBaseline result
     if args.localfit:
