@@ -76,12 +76,14 @@ MODE_DISPLAY = {
 # Inpainter = blue family, SA-wt = red/orange family
 CROSS_MODE_STYLE = {
     # (mode, method_type): (color, marker)
+    # Inpainter: blue family
     ("mc",          "inpainter"): {"color": "#1f77b4", "marker": "o"},     # blue circle
-    ("data",        "inpainter"): {"color": "#2ca02c", "marker": "*"},     # green star
-    ("sensorfront", "inpainter"): {"color": "#17becf", "marker": "^"},     # cyan triangle
+    ("data",        "inpainter"): {"color": "#4a9fd4", "marker": "*"},     # lighter blue star
+    ("sensorfront", "inpainter"): {"color": "#7ec8e3", "marker": "^"},     # lightest blue triangle
+    # SA-wt: red family
     ("mc",          "sa"):        {"color": "#d62728", "marker": "o"},     # red circle
-    ("data",        "sa"):        {"color": "#ff7f0e", "marker": "*"},     # orange star
-    ("sensorfront", "sa"):        {"color": "#e377c2", "marker": "^"},     # pink triangle
+    ("data",        "sa"):        {"color": "#e8605d", "marker": "*"},     # lighter red star
+    ("sensorfront", "sa"):        {"color": "#f5a0a0", "marker": "^"},     # lightest red triangle
 }
 
 FACE_INT_TO_NAME = {0: 'INNER', 1: 'US', 2: 'DS', 3: 'OUTER', 4: 'TOP', 5: 'BOT'}
