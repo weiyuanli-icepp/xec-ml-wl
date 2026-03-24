@@ -797,12 +797,12 @@ def main():
 
             ax_face.set_xticks(x_faces)
             ax_face.set_xticklabels(face_names, fontsize=10)
-            ax_face.set_ylabel('Relative MAE')
-            ax_face.set_title('Per-Face Relative MAE  (truth >= 100 photons)')
+            ax_face.set_ylabel('Relative MAE', fontsize=16)
+            ax_face.set_title('Per-Face Relative MAE  (truth >= 100 photons)', fontsize=16)
             ax_face.set_ylim(0, args.ylim_mae)
-            ax_face.legend(fontsize=15, loc='upper right', ncol=2)
+            ax_face.legend(fontsize=15, loc='upper right', ncol=1)
 
-        fig.suptitle(f'Inpainter Comparison Summary — {args.mode}', fontsize=14)
+        fig.suptitle(f'Inpainter Comparison Summary — {args.mode}', fontsize=16)
         plt.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
