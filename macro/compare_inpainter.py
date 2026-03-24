@@ -84,7 +84,7 @@ CROSS_MODE_STYLE = {
     ("sensorfront", "sa"):        {"color": "#e377c2", "marker": "^"},     # pink triangle
 }
 
-FACE_INT_TO_NAME = {0: 'inner', 1: 'us', 2: 'ds', 3: 'outer', 4: 'top', 5: 'bot'}
+FACE_INT_TO_NAME = {0: 'INNER', 1: 'US', 2: 'DS', 3: 'OUTER', 4: 'TOP', 5: 'BOT'}
 
 BASELINE_DEFS = {
     'avg': {'label': 'Neighbor Avg', 'color': 'orange'},
