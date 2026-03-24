@@ -65,6 +65,13 @@ ENTRIES_BY_MODE = {
     "data": ENTRIES_DATA,
 }
 
+# Labels and colors for cross-mode ("all") comparison
+MODE_DISPLAY = {
+    "mc":          {"label": "MC",                "color": "blue"},
+    "sensorfront": {"label": "MC light map peak", "color": "green"},
+    "data":        {"label": "Data",              "color": "red"},
+}
+
 FACE_INT_TO_NAME = {0: 'inner', 1: 'us', 2: 'ds', 3: 'outer', 4: 'top', 5: 'bot'}
 
 BASELINE_DEFS = {
@@ -396,8 +403,9 @@ def main():
     parser.add_argument('-o', '--output', type=str, default=None,
                         help='Output PDF path (default: compare_inpainter_{mode}.pdf)')
     parser.add_argument('--mode', type=str, default='mc',
-                        choices=list(ENTRIES_BY_MODE.keys()),
-                        help='Validation type to compare (default: mc)')
+                        choices=list(ENTRIES_BY_MODE.keys()) + ['all'],
+                        help='Validation type to compare (default: mc). '
+                             '"all" overlays mc/sensorfront/data for selected steps.')
     parser.add_argument('--baselines', type=str, default=None,
                         help='Path to standalone baseline ROOT file '
                              '(from compute_inpainter_baselines.py)')
@@ -420,12 +428,23 @@ def main():
     if args.output is None:
         args.output = f'compare_inpainter_{args.mode}.pdf'
 
-    entries = ENTRIES_BY_MODE[args.mode]
-
-    # Filter entries by step number if --steps is given
-    if args.steps is not None:
-        step_set = set(args.steps)
-        entries = [e for i, e in enumerate(entries) if (i + 1) in step_set]
+    if args.mode == 'all':
+        # Cross-mode comparison: load selected step(s) from each mode
+        entries = []
+        for mode_name, mode_entries in ENTRIES_BY_MODE.items():
+            disp = MODE_DISPLAY[mode_name]
+            filtered = mode_entries
+            if args.steps is not None:
+                step_set = set(args.steps)
+                filtered = [e for i, e in enumerate(filtered) if (i + 1) in step_set]
+            for e in filtered:
+                entries.append({**e, 'label': disp['label'], 'color': disp['color']})
+    else:
+        entries = ENTRIES_BY_MODE[args.mode]
+        # Filter entries by step number if --steps is given
+        if args.steps is not None:
+            step_set = set(args.steps)
+            entries = [e for i, e in enumerate(entries) if (i + 1) in step_set]
 
     # Filter baselines if --only-baselines is given
     if args.only_baselines is not None:
