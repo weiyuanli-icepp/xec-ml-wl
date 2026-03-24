@@ -1282,7 +1282,9 @@ instead of the old k-hop grid neighbor approach.
 
 **MC workflow summary:**
 ```
-compute_inpainter_baselines.py (once) --> run_validate_inpainter.sh (per step) --> compare_inpainter.py --mode mc --baselines
+1. compute_inpainter_baselines.py (once) 
+2. run_validate_inpainter.sh (per step) 
+3. compare_inpainter.py --mode mc --baselines
 ```
 
 ### 12.3 Sensorfront Validation (All Scan Steps)
@@ -1441,11 +1443,11 @@ Baselines and ML inference are independent. Steps 2a-2d can all run in parallel.
                                    │
      ┌──────────────┬──────────────┼──────────────┬──────────────┐
      │              │              │              │              │
-┌────▼─────┐ ┌─────▼──────┐ ┌────▼─────┐ ┌──────▼───────┐ ┌────▼──────┐
-│2a. MC    │ │2b. MC val  │ │2c. SF    │ │2d. Real data │ │2e. Real   │
-│baselines │ │(ML per     │ │prepare + │ │baselines     │ │data val   │
-│(once)    │ │ step)      │ │inference │ │+ LocalFit    │ │(ML per    │
-└────┬─────┘ └─────┬──────┘ └────┬─────┘ └──────┬───────┘ │ step)     │
+┌────▼─────┐ ┌───-──▼──────┐ ┌───-─▼─────┐ ┌──────▼───────┐ ┌────▼──────┐
+│2a. MC    │ │2b. MC val   │ │2c. SF     │ │2d. Real data │ │2e. Real   │
+│baselines │ │(ML per      │ │prepare +  │ │baselines     │ │data val   │
+│(once)    │ │       step) │ │ inference │ │   + LocalFit │ │(ML per    │
+└────┬─────┘ └──-───┬──────┘ └─-───┬─────┘ └──────┬───────┘ │ step)     │
      │              │              │              │         └────┬──────┘
      └──────────────┴──────────────┴──────────────┴──────────────┘
                                    │
