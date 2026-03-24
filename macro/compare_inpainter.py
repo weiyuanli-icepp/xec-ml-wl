@@ -448,8 +448,8 @@ def main():
                 step_set = set(args.steps)
                 filtered = [e for i, e in enumerate(filtered) if (i + 1) in step_set]
             for e in filtered:
-                entries.append({**e, 'label': disp['label'], 'color': disp['color'],
-                                '_mode': mode_name})
+                entries.append({**e, 'label': f"{disp['label']} (inpainter)",
+                                'color': disp['color'], '_mode': mode_name})
     else:
         entries = ENTRIES_BY_MODE[args.mode]
         # Filter entries by step number if --steps is given
