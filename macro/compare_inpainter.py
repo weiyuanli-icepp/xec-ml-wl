@@ -72,6 +72,18 @@ MODE_DISPLAY = {
     "data":        {"label": "Data",              "color": "red"},
 }
 
+# Cross-mode styling: same method shares a color, different modes use different markers
+# Inpainter = blue family, SA-wt = red/orange family
+CROSS_MODE_STYLE = {
+    # (mode, method_type): (color, marker)
+    ("mc",          "inpainter"): {"color": "#1f77b4", "marker": "o"},     # blue circle
+    ("data",        "inpainter"): {"color": "#2ca02c", "marker": "*"},     # green star
+    ("sensorfront", "inpainter"): {"color": "#17becf", "marker": "^"},     # cyan triangle
+    ("mc",          "sa"):        {"color": "#d62728", "marker": "o"},     # red circle
+    ("data",        "sa"):        {"color": "#ff7f0e", "marker": "*"},     # orange star
+    ("sensorfront", "sa"):        {"color": "#e377c2", "marker": "^"},     # pink triangle
+}
+
 FACE_INT_TO_NAME = {0: 'inner', 1: 'us', 2: 'ds', 3: 'outer', 4: 'top', 5: 'bot'}
 
 BASELINE_DEFS = {
@@ -448,8 +460,11 @@ def main():
                 step_set = set(args.steps)
                 filtered = [e for i, e in enumerate(filtered) if (i + 1) in step_set]
             for e in filtered:
+                sty = CROSS_MODE_STYLE.get((mode_name, "inpainter"), {})
                 entries.append({**e, 'label': f"{disp['label']} (inpainter)",
-                                'color': disp['color'], '_mode': mode_name})
+                                'color': sty.get('color', disp['color']),
+                                '_marker': sty.get('marker', 'o'),
+                                '_mode': mode_name})
     else:
         entries = ENTRIES_BY_MODE[args.mode]
         # Filter entries by step number if --steps is given
@@ -499,9 +514,11 @@ def main():
                 else:
                     continue
                 bl_label = f"{MODE_DISPLAY[mode_name]['label']} (SA-wt)"
+                sty = CROSS_MODE_STYLE.get((mode_name, "sa"), {})
                 bl_entry = {
                     'label': bl_label,
-                    'color': _BL_COLOR.get(mode_name, 'gray'),
+                    'color': sty.get('color', _BL_COLOR.get(mode_name, 'gray')),
+                    '_marker': sty.get('marker', 's'),
                     'path': entry['path'],
                     'is_baseline': True,
                 }
@@ -832,10 +849,11 @@ def main():
                     else:
                         vals = bias / centers
                     is_bl = entry.get('is_baseline', False)
-                    marker = 's' if is_bl else 'o'
+                    marker = entry.get('_marker', 's' if is_bl else 'o')
                     alpha = 0.8 if is_bl else 1.0
+                    ms = 8 if marker == '*' else 5
                     _plot_valid(ax, centers, vals, marker, color=entry['color'],
-                               markersize=5, alpha=alpha, linestyle='none',
+                               markersize=ms, alpha=alpha, linestyle='none',
                                label=entry['label'])
 
                 if bl_dict:
@@ -913,8 +931,10 @@ def main():
                         vals = rms / centers
                     else:
                         vals = bias / centers
-                    _plot_valid(ax, centers, vals, 'o', color=entry['color'],
-                               markersize=5, linestyle='none', label=entry['label'])
+                    marker = entry.get('_marker', 'o')
+                    ms = 8 if marker == '*' else 5
+                    _plot_valid(ax, centers, vals, marker, color=entry['color'],
+                               markersize=ms, linestyle='none', label=entry['label'])
 
                 if bl_dict:
                     for bname, bdef in BASELINE_DEFS.items():
@@ -1054,8 +1074,10 @@ def main():
                                 vals = rms / centers
                             else:
                                 vals = bias / centers
-                            _plot_valid(ax, centers, vals, 'o', color=entry['color'],
-                                       markersize=5, linestyle='none',
+                            marker = entry.get('_marker', 'o')
+                            ms = 8 if marker == '*' else 5
+                            _plot_valid(ax, centers, vals, marker, color=entry['color'],
+                                       markersize=ms, linestyle='none',
                                        label=entry['label'])
 
                         if bl_dict:
