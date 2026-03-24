@@ -420,6 +420,8 @@ def main():
                              '(e.g. --energy-range 45 50)')
     parser.add_argument('--steps', type=int, nargs='+', default=None,
                         help='Only include these scan steps (e.g. --steps 3)')
+    parser.add_argument('--ylim-mae', type=float, default=1.5,
+                        help='Y-axis upper limit for relative MAE/RMS plots (default: 1.5)')
     parser.add_argument('--only-baselines', type=str, nargs='+', default=None,
                         choices=list(BASELINE_DEFS.keys()),
                         help='Only show these baselines (e.g. --only-baselines sa)')
@@ -829,9 +831,9 @@ def main():
                 ax.set_ylabel(ylabel)
                 ax.set_title(face_name)
                 if metric_key in ('mae', 'rms'):
-                    ax.set_ylim(0, 1.5)
+                    ax.set_ylim(0, args.ylim_mae)
                 else:
-                    ax.set_ylim(-1.5, 1.5)
+                    ax.set_ylim(-args.ylim_mae, args.ylim_mae)
                 ax.legend(fontsize=7)
 
             # Hide unused axes
@@ -887,9 +889,9 @@ def main():
                 ax.set_ylabel(ylabel)
                 ax.set_title(face_name)
                 if metric_key in ('mae', 'rms'):
-                    ax.set_ylim(0, 1.5)
+                    ax.set_ylim(0, args.ylim_mae)
                 else:
-                    ax.set_ylim(-1.5, 1.5)
+                    ax.set_ylim(-args.ylim_mae, args.ylim_mae)
                 ax.legend(fontsize=7)
 
             for idx in range(n_active, len(axes_flat)):
