@@ -1359,6 +1359,8 @@ def collect_cli_overrides(args):
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.set_start_method("forkserver", force=True)
     parser = get_parser()
     args = parser.parse_args()
 
