@@ -21,7 +21,7 @@
 *.C_ACLiC_dict_rdict.pcm
 *.dSYM/
 
-# --- Common build/output dirs (adjust to your tree) ---
+# --- Common build/output dirs ---
 build/
 build-*/
 cmake-build-*/
@@ -35,7 +35,7 @@ out/
 *_C_ACLiC_dict*
 *_C.d.bak
 
-# --- ROOT ACLiC temp dirs (typical) ---
+# --- ROOT ACLiC temp dirs ---
 */tmp/aclic_build*/
 */analyzer/tmp/
 */analyzer/tmp/*
@@ -64,7 +64,7 @@ Thumbs.db
 # --- Linter configs (local) ---
 .markdownlint.json
 
-# --- Secrets (set actual names if you have them) ---
+# --- Secrets ---
 *.pem
 *.key
 *.crt
@@ -111,7 +111,7 @@ datasets/
 *.tar
 *.tar.gz
 
-# CUDA build cache (sometimes appears)
+# CUDA build cache
 .cache/
 
 # MLflow artifacts
