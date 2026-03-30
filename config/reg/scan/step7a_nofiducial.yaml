@@ -1,4 +1,4 @@
-# Step 8: Fine-tune energy regressor without fiducial cut
+# Step 7a: Fine-tune energy regressor without fiducial cut
 # Resume from step7 best checkpoint to improve edge-region performance
 
 data:
@@ -92,7 +92,7 @@ distributed:
 
 mlflow:
   experiment: "gamma_energy"
-  run_name: "scan_s8_nofiducial"
+  run_name: "scan_s7a_nofiducial"
 
 export:
   onnx: null
