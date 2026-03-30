@@ -128,9 +128,9 @@ class XECStreamingDataset(IterableDataset):
         # Logging for invalid npho values (unexpected data issues)
         self.log_invalid_npho = log_invalid_npho
 
-        # ThreadPool for CPU-bound normalization
+        # ThreadPool for CPU-bound normalization (lazy init for picklability)
         self.num_threads = num_workers
-        self.executor = ThreadPoolExecutor(max_workers=num_workers)
+        self.executor = None
 
     def _reset_profile_stats(self):
         """Reset profiling statistics."""
@@ -311,6 +311,11 @@ class XECStreamingDataset(IterableDataset):
                 process_start = time.perf_counter()
 
             num_events = len(chunk[self.input_branches[0]])
+
+            # Lazy-init executor (created here, not in __init__, for picklability
+            # with forkserver/spawn multiprocessing start methods)
+            if self.executor is None:
+                self.executor = ThreadPoolExecutor(max_workers=self.num_threads)
 
             indices = np.linspace(0, num_events, self.num_threads + 1, dtype=int)
             futures = []
