@@ -1,0 +1,102 @@
+# ===================================================
+# Inpainter Fine-tuning: Real Data v2 (lower LR continuation)
+# ===================================================
+# Continues from finetune_realdata best checkpoint (epoch 50, val=0.001663).
+# Val loss was still dropping at end of v1 — extend with 5x lower LR.
+#
+# Usage:
+#   CONFIG_PATH=config/inp/finetune_realdata_v2.yaml \
+#   RUN_NAME=inp_finetune_realdata_v2 \
+#   ./jobs/submit_inpainter.sh
+
+data:
+  train_path: "~/meghome/xec-ml-wl/data/real_data/train/"
+  val_path: "~/meghome/xec-ml-wl/data/real_data/val/"
+  tree_name: "tree"
+  batch_size: 1024
+  chunksize: 131072
+  num_workers: 2
+  prefetch_factor: 16
+  num_threads: 16
+  npho_branch: "npho"
+  time_branch: "relative_time"
+  log_invalid_npho: true
+
+normalization:
+  npho_scheme: log1p
+  npho_scale: 1000
+  npho_scale2: 4.08
+  time_scale: 1.14e-7
+  time_shift: -0.46
+  sentinel_time: -1.0
+  sentinel_npho: -1.0
+  npho_threshold: 100.0
+
+model:
+  outer_mode: "finegrid"
+  outer_fine_pool: [2, 2]
+  mask_ratio: 0.10
+  mask_npho_flat: false
+  freeze_encoder: false
+  use_local_context: true
+  predict_channels: [npho]
+  use_masked_attention: true
+  head_type: cross_attention
+  sensor_positions_file: "/data/user/ext-li_w1/meghome/xec-ml-wl/lib/sensor_positions.txt"
+  cross_attn_k: 16
+  cross_attn_hidden: 64
+  cross_attn_latent_dim: 128
+  cross_attn_pos_dim: 96
+  encoder_dim: 1024
+  dim_feedforward: 4096
+  num_fusion_layers: 2
+
+training:
+  mae_checkpoint: null
+  epochs: 50
+  lr: 1.0e-5                            # 5x lower than v1 (was 5e-5)
+  lr_scheduler: "cosine"
+  lr_min: 1.0e-7                         # Lower floor (was 1e-6)
+  warmup_epochs: 2
+  weight_decay: 1.0e-4
+  loss_fn: "smooth_l1"
+  loss_beta: 0.1
+  npho_weight: 1.0
+  grad_clip: 1.0
+  amp: true
+  compile: none
+  compile_fullgraph: false
+  track_mae_rmse: false
+  grad_accum_steps: 1
+  track_metrics: true
+  ema_decay: null
+  profile: false
+  time:
+    weight: 1.0
+    mask_ratio_scale: 1.0
+    use_npho_weight: true
+    npho_threshold: 100
+  npho_loss_weight:
+    enabled: true
+    alpha: 0.5
+  intensity_reweighting:
+    enabled: false
+    nbins: 5
+    target: uniform
+
+checkpoint:
+  resume_from: "artifacts/inp_finetune_realdata/inpainter_checkpoint_best.pth"
+  save_dir: "artifacts/inp_finetune_realdata_v2"
+  save_interval: 5
+  save_predictions: true
+  root_save_interval: 10
+  reset_epoch: true                      # Start from epoch 0 with best weights
+  refresh_lr: true                       # Fresh cosine schedule with lower LR
+  new_mlflow_run: true                   # New MLflow run for tracking
+
+distributed:
+  num_gpus: 4
+
+mlflow:
+  experiment: "inpainting"
+  run_name: "inp_finetune_realdata_v2"
