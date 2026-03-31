@@ -111,9 +111,11 @@ def main():
                 # Smoothed trend line (exponential moving average in log space)
                 if len(sub) > 3:
                     from scipy.ndimage import uniform_filter1d
+                    win = min(15, len(sub) // 2)
                     log_vals = np.log(sub["value"].values * scale)
-                    smoothed = np.exp(uniform_filter1d(log_vals, size=min(15, len(sub) // 2)))
-                    ax.plot(sub["step"].values, smoothed, linestyle="-",
+                    smoothed = np.exp(uniform_filter1d(log_vals, size=win))
+                    skip = win // 2  # skip boundary-affected points
+                    ax.plot(sub["step"].values[skip:], smoothed[skip:], linestyle="-",
                             color=line_color, linewidth=2, alpha=0.9)
 
         ax.set_xlabel("Epoch", fontsize=15)
