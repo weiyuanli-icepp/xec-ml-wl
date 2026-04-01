@@ -79,13 +79,13 @@ reweighting:
     nbins: 30
 
 checkpoint:
-  resume_from: "artifacts/scan_s7_fulldata/checkpoint_best.pth"
+  resume_from: "artifacts/scan_s7a_nofiducial/checkpoint_last.pth"
   save_dir: "artifacts"
   save_interval: 10
   save_artifacts: true
-  new_mlflow_run: true
-  reset_epoch: true
-  refresh_lr: true
+  new_mlflow_run: false
+  reset_epoch: false
+  refresh_lr: false
 
 distributed:
   num_gpus: 4
