@@ -5,7 +5,7 @@ data:
   train_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/train_max"
   val_path: "~/meghome/xec-ml-wl/data/E15to60_AngUni_PosSQ/val"
   tree_name: "tree"
-  batch_size: 1024
+  batch_size: 2048
   chunksize: 131072
   num_workers: 2
   prefetch_factor: 16
