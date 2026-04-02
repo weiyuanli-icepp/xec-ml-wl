@@ -111,7 +111,7 @@ void PrepareRealDataFromList(TString runListFile, Int_t jobIndex, TString output
    std::cout << "[INFO] Processing run " << runNumber << ": " << filePath << std::endl;
 
    gSystem->mkdir(outputDir.Data(), kTRUE);
-   TString outFile = Form("%s/DataGammaAngle_%06d.root", outputDir.Data(), runNumber);
+   TString outFile = Form("%s/DataGamma_%06d.root", outputDir.Data(), runNumber);
    _PrepareRealData_impl(rec, outFile);
 }
 
@@ -149,7 +149,7 @@ void PrepareRealData(Int_t sRun = 430000, Int_t nfile = 2000, TString fileSuffix
       std::cout << "Added: " << file << std::endl;
    }
 
-   TString outFile = Form("DataGammaAngle_%d-%d.root", startRun, lastRun);
+   TString outFile = Form("DataGamma_%d-%d.root", startRun, lastRun);
    _PrepareRealData_impl(rec, outFile);
 }
 
