@@ -91,7 +91,7 @@ checkpoint:
   refresh_lr: false
 
 distributed:
-  num_gpus: 4
+  num_gpus: 1
 
 mlflow:
   experiment: "gamma_angle"
