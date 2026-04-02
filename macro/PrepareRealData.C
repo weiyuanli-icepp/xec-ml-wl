@@ -416,16 +416,29 @@ std::map<Int_t, TString> PrepareRunList(TString dir, TString suffix, Int_t start
    int run = startRun;
    int consecutive_misses = 0;
 
+   // Try suffixes in order: requested suffix, then no suffix (.root)
+   std::vector<TString> suffixes;
+   suffixes.push_back(suffix);
+   if (suffix != ".root") {
+      suffixes.push_back(".root");
+   }
+
    while (found < (maxNRuns > 0 ? maxNRuns : 10000) && consecutive_misses < 1000) {
-      TString path = Form("%s/%03dxxx/rec%06d%s", dir.Data(), run/1000, run, suffix.Data());
-      if (gSystem->AccessPathName(path)) {
-         path = Form("%s/rec%06d%s", dir.Data(), run, suffix.Data());
+      Bool_t matched = kFALSE;
+      for (const auto& suf : suffixes) {
+         TString path = Form("%s/%03dxxx/rec%06d%s", dir.Data(), run/1000, run, suf.Data());
+         if (gSystem->AccessPathName(path)) {
+            path = Form("%s/rec%06d%s", dir.Data(), run, suf.Data());
+         }
+         if (!gSystem->AccessPathName(path)) {
+            files[run] = path;
+            found++;
+            consecutive_misses = 0;
+            matched = kTRUE;
+            break;
+         }
       }
-      if (!gSystem->AccessPathName(path)) {
-         files[run] = path;
-         found++;
-         consecutive_misses = 0;
-      } else {
+      if (!matched) {
          consecutive_misses++;
       }
       run++;
