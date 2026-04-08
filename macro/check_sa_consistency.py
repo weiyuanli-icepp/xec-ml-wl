@@ -138,25 +138,24 @@ def load_meganalyzer_recovery(rec_path):
 
     import awkward as ak
     print(f"[INFO] npho raw type: {npho_raw.type}")
+    print("[INFO] Vectorizing to (n_events, 4760) numpy arrays...")
 
-    # Expect shape (events, 4760, nGamma_per_event)
-    # Convert to numpy, taking gamma 0
     n_events = len(npho_raw)
-    npho_np = np.full((n_events, 4760), np.nan, dtype=np.float32)
-    recovered_np = np.zeros((n_events, 4760), dtype=np.int8)
 
-    for i in range(n_events):
-        pm_list = npho_raw[i]
-        rec_list = recovered_raw[i]
-        n_pm = len(pm_list)
-        if n_pm == 0:
-            continue
-        for pm_idx in range(min(n_pm, 4760)):
-            g = pm_list[pm_idx]
-            r = rec_list[pm_idx]
-            if len(g) > 0:
-                npho_np[i, pm_idx] = float(g[0])
-                recovered_np[i, pm_idx] = int(r[0])
+    # Shape: (n_events, var PMs, var gammas). Take first gamma per PM.
+    # ak.firsts collapses the innermost axis by taking the first element
+    # (None if empty).
+    npho_first = ak.firsts(npho_raw, axis=-1)           # (n_events, var PMs)
+    recovered_first = ak.firsts(recovered_raw, axis=-1)  # (n_events, var PMs)
+
+    # Pad to exactly 4760 PMs per event (clip if longer) so we can convert
+    # to a rectangular numpy array.
+    npho_padded = ak.pad_none(npho_first, 4760, clip=True, axis=1)
+    recovered_padded = ak.pad_none(recovered_first, 4760, clip=True, axis=1)
+
+    # Fill missing with sentinels and convert to numpy
+    npho_np = ak.to_numpy(ak.fill_none(npho_padded, np.nan)).astype(np.float32)
+    recovered_np = ak.to_numpy(ak.fill_none(recovered_padded, 0)).astype(np.int8)
 
     print(f"[INFO] Loaded {n_events} events, "
           f"{int(recovered_np.sum())} total dead-channel entries")
