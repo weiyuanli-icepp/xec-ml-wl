@@ -116,8 +116,10 @@ def load_rec(rec_path, max_events=None):
             "xecenepmweight.nphorecovered",
         ])
         xyz_key = _find_branch(tree, [
+            "xecposlfit/xecposlfit.xyz[3]",
             "xecposlfit/xecposlfit.xyz",
             "xecposlfit./xecposlfit.xyz",
+            "xecposlfit.xyz[3]",
             "xecposlfit.xyz",
         ])
 
@@ -135,7 +137,10 @@ def load_rec(rec_path, max_events=None):
         if rec_key is None:
             rec_key = _suffix_scan("xecenepmweight", ".nphorecovered")
         if xyz_key is None:
-            xyz_key = _suffix_scan("xecposlfit", ".xyz")
+            for k in tree.keys():
+                if "xecposlfit" in k and (k.endswith(".xyz") or k.endswith(".xyz[3]")):
+                    xyz_key = k
+                    break
 
         # Discover run/event branches
         run_key = None
