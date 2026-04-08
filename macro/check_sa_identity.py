@@ -163,6 +163,12 @@ def load_rec(rec_path, max_events=None):
         for name, key in branches.items():
             print(f"[INFO] {name:>22s}: {key}")
             if key is None:
+                # Print available xecposlfit branches for debugging
+                if name == "xecposlfit.xyz":
+                    print("[DEBUG] Available xecposlfit branches:")
+                    for k in tree.keys():
+                        if "xecposlfit" in k:
+                            print(f"   {k}")
                 raise RuntimeError(f"Could not find '{name}' branch")
 
         entry_stop = max_events if max_events else None
