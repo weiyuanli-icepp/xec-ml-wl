@@ -288,15 +288,26 @@ def _build_distance_neighbors(distance_threshold: float = 20.0,
     Matches MEGTXECEnePMWeight::RecoverDeadChannelFromSurroundings
     neighbor selection.
 
+    Uses positions from `lib/sensor_directions.txt` (format:
+    `id dir_x dir_y dir_z pos_x pos_y pos_z face`), which matches the
+    XECPMRunHeader geometry used by meganalyzer at runtime. The older
+    `lib/sensor_positions.txt` file had slightly different values (a few
+    mm off) which caused neighbor-set mismatches near the 20 cm threshold.
+
     Returns (nbr_indices, nbr_counts) with shapes (N_SENSORS, max_nbrs)
     and (N_SENSORS,).
     """
     import os
     if sensor_positions_path is None:
         sensor_positions_path = os.path.join(
-            os.path.dirname(__file__), "sensor_positions.txt")
+            os.path.dirname(__file__), "sensor_directions.txt")
     pos_data = np.loadtxt(sensor_positions_path, comments='#')
-    xyz = pos_data[:, 1:4]  # (N_SENSORS, 3)
+    # Auto-detect layout: sensor_directions.txt has 8 columns (id, dir_xyz,
+    # pos_xyz, face), sensor_positions.txt has 4 columns (id, pos_xyz).
+    if pos_data.shape[1] >= 7:
+        xyz = pos_data[:, 4:7]   # sensor_directions.txt: pos_xyz
+    else:
+        xyz = pos_data[:, 1:4]   # legacy sensor_positions.txt: xyz
 
     sensor_face = _build_sensor_face_map()
     dt2 = distance_threshold ** 2
