@@ -249,15 +249,41 @@ def main():
 
     # --- Statistics ---
     print("\n" + "=" * 60)
-    print("Consistency Check Summary")
+    print("Consistency Check Summary (all entries)")
     print("=" * 60)
     print(f"  N compared             : {len(our_pred):,}")
-    print(f"  Our pred  mean ± std   : {our_pred.mean():.3f} ± {our_pred.std():.3f}")
-    print(f"  Meg pred  mean ± std   : {meg_pred.mean():.3f} ± {meg_pred.std():.3f}")
-    print(f"  diff      mean ± std   : {diff.mean():+.4f} ± {diff.std():.4f}")
-    print(f"  |diff|    mean / max   : {np.abs(diff).mean():.4f} / {np.abs(diff).max():.4f}")
-    print(f"  rel diff  mean ± std   : {rel_diff.mean():+.2%} ± {rel_diff.std():.2%}")
-    print(f"  |rel|     mean / max   : {np.abs(rel_diff).mean():.2%} / {np.abs(rel_diff).max():.2%}")
+    print(f"  Our pred  median       : {np.median(our_pred):.3f}")
+    print(f"  Our pred  [1,50,99]%   : {np.percentile(our_pred, [1, 50, 99])}")
+    print(f"  Meg pred  median       : {np.median(meg_pred):.3f}")
+    print(f"  Meg pred  [1,50,99]%   : {np.percentile(meg_pred, [1, 50, 99])}")
+    print(f"  |diff|    median / p99 : {np.median(np.abs(diff)):.4f} / "
+          f"{np.percentile(np.abs(diff), 99):.4f}")
+    print(f"  |rel|     median / p99 : {np.median(np.abs(rel_diff)):.2%} / "
+          f"{np.percentile(np.abs(rel_diff), 99):.2%}")
+
+    # --- Robust summary: filter to physically reasonable range ---
+    # Meganalyzer's xecenepmweight.npho can contain outliers (e.g. huge values
+    # when the sum of neighbors is large and the solid-angle ratio inflates it).
+    # Use the central 95% to assess "typical" agreement.
+    both_sane = (np.abs(meg_pred) < 1e5) & (np.abs(our_pred) < 1e5)
+    n_sane = int(both_sane.sum())
+    if n_sane > 0:
+        od = our_pred[both_sane]
+        md = meg_pred[both_sane]
+        dd = diff[both_sane]
+        rd = rel_diff[both_sane]
+        print("\n" + "=" * 60)
+        print(f"Filtered to |pred| < 1e5 photons (N={n_sane:,}, "
+              f"{n_sane/len(our_pred)*100:.1f}%)")
+        print("=" * 60)
+        print(f"  Our pred  mean ± std   : {od.mean():+.3f} ± {od.std():.3f}")
+        print(f"  Meg pred  mean ± std   : {md.mean():+.3f} ± {md.std():.3f}")
+        print(f"  diff      mean ± std   : {dd.mean():+.4f} ± {dd.std():.4f}")
+        print(f"  |diff|    median / p99 : {np.median(np.abs(dd)):.4f} / "
+              f"{np.percentile(np.abs(dd), 99):.4f}")
+        print(f"  rel diff  mean ± std   : {rd.mean():+.3%} ± {rd.std():.3%}")
+        print(f"  |rel|     median / p99 : {np.median(np.abs(rd)):.3%} / "
+              f"{np.percentile(np.abs(rd), 99):.3%}")
 
     # Closest/farthest
     worst = np.argsort(np.abs(diff))[::-1][:args.max_print]
