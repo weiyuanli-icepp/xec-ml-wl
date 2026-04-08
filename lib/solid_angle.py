@@ -20,8 +20,12 @@ CHIP_SIZE_CM = 0.59       # 5.9 mm chip size
 # PMT cathode radius (from xecconst.h: kRCATH)
 PMT_CATHODE_RADIUS_CM = 3.81
 
-# SiPM/PMT boundary: sensors 0-4595 are SiPMs, 4596-4741 are PMTs
-SIPM_PMT_BOUNDARY = 4596
+# SiPM/PMT boundary: only the inner face (IDs 0-4091) is SiPMs; everything
+# else (outer, US, DS, top, bottom) is PMTs. This matches meganalyzer's
+# XECPMRunHeader::IsSiPM flag verified by macro/compare_xec_geometry.py on
+# rec559261.root. The previous value of 4596 misclassified 504 sensors
+# (outer + US + DS) as SiPMs, using the wrong solid-angle formula.
+SIPM_PMT_BOUNDARY = 4092
 
 
 def _solid_angle_rectangle(view, corner1, corner2, u0, u1, u2):
