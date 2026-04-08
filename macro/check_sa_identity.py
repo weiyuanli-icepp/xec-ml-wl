@@ -30,15 +30,29 @@ import uproot
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 
 # Project imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.inpainter_baselines import SolidAngleWeightedBaseline
 from lib.solid_angle import SolidAngleComputer
+from lib.geom_defs import FACE_SENSOR_IDS
 
 
 N_SENSORS = 4760
 KXEC_INVALID_ABS = 900.0  # cm; guard for ±1000 cm kXECInvalid* sentinel
+
+# Face order for display
+FACE_ORDER = ["inner", "outer", "us", "ds", "top", "bot"]
+
+
+def _sensor_to_face_map():
+    """Build (4760,) array mapping sensor_id → face name."""
+    face_of = np.full(N_SENSORS, "unknown", dtype=object)
+    for face_name in FACE_ORDER:
+        if face_name in FACE_SENSOR_IDS:
+            face_of[FACE_SENSOR_IDS[face_name].astype(int)] = face_name
+    return face_of
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +296,10 @@ def compare(data, our_pred, mask):
     with np.errstate(divide="ignore", invalid="ignore"):
         rel = diff / np.where(meg != 0, meg, 1.0)
 
+    # Map each sensor_id to its face name
+    face_map = _sensor_to_face_map()
+    face = face_map[sid_idx]
+
     return {
         "n": len(our),
         "our": our,
@@ -290,6 +308,7 @@ def compare(data, our_pred, mask):
         "rel": rel,
         "ev_idx": ev_idx,
         "sid_idx": sid_idx,
+        "face": face,
     }
 
 
@@ -336,20 +355,101 @@ def print_statistics(stats, max_print):
               f"{rel[sane].mean():+.3%} ± {rel[sane].std():.3%}")
 
     # Top-N worst
+    face = stats["face"]
     k = min(max_print, n)
     worst = np.argsort(np.abs(diff))[::-1][:k]
     print(f"\n  Top {k} largest |diff|:")
-    print(f"  {'ev':>6s} {'sid':>5s} {'our':>14s} {'meg':>14s} "
+    print(f"  {'ev':>6s} {'sid':>5s} {'face':>6s} {'our':>14s} {'meg':>14s} "
           f"{'diff':>14s} {'rel':>10s}")
     for i in worst:
         print(f"  {stats['ev_idx'][i]:>6d} {stats['sid_idx'][i]:>5d} "
+              f"{str(face[i]):>6s} "
               f"{our[i]:>14.4g} {meg[i]:>14.4g} "
               f"{diff[i]:>+14.4g} {rel[i]:>+10.2%}")
+
+    # --- Per-face summary ---
+    print("\n" + "=" * 60)
+    print("Per-Face Summary")
+    print("=" * 60)
+    header = (f"  {'Face':<8s} {'N':>9s} {'|diff|med':>11s} {'|rel|med':>10s} "
+              f"{'<1e-6':>8s} {'<1e-4':>8s} {'<1e-2':>8s}")
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for face_name in FACE_ORDER + ["unknown"]:
+        sel = (face == face_name)
+        nf = int(sel.sum())
+        if nf == 0:
+            continue
+        fdiff = np.abs(diff[sel])
+        frel = np.abs(rel[sel])
+        med_d = np.median(fdiff)
+        med_r = np.median(frel)
+        f6 = float((frel < 1e-6).mean())
+        f4 = float((frel < 1e-4).mean())
+        f2 = float((frel < 1e-2).mean())
+        print(f"  {face_name:<8s} {nf:>9,d} {med_d:>11.4g} {med_r:>9.3%} "
+              f"{f6:>8.2%} {f4:>8.2%} {f2:>8.2%}")
 
 
 # ---------------------------------------------------------------------------
 # Plots
 # ---------------------------------------------------------------------------
+
+def _plot_4panel(ax_grid, our, meg, diff, rel, title_suffix=""):
+    """Fill a 2x2 axes grid with the standard 4-panel comparison."""
+    # (0,0): linear scatter
+    ax = ax_grid[0, 0]
+    if len(meg) > 0:
+        ax.scatter(meg, our, s=3, alpha=0.3, color="steelblue")
+        lims = [min(meg.min(), our.min()), max(meg.max(), our.max())]
+        ax.plot(lims, lims, "r--", lw=1, label="y = x")
+        ax.set_aspect("equal", "box")
+    ax.set_xlabel("Meganalyzer SA prediction [npho]")
+    ax.set_ylabel("Our SA prediction [npho]")
+    ax.set_title(f"Scatter (N={len(our):,}){title_suffix}")
+    ax.legend(fontsize=8)
+
+    # (0,1): absolute diff histogram
+    ax = ax_grid[0, 1]
+    if len(diff) > 0:
+        lim = max(np.percentile(np.abs(diff), 99), 1e-6)
+        ax.hist(diff, bins=100, range=(-lim, lim), color="steelblue",
+                edgecolor="k", lw=0.3)
+        ax.axvline(0, color="r", ls="--")
+        ax.set_title(f"Absolute difference\n"
+                     f"μ={diff.mean():+.4g}, σ={diff.std():.4g}")
+    ax.set_xlabel("Our − Meg [npho]")
+    ax.set_ylabel("Entries")
+
+    # (1,0): relative diff histogram
+    ax = ax_grid[1, 0]
+    if len(rel) > 0:
+        lim = max(np.percentile(np.abs(rel), 99), 1e-6)
+        ax.hist(rel, bins=100, range=(-lim, lim), color="steelblue",
+                edgecolor="k", lw=0.3)
+        ax.axvline(0, color="r", ls="--")
+        ax.set_title(f"Relative difference\n"
+                     f"μ={rel.mean():+.3%}, σ={rel.std():.3%}")
+    ax.set_xlabel("(Our − Meg) / Meg")
+    ax.set_ylabel("Entries")
+
+    # (1,1): log-log scatter
+    ax = ax_grid[1, 1]
+    positive = (meg > 0) & (our > 0)
+    if positive.any():
+        ax.loglog(meg[positive], our[positive], "o",
+                  ms=2, alpha=0.3, color="steelblue")
+        lims_log = [
+            min(meg[positive].min(), our[positive].min()),
+            max(meg[positive].max(), our[positive].max()),
+        ]
+        ax.plot(lims_log, lims_log, "r--", lw=1, label="y = x")
+        ax.set_aspect("equal", "box")
+        ax.legend(fontsize=8)
+    ax.set_xlabel("Meganalyzer SA prediction [npho]")
+    ax.set_ylabel("Our SA prediction [npho]")
+    ax.set_title("Log-scale scatter")
+
 
 def make_plots(stats, output_path, title_extra=""):
     if stats["n"] == 0:
@@ -360,66 +460,40 @@ def make_plots(stats, output_path, title_extra=""):
     meg = stats["meg"]
     diff = stats["diff"]
     rel = stats["rel"]
+    face = stats["face"]
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    with PdfPages(output_path) as pdf:
+        # --- Page 1: all entries ---
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        _plot_4panel(axes, our, meg, diff, rel)
+        title = "SA-wt Identity Check: Our Python vs Meganalyzer — ALL"
+        if title_extra:
+            title += f"\n{title_extra}"
+        fig.suptitle(title, fontsize=13)
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        pdf.savefig(fig)
+        plt.close(fig)
 
-    # (0,0): linear scatter
-    ax = axes[0, 0]
-    ax.scatter(meg, our, s=3, alpha=0.3, color="steelblue")
-    lims = [min(meg.min(), our.min()), max(meg.max(), our.max())]
-    ax.plot(lims, lims, "r--", lw=1, label="y = x")
-    ax.set_xlabel("Meganalyzer SA prediction [npho]")
-    ax.set_ylabel("Our SA prediction [npho]")
-    ax.set_title(f"Scatter (N={stats['n']:,})")
-    ax.legend()
-    ax.set_aspect("equal", "box")
+        # --- Pages 2+: per-face ---
+        for face_name in FACE_ORDER + ["unknown"]:
+            sel = (face == face_name)
+            nf = int(sel.sum())
+            if nf == 0:
+                continue
+            fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+            _plot_4panel(
+                axes, our[sel], meg[sel], diff[sel], rel[sel],
+                title_suffix=f" [{face_name}]",
+            )
+            title = (f"SA-wt Identity Check — face: {face_name.upper()} "
+                     f"(N={nf:,})")
+            if title_extra:
+                title += f"\n{title_extra}"
+            fig.suptitle(title, fontsize=13)
+            fig.tight_layout(rect=[0, 0, 1, 0.95])
+            pdf.savefig(fig)
+            plt.close(fig)
 
-    # (0,1): absolute diff histogram
-    ax = axes[0, 1]
-    lim = max(np.percentile(np.abs(diff), 99), 1e-6)
-    ax.hist(diff, bins=100, range=(-lim, lim), color="steelblue",
-            edgecolor="k", lw=0.3)
-    ax.axvline(0, color="r", ls="--")
-    ax.set_xlabel("Our − Meganalyzer [npho]")
-    ax.set_ylabel("Entries")
-    ax.set_title(f"Absolute difference\n"
-                 f"μ={diff.mean():+.4g}, σ={diff.std():.4g}")
-
-    # (1,0): relative diff histogram
-    ax = axes[1, 0]
-    lim = max(np.percentile(np.abs(rel), 99), 1e-6)
-    ax.hist(rel, bins=100, range=(-lim, lim), color="steelblue",
-            edgecolor="k", lw=0.3)
-    ax.axvline(0, color="r", ls="--")
-    ax.set_xlabel("(Our − Meg) / Meg")
-    ax.set_ylabel("Entries")
-    ax.set_title(f"Relative difference\n"
-                 f"μ={rel.mean():+.3%}, σ={rel.std():.3%}")
-
-    # (1,1): log-log scatter
-    ax = axes[1, 1]
-    positive = (meg > 0) & (our > 0)
-    if positive.any():
-        ax.loglog(meg[positive], our[positive], "o",
-                  ms=2, alpha=0.3, color="steelblue")
-        lims_log = [
-            min(meg[positive].min(), our[positive].min()),
-            max(meg[positive].max(), our[positive].max()),
-        ]
-        ax.plot(lims_log, lims_log, "r--", lw=1, label="y = x")
-        ax.set_xlabel("Meganalyzer SA prediction [npho]")
-        ax.set_ylabel("Our SA prediction [npho]")
-        ax.set_title("Log-scale scatter")
-        ax.legend()
-        ax.set_aspect("equal", "box")
-
-    title = "SA-wt Identity Check: Our Python vs Meganalyzer"
-    if title_extra:
-        title += f"\n{title_extra}"
-    fig.suptitle(title, fontsize=13)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
     print(f"\n[INFO] Saved: {output_path}")
 
 

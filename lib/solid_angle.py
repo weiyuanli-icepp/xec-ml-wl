@@ -134,33 +134,31 @@ def solid_angle_mppc(view, center, normal):
 def _comp_ellint_3(k, n):
     """Complete elliptic integral of the third kind Pi(n, k).
 
-    Uses scipy's ellipkinc for the first kind and numerical integration
-    for the third kind via the series/AGM approach.
+    Π(n, k) = ∫₀^π/2 dθ / ((1 - n sin²θ) · √(1 - k² sin²θ))
 
-    Note: scipy doesn't have comp_ellint_3, so we use a numerical
-    quadrature approach.
+    Matches the convention of C++ std::comp_ellint_3(k, n) used by
+    MEG's PMSolidAngle.cpp.
+
+    Implemented via Carlson's symmetric form (DLMF 19.25.14), which is
+    numerically stable across the full parameter range:
+
+        Π(n, k) = K(k) + (n/3) · R_J(0, 1-k², 1, 1-n)
+
+    where R_J is the Carlson symmetric elliptic integral of the third
+    kind (scipy.special.elliprj) and K is the complete elliptic integral
+    of the first kind (scipy.special.ellipk). This replaces the earlier
+    numerical quadrature which was unstable for edge cases near the
+    shower core in PMT solid angle computation.
     """
-    from scipy.integrate import quad
+    from scipy.special import ellipk, elliprj
 
-    if np.isscalar(k) and np.isscalar(n):
-        def integrand(theta):
-            return 1.0 / ((1.0 - n * np.sin(theta)**2)
-                          * np.sqrt(1.0 - k**2 * np.sin(theta)**2))
-        result, _ = quad(integrand, 0, np.pi / 2)
-        return result
-
-    # Vectorized version
-    result = np.empty_like(k, dtype=np.float64)
-    k_flat = np.ravel(k)
-    n_flat = np.ravel(n)
-    r_flat = np.ravel(result)
-    for i in range(len(k_flat)):
-        ki, ni = float(k_flat[i]), float(n_flat[i])
-        def integrand(theta, _k=ki, _n=ni):
-            return 1.0 / ((1.0 - _n * np.sin(theta)**2)
-                          * np.sqrt(1.0 - _k**2 * np.sin(theta)**2 + 1e-30))
-        r_flat[i], _ = quad(integrand, 0, np.pi / 2)
-    return result.reshape(k.shape)
+    k = np.asarray(k, dtype=np.float64)
+    n = np.asarray(n, dtype=np.float64)
+    one_m_k2 = np.clip(1.0 - k * k, 0.0, None)
+    one_m_n = 1.0 - n
+    return ellipk(k * k) + (n / 3.0) * elliprj(
+        np.zeros_like(one_m_k2), one_m_k2, np.ones_like(one_m_k2), one_m_n
+    )
 
 
 def solid_angle_pmt(view, center, normal):
