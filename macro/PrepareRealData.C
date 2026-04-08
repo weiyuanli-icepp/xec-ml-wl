@@ -2,12 +2,15 @@
 PrepareRealData.C
 - Reads Rec Trees (Real Data)
 - Applies Event Selection (PhysicsSelection + EvstatGamma==0)
+  - Pass skipSelection=kTRUE to bypass all selection (e.g. for consistency
+    checks against meganalyzer dead-channel recovery).
 - Calculates ML Features (Relative Npho, Time)
 - Calculates Geometry (xyzVTX from Reco, emiVec, emiAng)
 - outputs a flat tree compatible with the Python Inference script.
 
 Usage:
 $ ./meganalyzer -b -q -I /path/to/PrepareRealData.C+
+$ ./meganalyzer -b -q 'PrepareRealData.C+(559261, 1, "_open.root", kTRUE)'  # skip selection
 */
 
 #include <TROOT.h>
@@ -58,6 +61,11 @@ using namespace MEG;
 std::map<Int_t, TString> PrepareRunList(TString dir, TString suffix, Int_t startRun, Int_t maxNRuns);
 void _PrepareRealData_impl(TChain *rec, TString outputFileName);
 
+// Global flag: set to kTRUE to skip physics selection and process every event
+// with valid gamma reconstruction (useful for consistency checks, e.g. dead
+// channel recovery comparison against meganalyzer).
+static Bool_t gSkipSelection = kFALSE;
+
 // ---------------------------------------------------------------------------
 // Entry point for batch processing: read one line from a run-list file.
 //
@@ -68,8 +76,9 @@ void _PrepareRealData_impl(TChain *rec, TString outputFileName);
 // Usage (meganalyzer):
 //   ./meganalyzer -b -q 'macro/PrepareRealData.C+("runlist.txt", 0, "output/")'
 // ---------------------------------------------------------------------------
-void PrepareRealDataFromList(TString runListFile, Int_t jobIndex, TString outputDir = ".")
+void PrepareRealDataFromList(TString runListFile, Int_t jobIndex, TString outputDir = ".", Bool_t skipSelection = kFALSE)
 {
+   gSkipSelection = skipSelection;
    std::ifstream ifs(runListFile.Data());
    if (!ifs.is_open()) {
       std::cout << "[Error] Cannot open run list: " << runListFile << std::endl;
@@ -118,8 +127,9 @@ void PrepareRealDataFromList(TString runListFile, Int_t jobIndex, TString output
 // ---------------------------------------------------------------------------
 // Original entry point: sequential scan from a start run.
 // ---------------------------------------------------------------------------
-void PrepareRealData(Int_t sRun = 430000, Int_t nfile = 2000, TString fileSuffix = "_open.root")
+void PrepareRealData(Int_t sRun = 430000, Int_t nfile = 2000, TString fileSuffix = "_open.root", Bool_t skipSelection = kFALSE)
 {
+   gSkipSelection = skipSelection;
    // =========================================================================
    // 1. CONFIGURATION
    // =========================================================================
@@ -254,32 +264,37 @@ void _PrepareRealData_impl(TChain *rec, TString outputFileName)
       if (nProcessed % 1000 == 0) std::cout << "Processing " << nProcessed << " / " << nTotal << std::endl;
       nProcessed++;
 
-      // --- 1. Trigger Selection ---
-      if (headerRV->Getmask() != 0) continue;
+      Int_t gammaIdx    = 0;
+      Int_t positronIdx = -1;
 
-      // --- 2. Physics Selection ---
-      std::vector<Bool_t> selected;
-      MEGGLBParticlesDataCombine* pComb = combinationRV.Get();
-      MEGRecData* pReco = recoRV.Get();
+      if (!gSkipSelection) {
+         // --- 1. Trigger Selection ---
+         if (headerRV->Getmask() != 0) continue;
 
-      selector.CombinedSelection(selected, pComb, pReco);
+         // --- 2. Physics Selection ---
+         std::vector<Bool_t> selected;
+         MEGGLBParticlesDataCombine* pComb = combinationRV.Get();
+         MEGRecData* pReco = recoRV.Get();
 
-      Int_t nPair = std::count(selected.begin(), selected.end(), kTRUE);
-      if (!nPair) continue;
+         selector.CombinedSelection(selected, pComb, pReco);
 
-      Int_t bestPairIndex = -1;
-      for (size_t i=0; i<selected.size(); i++) {
-         if (selected[i]) {
-            bestPairIndex = i;
-            break;
+         Int_t nPair = std::count(selected.begin(), selected.end(), kTRUE);
+         if (!nPair) continue;
+
+         Int_t bestPairIndex = -1;
+         for (size_t i=0; i<selected.size(); i++) {
+            if (selected[i]) {
+               bestPairIndex = i;
+               break;
+            }
          }
+
+         gammaIdx    = pComb->GetGammaIndexAt(bestPairIndex);
+         positronIdx = pComb->GetPositronIndexAt(bestPairIndex);
+
+         // --- 3. Pileup Selection ---
+         if (pReco->GetEvstatGammaAt(gammaIdx) != 0) continue;
       }
-
-      Int_t gammaIdx    = pComb->GetGammaIndexAt(bestPairIndex);
-      Int_t positronIdx = pComb->GetPositronIndexAt(bestPairIndex);
-
-      // --- 3. Pilup Selection ---
-      if (pReco->GetEvstatGammaAt(gammaIdx) != 0) continue;
 
       // --- 4. Data Extraction ---
       run_out   = infoRV->GetRunNumber();
@@ -288,25 +303,32 @@ void _PrepareRealData_impl(TChain *rec, TString outputFileName)
       if (xecposfitRA.GetSize() < 1 || xectimefitRA.GetSize() < 1 || xecenerecRA.GetSize() < 1) continue;
 
       // --- VTX and Emission Vector Calculation ---
-      // VTX from Positron Reco
-      xyzVTX[0] = pReco->GetXPositronAt(positronIdx);
-      xyzVTX[1] = pReco->GetYPositronAt(positronIdx);
-      xyzVTX[2] = pReco->GetZPositronAt(positronIdx);
+      // VTX from Positron Reco (skip in skip-selection mode)
+      if (gSkipSelection) {
+         xyzVTX[0] = 1e10f; xyzVTX[1] = 1e10f; xyzVTX[2] = 1e10f;
+         emiVec[0] = 1e10f; emiVec[1] = 1e10f; emiVec[2] = 1e10f;
+         emiAng[0] = 1e10f; emiAng[1] = 1e10f;
+      } else {
+         MEGRecData* pReco = recoRV.Get();
+         xyzVTX[0] = pReco->GetXPositronAt(positronIdx);
+         xyzVTX[1] = pReco->GetYPositronAt(positronIdx);
+         xyzVTX[2] = pReco->GetZPositronAt(positronIdx);
 
-      // Emission Vector: Gamma Reco Position - VTX
-      Double_t xG = pReco->GetXGammaAt(gammaIdx);
-      Double_t yG = pReco->GetYGammaAt(gammaIdx);
-      Double_t zG = pReco->GetZGammaAt(gammaIdx);
-      TVector3 vEmi(xG - xyzVTX[0], yG - xyzVTX[1], zG - xyzVTX[2]);
-      if (vEmi.Mag() > 0) vEmi = vEmi.Unit();
+         // Emission Vector: Gamma Reco Position - VTX
+         Double_t xG = pReco->GetXGammaAt(gammaIdx);
+         Double_t yG = pReco->GetYGammaAt(gammaIdx);
+         Double_t zG = pReco->GetZGammaAt(gammaIdx);
+         TVector3 vEmi(xG - xyzVTX[0], yG - xyzVTX[1], zG - xyzVTX[2]);
+         if (vEmi.Mag() > 0) vEmi = vEmi.Unit();
 
-      emiVec[0] = vEmi.X();
-      emiVec[1] = vEmi.Y();
-      emiVec[2] = vEmi.Z();
+         emiVec[0] = vEmi.X();
+         emiVec[1] = vEmi.Y();
+         emiVec[2] = vEmi.Z();
 
-      // Photon Angles
-      emiAng[0] = vEmi.Theta() * 180.0 / TMath::Pi();
-      emiAng[1] = TMath::ATan2(vEmi.Y(), -vEmi.X()) * 180.0 / TMath::Pi();
+         // Photon Angles
+         emiAng[0] = vEmi.Theta() * 180.0 / TMath::Pi();
+         emiAng[1] = TMath::ATan2(vEmi.Y(), -vEmi.X()) * 180.0 / TMath::Pi();
+      }
 
       // XEC Reco Variables
       const auto& aPos = xecposfitRA.At(gammaIdx);
