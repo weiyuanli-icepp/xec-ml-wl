@@ -243,8 +243,14 @@ def filter_valid_events(data):
 # Run our SA-wt baseline
 # ---------------------------------------------------------------------------
 
-def compute_our_predictions(data, distance_threshold, npho_threshold):
-    """Run SolidAngleWeightedBaseline on the rec-file-derived inputs."""
+def compute_our_predictions(data, distance_threshold, npho_threshold,
+                             geom_dump_path=None):
+    """Run SolidAngleWeightedBaseline on the rec-file-derived inputs.
+
+    If geom_dump_path is provided, loads the static IsBad flag from it
+    and uses it as the neighbor-exclusion mask (meganalyzer's semantics).
+    Otherwise falls back to using the recovery mask as the exclusion.
+    """
     print("[INFO] Computing solid angles from per-event xecposlfit.xyz ...")
     sac = SolidAngleComputer()  # auto-loads lib/sensor_directions.txt
     if not sac.geometry_loaded:
@@ -258,6 +264,28 @@ def compute_our_predictions(data, distance_threshold, npho_threshold):
 
     # Dead-channel mask: meganalyzer's own per-event flag
     mask = (data["recovered"] == 1)
+
+    # Load static IsBad for neighbor exclusion (meganalyzer's semantics)
+    neighbor_exclude_mask = None
+    if geom_dump_path is not None:
+        print(f"[INFO] Loading static IsBad flag from {geom_dump_path}")
+        gd = np.loadtxt(geom_dump_path, comments="#")
+        if gd.shape[1] < 4:
+            raise RuntimeError(
+                f"Geometry dump {geom_dump_path} missing is_bad column; "
+                "re-dump with latest dump_xec_geometry.C"
+            )
+        sensor_ids = gd[:, 0].astype(int)
+        is_bad = gd[:, 2].astype(bool)  # column 2 = is_bad
+        is_bad_arr = np.zeros(N_SENSORS, dtype=bool)
+        is_bad_arr[sensor_ids] = is_bad
+        neighbor_exclude_mask = is_bad_arr  # (4760,) broadcast per event
+        n_is_bad = int(is_bad_arr.sum())
+        n_mask_total = int(mask.sum())
+        n_mask_per_event = mask.any(axis=0).sum()
+        print(f"[INFO] Static IsBad count            : {n_is_bad}")
+        print(f"[INFO] Union of recovered (any ev)   : {int(n_mask_per_event)}")
+        print(f"[INFO] Total recovered (PM,event)    : {n_mask_total}")
 
     # Replace any residual NaNs in x_npho at padded positions (those positions
     # won't be in any real neighbor list anyway, but avoid NaN propagation)
@@ -276,6 +304,7 @@ def compute_our_predictions(data, distance_threshold, npho_threshold):
         mask=mask,
         solid_angles=omega,
         npho_transform=None,  # raw-photon space
+        neighbor_exclude_mask=neighbor_exclude_mask,
     )
     return predictions, mask, omega
 
@@ -547,6 +576,11 @@ def main():
                         help="Print top-N worst discrepancies (default: 20)")
     parser.add_argument("--save-debug-csv", default=None,
                         help="Optional CSV path to dump per-comparison rows")
+    parser.add_argument("--geom-dump", default=None,
+                        help="Path to dump_xec_geometry.C output (with is_bad "
+                             "column). When provided, uses the static IsBad "
+                             "flag as the neighbor-exclusion mask to match "
+                             "meganalyzer's fInvalid/GetIsBad split exactly.")
     args = parser.parse_args()
 
     data = load_rec(args.rec, max_events=args.max_events)
@@ -561,6 +595,7 @@ def main():
 
     our_pred, mask, _ = compute_our_predictions(
         data, args.distance_threshold, args.npho_threshold,
+        geom_dump_path=args.geom_dump,
     )
 
     stats = compare(data, our_pred, mask)

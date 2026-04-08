@@ -459,6 +459,7 @@ class SolidAngleWeightedBaseline:
         mask: np.ndarray,
         solid_angles: Optional[np.ndarray] = None,
         npho_transform: Optional[NphoTransform] = None,
+        neighbor_exclude_mask: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """Predict values for masked sensors.
 
@@ -471,12 +472,20 @@ class SolidAngleWeightedBaseline:
         x_npho : ndarray, shape (N_events, 4760)
             Npho values (raw or normalised).
         mask : ndarray, shape (N_events, 4760)
-            Boolean array; True = masked / dead channel.
+            Boolean array; True = target for recovery (will be predicted).
         solid_angles : ndarray, shape (N_events, 4760), optional
             Per-event solid angle of each sensor.
         npho_transform : NphoTransform, optional
             If provided, averaging is done in raw (linear) npho space
             and the result is re-normalised.
+        neighbor_exclude_mask : ndarray, shape (N_events, 4760) or (4760,), optional
+            Boolean array specifying which sensors to EXCLUDE from the
+            neighbor pool. If None (default), `mask` itself is used (so
+            all recovered sensors are also excluded as neighbors — the
+            typical Python use case). Set this to the static IsBad flag
+            when exactly reproducing meganalyzer's algorithm, which
+            excludes only `fPMRH->GetIsBad()` PMs from the neighbor loop
+            while recovering both `fInvalid` and `GetIsBad` PMs.
 
         Returns
         -------
@@ -490,6 +499,13 @@ class SolidAngleWeightedBaseline:
         nbr_cnt = self.nbr_counts
         max_nbrs = nbr_idx.shape[1]
 
+        # Broadcast neighbor_exclude_mask to (N, 4760) if needed
+        if neighbor_exclude_mask is not None:
+            if neighbor_exclude_mask.ndim == 1:
+                neighbor_exclude_mask = np.broadcast_to(
+                    neighbor_exclude_mask, (N, neighbor_exclude_mask.shape[0]),
+                )
+
         for i in range(N):
             masked_sensors = np.where(mask[i])[0]
             if masked_sensors.size == 0:
@@ -500,7 +516,14 @@ class SolidAngleWeightedBaseline:
 
             slot_range = np.arange(max_nbrs)[None, :]
             in_range = slot_range < counts[:, None]
-            neighbor_unmasked = ~mask[i][nbrs]
+            # Decide which neighbors to exclude: by default, any sensor
+            # marked for recovery (mask==True) is also excluded from the
+            # neighbor pool. If neighbor_exclude_mask is provided, use it
+            # instead (e.g. meganalyzer's GetIsBad-only semantics).
+            if neighbor_exclude_mask is not None:
+                neighbor_unmasked = ~neighbor_exclude_mask[i][nbrs]
+            else:
+                neighbor_unmasked = ~mask[i][nbrs]
             valid = in_range & neighbor_unmasked
 
             nbr_vals = x_npho[i][nbrs]

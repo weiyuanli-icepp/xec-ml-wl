@@ -34,17 +34,32 @@ import numpy as np
 def load_meganalyzer_dump(path):
     """Load meganalyzer XECPMRunHeader dump.
 
-    Returns dict with keys: id, is_sipm, face, xyz (N, 3), direction (N, 3).
+    Supports two formats:
+      - 9 columns (legacy): id is_sipm face x y z dir_x dir_y dir_z
+      - 10 columns (new):   id is_sipm is_bad face x y z dir_x dir_y dir_z
+
+    Returns dict with keys: id, is_sipm, is_bad (or None), face,
+    xyz (N, 3), direction (N, 3).
     """
     data = np.loadtxt(path, comments="#")
-    if data.ndim != 2 or data.shape[1] != 9:
+    if data.ndim != 2 or data.shape[1] not in (9, 10):
         raise RuntimeError(
             f"Unexpected shape for meganalyzer dump {path}: {data.shape}; "
-            f"expected (N, 9)"
+            f"expected (N, 9) or (N, 10)"
         )
+    if data.shape[1] == 10:
+        return {
+            "id": data[:, 0].astype(np.int32),
+            "is_sipm": data[:, 1].astype(np.int32),
+            "is_bad": data[:, 2].astype(np.int32),
+            "face": data[:, 3].astype(np.int32),
+            "xyz": data[:, 4:7],
+            "direction": data[:, 7:10],
+        }
     return {
         "id": data[:, 0].astype(np.int32),
         "is_sipm": data[:, 1].astype(np.int32),
+        "is_bad": None,
         "face": data[:, 2].astype(np.int32),
         "xyz": data[:, 3:6],
         "direction": data[:, 6:9],
