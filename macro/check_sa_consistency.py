@@ -105,33 +105,26 @@ def load_meganalyzer_recovery(rec_path):
         print(f"[INFO] npho branch      : {npho_key}")
         print(f"[INFO] recovered branch : {recovered_key}")
 
-        # Load run/event
-        run_key = _find_branch(tree, [
-            "Info/Info.fRunNumber", "Info./Info.fRunNumber",
-            "Info/RunNumber", "Info.fRunNumber",
-            "RunNumber", "runNumber",
-        ])
-        event_key = _find_branch(tree, [
-            "Info/Info.fEventNumber", "Info./Info.fEventNumber",
-            "Info/EventNumber", "Info.fEventNumber",
-            "EventNumber", "eventNumber",
-        ])
-
-        if run_key is None:
-            for k in tree.keys():
-                if "RunNumber" in k and "Info" in k:
-                    run_key = k
-                    break
-        if event_key is None:
-            for k in tree.keys():
-                if "EventNumber" in k and "Info" in k:
-                    event_key = k
-                    break
+        # Discover run/event branches by scanning all keys
+        all_keys = list(tree.keys())
+        run_key = None
+        event_key = None
+        for k in all_keys:
+            kl = k.lower()
+            if run_key is None and ("runnumber" in kl or kl.endswith(".run") or kl.endswith("/run")):
+                run_key = k
+            if event_key is None and ("eventnumber" in kl or kl.endswith(".event") or kl.endswith("/event")):
+                event_key = k
 
         print(f"[INFO] run branch       : {run_key}")
         print(f"[INFO] event branch     : {event_key}")
 
         if run_key is None or event_key is None:
+            print("[DEBUG] Available keys containing 'run' or 'event' or 'Info':")
+            for k in all_keys:
+                kl = k.lower()
+                if "run" in kl or "event" in kl or "info" in kl:
+                    print(f"   {k}")
             raise RuntimeError("Could not find run/event number branches")
 
         run_arr = tree[run_key].array(library="np")
