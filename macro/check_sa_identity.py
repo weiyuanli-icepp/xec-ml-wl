@@ -367,7 +367,7 @@ def print_statistics(stats, max_print):
               f"{our[i]:>14.4g} {meg[i]:>14.4g} "
               f"{diff[i]:>+14.4g} {rel[i]:>+10.2%}")
 
-    # --- Per-face summary ---
+    # --- Per-face summary (always print all faces, even if empty) ---
     print("\n" + "=" * 60)
     print("Per-Face Summary")
     print("=" * 60)
@@ -379,6 +379,8 @@ def print_statistics(stats, max_print):
         sel = (face == face_name)
         nf = int(sel.sum())
         if nf == 0:
+            print(f"  {face_name:<8s} {nf:>9,d} "
+                  f"{'—':>11s} {'—':>10s} {'—':>8s} {'—':>8s} {'—':>8s}")
             continue
         fdiff = np.abs(diff[sel])
         frel = np.abs(rel[sel])
@@ -479,7 +481,9 @@ def make_plots(stats, output_path, title_extra=""):
             sel = (face == face_name)
             nf = int(sel.sum())
             if nf == 0:
+                print(f"[INFO] Skipping face '{face_name}' (no dead channels)")
                 continue
+            print(f"[INFO] Face '{face_name}': {nf:,} entries")
             fig, axes = plt.subplots(2, 2, figsize=(12, 10))
             _plot_4panel(
                 axes, our[sel], meg[sel], diff[sel], rel[sel],
