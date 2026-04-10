@@ -451,9 +451,14 @@ def run_inference(model, model_type: str, x: np.ndarray, mask: np.ndarray,
             mask_batch = torch.tensor(mask[start:end], device=device)
 
             if model_type == 'torchscript':
-                # TorchScript model returns (B, 4760, out_channels)
+                # TorchScript wrapper returns (B, 4760) — raw npho only
                 pred_batch = model(x_batch, mask_batch)
-                all_preds[start:end] = pred_batch.cpu().numpy()
+                pred_np = pred_batch.cpu().numpy()
+                if pred_np.ndim == 2:
+                    # Wrapper returns 2D (npho only); fill first channel
+                    all_preds[start:end, :, 0] = pred_np
+                else:
+                    all_preds[start:end] = pred_np
             else:
                 # Checkpoint model - use forward_full_output
                 pred_batch = model.forward_full_output(x_batch, mask_batch)
