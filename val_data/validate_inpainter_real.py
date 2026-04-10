@@ -517,9 +517,13 @@ def run_inference_torchscript(model, x: np.ndarray,
             x_batch = torch.tensor(x[start_idx:end_idx], device=device, dtype=torch.float32)
             mask_batch = torch.tensor(combined_mask[start_idx:end_idx], device=device, dtype=torch.float32)
 
-            # Run model - returns (B, 4760, 2)
+            # Run model - wrapper returns (B, 4760) raw npho
             result = model(x_batch, mask_batch)
-            output[start_idx:end_idx] = result.cpu().numpy()
+            result_np = result.cpu().numpy()
+            if result_np.ndim == 2:
+                output[start_idx:end_idx, :, 0] = result_np
+            else:
+                output[start_idx:end_idx] = result_np
 
     return output
 
