@@ -1058,18 +1058,23 @@ def main():
     print(f"[INFO] Artificial masks per event: {artificial_mask.sum(axis=1).mean():.1f} avg")
 
     # Prepare model input
-    print("[INFO] Preparing model input...")
-    print(f"[INFO] Normalization parameters:")
-    print(f"       npho_scale={args.npho_scale}, npho_scale2={args.npho_scale2}")
-    print(f"       time_scale={args.time_scale}, time_shift={args.time_shift}")
-    print(f"       (IMPORTANT: These must match the values used during training!)")
-    x_input = prepare_model_input(
-        data['npho'], data['relative_time'],
-        npho_scale=args.npho_scale,
-        npho_scale2=args.npho_scale2,
-        time_scale=args.time_scale,
-        time_shift=args.time_shift
-    )
+    if args.torchscript:
+        # TorchScript wrapper handles normalization — pass raw values
+        print("[INFO] TorchScript mode: passing raw values (wrapper handles normalization)")
+        x_input = np.stack([data['npho'], data['relative_time']], axis=-1).astype(np.float32)
+    else:
+        # Checkpoint model expects normalized input
+        print("[INFO] Preparing normalized model input...")
+        print(f"[INFO] Normalization parameters:")
+        print(f"       npho_scale={args.npho_scale}, npho_scale2={args.npho_scale2}")
+        print(f"       time_scale={args.time_scale}, time_shift={args.time_shift}")
+        x_input = prepare_model_input(
+            data['npho'], data['relative_time'],
+            npho_scale=args.npho_scale,
+            npho_scale2=args.npho_scale2,
+            time_scale=args.time_scale,
+            time_shift=args.time_shift
+        )
 
     # Diagnostic: Show input data statistics
     npho_valid = data['npho'][data['npho'] < 1e9]
@@ -1085,9 +1090,10 @@ def main():
     combined_mask[:, combined_dead_mask] = True  # Dead channels
     combined_mask |= artificial_mask  # Plus artificial
 
-    # Mask the input
-    x_input[combined_mask, 0] = MODEL_SENTINEL_NPHO  # npho channel
-    x_input[combined_mask, 1] = MODEL_SENTINEL_TIME   # time channel
+    # Apply sentinels only for checkpoint mode (TorchScript wrapper handles this)
+    if not args.torchscript:
+        x_input[combined_mask, 0] = MODEL_SENTINEL_NPHO
+        x_input[combined_mask, 1] = MODEL_SENTINEL_TIME
 
     # Determine device (default: cpu for compatibility)
     device = args.device if args.device else 'cpu'

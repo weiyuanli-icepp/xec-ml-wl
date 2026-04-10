@@ -1109,14 +1109,18 @@ def main():
     data = load_data(args.input, tree_name=args.tree_name, max_events=args.max_events)
     n_events = len(data['npho'])
 
-    # Normalize
-    print(f"[INFO] Normalizing data (npho_scheme={npho_scheme}, "
-          f"scale={npho_scale}, scale2={npho_scale2})...")
-    x_input = normalize_data(data['npho'], data['time'], npho_scheme=npho_scheme,
-                             npho_scale=npho_scale, npho_scale2=npho_scale2)
+    # Prepare input (TorchScript takes raw values; checkpoint takes normalized)
+    if model_type == 'torchscript':
+        print("[INFO] TorchScript mode: passing raw values (wrapper handles normalization)")
+        x_input = np.stack([data['npho'], data['time']], axis=-1).astype(np.float32)
+    else:
+        print(f"[INFO] Normalizing data (npho_scheme={npho_scheme}, "
+              f"scale={npho_scale}, scale2={npho_scale2})...")
+        x_input = normalize_data(data['npho'], data['time'], npho_scheme=npho_scheme,
+                                 npho_scale=npho_scale, npho_scale2=npho_scale2)
     x_original = x_input.copy()
 
-    # Free raw arrays (no longer needed after normalization)
+    # Free raw arrays (no longer needed)
     del data['npho'], data['time']
     gc.collect()
 
@@ -1152,16 +1156,18 @@ def main():
         artificial_mask, combined_mask = create_artificial_mask(
             x_input, n_art, dead_mask, seed=args.seed
         )
-        # Apply combined mask to input (per-channel sentinels)
-        x_input[combined_mask, 0] = MODEL_SENTINEL_NPHO  # npho -> npho sentinel
-        x_input[combined_mask, 1] = MODEL_SENTINEL_TIME        # time -> time sentinel
+        # Apply sentinels only for checkpoint mode (TorchScript wrapper handles this)
+        if model_type != 'torchscript':
+            x_input[combined_mask, 0] = MODEL_SENTINEL_NPHO
+            x_input[combined_mask, 1] = MODEL_SENTINEL_TIME
     else:
         # MC pseudo-experiment: apply dead pattern to clean MC
         print("[INFO] MC mode: applying dead channel pattern")
         artificial_mask = None
         combined_mask = np.zeros((n_events, N_CHANNELS), dtype=bool)
         combined_mask[:, dead_mask] = True
-        x_input[combined_mask, 0] = MODEL_SENTINEL_NPHO  # npho -> npho sentinel
+        if model_type != 'torchscript':
+            x_input[combined_mask, 0] = MODEL_SENTINEL_NPHO
         x_input[combined_mask, 1] = MODEL_SENTINEL_TIME        # time -> time sentinel
 
     n_masked = combined_mask.sum()
