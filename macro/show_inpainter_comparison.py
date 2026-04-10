@@ -373,8 +373,10 @@ Examples:
         npho_threshold=raw_threshold,
     )
 
-    # x_truth: full normalized sensor values
+    # x_truth: full normalized sensor values (default)
     x_truth = np.stack([npho_norm, time_norm], axis=-1)  # (4760, 2)
+    # Also keep raw for auto-detection of prediction space
+    x_truth_raw = np.stack([raw_npho, raw_time], axis=-1)  # (4760, 2)
     num_sensors = x_truth.shape[0]
 
     # --- Load inpainter predictions ---
@@ -511,30 +513,36 @@ Examples:
     else:
         print(f"Event {args.event_idx}: {n_masked} valid masked sensors ({100*n_masked/num_sensors:.1f}%)")
 
-    # Validate normalization consistency between original file and predictions file
-    truth_from_original = x_truth[sensor_ids]
-    npho_diff = np.abs(truth_from_original[:, 0] - truth_npho_pred).mean()
-    time_diff = np.abs(truth_from_original[:, 1] - truth_time_pred).mean()
-    if npho_diff > 0.05 or time_diff > 0.05:
-        print(f"  Warning: Normalization mismatch detected!")
-        print(f"    npho diff: {npho_diff:.4f}, time diff: {time_diff:.4f}")
-        print(f"    This may indicate different normalization parameters were used.")
-    elif npho_diff > 0.01 or time_diff > 0.01:
-        print(f"  Note: Small normalization difference (npho: {npho_diff:.4f}, time: {time_diff:.4f})")
-        print(f"    Consider regenerating predictions with: python macro/generate_test_predictions.py")
+    # Auto-detect if predictions are in raw or normalized space by comparing
+    # truth values against both raw and normalized originals
+    truth_from_norm = x_truth[sensor_ids]
+    truth_from_raw = x_truth_raw[sensor_ids]
+    diff_norm = np.abs(truth_from_norm[:, 0] - truth_npho_pred).mean()
+    diff_raw = np.abs(truth_from_raw[:, 0] - truth_npho_pred).mean()
+
+    if diff_raw < diff_norm:
+        # Predictions are in raw space (new TorchScript wrapper)
+        print(f"  Predictions appear to be in raw space (using raw original for display)")
+        x_display = x_truth_raw
+    else:
+        # Predictions are in normalized space (checkpoint or old wrapper)
+        x_display = x_truth
+        if diff_norm > 0.05:
+            print(f"  Warning: Normalization mismatch detected!")
+            print(f"    npho diff: {diff_norm:.4f}")
+            print(f"    This may indicate different normalization parameters were used.")
 
     # --- Reconstruct mask, x_masked, x_pred ---
-    # mask: 1 where masked, 0 where visible
     mask = np.zeros(num_sensors, dtype=np.float32)
     mask[sensor_ids] = 1.0
 
     # x_masked: input with masked sensors set to sentinel
-    x_masked = x_truth.copy()
-    x_masked[sensor_ids, 0] = -1.0  # npho = sentinel_npho for masked
-    x_masked[sensor_ids, 1] = sentinel_time  # time = sentinel for masked
+    x_masked = x_display.copy()
+    x_masked[sensor_ids, 0] = -1.0
+    x_masked[sensor_ids, 1] = sentinel_time
 
     # x_pred: truth with masked sensors replaced by predictions
-    x_pred = x_truth.copy()
+    x_pred = x_display.copy()
     x_pred[sensor_ids, 0] = pred_npho
     x_pred[sensor_ids, 1] = pred_time
 
