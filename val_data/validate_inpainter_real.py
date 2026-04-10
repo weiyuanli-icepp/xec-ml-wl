@@ -570,12 +570,13 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
                               npho_scale2: float = DEFAULT_NPHO_SCALE2,
                               time_scale: float = DEFAULT_TIME_SCALE,
                               time_shift: float = DEFAULT_TIME_SHIFT,
-                              predict_channels: List[str] = None) -> List[Dict]:
+                              predict_channels: List[str] = None,
+                              raw_output: bool = False) -> List[Dict]:
     """
     Collect predictions from flat output tensor (for TorchScript/ONNX).
 
     Args:
-        output: Model output (N, 4760, out_channels) with predictions (in normalized space)
+        output: Model output (N, 4760, out_channels). Normalized for checkpoint, raw for TorchScript.
         x_original: Original input before masking (N, 4760, 2) - NOT USED, kept for API compat
         combined_mask: Boolean mask (N, 4760) of all masked channels
         artificial_mask: Boolean mask (N, 4760) of artificially masked
@@ -653,14 +654,18 @@ def collect_predictions_flat(output: np.ndarray, x_original: np.ndarray,
             is_artificial = artificial_mask[event_idx, sensor_id]
             mask_type = 0 if is_artificial else 1
 
-            # Get npho prediction (denormalize from model's normalized output)
-            pred_npho_norm = float(output[event_idx, sensor_id, pred_npho_idx])
-            pred_npho = denorm_npho(pred_npho_norm)
+            # Get npho prediction
+            if raw_output:
+                pred_npho = float(output[event_idx, sensor_id, pred_npho_idx])
+            else:
+                pred_npho = denorm_npho(float(output[event_idx, sensor_id, pred_npho_idx]))
 
             # Get time prediction only if model predicts time
             if predict_time:
-                pred_time_norm = float(output[event_idx, sensor_id, pred_time_idx])
-                pred_time = denorm_time(pred_time_norm)
+                if raw_output:
+                    pred_time = float(output[event_idx, sensor_id, pred_time_idx])
+                else:
+                    pred_time = denorm_time(float(output[event_idx, sensor_id, pred_time_idx]))
             else:
                 pred_time = -999.0
 
@@ -1121,7 +1126,7 @@ def main():
             batch_size=args.batch_size, device=device
         )
 
-        # Collect predictions from flat output
+        # Collect predictions from flat output (raw_output=True: wrapper returns raw npho)
         print("[INFO] Collecting predictions...")
         pred_list = collect_predictions_flat(
             output, x_original, combined_mask,
@@ -1131,7 +1136,8 @@ def main():
             npho_scale2=args.npho_scale2,
             time_scale=args.time_scale,
             time_shift=args.time_shift,
-            predict_channels=predict_channels
+            predict_channels=predict_channels,
+            raw_output=True
         )
 
     elif args.onnx:
