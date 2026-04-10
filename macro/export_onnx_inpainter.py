@@ -69,7 +69,7 @@ class InpainterScriptableWrapper(nn.Module):
         """
         # Normalize npho: log1p(raw / scale) / scale2
         npho_norm = torch.log1p(x_raw[:, :, 0] / self.npho_scale) / self.npho_scale2
-        time_norm = x_raw[:, :, 1] / self.time_scale + self.time_shift
+        time_norm = x_raw[:, :, 1] / self.time_scale - self.time_shift
 
         # Apply sentinels at masked positions
         mask_bool = mask.bool()
