@@ -979,6 +979,7 @@ Examples:
                             'time_branch': time_branch,
                             'sentinel_npho': float(sentinel_npho),
                             'npho_scheme': npho_scheme,
+                            'npho_threshold': float(npho_threshold),
                             'encoder_dim': encoder_dim,
                             'dim_feedforward': encoder_dim_feedforward,
                             'num_fusion_layers': encoder_num_fusion_layers,

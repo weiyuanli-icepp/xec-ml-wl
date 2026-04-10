@@ -39,11 +39,12 @@ class InpainterScriptableWrapper(nn.Module):
     """
     TorchScript-compatible wrapper for XEC_Inpainter.
 
-    Bakes normalization/denormalization inside the model so the C++ side
-    can pass RAW npho and time values and get RAW npho back.
+    Handles ALL normalization, sentinel detection, and denormalization internally
+    so callers (C++, Python) just pass raw values. Mirrors the training dataset
+    logic in lib/dataset.py:195-254.
 
-    Input:  x_raw (B, 4760, 2) with [npho_raw, time_raw]
-            mask  (B, 4760)    binary (1=dead, 0=valid)
+    Input:  x_raw (B, 4760, 2) with [raw_npho, relative_time]
+            mask  (B, 4760)    binary dead-channel mask (1=dead/bad, 0=valid)
     Output: npho_out (B, 4760) raw npho with inpainted values at masked positions
     """
 
@@ -51,43 +52,86 @@ class InpainterScriptableWrapper(nn.Module):
         super().__init__()
         self.inpainter = inpainter
         self.out_channels = inpainter.out_channels
-        # Bake normalization constants from config
+
+        # Normalization constants from config
+        self.npho_scheme: str = config.get("npho_scheme", "log1p")
         self.npho_scale: float = config.get("npho_scale", 1000.0)
         self.npho_scale2: float = config.get("npho_scale2", 4.08)
         self.time_scale: float = config.get("time_scale", 1.14e-7)
         self.time_shift: float = config.get("time_shift", -0.46)
         self.sentinel_npho: float = config.get("sentinel_npho", -1.0)
         self.sentinel_time: float = config.get("sentinel_time", -1.0)
+        self.npho_threshold: float = config.get("npho_threshold", 100.0)
+
+        # Pre-compute scheme-dependent constants (safe in __init__, not in forward)
+        import math
+        if self.npho_scheme == "log1p":
+            self.domain_min: float = -self.npho_scale * 0.999
+        elif self.npho_scheme == "sqrt":
+            self.domain_min = 0.0
+        elif self.npho_scheme == "anscombe":
+            self.domain_min = -0.375
+        else:
+            self.domain_min = float('-inf')
+        self.sqrt_scale: float = math.sqrt(self.npho_scale)
+        self.anscombe_sf: float = 2.0 * math.sqrt(self.npho_scale + 0.375)
+
+    def _npho_forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.npho_scheme == "log1p":
+            return torch.log1p(x / self.npho_scale) / self.npho_scale2
+        elif self.npho_scheme == "sqrt":
+            return torch.sqrt(x) / self.sqrt_scale
+        elif self.npho_scheme == "anscombe":
+            return 2.0 * torch.sqrt(x + 0.375) / self.anscombe_sf
+        else:
+            return x / self.npho_scale
+
+    def _npho_inverse(self, y: torch.Tensor) -> torch.Tensor:
+        if self.npho_scheme == "log1p":
+            return self.npho_scale * (torch.exp(y * self.npho_scale2) - 1.0)
+        elif self.npho_scheme == "sqrt":
+            return (y * self.sqrt_scale) ** 2
+        elif self.npho_scheme == "anscombe":
+            return (y * self.anscombe_sf / 2.0) ** 2 - 0.375
+        else:
+            return y * self.npho_scale
 
     def forward(self, x_raw: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x_raw: (B, 4760, 2) - RAW sensor values [npho_raw, time_raw]
-            mask:  (B, 4760)    - binary mask (1=dead, 0=valid)
+            x_raw: (B, 4760, 2) - RAW sensor values [raw_npho, relative_time]
+            mask:  (B, 4760)    - binary dead-channel mask (1=dead/bad, 0=valid)
         Returns:
             npho_out: (B, 4760) - raw npho with inpainted values at masked positions
         """
-        # Normalize npho: log1p(raw / scale) / scale2
-        npho_norm = torch.log1p(x_raw[:, :, 0] / self.npho_scale) / self.npho_scale2
-        time_norm = x_raw[:, :, 1] / self.time_scale - self.time_shift
-
-        # Apply sentinels at masked positions
+        raw_n = x_raw[:, :, 0]
+        raw_t = x_raw[:, :, 1]
         mask_bool = mask.bool()
-        npho_norm = npho_norm.masked_fill(mask_bool, self.sentinel_npho)
-        time_norm = time_norm.masked_fill(mask_bool, self.sentinel_time)
 
-        x_norm = torch.stack([npho_norm, time_norm], dim=-1)  # (B, 4760, 2)
+        # Build masks (mirrors dataset.py:214-243)
+        npho_invalid = mask_bool | (raw_n > 9e9) | torch.isnan(raw_n) | torch.isinf(raw_n)
+        domain_break = (~npho_invalid) & (raw_n < self.domain_min)
+        time_invalid = (npho_invalid | (raw_n < self.npho_threshold)
+                        | (raw_t.abs() > 9e9) | torch.isnan(raw_t) | torch.isinf(raw_t))
 
-        # Run model
-        pred_all = self.inpainter.forward_full_output(x_norm, mask)  # (B, 4760, C)
+        # Npho normalization (configurable scheme)
+        raw_n_safe = torch.where(npho_invalid | domain_break, torch.zeros_like(raw_n), raw_n)
+        n_norm = self._npho_forward(raw_n_safe)
+        n_norm = torch.where(npho_invalid, torch.full_like(n_norm, self.sentinel_npho), n_norm)
+        n_norm = torch.where(domain_break, torch.zeros_like(n_norm), n_norm)
 
-        # Denormalize npho output: scale * (exp(norm * scale2) - 1)
-        npho_pred_norm = pred_all[:, :, 0]
-        npho_pred_raw = self.npho_scale * (torch.exp(npho_pred_norm * self.npho_scale2) - 1.0)
+        # Time normalization (linear: raw/scale - shift, matching dataset.py:253)
+        t_norm = raw_t / self.time_scale - self.time_shift
+        t_norm = torch.where(time_invalid, torch.full_like(t_norm, self.sentinel_time), t_norm)
+
+        x_norm = torch.stack([n_norm, t_norm], dim=-1)
+        pred_all = self.inpainter.forward_full_output(x_norm, mask)
+
+        # Denormalize npho output
+        npho_pred_raw = self._npho_inverse(pred_all[:, :, 0])
 
         # Combine: predictions at masked, original at unmasked
-        npho_out = torch.where(mask_bool, npho_pred_raw, x_raw[:, :, 0])
-        return npho_out  # (B, 4760)
+        return torch.where(mask_bool, npho_pred_raw, raw_n)
 
 
 # Keep old class name as alias for backward compatibility
@@ -225,9 +269,13 @@ NOTE: ONNX export is NOT supported due to nn.TransformerEncoder's fused kernel.
     wrapper = InpainterONNXWrapper(inpainter, config)
     wrapper.eval()
 
-    # Dummy inputs for tracing
-    # With forward_full_output(), the model returns fixed-size (B, 4760, 2) tensor,
-    # so tracing is clean and batch size can vary at inference time.
+    print(f"[INFO] Wrapper config: npho_scheme={wrapper.npho_scheme}, "
+          f"npho_scale={wrapper.npho_scale}, npho_scale2={wrapper.npho_scale2}")
+    print(f"[INFO]   time_scale={wrapper.time_scale}, time_shift={wrapper.time_shift}")
+    print(f"[INFO]   sentinel_npho={wrapper.sentinel_npho}, sentinel_time={wrapper.sentinel_time}")
+    print(f"[INFO]   npho_threshold={wrapper.npho_threshold}, domain_min={wrapper.domain_min}")
+
+    # Dummy inputs for tracing (raw scale values, not normalized)
     trace_batch = args.trace_batch_size
     trace_mask_per_event = args.trace_mask_per_event
 
@@ -236,7 +284,9 @@ NOTE: ONNX export is NOT supported due to nn.TransformerEncoder's fused kernel.
     print(f"[INFO] Output channels: {out_channels} ({inpainter.predict_channels})")
     print(f"[INFO] Using fixed-size output method (forward_full_output) for clean tracing")
 
-    dummy_input = torch.randn(trace_batch, 4760, 2)
+    dummy_input = torch.zeros(trace_batch, 4760, 2)
+    dummy_input[:, :, 0] = torch.rand(trace_batch, 4760) * 2000   # raw npho [0, 2000]
+    dummy_input[:, :, 1] = torch.rand(trace_batch, 4760) * 1e-7   # relative time [0, 100ns]
     dummy_mask = torch.zeros(trace_batch, 4760)
 
     # Create realistic mask pattern for each event in batch
