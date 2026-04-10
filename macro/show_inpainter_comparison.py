@@ -520,17 +520,28 @@ Examples:
     diff_norm = np.abs(truth_from_norm[:, 0] - truth_npho_pred).mean()
     diff_raw = np.abs(truth_from_raw[:, 0] - truth_npho_pred).mean()
 
-    if diff_raw < diff_norm:
+    is_raw = diff_raw < diff_norm
+    if is_raw:
         # Predictions are in raw space (new TorchScript wrapper)
-        print(f"  Predictions appear to be in raw space (using raw original for display)")
-        x_display = x_truth_raw
+        # Normalize predictions for display (event_display expects normalized values)
+        print(f"  Predictions in raw space — normalizing for display")
+        transform = NphoTransform(scheme=npho_scheme, npho_scale=npho_scale, npho_scale2=npho_scale2)
+        domain_min = transform.domain_min()
+        pred_safe = np.where((pred_npho > 9e9) | np.isnan(pred_npho), 0.0, pred_npho)
+        pred_safe = np.where(pred_safe < domain_min, 0.0, pred_safe)
+        pred_npho_disp = transform.forward(pred_safe)
+        pred_time_disp = pred_time / time_scale - time_shift if time_scale != 0 else pred_time
     else:
-        # Predictions are in normalized space (checkpoint or old wrapper)
-        x_display = x_truth
+        # Already normalized
+        pred_npho_disp = pred_npho
+        pred_time_disp = pred_time
         if diff_norm > 0.05:
             print(f"  Warning: Normalization mismatch detected!")
             print(f"    npho diff: {diff_norm:.4f}")
             print(f"    This may indicate different normalization parameters were used.")
+
+    # Always display in normalized space
+    x_display = x_truth
 
     # --- Reconstruct mask, x_masked, x_pred ---
     mask = np.zeros(num_sensors, dtype=np.float32)
@@ -543,8 +554,8 @@ Examples:
 
     # x_pred: truth with masked sensors replaced by predictions
     x_pred = x_display.copy()
-    x_pred[sensor_ids, 0] = pred_npho
-    x_pred[sensor_ids, 1] = pred_time
+    x_pred[sensor_ids, 0] = pred_npho_disp
+    x_pred[sensor_ids, 1] = pred_time_disp
 
     # --- Plot ---
     # Build title with event features
